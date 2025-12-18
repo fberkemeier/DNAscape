@@ -1,7 +1,7 @@
 Installation
 ============
 
-Create an environment and install DNAscape. This is an easy tutorial.
+Create an environment and install DNAscape.
 
 .. code-block:: bash
 
