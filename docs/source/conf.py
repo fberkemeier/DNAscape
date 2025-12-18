@@ -34,6 +34,8 @@ html_theme = 'sphinx_rtd_theme'
 html_static_path = ['_static']
 
 html_theme_options = {
-    "display_version": False,
+    "version_selector": False,
+    "language_selector": False,
+    "flyout_display": "hidden",
 }
 
