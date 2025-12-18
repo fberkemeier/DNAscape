@@ -7,8 +7,8 @@
 # https://www.sphinx-doc.org/en/master/usage/configuration.html#project-information
 
 project = 'DNAscape'
-copyright = '2025, fberkemeier'
-author = 'fberkemeier'
+copyright = '2025, Francisco Berkemeier'
+author = 'Francisco Berkemeier'
 release = '0.0.1'
 
 # -- General configuration ---------------------------------------------------
