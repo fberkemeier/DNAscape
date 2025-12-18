@@ -3,11 +3,13 @@
 # For the full list of built-in configuration values, see the documentation:
 # https://www.sphinx-doc.org/en/master/usage/configuration.html
 
+from datetime import datetime
+
 # -- Project information -----------------------------------------------------
 # https://www.sphinx-doc.org/en/master/usage/configuration.html#project-information
 
 project = 'DNAscape'
-copyright = '2025, Francisco Berkemeier'
+copyright = f"{datetime.now().year}, Francisco Berkemeier"
 author = 'Francisco Berkemeier'
 release = '0.0.1'
 
