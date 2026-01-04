@@ -45,6 +45,14 @@
 <ul>
 <li class="toctree-l1"><a class="reference internal" href="installation.html">Installation</a></li>
 <li class="toctree-l1"><a class="reference internal" href="quickstart.html">Quickstart</a></li>
+<li class="toctree-l1"><a class="reference internal" href="foundations.html">Foundations</a></li>
+<li class="toctree-l1"><a class="reference internal" href="simulationengine.html">Simulation Engine</a></li>
+<li class="toctree-l1"><a class="reference internal" href="mappingfunctions.html">Mapping Functions</a></li>
+<li class="toctree-l1"><a class="reference internal" href="datamanagement.html">Data Management</a></li>
+<li class="toctree-l1"><a class="reference internal" href="visualisation.html">Visualisation</a></li>
+<li class="toctree-l1"><a class="reference internal" href="examples.html">Examples</a></li>
+<li class="toctree-l1"><a class="reference internal" href="additionalresources.html">Additional Resources</a></li>
+<li class="toctree-l1"><a class="reference internal" href="releasenotes.html">Release Notes</a></li>
 </ul>
 
         </div>
@@ -79,8 +87,30 @@
 <ul>
 <li class="toctree-l1"><a class="reference internal" href="installation.html">Installation</a></li>
 <li class="toctree-l1"><a class="reference internal" href="quickstart.html">Quickstart</a></li>
+<li class="toctree-l1"><a class="reference internal" href="foundations.html">Foundations</a></li>
+<li class="toctree-l1"><a class="reference internal" href="simulationengine.html">Simulation Engine</a></li>
+<li class="toctree-l1"><a class="reference internal" href="mappingfunctions.html">Mapping Functions</a></li>
+<li class="toctree-l1"><a class="reference internal" href="datamanagement.html">Data Management</a></li>
+<li class="toctree-l1"><a class="reference internal" href="visualisation.html">Visualisation</a></li>
+<li class="toctree-l1"><a class="reference internal" href="examples.html">Examples</a></li>
+<li class="toctree-l1"><a class="reference internal" href="additionalresources.html">Additional Resources</a></li>
+<li class="toctree-l1"><a class="reference internal" href="releasenotes.html">Release Notes</a></li>
 </ul>
 </div>
+<section id="overview">
+<h2>Overview<a class="headerlink" href="#overview" title="Link to this heading"></a></h2>
+<p>DNAscape is a computational framework for modelling and analysing genome-wide DNA replication kinetics. It provides a unified toolkit to map between experimentally accessible replication observables such as replication timing (e.g., Repli-seq), origin firing properties (Ini-seq, SNS-seq), fork dynamics, and replicated fraction, using mechanistically grounded kinetic models inspired by the Kolmogorov-Avrami-Mehl-Johnson framework.</p>
+<p>At its core, DNAscape implements bidirectional mappings between replication observables, enabling inference of origin firing rates from replication timing data, forward prediction of replication timing from inferred kinetics, and stochastic simulation of replication dynamics across entire chromosomes or genomes. These simulations yield emergent quantities including origin efficiency, inter-origin distances, fork counts, temporal replication profiles, among others.</p>
+<p>DNAscape is designed to be modular and extensible. It supports chromosome-resolved analyses, various resolutions, ensemble simulations, and flexible visualisation, and is intended to integrate naturally with modern data-driven approaches. The framework aims to bridge experimental data and quantitative theory, providing interpretable, scalable tools for studying DNA replication under both physiological and perturbed conditions.</p>
+</section>
+<section id="publications">
+<h2>Publications<a class="headerlink" href="#publications" title="Link to this heading"></a></h2>
+<p>If you use DNAscape for your research, please cite the publication appropriate for the version you used:</p>
+</section>
+<section id="bugs-questions-and-comments">
+<h2>Bugs, Questions, and Comments<a class="headerlink" href="#bugs-questions-and-comments" title="Link to this heading"></a></h2>
+<p>If you encounter any issues or have questions about how to use the software, please open a <a class="reference external" href="https://github.com/fberkemeier/DNAscape/issues">GitHub issue</a>. Feedback is a valuable part of the ongoing development. For comments or suggestions regarding improvements to the software or the documentation, you may also contact Francisco Berkemeier by email at <a class="reference external" href="mailto:fp409&#37;&#52;&#48;cam&#46;ac&#46;uk">fp409<span>&#64;</span>cam<span>&#46;</span>ac<span>&#46;</span>uk</a>.</p>
+</section>
 </section>
 
 
@@ -93,7 +123,7 @@
   <hr/>
 
   <div role="contentinfo">
-    <p>&#169; Copyright 2025, fberkemeier.</p>
+    <p>&#169; Copyright 2025, Francisco Berkemeier.</p>
   </div>
 
   Built with <a href="https://www.sphinx-doc.org/">Sphinx</a> using a

@@ -19,6 +19,7 @@
     <script src="_static/js/theme.js"></script>
     <link rel="index" title="Index" href="genindex.html" />
     <link rel="search" title="Search" href="search.html" />
+    <link rel="next" title="Foundations" href="foundations.html" />
     <link rel="prev" title="Installation" href="installation.html" /> 
 </head>
 
@@ -44,7 +45,19 @@
               <p class="caption" role="heading"><span class="caption-text">Contents:</span></p>
 <ul class="current">
 <li class="toctree-l1"><a class="reference internal" href="installation.html">Installation</a></li>
-<li class="toctree-l1 current"><a class="current reference internal" href="#">Quickstart</a></li>
+<li class="toctree-l1 current"><a class="current reference internal" href="#">Quickstart</a><ul>
+<li class="toctree-l2"><a class="reference internal" href="#mapping-replication-timing-to-firing-rate">Mapping replication timing to firing rate</a></li>
+<li class="toctree-l2"><a class="reference internal" href="#simulation-from-an-inferred-firing-rate-profile">Simulation from an inferred firing-rate profile</a></li>
+</ul>
+</li>
+<li class="toctree-l1"><a class="reference internal" href="foundations.html">Foundations</a></li>
+<li class="toctree-l1"><a class="reference internal" href="simulationengine.html">Simulation Engine</a></li>
+<li class="toctree-l1"><a class="reference internal" href="mappingfunctions.html">Mapping Functions</a></li>
+<li class="toctree-l1"><a class="reference internal" href="datamanagement.html">Data Management</a></li>
+<li class="toctree-l1"><a class="reference internal" href="visualisation.html">Visualisation</a></li>
+<li class="toctree-l1"><a class="reference internal" href="examples.html">Examples</a></li>
+<li class="toctree-l1"><a class="reference internal" href="additionalresources.html">Additional Resources</a></li>
+<li class="toctree-l1"><a class="reference internal" href="releasenotes.html">Release Notes</a></li>
 </ul>
 
         </div>
@@ -73,7 +86,142 @@
              
   <section id="quickstart">
 <h1>Quickstart<a class="headerlink" href="#quickstart" title="Link to this heading"></a></h1>
-<p>A minimal example will go here.</p>
+<p>Here we show a minimal DNAscape workflow: load a replication timing profile,
+infer a firing-rate profile, and run a stochastic simulation to generate
+derived quantities such as replication timing, origin efficiency, inter-origin distances, and the
+replicated fraction.</p>
+<section id="mapping-replication-timing-to-firing-rate">
+<h2>Mapping replication timing to firing rate<a class="headerlink" href="#mapping-replication-timing-to-firing-rate" title="Link to this heading"></a></h2>
+<p>Replication timing profiles provide a natural entry point for kinetic
+inference. In this example, a replication timing profile for chromosome 1 is
+loaded and visualised.</p>
+<div class="highlight-python notranslate"><div class="highlight"><pre><span></span><span class="n">timedata</span> <span class="o">=</span> <span class="n">loadcsv</span><span class="p">(</span><span class="s2">&quot;example&quot;</span><span class="p">,</span> <span class="n">example</span><span class="o">=</span><span class="s2">&quot;replication_timing_hESC&quot;</span><span class="p">,</span> <span class="n">chr_number</span><span class="o">=</span><span class="mi">1</span><span class="p">)</span>
+</pre></div>
+</div>
+<p>which can be plotted</p>
+<div class="highlight-python notranslate"><div class="highlight"><pre><span></span><span class="n">plotf</span><span class="p">(</span><span class="n">timedata</span><span class="p">,</span> <span class="n">xtitle</span><span class="o">=</span><span class="s2">&quot;Chromosome position (kb)&quot;</span><span class="p">,</span> <span class="n">ytitle</span><span class="o">=</span><span class="s2">&quot;Replication time (min)&quot;</span><span class="p">,</span> <span class="n">invyQ</span><span class="o">=</span><span class="kc">True</span><span class="p">)</span>
+</pre></div>
+</div>
+<figure class="align-default">
+<a class="reference internal image-reference" href="_images/plot_quick1.png"><img alt="Replication timing profile example" src="_images/plot_quick1.png" style="width: 700px;" />
+</a>
+</figure>
+<p>From the replication timing profile, a firing-rate profile is inferred using
+the DNAscape kinetic mapping routines.</p>
+<div class="highlight-python notranslate"><div class="highlight"><pre><span></span><span class="n">frates</span> <span class="o">=</span> <span class="n">rfit</span><span class="p">(</span><span class="s2">&quot;replication_timing&quot;</span><span class="p">,</span> <span class="s2">&quot;firing_rate&quot;</span><span class="p">,</span> <span class="n">source</span><span class="o">=</span><span class="n">timedata</span><span class="p">)</span>
+</pre></div>
+</div>
+<div class="highlight-python notranslate"><div class="highlight"><pre><span></span><span class="n">plotf</span><span class="p">(</span><span class="n">frates</span><span class="p">,</span> <span class="n">xtitle</span><span class="o">=</span><span class="s2">&quot;Chromosome position (kb)&quot;</span><span class="p">,</span> <span class="n">ytitle</span><span class="o">=</span><span class="s2">&quot;Firing rate (min⁻¹)&quot;</span><span class="p">)</span>
+</pre></div>
+</div>
+<figure class="align-default">
+<a class="reference internal image-reference" href="_images/plot_quick2.png"><img alt="Inferred firing-rate profile example" src="_images/plot_quick2.png" style="width: 700px;" />
+</a>
+</figure>
+<p>The inferred firing-rate profile can be mapped back to a replication timing
+profile to check self-consistency of the kinetic mapping.</p>
+<div class="highlight-python notranslate"><div class="highlight"><pre><span></span><span class="n">timepred</span> <span class="o">=</span> <span class="n">rfit</span><span class="p">(</span><span class="s2">&quot;firing_rate&quot;</span><span class="p">,</span> <span class="s2">&quot;replication_timing&quot;</span><span class="p">,</span> <span class="n">source</span><span class="o">=</span><span class="n">frates</span><span class="p">)</span>
+</pre></div>
+</div>
+<p>A direct comparison between the observed timing and the timing predicted from
+the inferred firing-rate profile can be made on a subregion of the chromosome.</p>
+<div class="highlight-python notranslate"><div class="highlight"><pre><span></span><span class="n">plotf</span><span class="p">(</span>
+    <span class="n">timedata</span><span class="p">[</span><span class="mi">10000</span><span class="p">:</span><span class="mi">40000</span><span class="p">],</span>
+    <span class="n">timepred</span><span class="p">[</span><span class="mi">10000</span><span class="p">:</span><span class="mi">40000</span><span class="p">],</span>
+    <span class="n">labels</span><span class="o">=</span><span class="p">[</span><span class="s2">&quot;Timing data&quot;</span><span class="p">,</span> <span class="s2">&quot;Timing predicted&quot;</span><span class="p">],</span>
+    <span class="n">xtitle</span><span class="o">=</span><span class="s2">&quot;Chromosome position (kb)&quot;</span><span class="p">,</span>
+    <span class="n">ytitle</span><span class="o">=</span><span class="s2">&quot;Time (min)&quot;</span><span class="p">,</span>
+    <span class="n">invyQ</span><span class="o">=</span><span class="kc">True</span><span class="p">,</span>
+<span class="p">)</span>
+</pre></div>
+</div>
+<figure class="align-default">
+<a class="reference internal image-reference" href="_images/plot_quick3.png"><img alt="Timing data compared with timing predicted from inferred firing rate" src="_images/plot_quick3.png" style="width: 700px;" />
+</a>
+</figure>
+</section>
+<section id="simulation-from-an-inferred-firing-rate-profile">
+<h2>Simulation from an inferred firing-rate profile<a class="headerlink" href="#simulation-from-an-inferred-firing-rate-profile" title="Link to this heading"></a></h2>
+<p>Given an inferred firing-rate profile, DNAscape can simulate replication
+dynamics across an ensemble of stochastic realisations.</p>
+<div class="highlight-python notranslate"><div class="highlight"><pre><span></span><span class="n">simres</span> <span class="o">=</span> <span class="n">rsim</span><span class="p">(</span><span class="n">frates</span><span class="p">,</span> <span class="n">time_statsQ</span><span class="o">=</span><span class="kc">True</span><span class="p">,</span> <span class="n">sim_number</span><span class="o">=</span><span class="mi">100</span><span class="p">)</span>
+</pre></div>
+</div>
+<p>These simulations produce genome-wide observables such as replication timing, inter-origin
+distances, fork counts, and replicated fraction. These can be extracted from the simulation as follows</p>
+<div class="highlight-python notranslate"><div class="highlight"><pre><span></span><span class="n">timesim</span> <span class="o">=</span> <span class="n">simres</span><span class="p">[</span><span class="s2">&quot;replication_timing&quot;</span><span class="p">]</span>
+<span class="n">iod</span>     <span class="o">=</span> <span class="n">simres</span><span class="p">[</span><span class="s2">&quot;inter_ori_distances&quot;</span><span class="p">]</span>
+<span class="n">frep</span>    <span class="o">=</span> <span class="n">simres</span><span class="p">[</span><span class="s2">&quot;fraction_replicated&quot;</span><span class="p">]</span>
+<span class="n">forka</span>   <span class="o">=</span> <span class="n">simres</span><span class="p">[</span><span class="s2">&quot;active_forks&quot;</span><span class="p">]</span>
+<span class="n">nroris</span>  <span class="o">=</span> <span class="n">simres</span><span class="p">[</span><span class="s2">&quot;num_oris&quot;</span><span class="p">]</span>
+<span class="n">effic</span>   <span class="o">=</span> <span class="n">simres</span><span class="p">[</span><span class="s2">&quot;efficiency&quot;</span><span class="p">]</span>
+</pre></div>
+</div>
+<p>A three-way comparison can be made between the observed timing, the timing
+predicted from the inferred firing-rate profile, and the timing emerging from
+stochastic simulations.</p>
+<div class="highlight-python notranslate"><div class="highlight"><pre><span></span><span class="n">plotf</span><span class="p">(</span>
+    <span class="n">timedata</span><span class="p">[</span><span class="mi">10000</span><span class="p">:</span><span class="mi">40000</span><span class="p">],</span>
+    <span class="n">timepred</span><span class="p">[</span><span class="mi">10000</span><span class="p">:</span><span class="mi">40000</span><span class="p">],</span>
+    <span class="n">timesim</span><span class="p">[</span><span class="mi">10000</span><span class="p">:</span><span class="mi">40000</span><span class="p">],</span>
+    <span class="n">labels</span><span class="o">=</span><span class="p">[</span><span class="s2">&quot;Timing data&quot;</span><span class="p">,</span> <span class="s2">&quot;Timing predicted&quot;</span><span class="p">,</span> <span class="s2">&quot;Timing simulated&quot;</span><span class="p">],</span>
+    <span class="n">xtitle</span><span class="o">=</span><span class="s2">&quot;Chromosome position (kb)&quot;</span><span class="p">,</span>
+    <span class="n">ytitle</span><span class="o">=</span><span class="s2">&quot;Time (min)&quot;</span><span class="p">,</span>
+    <span class="n">invyQ</span><span class="o">=</span><span class="kc">True</span><span class="p">,</span>
+<span class="p">)</span>
+</pre></div>
+</div>
+<figure class="align-default">
+<a class="reference internal image-reference" href="_images/plot_quick4.png"><img alt="Timing data, predicted timing, and simulated timing comparison" src="_images/plot_quick4.png" style="width: 700px;" />
+</a>
+</figure>
+<p>The distribution of inter-origin distances provides a compact summary of
+origin spacing emerging from the inferred kinetics.</p>
+<div class="highlight-python notranslate"><div class="highlight"><pre><span></span><span class="n">ploth</span><span class="p">(</span><span class="n">iod</span><span class="p">,</span> <span class="n">xtitle</span><span class="o">=</span><span class="s2">&quot;Inter-origin distance (kb)&quot;</span><span class="p">,</span> <span class="n">bin_size</span><span class="o">=</span><span class="mi">10</span><span class="p">,</span> <span class="n">xmax</span><span class="o">=</span><span class="mi">1000</span><span class="p">)</span>
+</pre></div>
+</div>
+<figure class="align-default">
+<a class="reference internal image-reference" href="_images/plot_quick5.png"><img alt="Inter-origin distance distribution example" src="_images/plot_quick5.png" style="width: 700px;" />
+</a>
+</figure>
+<p>Temporal evolution of replication can be visualised by jointly plotting the
+fraction of replicated DNA and the number of active forks as a function of
+time.</p>
+<div class="highlight-python notranslate"><div class="highlight"><pre><span></span><span class="n">plotf</span><span class="p">(</span>
+    <span class="n">frep</span><span class="p">,</span> <span class="n">forka</span><span class="p">,</span>
+    <span class="n">xtitle</span><span class="o">=</span><span class="s2">&quot;Time (min)&quot;</span><span class="p">,</span>
+    <span class="n">labels</span><span class="o">=</span><span class="p">[</span><span class="s2">&quot;Replicated fraction&quot;</span><span class="p">,</span> <span class="s2">&quot;Active forks&quot;</span><span class="p">],</span>
+    <span class="n">dual_axis</span><span class="o">=</span><span class="kc">True</span><span class="p">,</span>
+<span class="p">)</span>
+</pre></div>
+</div>
+<figure class="align-default">
+<a class="reference internal image-reference" href="_images/plot_quick6.png"><img alt="Replicated fraction and active forks over time example" src="_images/plot_quick6.png" style="width: 700px;" />
+</a>
+</figure>
+<p>Origin efficiency can be visualised alongside the inferred firing-rate profile.</p>
+<div class="highlight-python notranslate"><div class="highlight"><pre><span></span><span class="n">plotf</span><span class="p">(</span>
+    <span class="n">effic</span><span class="p">,</span> <span class="n">frates</span><span class="p">,</span>
+    <span class="n">xtitle</span><span class="o">=</span><span class="s2">&quot;Chromosome position (kb)&quot;</span><span class="p">,</span>
+    <span class="n">labels</span><span class="o">=</span><span class="p">[</span><span class="s2">&quot;Origin efficiency&quot;</span><span class="p">,</span> <span class="s2">&quot;Firing rate&quot;</span><span class="p">],</span>
+    <span class="n">dual_axis</span><span class="o">=</span><span class="kc">True</span><span class="p">,</span>
+<span class="p">)</span>
+</pre></div>
+</div>
+<figure class="align-default">
+<a class="reference internal image-reference" href="_images/plot_quick7.png"><img alt="Origin efficiency and firing rate (dual axis)" src="_images/plot_quick7.png" style="width: 700px;" />
+</a>
+</figure>
+<p>The distribution of the total number of origins firing per simulation can be
+summarised using a whisker plot (optionally with a violin overlay).</p>
+<div class="highlight-python notranslate"><div class="highlight"><pre><span></span><span class="n">plotw</span><span class="p">(</span><span class="n">nroris</span><span class="p">,</span> <span class="n">ytitle</span><span class="o">=</span><span class="s2">&quot;Number of origins&quot;</span><span class="p">,</span> <span class="n">labels</span><span class="o">=</span><span class="p">[</span><span class="s2">&quot;hESC&quot;</span><span class="p">],</span> <span class="n">violinQ</span><span class="o">=</span><span class="kc">True</span><span class="p">)</span>
+</pre></div>
+</div>
+<figure class="align-default">
+<a class="reference internal image-reference" href="_images/plot_quick8.png"><img alt="Number of origins distribution across simulations" src="_images/plot_quick8.png" style="width: 700px;" />
+</a>
+</figure>
+</section>
 </section>
 
 
@@ -81,12 +229,13 @@
           </div>
           <footer><div class="rst-footer-buttons" role="navigation" aria-label="Footer">
         <a href="installation.html" class="btn btn-neutral float-left" title="Installation" accesskey="p" rel="prev"><span class="fa fa-arrow-circle-left" aria-hidden="true"></span> Previous</a>
+        <a href="foundations.html" class="btn btn-neutral float-right" title="Foundations" accesskey="n" rel="next">Next <span class="fa fa-arrow-circle-right" aria-hidden="true"></span></a>
     </div>
 
   <hr/>
 
   <div role="contentinfo">
-    <p>&#169; Copyright 2025, fberkemeier.</p>
+    <p>&#169; Copyright 2025, Francisco Berkemeier.</p>
   </div>
 
   Built with <a href="https://www.sphinx-doc.org/">Sphinx</a> using a
