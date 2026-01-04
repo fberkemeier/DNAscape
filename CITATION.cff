@@ -1,0 +1,21 @@
+# This CITATION.cff file was generated with cffinit.
+# Visit https://bit.ly/cffinit to generate yours today!
+
+cff-version: 1.2.0
+title: DNAscape
+message: >-
+  If you use this software, please cite it using the
+  metadata from this file.
+type: software
+authors:
+  - given-names: Francisco
+    family-names: Berkemeier
+    email: fp409@cam.ac.uk
+    affiliation: University of Cambridge
+    orcid: 'https://orcid.org/0000-0001-9850-3666'
+repository-code: 'https://github.com/fberkemeier/DNAscape'
+url: 'https://github.com/fberkemeier/DNAscape'
+keywords:
+  - DNA replication
+  - Mathematical model
+license: GPL-3.0
