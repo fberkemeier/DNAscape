@@ -6,37 +6,47 @@
 
 [![Documentation Status](https://readthedocs.org/projects/dnascape/badge/?version=latest)](https://dnascape.readthedocs.io/en/latest/)
 
-DNAscape is a Python package for fitting, mapping, and simulating DNA replication kinetics from genomic data.
+DNAscape is software for simulating and mapping DNA replication kinetics across genomic space and replication time. It connects replication features such as initiation activity, replication timing, fork directionality, replicated fraction, fork density, origin efficiency, and completion time through explicit mechanistic assumptions.
 
-At its core, DNAscape represents genome replication as origin initiation followed by bidirectional fork propagation. Analyses can define or infer an initiation rate `I(x, t)` and fork speed `v(x, t)`, where both quantities may vary across genomic position and replication time. This allows measured replication features to be interpreted in terms of explicit kinetic hypotheses.
-
-DNAscape is designed for researchers who want to connect replication timing, origin activity, fork movement, and completion dynamics in a single reproducible workflow.
+The aim is practical: DNAscape helps users move between observed data, inferred kinetic features, and simulated replication programmes. It can be used to test hypotheses, compare conditions, generate synthetic controls, and ask how changes in origin firing or fork progression would appear in measurable replication profiles. Documentation is available at [dnascape.readthedocs.io](https://dnascape.readthedocs.io/en/latest/).
 
 ## Core functionality
 
-- **Fit** initiation programmes from observed replication timing under stated assumptions.
-- **Map** between firing rate, replication timing, fork directionality, and related replication features.
-- **Simulate** stochastic replication ensembles from specified initiation and fork-speed landscapes.
-- **Test** how changes in initiation, fork speed, fork stalling, or domain structure affect observable profiles.
-- **Validate** analysis pipelines with synthetic replication programmes where the ground truth is known.
+- **Simulate** DNA replication programmes in space and time from specified initiation and fork-speed assumptions.
+- **Map** between replication features, including firing rate, replication timing, fork directionality, replicated fraction, and related outputs.
+- **Fit or infer** one replication feature from another under fixed assumptions, rather than treating each assay as an isolated signal.
+- **Test perturbations** such as altered initiation, reduced fork speed, fork stalling, dormant-origin activation, or changes in domain structure.
+- **Validate pipelines** using synthetic replication programmes where the ground truth is known.
 - **Visualise** replication tracks, distributions, heatmaps, and genomic feature context.
 
 ## Installation
 
-DNAscape requires Python 3.9 or later.
+DNAscape requires Python 3.9 or later. A clean virtual environment is recommended.
 
 ```bash
 git clone https://github.com/fberkemeier/DNAscape.git
 cd DNAscape
-pip install -r requirements.txt
-pip install -e .
+
+python -m venv .venv
+source .venv/bin/activate   # Windows: .venv\Scripts\activate
+
+python -m pip install --upgrade pip
+python -m pip install -r requirements.txt
+python -m pip install -e .
 ```
+
+If you already manage Python environments another way, run the final two `pip install` commands inside your preferred environment.
 
 ## Quick start
 
 ```python
 import numpy as np
-from dnascape import map_firing_timing, map_timing_firing, rsim
+from dnascape import (
+    map_firing_timing,
+    map_timing_firing,
+    map_timing_directionality,
+    rsim,
+)
 
 # Define a synthetic initiation landscape.
 x = np.linspace(-3, 3, 500)
@@ -45,6 +55,13 @@ firing_rate = 0.02 + 0.08 * np.exp(-(x ** 2))
 # Forward mapping: initiation activity -> expected replication timing.
 timing = map_firing_timing(
     firing_rate,
+    fork_speed=1.4,
+    resolution=1.0,
+)
+
+# Feature mapping: replication timing -> fork directionality.
+fork_directionality = map_timing_directionality(
+    timing,
     fork_speed=1.4,
     resolution=1.0,
 )
@@ -71,6 +88,8 @@ sim = rsim(
 sim.keys()
 ```
 
+For a guided workflow, start with `examples/dnascape_quickstart.ipynb`. Additional Jupyter notebooks in `examples/` show deterministic mappings, stochastic simulations, periodic-domain tests, fitting workflows, and biological case studies.
+
 ## Command-line interface
 
 After installation, the `dnascape` command is available:
@@ -88,18 +107,6 @@ dnascape rfit --d1 firing_rate --d2 replication_timing --source frates.npy
 
 For larger analyses, the Python API and notebooks are currently the recommended interface because they make assumptions, intermediate arrays, plots, and validation checks easier to inspect.
 
-## Examples
-
-Example notebooks are available in `examples/`. These are being organised into a validation ladder:
-
-- small synthetic domains
-- deterministic mapping tests
-- stochastic simulation tests
-- timing-to-firing recovery tests
-- periodic-domain examples
-- biological case studies
-- roadmap-driven feature tests
-
 ## Scientific scope
 
 DNAscape is built around a general replication-kinetic description:
@@ -114,20 +121,20 @@ where `x` is genomic position and `t` is replication time. Simple analyses can u
 This supports two complementary modes of analysis:
 
 - **Forward modelling** starts from a proposed mechanism and predicts the replication profiles it would generate.
-- **Inverse mapping** starts from observed replication data and infers the kinetic quantities that could explain it under fixed assumptions.
+- **Inverse mapping** starts from observed replication features and infers kinetic quantities that could explain them under fixed assumptions.
 
 The purpose is not only to reproduce measured tracks, but to make the assumptions behind each interpretation explicit, testable, and comparable.
 
 ## Applications
 
-- **Interpret replication timing.**  
-  Infer candidate initiation landscapes that explain timing profiles under explicit fork-speed, geometry, and boundary assumptions.
-
-- **Connect replication observables.**  
-  Relate timing, initiation activity, fork directionality, replicated fraction, and simulation outputs through common kinetic quantities.
+- **Interpret replication data.**  
+  Map between timing, initiation activity, fork directionality, replicated fraction, and simulated outputs using a shared kinetic framework.
 
 - **Test mechanistic hypotheses.**  
-  Ask whether altered initiation, reduced fork speed, fork stalling, dormant-origin activation, or other perturbations can explain an observed phenotype.
+  Ask whether altered initiation, fork-speed changes, fork stalling, dormant-origin activation, or other perturbations can explain an observed phenotype.
+
+- **Compare biological conditions.**  
+  Use the same assumptions and outputs to compare cell types, treatments, perturbations, or candidate therapeutic scenarios.
 
 - **Benchmark analysis methods.**  
   Generate synthetic replication programmes, observe them through simulated outputs, and test whether fitting or downstream analysis recovers the known mechanism.
@@ -157,20 +164,6 @@ known initiation rate and fork speed
     -> fitted kinetic quantities from simulated observations
     -> comparison with the known input
 ```
-
-## Documentation
-
-Documentation is available at:
-
-- [DNAscape documentation](https://dnascape.readthedocs.io/en/latest/)
-
-The documentation will be expanded alongside the validation notebooks and roadmap work. At this stage, the README and example notebooks are the most direct entry points for understanding the modelling workflow.
-
-## Project status
-
-DNAscape is under active development. Current work focuses on polishing the full simulation and mapping pipeline, strengthening tests, improving notebook-based validation, and expanding biologically framed documentation.
-
-Planned and in-progress items are tracked in `ROADMAP.md`.
 
 ## Citation
 
