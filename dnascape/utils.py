@@ -15,7 +15,14 @@ def interp_nans(y):
 
 def smoothf(data, window=50):
     data = np.asarray(data, float)
+    if window is None:
+        return data
     n = len(data)
+    if n == 0:
+        return data
+    window = int(window)
+    if window <= 1:
+        return data
     win = min(window, n)
     kernel = np.ones(win, float) / win
     size = n + win - 1

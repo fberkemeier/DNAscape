@@ -96,11 +96,13 @@ def map_timing_directionality(
     timing,
     fork_speed=1.4,
     resolution=1.0,
-    T0=0.0,
+    T0=None,
     smoothw=None,
     perQ=False,
 ):
     T = np.asarray(timing, dtype=float)
+    if T0 is None:
+        T0 = T[0] if T.size else 0.0
 
     dT_per_bin = np.empty_like(T)
 

@@ -542,7 +542,7 @@ def simulate_replication(
     )
 
 def rsim(
-    ori_rate=0.1,
+    ori_rate=None,
     fork_speed=1.4,
     sim_number=50,
     resolution_space=1.0,
@@ -559,13 +559,44 @@ def rsim(
     time_grid=np.arange(0.0, 1500.0 + 1.0, 1.0),
     max_rep_time=1200.0,
     seed=None,
-    verbose=True,
+    verbose=False,
     print_every=1,
     dens_block_n=4096,
     dens_memmap_dir=None,
+    firing_rate=None,
+    initiation_rate=None,
+    geometry=None,
+    resolution=None,
 ):
     if time_stats_densQ is not None:
         time_stats_xtQ = bool(time_stats_densQ)
+
+    if firing_rate is not None and initiation_rate is not None:
+        raise ValueError("Pass only one of firing_rate or initiation_rate.")
+    if ori_rate is not None and (firing_rate is not None or initiation_rate is not None):
+        raise ValueError("Pass either ori_rate or firing_rate/initiation_rate, not both.")
+
+    if firing_rate is not None:
+        ori_rate = firing_rate
+    elif initiation_rate is not None:
+        ori_rate = initiation_rate
+
+    if ori_rate is None:
+        raise ValueError("rsim requires a firing_rate/ori_rate array with shape (n,) or (T,n).")
+
+    if resolution is not None:
+        resolution_space = resolution
+
+    if geometry is not None:
+        if not isinstance(geometry, str):
+            raise ValueError("geometry must be 'linear' or 'periodic'.")
+        g = geometry.strip().lower()
+        if g in {"linear", "chromosome", "open"}:
+            perQ = False
+        elif g in {"periodic", "circular", "circle"}:
+            perQ = True
+        else:
+            raise ValueError("geometry must be 'linear' or 'periodic'.")
 
     ori_arr = np.asarray(ori_rate, dtype=float)
     if ori_arr.ndim == 1:
@@ -844,9 +875,13 @@ def rsim(
         replication_timing=avg_rep_time_min,
         rep_times_per_sim=rep_times_per_sim,
         s_phase_duration=s_phase_durations_min,
+        completion_time=s_phase_durations_min,
         num_oris=nr_oris.tolist(),
+        num_origins=nr_oris.tolist(),
         inter_origin_distances=all_iods_kb,
+        inter_origin_distance=all_iods_kb,
         efficiency=efficiencies,
+        origin_efficiency=efficiencies,
         fork_directionality=fork_directionality,
         time_grid=time_grid,
         dt_grid=dt_grid_out,
@@ -855,7 +890,9 @@ def rsim(
         initiation_events_xt=avg_initiation_events_xt,
         coalescence_events_xt=avg_coalescence_events_xt,
         right_moving_fork_density_xt=avg_right_moving_fork_density_xt,
+        right_fork_density_xt=avg_right_moving_fork_density_xt,
         left_moving_fork_density_xt=avg_left_moving_fork_density_xt,
+        left_fork_density_xt=avg_left_moving_fork_density_xt,
         total_forks=avg_total_forks,
         active_forks=avg_active_forks,
         stalled_forks=avg_stalled_forks,
