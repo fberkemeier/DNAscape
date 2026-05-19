@@ -8,7 +8,9 @@
 
 DNAscape is software for simulating and mapping DNA replication kinetics across genomic space and replication time. It connects replication features such as initiation activity, replication timing, fork directionality, replicated fraction, fork density, origin efficiency, and completion time through explicit mechanistic assumptions.
 
-The aim is practical: DNAscape helps users move between observed data, inferred kinetic features, and simulated replication programmes. It can be used to test hypotheses, compare conditions, generate synthetic controls, and ask how changes in origin firing or fork progression would appear in measurable replication profiles. Documentation is available at [dnascape.readthedocs.io](https://dnascape.readthedocs.io/en/latest/).
+DNAscape provides a common framework for moving between observed replication data, inferred kinetic features, and simulated replication programmes. It is intended for analyses where assumptions about origin firing, fork progression, genome geometry, and replication stress need to be stated explicitly and tested quantitatively. [Documentation](https://dnascape.readthedocs.io/en/latest/) is available online.
+
+DNAscape v1.0.0 supports integration of replication datasets such as Repli-seq, SNS-seq, Ini-seq, and Fork-seq-style profiles, while remaining flexible enough to work with simulated tracks, custom genomic signals, and user-defined modelling assumptions.
 
 ## Core functionality
 
@@ -39,6 +41,10 @@ If you already manage Python environments another way, run the final two `pip in
 
 ## Quick start
 
+For a guided first pass, we recommend starting with `examples/dnascape_quickstart.ipynb`. The minimal Python workflow below shows the same basic logic in script form.
+
+First import the core mapping and simulation functions.
+
 ```python
 import numpy as np
 from dnascape import (
@@ -47,25 +53,41 @@ from dnascape import (
     map_timing_directionality,
     rsim,
 )
+```
 
+Define a simple synthetic initiation landscape.
+
+```python
 # Define a synthetic initiation landscape.
 x = np.linspace(-3, 3, 500)
 firing_rate = 0.02 + 0.08 * np.exp(-(x ** 2))
+```
 
+Map initiation activity to an expected replication-timing profile.
+
+```python
 # Forward mapping: initiation activity -> expected replication timing.
 timing = map_firing_timing(
     firing_rate,
     fork_speed=1.4,
     resolution=1.0,
 )
+```
 
+Map the timing profile to fork directionality.
+
+```python
 # Feature mapping: replication timing -> fork directionality.
 fork_directionality = map_timing_directionality(
     timing,
     fork_speed=1.4,
     resolution=1.0,
 )
+```
 
+Fit or infer initiation activity back from the timing profile under the same assumptions.
+
+```python
 # Inverse mapping: replication timing -> inferred initiation activity.
 recovered_firing_rate = map_timing_firing(
     timing,
@@ -74,7 +96,11 @@ recovered_firing_rate = map_timing_firing(
     maxiter=8,
     verbose=False,
 )
+```
 
+Run a stochastic replication simulation from the initiation landscape.
+
+```python
 # Stochastic simulation under the same initiation assumptions.
 sim = rsim(
     firing_rate,
@@ -88,7 +114,7 @@ sim = rsim(
 sim.keys()
 ```
 
-For a guided workflow, start with `examples/dnascape_quickstart.ipynb`. Additional Jupyter notebooks in `examples/` show deterministic mappings, stochastic simulations, periodic-domain tests, fitting workflows, and biological case studies.
+Additional Jupyter notebooks in `examples/` show deterministic mappings, stochastic simulations, periodic-domain tests, fitting workflows, and biological case studies.
 
 ## Command-line interface
 
