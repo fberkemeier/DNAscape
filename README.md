@@ -6,11 +6,9 @@
 
 [![Documentation Status](https://readthedocs.org/projects/dnascape/badge/?version=latest)](https://dnascape.readthedocs.io/en/latest/)
 
-DNAscape is software for simulating and mapping DNA replication kinetics across genomic space and replication time. It connects replication features such as initiation activity, replication timing, fork directionality, replicated fraction, fork density, origin efficiency, and completion time through explicit mechanistic assumptions.
+DNAscape is software for simulating and mapping DNA replication kinetics across genomic space and time. It connects origin initiation and replication fork dynamics to observable and inferred features of the replication programme, including replication timing, fork directionality, origin and fork density, origin efficiency, completion time, among others. It provides a mechanistic framework for moving between observed replication data, inferred kinetic features and simulated replication programmes, supporting analyses in which assumptions about origin firing, fork progression, genome geometry and replication stress can be stated clearly and tested quantitatively.
 
-DNAscape provides a common framework for moving between observed replication data, inferred kinetic features, and simulated replication programmes. It is intended for analyses where assumptions about origin firing, fork progression, genome geometry, and replication stress need to be stated explicitly and tested quantitatively. [Documentation](https://dnascape.readthedocs.io/en/latest/) is available online.
-
-DNAscape v1.0.0 supports integration of replication datasets such as Repli-seq, SNS-seq, Ini-seq, and Fork-seq-style profiles, while remaining flexible enough to work with simulated tracks, custom genomic signals, and user-defined modelling assumptions.
+DNAscape v1.0.0 supports integration of replication datasets such as Repli-seq, SNS-seq, Ini-seq, and Fork-seq-style profiles, while remaining flexible enough to work with simulated tracks, custom genomic signals, and user-defined modelling assumptions. Full details and examples can be found in the [Documentation](https://dnascape.readthedocs.io/en/latest/).
 
 ## Core functionality
 
