@@ -11,7 +11,7 @@ notebook directly from the repository root:
 
 .. code-block:: bash
 
-   python -m jupyterlab examples/DNAscape_examples.ipynb
+   python -m jupyterlab examples/0_quickstart.ipynb
 
 Mapping replication timing to firing rate
 -----------------------------------------
@@ -39,7 +39,7 @@ the DNAscape kinetic mapping routines.
 
 .. code-block:: python
 
-   frates = rfit("replication_timing", "firing_rate", source=timedata)
+   frates = rfit(source="replication_timing", target="firing_rate", data=timedata)
 
 .. code-block:: python
 
@@ -54,7 +54,7 @@ profile to check self-consistency of the kinetic mapping.
 
 .. code-block:: python
 
-   timepred = rfit("firing_rate", "replication_timing", source=frates)
+   timepred = rfit(source="firing_rate", target="replication_timing", data=frates)
 
 A direct comparison between the observed timing and the timing predicted from
 the inferred firing-rate profile can be made on a subregion of the chromosome.
@@ -90,11 +90,11 @@ distances, fork counts, and replicated fraction. These can be extracted from the
 .. code-block:: python
 
    timesim = simres["replication_timing"]
-   iod     = simres["inter_ori_distances"]
-   frep    = simres["fraction_replicated"]
+   iod     = simres["inter_origin_distance"]
+   frep    = simres["replicated_fraction"]
    forka   = simres["active_forks"]
-   nroris  = simres["num_oris"]
-   effic   = simres["efficiency"]
+   nroris  = simres["num_origins"]
+   effic   = simres["origin_efficiency"]
 
 A three-way comparison can be made between the observed timing, the timing
 predicted from the inferred firing-rate profile, and the timing emerging from

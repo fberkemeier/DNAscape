@@ -39,7 +39,7 @@ If you already manage Python environments another way, run the final two `pip in
 
 ## Quick start
 
-For a guided first pass, we recommend starting with `examples/dnascape_quickstart.ipynb`. The minimal Python workflow below shows the same basic logic in script form.
+For a guided first pass, we recommend starting with `examples/0_quickstart.ipynb`. The minimal Python workflow below shows the same basic logic in script form.
 
 First import the core mapping and simulation functions.
 
@@ -126,7 +126,7 @@ The command-line interface auto-discovers public DNAscape functions and exposes 
 
 ```bash
 dnascape rsim --ori-rate frates.npy --fork-speed 1.4 --sim-number 100 --time-statsq
-dnascape rfit --d1 firing_rate --d2 replication_timing --source frates.npy
+dnascape rfit --source firing_rate --target replication_timing --data frates.npy
 ```
 
 For larger analyses, the Python API and notebooks are currently the recommended interface because they make assumptions, intermediate arrays, plots, and validation checks easier to inspect.

@@ -10,7 +10,7 @@ class NameMapping:
             'iod':'inter_origin_distances',
             'rfd':'fork_directionality',
             'fs':'fork_speed',
-            'fss':'fork_speeds',
+            'fss':'fork_speed',
             'nori':'num_oris',
             'ex':'example',
             'rg':'region'

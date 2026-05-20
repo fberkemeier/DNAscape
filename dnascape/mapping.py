@@ -152,3 +152,10 @@ def map_directionality_timing(
         T = T0 + np.cumsum(dT_per_bin)
 
     return T
+
+
+def __getattr__(name):
+    if name in {"rmap", "DataTypeMapper", "MappingSpec"}:
+        from . import routing
+        return getattr(routing, name)
+    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")

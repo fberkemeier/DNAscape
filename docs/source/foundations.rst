@@ -18,15 +18,15 @@ Notation
    representing the instantaneous probability per unit time that an ori
    initiates replication.
 
-``efficiency``
+``origin_efficiency``
    Efficiency of each ori, defined as the probability that an ori fires at
    least once during S phase.
 
-``inter_ori_distances``
+``inter_origin_distance``
    Distances between neighbouring oris, represented either as an explicit
    list or as a probability distribution.
 
-``num_oris``
+``num_origins``
    Total number of oris in the genome or within a specified genomic region.
 
 ``replication_timing``
@@ -41,7 +41,7 @@ Notation
    Replication fork directionality (RFD), describing the imbalance between
    leftward and rightward fork movement across the genome.
 
-``fork_speeds``
+``fork_speed``
    Replication fork speeds across the genome, represented either as a single
    scalar value or as a spatially varying array.
 
@@ -53,6 +53,6 @@ Notation
    Total number of replication forks generated throughout the entire
    replication process.
 
-``fraction_replicated``
+``replicated_fraction``
    Fraction of replicated DNA as a function of time, ranging from zero at
    S-phase entry to one upon completion of genome replication.

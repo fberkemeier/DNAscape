@@ -1,160 +1,16 @@
-"""High-level fitting wrappers and mapper registry."""
+"""Fitting algorithms and fitting-oriented helpers."""
 
 import os
 import math
 import time
-import inspect
-from dataclasses import dataclass
 
 import numpy as np
 
 from .constants import mapt
 from .io import _resolve_data_path, savecsv
-from .mapping import map_directionality_timing, map_firing_timing, map_timing_directionality
+from .mapping import map_firing_timing
 from .simulation import rsim
 from .utils import etaferr, mean_squared_error
-
-_FEATURE_ALIASES = {
-    "fr": "firing_rate",
-    "firing": "firing_rate",
-    "origin_activity": "firing_rate",
-    "initiation": "firing_rate",
-    "initiation_rate": "firing_rate",
-    "rt": "replication_timing",
-    "timing": "replication_timing",
-    "replication_time": "replication_timing",
-    "rfd": "fork_directionality",
-    "directionality": "fork_directionality",
-    "fork_direction": "fork_directionality",
-    "fs": "fork_speed",
-    "fss": "fork_speed",
-    "v": "fork_speed",
-    "speed": "fork_speed",
-    "fork_speeds": "fork_speed",
-    "ori_rate": "firing_rate",
-    "origin_rate": "firing_rate",
-    "eff": "origin_efficiency",
-    "efficiency": "origin_efficiency",
-    "iod": "inter_origin_distance",
-    "inter_origin_distances": "inter_origin_distance",
-    "s_phase_duration": "completion_time",
-    "nori": "num_origins",
-    "num_oris": "num_origins",
-    "number_of_origins": "num_origins",
-    "right_moving_fork_density": "right_fork_density",
-    "left_moving_fork_density": "left_fork_density",
-}
-
-_CANONICAL_FEATURES = {
-    "firing_rate",
-    "fork_speed",
-    "replication_timing",
-    "fork_directionality",
-    "replicated_fraction",
-    "fork_density",
-    "right_fork_density",
-    "left_fork_density",
-    "origin_efficiency",
-    "inter_origin_distance",
-    "completion_time",
-    "num_origins",
-    "initiation_events",
-    "coalescence_events",
-    "replicated_fraction_xt",
-    "initiation_events_xt",
-    "coalescence_events_xt",
-    "right_fork_density_xt",
-    "left_fork_density_xt",
-}
-
-_ASSUMPTION_ALIASES = {
-    "resolution_space": "resolution",
-    "bin_size": "resolution",
-    "periodic": "perQ",
-    "perq": "perQ",
-}
-
-
-def _canonical_feature(name):
-    text = str(name).strip().replace("-", "_")
-    key = text.lower()
-    if key in _FEATURE_ALIASES:
-        return _FEATURE_ALIASES[key]
-    if key in _CANONICAL_FEATURES:
-        return key
-    return text
-
-
-def _canonical_assumption(name):
-    text = str(name).strip().replace("-", "_")
-    key = text.lower()
-    if key in _ASSUMPTION_ALIASES:
-        return _ASSUMPTION_ALIASES[key]
-    return _canonical_feature(text)
-
-
-def _geometry_to_perq(value):
-    if isinstance(value, str):
-        key = value.strip().lower()
-        if key in {"periodic", "circular", "circle"}:
-            return True
-        if key in {"linear", "chromosome", "open"}:
-            return False
-    return None
-
-
-def _field_kind(value):
-    arr = np.asarray(value)
-    if arr.ndim == 0:
-        return "scalar"
-    if arr.ndim == 1:
-        return "x"
-    if arr.ndim == 2:
-        return "xt"
-    return f"{arr.ndim}d"
-
-
-@dataclass(frozen=True)
-class MappingSpec:
-    source: tuple
-    target: str
-    method: str
-    func: object = None
-    implemented: bool = True
-    required_assumptions: tuple = ()
-    optional_assumptions: tuple = ()
-    default_assumptions: tuple = ()
-    assumption_kinds: tuple = ()
-    description: str = ""
-
-    def defaults_dict(self):
-        return dict(self.default_assumptions)
-
-    def assumptions_with_defaults(self, assumptions):
-        out = self.defaults_dict()
-        out.update(assumptions)
-        return out
-
-    def missing_required(self, assumptions):
-        merged = self.assumptions_with_defaults(assumptions)
-        return tuple(name for name in self.required_assumptions if name not in merged)
-
-    def accepts(self, assumptions):
-        if self.missing_required(assumptions):
-            return False
-        merged = self.assumptions_with_defaults(assumptions)
-        for name, kinds in self.assumption_kinds:
-            cname = _canonical_assumption(name)
-            if cname not in merged:
-                continue
-            kind = _field_kind(merged[cname])
-            if kind not in kinds:
-                return False
-        return True
-
-    def implemented_status(self):
-        return "implemented" if self.implemented else "planned"
-
 
 def select_profile_region(
     profile,
@@ -301,13 +157,30 @@ def map_timing_firing(
     chr_number=1,
     save_errQ=False
 ):
+    """Infer a spatial firing-rate profile from replication timing.
+
+    ``fork_speed`` is the canonical argument name. ``fork_speeds`` is accepted
+    as an older compatibility alias.
+    """
 
     mse_list = []
 
     T = np.asarray(observed_timing, dtype=float)
     n = len(T)
 
-    fork_speed_per_bin = fork_speed / resolution
+    if fork_speeds is not None:
+        fork_speed = fork_speeds
+
+    fork_speed_arr = np.asarray(fork_speed, dtype=float)
+    variable_fork_speed = fork_speed_arr.size > 1
+    fork_speed_initial = (
+        float(np.nanmean(fork_speed_arr))
+        if variable_fork_speed
+        else float(fork_speed_arr.reshape(-1)[0])
+    )
+    if not np.isfinite(fork_speed_initial) or fork_speed_initial <= 0:
+        raise ValueError("fork_speed must contain finite positive values.")
+    fork_speed_per_bin = fork_speed_initial / resolution
 
     # initial guess for firing rate
     x0 = (math.pi / (4.0 * fork_speed_per_bin)) * np.maximum(T, 1e-80) ** (-2)
@@ -338,14 +211,14 @@ def map_timing_firing(
     # initial prediction
     y = map_firing_timing(
         x,
-        fork_speed=fork_speed,
+        fork_speed=fork_speed_initial,
         resolution=resolution,
         neighbourhood_range=neighbourhood_range,
         perQ=perQ,
     )
     mse = mean_squared_error(T[crop], y[crop])
 
-    if stall_rate > 0. or fork_speeds is not None:
+    if stall_rate > 0. or variable_fork_speed:
         maxiter0 = 0
     else:
         maxiter0 = maxiter
@@ -356,7 +229,7 @@ def map_timing_firing(
         x = update_firing_rate(T, y, x)
         y = map_firing_timing(
             x,
-            fork_speed=fork_speed,
+            fork_speed=fork_speed_initial,
             resolution=resolution,
             neighbourhood_range=neighbourhood_range,
             perQ=perQ
@@ -369,7 +242,7 @@ def map_timing_firing(
             
 
     # Stalling models
-    if stall_rate > 0. or fork_speeds is not None:
+    if stall_rate > 0. or variable_fork_speed:
 
         alpha = fit_step
         iterations = maxiter
@@ -392,9 +265,9 @@ def map_timing_firing(
     
         for k in range(iterations):
             simres = rsim(
-                rates,
+                firing_rate=rates,
                 sim_number=sim_number,
-                fork_speed=fork_speeds if fork_speeds is not None else fork_speed,
+                fork_speed=fork_speed,
                 stall_rate=stall_rate,
                 tau=tau,
                 resolution_space=resolution,
@@ -425,385 +298,101 @@ def map_timing_firing(
         
     return x
 
-class DataTypeMapper:
-    """Route replication feature mappings and fits.
-
-    The mapper is intentionally broader than a direct function lookup. It
-    records which feature-to-feature routes are implemented now and which
-    routes are planned but still need a dedicated fitting method.
-    """
-
-    def __init__(self):
-        self._specs = []
-
-    @staticmethod
-    def canonical(name):
-        return _canonical_feature(name)
-
-    def register(
-        self,
-        from_type,
-        to_type,
-        func,
-        method=None,
-        required_assumptions=(),
-        optional_assumptions=(),
-        default_assumptions=None,
-        assumption_kinds=(),
-        implemented=True,
-        description="",
-    ):
-        source = tuple(_canonical_feature(x) for x in (
-            from_type if isinstance(from_type, (tuple, list)) else (from_type,)
-        ))
-        target = _canonical_feature(to_type)
-        if method is None:
-            method = f"{'_'.join(source)}_to_{target}"
-        spec = MappingSpec(
-            source=source,
-            target=target,
-            method=method,
-            func=func,
-            implemented=implemented,
-            required_assumptions=tuple(
-                _canonical_assumption(name)
-                for name in required_assumptions
-            ),
-            optional_assumptions=tuple(
-                _canonical_assumption(name)
-                for name in optional_assumptions
-            ),
-            default_assumptions=tuple(
-                (_canonical_assumption(name), value)
-                for name, value in (default_assumptions or {}).items()
-            ),
-            assumption_kinds=tuple(
-                (_canonical_assumption(name), (kinds,) if isinstance(kinds, str) else tuple(kinds))
-                for name, kinds in assumption_kinds
-            ),
-            description=description,
-        )
-        self._specs.append(spec)
-        return spec
-
-    def register_placeholder(
-        self,
-        from_type,
-        to_type,
-        method,
-        required_assumptions=(),
-        optional_assumptions=(),
-        default_assumptions=None,
-        assumption_kinds=(),
-        description="",
-    ):
-        return self.register(
-            from_type=from_type,
-            to_type=to_type,
-            func=None,
-            method=method,
-            required_assumptions=required_assumptions,
-            optional_assumptions=optional_assumptions,
-            default_assumptions=default_assumptions,
-            assumption_kinds=assumption_kinds,
-            implemented=False,
-            description=description,
-        )
-
-    def _normalise_assumptions(self, assumptions, extra):
-        out = {}
-        if assumptions:
-            out.update({_canonical_assumption(k): v for k, v in assumptions.items()})
-        out.update({_canonical_assumption(k): v for k, v in extra.items()})
-        perq = _geometry_to_perq(out.get("geometry"))
-        if perq is not None and "perQ" not in out:
-            out["perQ"] = perq
-        return out
-
-    def _normalise_source(self, source, data):
-        if isinstance(source, dict):
-            if data is not None:
-                raise ValueError("Pass either source={...} or source='feature' with data=..., not both.")
-            return {_canonical_feature(k): v for k, v in source.items()}
-
-        if source is None:
-            raise ValueError("rmap requires a source feature or source={feature: data}.")
-        if data is None:
-            raise ValueError("rmap requires data when source is passed as a feature name.")
-        return {_canonical_feature(source): data}
-
-    def _candidate_specs(self, source_names, target, method):
-        source_set = set(source_names)
-        out = []
-        for spec in self._specs:
-            if set(spec.source) != source_set or spec.target != target:
-                continue
-            if method != "auto" and spec.method != method:
-                continue
-            out.append(spec)
-        return out
-
-    def _select_spec(self, source_data, target, assumptions, method):
-        candidates = self._candidate_specs(source_data.keys(), target, method)
-        if not candidates:
-            src = ", ".join(source_data.keys())
-            raise KeyError(f"No mapping route registered from [{src}] to '{target}'.")
-
-        kind_matches = [spec for spec in candidates if spec.accepts(assumptions)]
-        if kind_matches:
-            spec = kind_matches[0]
-            return spec, spec.assumptions_with_defaults(assumptions)
-
-        details = []
-        for spec in candidates:
-            missing = spec.missing_required(assumptions)
-            req = ", ".join(
-                f"{name}: {'/'.join(kinds)}"
-                for name, kinds in spec.assumption_kinds
-            )
-            missing_msg = f"; missing {', '.join(missing)}" if missing else ""
-            details.append(f"{spec.method} expects {req or 'no specific field kinds'}{missing_msg}")
-        raise ValueError(
-            "No registered mapping route matches the supplied assumption field kinds. "
-            + "; ".join(details)
-        )
-
-    def _function_kwargs(self, spec, assumptions):
-        if spec.func is None:
-            return assumptions
-
-        sig = inspect.signature(spec.func)
-        params = sig.parameters
-        if any(p.kind == inspect.Parameter.VAR_KEYWORD for p in params.values()):
-            return assumptions
-        return {
-            key: value
-            for key, value in assumptions.items()
-            if key in params
-        }
-
-    def _not_implemented_message(self, spec):
-        src = ", ".join(spec.source)
-        msg = (
-            f"Mapping route '{spec.method}' from [{src}] to '{spec.target}' is registered "
-            "but not implemented yet."
-        )
-        if spec.description:
-            msg += f" {spec.description}"
-        return msg
-
-    def __call__(
-        self,
-        source=None,
-        target=None,
-        data=None,
-        assumptions=None,
-        method="auto",
-        return_info=False,
-        **kwargs,
-    ):
-        if target is None:
-            raise ValueError("rmap requires a target feature.")
-
-        target = _canonical_feature(target)
-        source_data = self._normalise_source(source, data)
-        assumptions = self._normalise_assumptions(assumptions, kwargs)
-        spec, assumptions = self._select_spec(source_data, target, assumptions, method)
-
-        if not spec.implemented:
-            raise NotImplementedError(self._not_implemented_message(spec))
-
-        payload = (
-            source_data[spec.source[0]]
-            if len(spec.source) == 1
-            else dict(source_data)
-        )
-        values = spec.func(payload, **self._function_kwargs(spec, assumptions))
-
-        if return_info:
-            return {
-                "target": spec.target,
-                "values": values,
-                "method": spec.method,
-                "source": dict(source_data),
-                "assumptions": dict(assumptions),
-                "implemented": spec.implemented,
-                "required_assumptions": spec.required_assumptions,
-                "optional_assumptions": spec.optional_assumptions,
-                "description": spec.description,
-            }
-        return values
-
-    def get(self, from_type, to_type, method="auto", assumptions=None, **kwargs):
-        source_data = {_canonical_feature(from_type): None}
-        assumptions = self._normalise_assumptions(assumptions, kwargs)
-        spec, _ = self._select_spec(source_data, _canonical_feature(to_type), assumptions, method)
-        if not spec.implemented:
-            raise NotImplementedError(self._not_implemented_message(spec))
-        return spec.func
-
-    def map(self, from_type, to_type, data, method="auto", assumptions=None, **kwargs):
-        """Backward-compatible feature mapping API."""
-        return self(
-            source=from_type,
-            target=to_type,
-            data=data,
-            assumptions=assumptions,
-            method=method,
-            **kwargs,
-        )
-
-    def describe(self):
-        print("Available replication feature mappings:")
-        for spec in self._specs:
-            status = spec.implemented_status()
-            src = ", ".join(spec.source)
-            required = ", ".join(spec.required_assumptions)
-            req = ", ".join(
-                f"{name}: {'/'.join(kinds)}"
-                for name, kinds in spec.assumption_kinds
-            )
-            details = []
-            if required:
-                details.append(f"requires {required}")
-            if req:
-                details.append(f"supports {req}")
-            suffix = f" [{'; '.join(details)}]" if details else ""
-            print(f"  {src} -> {spec.target} via {spec.method} ({status}){suffix}")
-
-    def features(self):
-        return tuple(sorted(_CANONICAL_FEATURES))
-
-    def routes(self):
-        return tuple(self._specs)
 
 
-rmap = DataTypeMapper()
-rmap.register(
-    "firing_rate",
-    "replication_timing",
-    map_firing_timing,
-    method="firing_to_timing_deterministic",
-    required_assumptions=("fork_speed",),
-    optional_assumptions=("resolution", "neighbourhood_range", "perQ"),
-    default_assumptions={"fork_speed": 1.4},
-    assumption_kinds=(("fork_speed", ("scalar",)),),
-    description="Deterministic mapping with constant fork speed.",
-)
-rmap.register_placeholder(
-    "firing_rate",
-    "replication_timing",
-    method="firing_to_timing_variable_fork_speed",
-    required_assumptions=("fork_speed",),
-    optional_assumptions=("resolution", "neighbourhood_range", "perQ"),
-    assumption_kinds=(("fork_speed", ("x", "xt")),),
-    description="Variable fork-speed deterministic mapping needs a dedicated solver.",
-)
-rmap.register(
-    "replication_timing",
-    "firing_rate",
-    map_timing_firing,
-    method="timing_to_firing_constant_fork_speed",
-    required_assumptions=("fork_speed",),
-    optional_assumptions=(
-        "resolution",
-        "neighbourhood_range",
-        "fit_step",
-        "maxiter",
-        "sim_number",
-        "err_threshold",
-        "deviation_threshold",
-        "verbose",
-        "perQ",
-        "stall_rate",
-        "tau",
-    ),
-    default_assumptions={"fork_speed": 1.4},
-    assumption_kinds=(("fork_speed", ("scalar",)),),
-    description="Iterative fit of a space-dependent firing rate with constant fork speed.",
-)
-rmap.register_placeholder(
-    "replication_timing",
-    "firing_rate",
-    method="timing_to_firing_variable_fork_speed",
-    required_assumptions=("fork_speed",),
-    optional_assumptions=(
-        "resolution",
-        "neighbourhood_range",
-        "fit_step",
-        "maxiter",
-        "sim_number",
-        "verbose",
-        "perQ",
-    ),
-    assumption_kinds=(("fork_speed", ("x", "xt")),),
-    description="Fitting firing rate from timing with variable fork speed is planned.",
-)
-rmap.register_placeholder(
-    ("replication_timing", "fork_speed"),
-    "firing_rate",
-    method="timing_and_fork_speed_to_firing",
-    optional_assumptions=("resolution", "geometry", "perQ"),
-    description="Use assumptions={'fork_speed': scalar} for the implemented constant-speed route.",
-)
-rmap.register(
-    "replication_timing",
-    "fork_directionality",
-    map_timing_directionality,
-    method="timing_to_directionality",
-    required_assumptions=("fork_speed",),
-    optional_assumptions=("resolution", "T0", "smoothw", "perQ"),
-    default_assumptions={"fork_speed": 1.4},
-    assumption_kinds=(("fork_speed", ("scalar",)),),
-    description="Gradient-based fork-directionality mapping.",
-)
-rmap.register(
-    "fork_directionality",
-    "replication_timing",
-    map_directionality_timing,
-    method="directionality_to_timing",
-    required_assumptions=("fork_speed",),
-    optional_assumptions=("resolution", "T0", "smoothw", "perQ"),
-    default_assumptions={"fork_speed": 1.4},
-    assumption_kinds=(("fork_speed", ("scalar",)),),
-    description="Integration of fork directionality to timing.",
-)
-rmap.register_placeholder(
-    ("replication_timing", "firing_rate"),
-    "fork_speed",
-    method="timing_and_firing_to_fork_speed",
-    optional_assumptions=("resolution", "geometry", "perQ"),
-    description="Fitting fork speed from timing and firing rate needs a dedicated optimisation method.",
-)
-rmap.register_placeholder(
-    "replication_timing",
-    "fork_speed",
-    method="timing_to_fork_speed_with_fixed_firing",
-    required_assumptions=("firing_rate",),
-    optional_assumptions=("resolution", "geometry", "perQ"),
-    assumption_kinds=(("firing_rate", ("scalar", "x", "xt")),),
-    description="Pass firing_rate as an assumption once this fitting route is implemented.",
-)
+def __getattr__(name):
+    if name in {"rmap", "DataTypeMapper", "MappingSpec"}:
+        from . import routing
+        return getattr(routing, name)
+    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
 
 def rfit(
-    d1='firing_rate',
-    d2='replication_timing',
-    cell_line='H1', chr_number=1,
-    fork_speed=1.4, resolution=1.,
-    source=[],
+    source="firing_rate",
+    target="replication_timing",
+    data=None,
+    assumptions=None,
+    method="auto",
+    cell_line="H1",
+    chr_number=1,
+    fork_speed=1.4,
+    resolution=1.0,
     saveQ=False,
+    return_info=False,
+    source_feature=None,
+    d1=None,
+    d2=None,
     **kwargs
 ):
+    """Fit or map one replication feature to another.
 
-    if any(source):
-        data1 = source
+    Prefer the same terms used by ``rmap``: ``source``, ``target``, ``data``,
+    ``assumptions``, and ``method``. If ``source`` is not a string or mapping,
+    it is treated as the older data-array argument. The older
+    ``source_feature``, ``d1``, and ``d2`` names are still accepted as aliases.
+    """
+    from .routing import _canonical_assumption, rmap
+
+    if source_feature is not None:
+        source = source_feature
+    if d1 is not None:
+        source = d1
+    if d2 is not None:
+        target = d2
+    if data is None and not isinstance(source, (str, dict)):
+        data = source
+        source = "firing_rate"
+
+    target = rmap.canonical(target)
+
+    source_payload = None
+    if isinstance(source, dict):
+        if data is not None:
+            raise ValueError("Pass either source={feature: data} or source='feature' with data=..., not both.")
+        if len(source) != 1:
+            raise ValueError("rfit source dictionaries must contain exactly one feature.")
+        source_key, data = next(iter(source.items()))
+        source_feature = rmap.canonical(source_key)
+        source_payload = {source_feature: data}
     else:
-        data1 = np.loadtxt(_resolve_data_path(f"{mapt[d1]}/{mapt[d1]}_{cell_line}_chr{chr_number}.txt"), dtype=float)
-    data2 = rmap.map(d1, d2, data1, fork_speed=fork_speed, resolution=resolution, **kwargs)
+        source_feature = rmap.canonical(source)
+
+    if data is None:
+        source_name = mapt[source_feature]
+        data = np.loadtxt(
+            _resolve_data_path(f"{source_name}/{source_name}_{cell_line}_chr{chr_number}.txt"),
+            dtype=float,
+        )
+    if source_payload is None:
+        source_payload = source_feature
+
+    merged_assumptions = {}
+    if assumptions:
+        merged_assumptions.update(
+            {_canonical_assumption(key): value for key, value in assumptions.items()}
+        )
+    if "fork_speed" not in merged_assumptions:
+        merged_assumptions["fork_speed"] = fork_speed
+    if "resolution" not in merged_assumptions:
+        merged_assumptions["resolution"] = resolution
+
+    data2 = rmap(
+        source=source_payload,
+        target=target,
+        data=None if isinstance(source_payload, dict) else data,
+        assumptions=merged_assumptions,
+        method=method,
+        return_info=return_info,
+        **kwargs,
+    )
 
     if saveQ:
-        out = _resolve_data_path(f"{mapt[d2]}/{mapt[d2]}_{cell_line}_chr{chr_number}.txt", for_write=True)
+        values = data2["values"] if return_info else data2
+        target_name = mapt[target]
+        out = _resolve_data_path(
+            f"{target_name}/{target_name}_{cell_line}_chr{chr_number}.txt",
+            for_write=True,
+        )
         os.makedirs(out.parent, exist_ok=True)
-        np.savetxt(out, data2)
+        np.savetxt(out, values)
 
     return data2

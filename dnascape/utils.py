@@ -117,11 +117,19 @@ def etaf(it, maxiter, start_time):
     sims_left = maxiter - it
     avg_time_per_sim = elapsed / it
     eta_sec = sims_left * avg_time_per_sim
-    print(f"[{it}/{maxiter}]  Elapsed: {hms(elapsed)}  ETA: {hms(eta_sec)}", end="\r")
+    print(
+        f"[{it}/{maxiter}]  Elapsed: {hms(elapsed)}  ETA: {hms(eta_sec)}",
+        end="\r",
+        flush=True,
+    )
 
 def etaferr(it, maxiter, start_time, err):
     elapsed = time.time() - start_time
     sims_left = maxiter - it
     avg_time_per_sim = elapsed / it
     eta_sec = sims_left * avg_time_per_sim
-    print(f"[{it}/{maxiter}]  Elapsed: {hms(elapsed)}  ETA: {hms(eta_sec)}  MSE: {err:.4e}", end="\r")
+    print(
+        f"[{it}/{maxiter}]  Elapsed: {hms(elapsed)}  ETA: {hms(eta_sec)}  MSE: {err:.4e}",
+        end="\r",
+        flush=True,
+    )

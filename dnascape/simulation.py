@@ -9,9 +9,149 @@ import numpy as np
 
 from .utils import etaf, fast_shift_add
 
+
+def _resolve_n_bins(firing_rate, fork_speed, n_bins=None):
+    """Infer the spatial genome length from spatial or space-time inputs."""
+    candidates = []
+
+    def add_candidate(field, name):
+        if field is None:
+            return
+        arr = np.asarray(field)
+        if arr.size == 1:
+            return
+        if arr.ndim == 1:
+            candidates.append((name, int(arr.size)))
+            return
+        if arr.ndim == 2:
+            if arr.shape[0] == 1 and arr.shape[1] > 1:
+                return
+            if arr.shape[1] == 1 and arr.shape[0] > 1:
+                candidates.append((name, int(arr.shape[0])))
+                return
+            candidates.append((name, int(arr.shape[1])))
+            return
+        raise ValueError(f"{name} must be scalar, (n,), (1,T), (n,1), or (T,n).")
+
+    add_candidate(firing_rate, "firing_rate")
+    add_candidate(fork_speed, "fork_speed")
+
+    if n_bins is not None:
+        n = int(n_bins)
+        if n <= 0:
+            raise ValueError("n_bins must be a positive integer.")
+        mismatches = [f"{name} has n={candidate}" for name, candidate in candidates if candidate != n]
+        if mismatches:
+            raise ValueError("n_bins is inconsistent with supplied fields: " + "; ".join(mismatches))
+        return n
+
+    unique = {candidate for _, candidate in candidates}
+    if len(unique) == 1:
+        return unique.pop()
+    if len(unique) > 1:
+        detail = ", ".join(f"{name}: n={candidate}" for name, candidate in candidates)
+        raise ValueError(f"Spatial field lengths disagree ({detail}).")
+    raise ValueError(
+        "Cannot infer genome length from scalar or time-only inputs. "
+        "Pass n_bins, or provide at least one spatial profile or space-time field."
+    )
+
+
+def _as_rate_field(field, name, n_bins):
+    arr = np.asarray(field, dtype=float)
+    if arr.size == 1:
+        value = float(arr.reshape(-1)[0])
+        if not np.isfinite(value) or value < 0:
+            raise ValueError(f"{name} scalar must be finite and >= 0.")
+        return "scalar", value, None
+    if arr.ndim == 1:
+        if arr.size != n_bins:
+            raise ValueError(f"{name} (n,) must have length {n_bins}, got {arr.size}.")
+        if np.any(~np.isfinite(arr)) or np.any(arr < 0):
+            raise ValueError(f"{name} (n,) must be finite and >= 0.")
+        return "x", arr.astype(float, copy=False), None
+    if arr.ndim == 2:
+        if arr.shape[0] == 1 and arr.shape[1] > 1:
+            values_t = arr.reshape(-1)
+            if np.any(~np.isfinite(values_t)) or np.any(values_t < 0):
+                raise ValueError(f"{name} (1,T) must be finite and >= 0.")
+            return "t", values_t.astype(float, copy=False), int(values_t.size)
+        if arr.shape[1] == 1 and arr.shape[0] > 1:
+            values_x = arr.reshape(-1)
+            if values_x.size != n_bins:
+                raise ValueError(f"{name} (n,1) must have length {n_bins}, got {values_x.size}.")
+            if np.any(~np.isfinite(values_x)) or np.any(values_x < 0):
+                raise ValueError(f"{name} (n,1) must be finite and >= 0.")
+            return "x", values_x.astype(float, copy=False), None
+        if arr.shape[1] != n_bins:
+            raise ValueError(f"{name} (T,n) must have n={n_bins} columns, got {arr.shape[1]}.")
+        if np.any(~np.isfinite(arr)) or np.any(arr < 0):
+            raise ValueError(f"{name} (T,n) must be finite and >= 0.")
+        return "xt", arr.astype(float, copy=False), int(arr.shape[0])
+    raise ValueError(f"{name} must be scalar, (n,), (1,T), (n,1), or (T,n).")
+
+
+def _as_speed_field(field, name, n_bins):
+    arr = np.asarray(field, dtype=float)
+    if arr.size == 1:
+        value = float(arr.reshape(-1)[0])
+        if not np.isfinite(value) or value <= 0:
+            raise ValueError(f"{name} scalar must be finite and > 0.")
+        return "scalar", value, None
+    if arr.ndim == 1:
+        if arr.size != n_bins:
+            raise ValueError(f"{name} (n,) must have length {n_bins}, got {arr.size}.")
+        if np.any(~np.isfinite(arr)) or np.any(arr <= 0):
+            raise ValueError(f"{name} (n,) must be finite and > 0.")
+        return "x", arr.astype(float, copy=False), None
+    if arr.ndim == 2:
+        if arr.shape[0] == 1 and arr.shape[1] > 1:
+            values_t = arr.reshape(-1)
+            if np.any(~np.isfinite(values_t)) or np.any(values_t <= 0):
+                raise ValueError(f"{name} (1,T) must be finite and > 0.")
+            return "t", values_t.astype(float, copy=False), int(values_t.size)
+        if arr.shape[1] == 1 and arr.shape[0] > 1:
+            values_x = arr.reshape(-1)
+            if values_x.size != n_bins:
+                raise ValueError(f"{name} (n,1) must have length {n_bins}, got {values_x.size}.")
+            if np.any(~np.isfinite(values_x)) or np.any(values_x <= 0):
+                raise ValueError(f"{name} (n,1) must be finite and > 0.")
+            return "x", values_x.astype(float, copy=False), None
+        if arr.shape[1] != n_bins:
+            raise ValueError(f"{name} (T,n) must have n={n_bins} columns, got {arr.shape[1]}.")
+        if np.any(~np.isfinite(arr)) or np.any(arr <= 0):
+            raise ValueError(f"{name} (T,n) must be finite and > 0.")
+        return "xt", arr.astype(float, copy=False), int(arr.shape[0])
+    raise ValueError(f"{name} must be scalar, (n,), (1,T), (n,1), or (T,n).")
+
+
+def _normalise_firing_rate(firing_rate=None, ori_rate=None, initiation_rate=None):
+    supplied = [
+        name
+        for name, value in (
+            ("firing_rate", firing_rate),
+            ("ori_rate", ori_rate),
+            ("initiation_rate", initiation_rate),
+        )
+        if value is not None
+    ]
+    if len(supplied) > 1:
+        raise ValueError(
+            "Pass only one firing-rate argument. Use firing_rate as the preferred name; "
+            "ori_rate and initiation_rate are compatibility aliases."
+        )
+    if firing_rate is not None:
+        return firing_rate
+    if ori_rate is not None:
+        return ori_rate
+    if initiation_rate is not None:
+        return initiation_rate
+    raise ValueError("A firing_rate input is required.")
+
+
 def simulate_replication(
-    ori_rate,
-    fork_speed,
+    firing_rate=None,
+    fork_speed=1.4,
     resolution_space=1.0,
     resolution_time=1.0,
     rng=None,
@@ -26,7 +166,16 @@ def simulate_replication(
     time_stats_densQ=None,  # deprecated alias; kept for backwards compatibility
     time_grid=None,
     max_rep_time=1200.0,
+    n_bins=None,
+    ori_rate=None,
+    initiation_rate=None,
 ):
+    """Run one stochastic replication simulation.
+
+    ``firing_rate`` and ``fork_speed`` may be scalar, spatial ``(n,)``,
+    time-only ``(1, T)``, or space-time ``(T, n)`` fields. If neither input
+    contains a spatial axis, pass ``n_bins`` explicitly.
+    """
     rng = np.random.default_rng() if rng is None else rng
     if time_stats_densQ is not None:
         time_stats_xtQ = bool(time_stats_densQ)
@@ -39,65 +188,25 @@ def simulate_replication(
     if not np.isfinite(resolution_time) or resolution_time <= 0:
         raise ValueError("resolution_time must be a finite positive number.")
 
-    def _as_rate_field(field, name, n_hint=None):
-        arr = np.asarray(field, dtype=float)
-        if arr.ndim == 0:
-            if not np.isfinite(arr) or arr < 0:
-                raise ValueError(f"{name} scalar must be finite and >= 0.")
-            return "scalar", float(arr), None
-        if arr.ndim == 1:
-            if n_hint is not None and arr.size != n_hint:
-                raise ValueError(f"{name} (n,) must have length {n_hint}, got {arr.size}.")
-            if np.any(~np.isfinite(arr)) or np.any(arr < 0):
-                raise ValueError(f"{name} (n,) must be finite and >= 0.")
-            return "x", arr.astype(float, copy=False), None
-        if arr.ndim == 2:
-            if n_hint is not None and arr.shape[1] != n_hint:
-                raise ValueError(f"{name} (T,n) must have n={n_hint} columns, got {arr.shape[1]}.")
-            if np.any(~np.isfinite(arr)) or np.any(arr < 0):
-                raise ValueError(f"{name} (T,n) must be finite and >= 0.")
-            return "xt", arr.astype(float, copy=False), int(arr.shape[0])
-        raise ValueError(f"{name} must be scalar, (n,), or (T,n).")
+    firing_rate = _normalise_firing_rate(
+        firing_rate=firing_rate,
+        ori_rate=ori_rate,
+        initiation_rate=initiation_rate,
+    )
+    n = _resolve_n_bins(firing_rate, fork_speed, n_bins=n_bins)
 
-    def _as_speed_field(field, name, n_hint=None):
-        arr = np.asarray(field, dtype=float)
-        if arr.ndim == 0:
-            if not np.isfinite(arr) or arr <= 0:
-                raise ValueError(f"{name} scalar must be finite and > 0.")
-            return "scalar", float(arr), None
-        if arr.ndim == 1:
-            if n_hint is not None and arr.size != n_hint:
-                raise ValueError(f"{name} (n,) must have length {n_hint}, got {arr.size}.")
-            if np.any(~np.isfinite(arr)) or np.any(arr <= 0):
-                raise ValueError(f"{name} (n,) must be finite and > 0.")
-            return "x", arr.astype(float, copy=False), None
-        if arr.ndim == 2:
-            if n_hint is not None and arr.shape[1] != n_hint:
-                raise ValueError(f"{name} (T,n) must have n={n_hint} columns, got {arr.shape[1]}.")
-            if np.any(~np.isfinite(arr)) or np.any(arr <= 0):
-                raise ValueError(f"{name} (T,n) must be finite and > 0.")
-            return "xt", arr.astype(float, copy=False), int(arr.shape[0])
-        raise ValueError(f"{name} must be scalar, (n,), or (T,n).")
-
-    ori_arr = np.asarray(ori_rate, dtype=float)
-    if ori_arr.ndim == 0:
-        raise ValueError("ori_rate must be (n,) or (T,n) (scalar does not define genome length).")
-    if ori_arr.ndim == 1:
-        n = int(ori_arr.size)
-    elif ori_arr.ndim == 2:
-        n = int(ori_arr.shape[1])
-    else:
-        raise ValueError("ori_rate must be (n,) or (T,n).")
-
-    I_kind, I_val, TI = _as_rate_field(ori_rate, "ori_rate", n_hint=n)
-    v_kind, v_val, Tv = _as_speed_field(fork_speed, "fork_speed", n_hint=n)
+    I_kind, I_val, TI = _as_rate_field(firing_rate, "firing_rate", n_bins=n)
+    v_kind, v_val, Tv = _as_speed_field(fork_speed, "fork_speed", n_bins=n)
 
     inv_v_x = None
+    inv_v_t = None
     inv_v_xt = None
     if v_kind == "scalar":
         inv_v_scalar = 1.0 / v_val
     elif v_kind == "x":
         inv_v_x = 1.0 / v_val
+    elif v_kind == "t":
+        inv_v_t = 1.0 / v_val
     else:
         inv_v_xt = 1.0 / v_val
         Tv = inv_v_xt.shape[0]
@@ -121,7 +230,7 @@ def simulate_replication(
         if not np.isfinite(t) or t < 0.0:
             return 0
         r = int(t // resolution_time)
-        if inv_v_xt is not None and r >= Tv:
+        if (inv_v_t is not None or inv_v_xt is not None) and r >= Tv:
             r = Tv - 1
         return r
 
@@ -129,6 +238,9 @@ def simulate_replication(
         if inv_v_xt is not None:
             r = _row_for_time(t_here)
             return resolution_space * inv_v_xt[r, k_to] + stall_delay_left[k_to]
+        if inv_v_t is not None:
+            r = _row_for_time(t_here)
+            return resolution_space * inv_v_t[r] + stall_delay_left[k_to]
         if inv_v_x is not None:
             return resolution_space * inv_v_x[k_to] + stall_delay_left[k_to]
         return resolution_space * inv_v_scalar + stall_delay_left[k_to]
@@ -137,6 +249,9 @@ def simulate_replication(
         if inv_v_xt is not None:
             r = _row_for_time(t_here)
             return resolution_space * inv_v_xt[r, k_to] + stall_delay_right[k_to]
+        if inv_v_t is not None:
+            r = _row_for_time(t_here)
+            return resolution_space * inv_v_t[r] + stall_delay_right[k_to]
         if inv_v_x is not None:
             return resolution_space * inv_v_x[k_to] + stall_delay_right[k_to]
         return resolution_space * inv_v_scalar + stall_delay_right[k_to]
@@ -151,6 +266,24 @@ def simulate_replication(
     elif I_kind == "scalar":
         if I_val > 0:
             t0[:] = rng.exponential(scale=1.0 / I_val, size=n)
+    elif I_kind == "t":
+        u = rng.random(n)
+        target = -np.log(u)
+        H = np.cumsum(I_val * resolution_time)
+        hit = target <= H[-1] if H.size else np.zeros(n, dtype=bool)
+        if np.any(hit):
+            kh = np.flatnonzero(hit).astype(np.int64, copy=False)
+            jh = np.searchsorted(H, target[hit], side="left").astype(np.int64, copy=False)
+            prevH = np.zeros(kh.size, float)
+            m0 = jh > 0
+            if np.any(m0):
+                prevH[m0] = H[jh[m0] - 1]
+            lam = I_val[jh]
+            frac = np.ones_like(lam)
+            poslam = lam > 0
+            frac[poslam] = (target[kh[poslam]] - prevH[poslam]) / (lam[poslam] * resolution_time)
+            frac = np.clip(frac, 0.0, 1.0)
+            t0[kh] = (jh.astype(float) + frac) * resolution_time
     else:
         u = rng.random(n)
         target = -np.log(u)
@@ -542,7 +675,7 @@ def simulate_replication(
     )
 
 def rsim(
-    ori_rate=None,
+    firing_rate=None,
     fork_speed=1.4,
     sim_number=50,
     resolution_space=1.0,
@@ -559,30 +692,32 @@ def rsim(
     time_grid=np.arange(0.0, 1500.0 + 1.0, 1.0),
     max_rep_time=1200.0,
     seed=None,
-    verbose=False,
+    verbose=True,
     print_every=1,
     dens_block_n=4096,
     dens_memmap_dir=None,
-    firing_rate=None,
+    n_bins=None,
+    ori_rate=None,
     initiation_rate=None,
     geometry=None,
     resolution=None,
 ):
+    """Run replicate stochastic simulations and return averaged features.
+
+    ``firing_rate`` is the preferred name for origin-initiation propensity.
+    ``ori_rate`` and ``initiation_rate`` are accepted as compatibility aliases.
+    Firing rate and fork speed support four field forms: scalar, ``(n,)``,
+    ``(1, T)``, and ``(T, n)``. Use ``n_bins`` when both kinetic inputs lack a
+    spatial axis.
+    """
     if time_stats_densQ is not None:
         time_stats_xtQ = bool(time_stats_densQ)
 
-    if firing_rate is not None and initiation_rate is not None:
-        raise ValueError("Pass only one of firing_rate or initiation_rate.")
-    if ori_rate is not None and (firing_rate is not None or initiation_rate is not None):
-        raise ValueError("Pass either ori_rate or firing_rate/initiation_rate, not both.")
-
-    if firing_rate is not None:
-        ori_rate = firing_rate
-    elif initiation_rate is not None:
-        ori_rate = initiation_rate
-
-    if ori_rate is None:
-        raise ValueError("rsim requires a firing_rate/ori_rate array with shape (n,) or (T,n).")
+    firing_rate = _normalise_firing_rate(
+        firing_rate=firing_rate,
+        ori_rate=ori_rate,
+        initiation_rate=initiation_rate,
+    )
 
     if resolution is not None:
         resolution_space = resolution
@@ -598,13 +733,7 @@ def rsim(
         else:
             raise ValueError("geometry must be 'linear' or 'periodic'.")
 
-    ori_arr = np.asarray(ori_rate, dtype=float)
-    if ori_arr.ndim == 1:
-        n = int(ori_arr.size)
-    elif ori_arr.ndim == 2:
-        n = int(ori_arr.shape[1])
-    else:
-        raise ValueError("ori_rate must be (n,) or (T,n).")
+    n = _resolve_n_bins(firing_rate, fork_speed, n_bins=n_bins)
 
     sim_number = int(sim_number)
 
@@ -687,7 +816,7 @@ def rsim(
 
     for i, g in enumerate(generators, start=1):
         fired_idx, _, _, rep_time, iod, time_stats, fdir, t_fire, src, prev = simulate_replication(
-            ori_rate=ori_rate,
+            firing_rate=firing_rate,
             fork_speed=fork_speed,
             resolution_space=resolution_space,
             resolution_time=resolution_time,
@@ -703,6 +832,7 @@ def rsim(
             time_stats_densQ=time_stats_densQ,
             time_grid=time_grid,
             max_rep_time=max_rep_time,
+            n_bins=n,
         )
 
         rep_times_per_sim[i - 1, :] = rep_time
