@@ -58,11 +58,65 @@ def map_firing_timing(
     fork_speed=1.4,
     resolution=1,
     neighbourhood_range=2000,
-    perQ=False
+    perQ=False,
+    n_bins=None,
 ):
+    """Map firing rate to replication timing.
+
+    ``firing_rate`` may be a spatial profile ``I(x)`` or a scalar ``I0``. For
+    scalar firing, pass ``n_bins`` so the constant rate can be expanded over a
+    genomic interval. ``fork_speed`` may be a scalar ``v0`` or a spatial
+    effective speed profile ``v(x)`` with the same length as the firing profile.
+    """
     x = np.asarray(firing_rate, dtype=float)
+    if x.size == 1:
+        if n_bins is None:
+            raise ValueError("n_bins is required when firing_rate is scalar.")
+        n_bins = int(n_bins)
+        if n_bins <= 0:
+            raise ValueError("n_bins must be a positive integer.")
+        value = float(x.reshape(-1)[0])
+        x = np.full(n_bins, value, dtype=float)
+    elif x.ndim == 1:
+        x = x.astype(float, copy=False)
+        if n_bins is not None and int(n_bins) != x.size:
+            raise ValueError("n_bins must match the length of firing_rate.")
+    elif x.ndim == 2 and x.shape[1] == 1:
+        x = x.reshape(-1).astype(float, copy=False)
+        if n_bins is not None and int(n_bins) != x.size:
+            raise ValueError("n_bins must match the length of firing_rate.")
+    else:
+        raise ValueError("firing_rate must be scalar, (n,), or (n,1) for this deterministic map.")
+
+    if np.any(~np.isfinite(x)) or np.any(x < 0):
+        raise ValueError("firing_rate must contain finite values >= 0.")
+
+    resolution = float(resolution)
+    if not np.isfinite(resolution) or resolution <= 0:
+        raise ValueError("resolution must be a finite positive value.")
+
     n = x.size
-    fork_speed_per_bin = fork_speed / resolution
+    fork_speed_arr = np.asarray(fork_speed, dtype=float)
+    if fork_speed_arr.size == 1:
+        fork_speed = float(fork_speed_arr.reshape(-1)[0])
+        if not np.isfinite(fork_speed) or fork_speed <= 0:
+            raise ValueError("fork_speed must be a finite positive scalar.")
+        fork_speed_per_bin = fork_speed / resolution
+    elif fork_speed_arr.ndim == 1:
+        if fork_speed_arr.size != n:
+            raise ValueError("fork_speed must match the length of firing_rate.")
+        if np.any(~np.isfinite(fork_speed_arr)) or np.any(fork_speed_arr <= 0):
+            raise ValueError("fork_speed must contain finite positive values.")
+        fork_speed_per_bin = fork_speed_arr.astype(float, copy=False) / resolution
+    elif fork_speed_arr.ndim == 2 and fork_speed_arr.shape[1] == 1:
+        fork_speed_arr = fork_speed_arr.reshape(-1).astype(float, copy=False)
+        if fork_speed_arr.size != n:
+            raise ValueError("fork_speed must match the length of firing_rate.")
+        if np.any(~np.isfinite(fork_speed_arr)) or np.any(fork_speed_arr <= 0):
+            raise ValueError("fork_speed must contain finite positive values.")
+        fork_speed_per_bin = fork_speed_arr / resolution
+    else:
+        raise ValueError("fork_speed must be scalar, (n,), or (n,1) for this deterministic map.")
 
     # Requested neighbourhood radius in bins
     L_req = max(1, int(neighbourhood_range / resolution))

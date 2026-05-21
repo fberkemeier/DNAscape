@@ -10,7 +10,7 @@ from .constants import mapt
 from .io import _resolve_data_path, savecsv
 from .mapping import map_firing_timing
 from .simulation import rsim
-from .utils import etaferr, mean_squared_error
+from .utils import etaferr, mean_squared_error, smoothf
 
 def select_profile_region(
     profile,
@@ -152,7 +152,8 @@ def map_timing_firing(
     sim_number=1000,
     err_threshold=15.0,
     deviation_threshold=None,
-    verbose=False,
+    verbose=True,
+    print_every=1,
     perQ=False,
     chr_number=1,
     save_errQ=False
@@ -223,6 +224,7 @@ def map_timing_firing(
     else:
         maxiter0 = maxiter
 
+    print_every = max(1, int(print_every))
     start_time = time.time()
 
     for it in range(1, maxiter0 + 1):
@@ -236,7 +238,7 @@ def map_timing_firing(
         )
         mse = mean_squared_error(T[crop], y[crop])
 
-        if verbose:
+        if verbose and (it % print_every == 0 or it == maxiter0):
             etaferr(it=it, maxiter=maxiter0, start_time=start_time, err=mse)
             mse_list.append(mse)
             
@@ -285,7 +287,7 @@ def map_timing_firing(
             mse = float(np.mean(mse**2))
             hist_mse.append(mse)
     
-            if verbose:
+            if verbose and ((k + 1) % print_every == 0 or (k + 1) == iterations):
                 etaferr(it=k+1, maxiter=iterations, start_time=start_time, err=mse)
                 mse_list.append(mse)
 
@@ -297,6 +299,309 @@ def map_timing_firing(
         savecsv(arr=mse_list, chr_number=chr_number, stitle=f'fit_error', outpath="fit_error")
         
     return x
+
+
+def map_timing_constant_firing(
+    observed_timing,
+    fork_speed=1.4,
+    resolution=1.0,
+    neighbourhood_range=2000,
+    fit_step=0.6,
+    maxiter=10,
+    err_threshold=15.0,
+    rate_bounds=None,
+    perQ=False,
+    n_bins=None,
+    verbose=True,
+    print_every=1,
+):
+    """Infer one constant firing rate from timing with constant fork speed."""
+    T = np.asarray(observed_timing, dtype=float)
+    if T.ndim != 1:
+        raise ValueError("observed_timing must be a one-dimensional array.")
+    if T.size == 0:
+        raise ValueError("observed_timing must contain at least one value.")
+    if n_bins is not None and int(n_bins) != T.size:
+        raise ValueError("n_bins must match the length of observed_timing.")
+
+    fork_speed_arr = np.asarray(fork_speed, dtype=float)
+    if fork_speed_arr.size != 1:
+        raise ValueError("fork_speed must be scalar for constant firing-rate fitting.")
+    fork_speed = float(fork_speed_arr.reshape(-1)[0])
+    if not np.isfinite(fork_speed) or fork_speed <= 0:
+        raise ValueError("fork_speed must be a finite positive scalar.")
+
+    resolution = float(resolution)
+    if not np.isfinite(resolution) or resolution <= 0:
+        raise ValueError("resolution must be a finite positive value.")
+
+    lm = int(1000 / resolution)
+    if perQ:
+        crop = slice(None)
+    else:
+        crop = slice(lm, -lm) if 2 * lm < T.size else slice(None)
+
+    v_per_bin = fork_speed / resolution
+    finite_positive_timing = T[crop][np.isfinite(T[crop]) & (T[crop] > 0)]
+    if finite_positive_timing.size:
+        profile_guess = (math.pi / (4.0 * v_per_bin)) * finite_positive_timing ** (-2)
+        rate_guess = float(np.nanmedian(profile_guess))
+    else:
+        rate_guess = 1e-6
+    if not np.isfinite(rate_guess) or rate_guess <= 0:
+        rate_guess = 1e-6
+
+    floor = 10.0 ** (-err_threshold)
+    if rate_bounds is None:
+        low = max(rate_guess * 1e-4, floor)
+        high = max(rate_guess * 1e4, low * 10.0)
+    else:
+        if len(rate_bounds) != 2:
+            raise ValueError("rate_bounds must be a (min_rate, max_rate) pair.")
+        low, high = map(float, rate_bounds)
+        if not (np.isfinite(low) and np.isfinite(high)) or low <= 0 or high <= low:
+            raise ValueError("rate_bounds must satisfy 0 < min_rate < max_rate.")
+
+    rate = float(np.clip(rate_guess, low, high))
+
+    maxiter = int(maxiter)
+    print_every = max(1, int(print_every))
+    start_time = time.time()
+
+    for it in range(1, maxiter + 1):
+        predicted = map_firing_timing(
+            rate,
+            fork_speed=fork_speed,
+            resolution=resolution,
+            neighbourhood_range=neighbourhood_range,
+            perQ=perQ,
+            n_bins=T.size,
+        )
+        observed = T[crop]
+        predicted = predicted[crop]
+        ok = (
+            np.isfinite(observed)
+            & np.isfinite(predicted)
+            & (observed > 0)
+            & (predicted > 0)
+        )
+        if not np.any(ok):
+            break
+        mse = mean_squared_error(observed[ok], predicted[ok])
+        ratio = float(np.nanmedian(predicted[ok] / observed[ok]))
+        if not np.isfinite(ratio) or ratio <= 0:
+            break
+        rate *= ratio ** fit_step
+        rate = float(np.clip(rate, low, high))
+        if verbose and (it % print_every == 0 or it == maxiter):
+            etaferr(it=it, maxiter=maxiter, start_time=start_time, err=mse)
+
+    return rate
+
+
+def map_timing_firing_constant_speed(
+    source,
+    resolution=1.0,
+    neighbourhood_range=2000,
+    fit_step=0.6,
+    maxiter=10,
+    speed_bounds=None,
+    initial_fork_speed=1.4,
+    perQ=False,
+    n_bins=None,
+    verbose=True,
+    print_every=1,
+):
+    """Infer one constant fork speed from timing and firing rate."""
+    if not isinstance(source, dict):
+        raise ValueError("source must contain replication_timing and firing_rate.")
+    if "replication_timing" not in source or "firing_rate" not in source:
+        raise ValueError("source must contain replication_timing and firing_rate.")
+
+    T = np.asarray(source["replication_timing"], dtype=float)
+    if T.ndim != 1:
+        raise ValueError("replication_timing must be a one-dimensional array.")
+    if T.size == 0:
+        raise ValueError("replication_timing must contain at least one value.")
+    if n_bins is not None and int(n_bins) != T.size:
+        raise ValueError("n_bins must match the length of replication_timing.")
+
+    resolution = float(resolution)
+    if not np.isfinite(resolution) or resolution <= 0:
+        raise ValueError("resolution must be a finite positive value.")
+
+    speed = float(initial_fork_speed)
+    if not np.isfinite(speed) or speed <= 0:
+        speed = 1.4
+
+    if speed_bounds is None:
+        low = max(speed * 1e-3, 1e-12)
+        high = max(speed * 1e3, low * 10.0)
+    else:
+        if len(speed_bounds) != 2:
+            raise ValueError("speed_bounds must be a (min_speed, max_speed) pair.")
+        low, high = map(float, speed_bounds)
+        if not (np.isfinite(low) and np.isfinite(high)) or low <= 0 or high <= low:
+            raise ValueError("speed_bounds must satisfy 0 < min_speed < max_speed.")
+    speed = float(np.clip(speed, low, high))
+
+    lm = int(1000 / resolution)
+    if perQ:
+        crop = slice(None)
+    else:
+        crop = slice(lm, -lm) if 2 * lm < T.size else slice(None)
+
+    firing_rate = source["firing_rate"]
+    maxiter = int(maxiter)
+    print_every = max(1, int(print_every))
+    start_time = time.time()
+
+    for it in range(1, maxiter + 1):
+        predicted = map_firing_timing(
+            firing_rate,
+            fork_speed=speed,
+            resolution=resolution,
+            neighbourhood_range=neighbourhood_range,
+            perQ=perQ,
+            n_bins=T.size,
+        )
+        observed = T[crop]
+        predicted = predicted[crop]
+        ok = (
+            np.isfinite(observed)
+            & np.isfinite(predicted)
+            & (observed > 0)
+            & (predicted > 0)
+        )
+        if not np.any(ok):
+            break
+        mse = mean_squared_error(observed[ok], predicted[ok])
+        ratio = float(np.nanmedian(predicted[ok] / observed[ok]))
+        if not np.isfinite(ratio) or ratio <= 0:
+            break
+        speed *= ratio ** fit_step
+        speed = float(np.clip(speed, low, high))
+        if verbose and (it % print_every == 0 or it == maxiter):
+            etaferr(it=it, maxiter=maxiter, start_time=start_time, err=mse)
+
+    return speed
+
+
+def map_timing_firing_spatial_speed(
+    source,
+    resolution=1.0,
+    neighbourhood_range=2000,
+    fit_step=0.4,
+    maxiter=10,
+    speed_bounds=None,
+    initial_fork_speed=1.4,
+    smoothw=50,
+    perQ=False,
+    n_bins=None,
+    verbose=True,
+    print_every=1,
+):
+    """Infer a spatial effective fork-speed profile from timing and firing."""
+    if not isinstance(source, dict):
+        raise ValueError("source must contain replication_timing and firing_rate.")
+    if "replication_timing" not in source or "firing_rate" not in source:
+        raise ValueError("source must contain replication_timing and firing_rate.")
+
+    T = np.asarray(source["replication_timing"], dtype=float)
+    if T.ndim != 1:
+        raise ValueError("replication_timing must be a one-dimensional array.")
+    if T.size == 0:
+        raise ValueError("replication_timing must contain at least one value.")
+    if n_bins is not None and int(n_bins) != T.size:
+        raise ValueError("n_bins must match the length of replication_timing.")
+
+    firing_rate = np.asarray(source["firing_rate"], dtype=float)
+    if firing_rate.size != 1:
+        if firing_rate.ndim == 2 and firing_rate.shape[1] == 1:
+            firing_rate = firing_rate.reshape(-1)
+        if firing_rate.ndim != 1 or firing_rate.size != T.size:
+            raise ValueError("firing_rate must be scalar, (n,), or (n,1) for spatial speed fitting.")
+        if np.any(~np.isfinite(firing_rate)) or np.any(firing_rate < 0):
+            raise ValueError("firing_rate must contain finite values >= 0.")
+    else:
+        firing_rate = float(firing_rate.reshape(-1)[0])
+        if not np.isfinite(firing_rate) or firing_rate < 0:
+            raise ValueError("firing_rate scalar must be finite and >= 0.")
+
+    resolution = float(resolution)
+    if not np.isfinite(resolution) or resolution <= 0:
+        raise ValueError("resolution must be a finite positive value.")
+
+    initial = np.asarray(initial_fork_speed, dtype=float)
+    if initial.size == 1:
+        value = float(initial.reshape(-1)[0])
+        if not np.isfinite(value) or value <= 0:
+            value = 1.4
+        speed = np.full(T.size, value, dtype=float)
+    elif initial.ndim == 1 and initial.size == T.size:
+        speed = initial.astype(float, copy=True)
+    elif initial.ndim == 2 and initial.shape[1] == 1 and initial.shape[0] == T.size:
+        speed = initial.reshape(-1).astype(float, copy=True)
+    else:
+        raise ValueError("initial_fork_speed must be scalar, (n,), or (n,1).")
+    if np.any(~np.isfinite(speed)) or np.any(speed <= 0):
+        raise ValueError("initial_fork_speed must contain finite positive values.")
+
+    reference_speed = float(np.nanmedian(speed))
+    if speed_bounds is None:
+        low = max(reference_speed * 1e-3, 1e-12)
+        high = max(reference_speed * 1e3, low * 10.0)
+    else:
+        if len(speed_bounds) != 2:
+            raise ValueError("speed_bounds must be a (min_speed, max_speed) pair.")
+        low, high = map(float, speed_bounds)
+        if not (np.isfinite(low) and np.isfinite(high)) or low <= 0 or high <= low:
+            raise ValueError("speed_bounds must satisfy 0 < min_speed < max_speed.")
+    speed = np.clip(speed, low, high)
+
+    lm = int(1000 / resolution)
+    if perQ:
+        crop = slice(None)
+    else:
+        crop = slice(lm, -lm) if 2 * lm < T.size else slice(None)
+
+    maxiter = int(maxiter)
+    print_every = max(1, int(print_every))
+    start_time = time.time()
+
+    for it in range(1, maxiter + 1):
+        predicted = map_firing_timing(
+            firing_rate,
+            fork_speed=speed,
+            resolution=resolution,
+            neighbourhood_range=neighbourhood_range,
+            perQ=perQ,
+            n_bins=T.size,
+        )
+        observed = T[crop]
+        predicted_crop = predicted[crop]
+        ok_crop = (
+            np.isfinite(observed)
+            & np.isfinite(predicted_crop)
+            & (observed > 0)
+            & (predicted_crop > 0)
+        )
+        if not np.any(ok_crop):
+            break
+
+        mse = mean_squared_error(observed[ok_crop], predicted_crop[ok_crop])
+        ratio = np.ones(T.size, dtype=float)
+        ratio_view = ratio[crop]
+        ratio_view[ok_crop] = predicted_crop[ok_crop] / observed[ok_crop]
+        speed *= ratio ** fit_step
+        if smoothw is not None:
+            speed = smoothf(speed, smoothw)
+        speed = np.clip(speed, low, high)
+
+        if verbose and (it % print_every == 0 or it == maxiter):
+            etaferr(it=it, maxiter=maxiter, start_time=start_time, err=mse)
+
+    return speed
 
 
 
@@ -326,8 +631,9 @@ def rfit(
     """Fit or map one replication feature to another.
 
     Prefer the same terms used by ``rmap``: ``source``, ``target``, ``data``,
-    ``assumptions``, and ``method``. If ``source`` is not a string or mapping,
-    it is treated as the older data-array argument. The older
+    ``assumptions``, and ``method``. ``source`` may be a dictionary when a
+    route needs multiple supplied features. If ``source`` is not a string or
+    mapping, it is treated as the older data-array argument. The older
     ``source_feature``, ``d1``, and ``d2`` names are still accepted as aliases.
     """
     from .routing import _canonical_assumption, rmap
@@ -345,18 +651,25 @@ def rfit(
     target = rmap.canonical(target)
 
     source_payload = None
+    source_features = set()
     if isinstance(source, dict):
         if data is not None:
             raise ValueError("Pass either source={feature: data} or source='feature' with data=..., not both.")
-        if len(source) != 1:
-            raise ValueError("rfit source dictionaries must contain exactly one feature.")
-        source_key, data = next(iter(source.items()))
-        source_feature = rmap.canonical(source_key)
-        source_payload = {source_feature: data}
+        if not source:
+            raise ValueError("rfit source dictionaries must contain at least one feature.")
+        source_payload = {rmap.canonical(key): value for key, value in source.items()}
+        missing_values = [key for key, value in source_payload.items() if value is None]
+        if missing_values:
+            raise ValueError(
+                "rfit source dictionaries must provide data for every feature: "
+                + ", ".join(missing_values)
+            )
+        source_features = set(source_payload)
     else:
         source_feature = rmap.canonical(source)
+        source_features = {source_feature}
 
-    if data is None:
+    if data is None and source_payload is None:
         source_name = mapt[source_feature]
         data = np.loadtxt(
             _resolve_data_path(f"{source_name}/{source_name}_{cell_line}_chr{chr_number}.txt"),
@@ -370,7 +683,7 @@ def rfit(
         merged_assumptions.update(
             {_canonical_assumption(key): value for key, value in assumptions.items()}
         )
-    if "fork_speed" not in merged_assumptions:
+    if "fork_speed" not in merged_assumptions and "fork_speed" not in source_features:
         merged_assumptions["fork_speed"] = fork_speed
     if "resolution" not in merged_assumptions:
         merged_assumptions["resolution"] = resolution

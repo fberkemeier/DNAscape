@@ -101,12 +101,16 @@ Run a stochastic replication simulation from the initiation landscape.
 ```python
 # Stochastic simulation under the same initiation assumptions.
 sim = rsim(
-    firing_rate,
-    fork_speed=1.4,
-    sim_number=50,
-    resolution_space=1.0,
-    seed=1,
-    verbose=False,
+    source={
+        "firing_rate": firing_rate,
+        "fork_speed": 1.4,
+    },
+    assumptions={
+        "sim_number": 50,
+        "resolution": 1.0,
+        "seed": 1,
+        "verbose": False,
+    },
 )
 
 sim.keys()

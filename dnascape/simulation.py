@@ -10,6 +10,37 @@ import numpy as np
 from .utils import etaf, fast_shift_add
 
 
+_SOURCE_ALIASES = {
+    "firing": "firing_rate",
+    "origin_rate": "firing_rate",
+    "ori_rate": "firing_rate",
+    "initiation": "firing_rate",
+    "initiation_rate": "firing_rate",
+    "fr": "firing_rate",
+    "fork_speeds": "fork_speed",
+    "speed": "fork_speed",
+    "v": "fork_speed",
+    "fs": "fork_speed",
+}
+
+_ASSUMPTION_ALIASES = {
+    "bin_size": "resolution",
+    "resolution_kb": "resolution",
+    "resolution_space_kb": "resolution_space",
+    "periodic": "perQ",
+    "perq": "perQ",
+    "time_stats": "time_statsQ",
+    "time_stats_xt": "time_stats_xtQ",
+    "time_stats_dens": "time_stats_densQ",
+}
+
+
+def _normalise_structured_key(name, aliases):
+    text = str(name).strip().replace("-", "_")
+    key = text.lower()
+    return aliases.get(key, text)
+
+
 def _resolve_n_bins(firing_rate, fork_speed, n_bins=None):
     """Infer the spatial genome length from spatial or space-time inputs."""
     candidates = []
@@ -701,6 +732,8 @@ def rsim(
     initiation_rate=None,
     geometry=None,
     resolution=None,
+    source=None,
+    assumptions=None,
 ):
     """Run replicate stochastic simulations and return averaged features.
 
@@ -709,7 +742,105 @@ def rsim(
     Firing rate and fork speed support four field forms: scalar, ``(n,)``,
     ``(1, T)``, and ``(T, n)``. Use ``n_bins`` when both kinetic inputs lack a
     spatial axis.
+
+    For consistency with ``rmap``, kinetic inputs can also be supplied as
+    ``source={"firing_rate": ..., "fork_speed": ...}``, while simulation
+    settings can be supplied through ``assumptions={...}``.
     """
+    params = {
+        "firing_rate": firing_rate,
+        "fork_speed": fork_speed,
+        "sim_number": sim_number,
+        "resolution_space": resolution_space,
+        "resolution_time": resolution_time,
+        "perQ": perQ,
+        "stall_rate": stall_rate,
+        "tau": tau,
+        "ffiring_nr": ffiring_nr,
+        "ffiring_recycle": ffiring_recycle,
+        "ffiring_forkQ": ffiring_forkQ,
+        "time_statsQ": time_statsQ,
+        "time_stats_xtQ": time_stats_xtQ,
+        "time_stats_densQ": time_stats_densQ,
+        "time_grid": time_grid,
+        "max_rep_time": max_rep_time,
+        "seed": seed,
+        "verbose": verbose,
+        "print_every": print_every,
+        "dens_block_n": dens_block_n,
+        "dens_memmap_dir": dens_memmap_dir,
+        "n_bins": n_bins,
+        "ori_rate": ori_rate,
+        "initiation_rate": initiation_rate,
+        "geometry": geometry,
+        "resolution": resolution,
+    }
+
+    if source is not None:
+        if not isinstance(source, dict):
+            raise ValueError("rsim source must be a dictionary with firing_rate and/or fork_speed.")
+        allowed_source = {"firing_rate", "fork_speed"}
+        for key, value in source.items():
+            name = _normalise_structured_key(key, _SOURCE_ALIASES)
+            if name not in allowed_source:
+                raise ValueError(
+                    "rsim source only accepts kinetic inputs: firing_rate and fork_speed."
+                )
+            if name == "firing_rate" and (
+                params["firing_rate"] is not None
+                or params["ori_rate"] is not None
+                or params["initiation_rate"] is not None
+            ):
+                raise ValueError("Pass firing_rate either directly or in source, not both.")
+            params[name] = value
+
+    if assumptions is not None:
+        if not isinstance(assumptions, dict):
+            raise ValueError("rsim assumptions must be a dictionary.")
+        source_only = {
+            "firing_rate",
+            "fork_speed",
+            "ori_rate",
+            "initiation_rate",
+        }
+        allowed_assumptions = set(params) - source_only
+        for key, value in assumptions.items():
+            name = _normalise_structured_key(key, _ASSUMPTION_ALIASES)
+            if name in source_only:
+                raise ValueError(
+                    "Put kinetic inputs such as firing_rate and fork_speed in source, not assumptions."
+                )
+            if name not in allowed_assumptions:
+                raise ValueError(f"Unknown rsim assumption: {key!r}.")
+            params[name] = value
+
+    firing_rate = params["firing_rate"]
+    fork_speed = params["fork_speed"]
+    sim_number = params["sim_number"]
+    resolution_space = params["resolution_space"]
+    resolution_time = params["resolution_time"]
+    perQ = params["perQ"]
+    stall_rate = params["stall_rate"]
+    tau = params["tau"]
+    ffiring_nr = params["ffiring_nr"]
+    ffiring_recycle = params["ffiring_recycle"]
+    ffiring_forkQ = params["ffiring_forkQ"]
+    time_statsQ = params["time_statsQ"]
+    time_stats_xtQ = params["time_stats_xtQ"]
+    time_stats_densQ = params["time_stats_densQ"]
+    time_grid = params["time_grid"]
+    max_rep_time = params["max_rep_time"]
+    seed = params["seed"]
+    verbose = params["verbose"]
+    print_every = params["print_every"]
+    dens_block_n = params["dens_block_n"]
+    dens_memmap_dir = params["dens_memmap_dir"]
+    n_bins = params["n_bins"]
+    ori_rate = params["ori_rate"]
+    initiation_rate = params["initiation_rate"]
+    geometry = params["geometry"]
+    resolution = params["resolution"]
+
     if time_stats_densQ is not None:
         time_stats_xtQ = bool(time_stats_densQ)
 

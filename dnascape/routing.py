@@ -5,7 +5,12 @@ from dataclasses import dataclass
 
 import numpy as np
 
-from .fitting import map_timing_firing
+from .fitting import (
+    map_timing_constant_firing,
+    map_timing_firing,
+    map_timing_firing_constant_speed,
+    map_timing_firing_spatial_speed,
+)
 from .mapping import map_directionality_timing, map_firing_timing, map_timing_directionality
 from .simulation import rsim
 
@@ -127,6 +132,38 @@ def _field_kind(value):
     return f"{arr.ndim}d"
 
 
+def _canonical_form(value):
+    if value is None:
+        return None
+    text = str(value).strip().lower().replace(" ", "")
+    aliases = {
+        "0": "scalar",
+        "scalar": "scalar",
+        "constant": "scalar",
+        "const": "scalar",
+        "i0": "scalar",
+        "v0": "scalar",
+        "x": "x",
+        "spatial": "x",
+        "space": "x",
+        "i(x)": "x",
+        "v(x)": "x",
+        "t": "t",
+        "temporal": "t",
+        "time": "t",
+        "i(t)": "t",
+        "v(t)": "t",
+        "xt": "xt",
+        "x,t": "xt",
+        "(x,t)": "xt",
+        "space-time": "xt",
+        "spacetime": "xt",
+        "i(x,t)": "xt",
+        "v(x,t)": "xt",
+    }
+    return aliases.get(text, text)
+
+
 @dataclass(frozen=True)
 class MappingSpec:
     source: tuple
@@ -139,6 +176,7 @@ class MappingSpec:
     default_assumptions: tuple = ()
     source_kinds: tuple = ()
     assumption_kinds: tuple = ()
+    assumption_values: tuple = ()
     description: str = ""
 
     def defaults_dict(self):
@@ -163,8 +201,24 @@ class MappingSpec:
                 return False
         return True
 
+    def _assumption_value_matches(self, assumptions):
+        merged = self.assumptions_with_defaults(assumptions)
+        for name, allowed in self.assumption_values:
+            cname = _canonical_assumption(name)
+            allowed_forms = tuple(_canonical_form(value) for value in allowed)
+            if cname not in merged:
+                if None in allowed_forms:
+                    continue
+                return False
+            value = _canonical_form(merged[cname])
+            if value not in allowed_forms:
+                return False
+        return True
+
     def accepts(self, source_data, assumptions):
         if not self._source_kind_matches(source_data):
+            return False
+        if not self._assumption_value_matches(assumptions):
             return False
         if self.missing_required(assumptions):
             return False
@@ -186,6 +240,10 @@ _RSIM_OPTION_NAMES = tuple(
     name for name in inspect.signature(rsim).parameters
     if name not in {"ori_rate", "firing_rate", "initiation_rate"}
 )
+_RSIM_ASSUMPTION_NAMES = tuple(
+    name for name in _RSIM_OPTION_NAMES
+    if name != "fork_speed"
+)
 
 
 def _simulation_feature_mapper(output_name, default_options=None):
@@ -202,6 +260,21 @@ def _simulation_feature_mapper(output_name, default_options=None):
     return mapper
 
 
+def _simulation_source_feature_mapper(output_name, default_options=None):
+    def mapper(source, **kwargs):
+        options = dict(default_options or {})
+        options.update({
+            key: value
+            for key, value in kwargs.items()
+            if key in _RSIM_ASSUMPTION_NAMES
+        })
+        options["fork_speed"] = source["fork_speed"]
+        return rsim(firing_rate=source["firing_rate"], **options)[output_name]
+
+    mapper.__name__ = f"map_firing_and_speed_to_{output_name}_simulation"
+    return mapper
+
+
 def map_firing_to_fork_density_xt_simulation(firing_rate, **kwargs):
     options = {"time_stats_xtQ": True}
     options.update({
@@ -211,6 +284,139 @@ def map_firing_to_fork_density_xt_simulation(firing_rate, **kwargs):
     })
     result = rsim(firing_rate=firing_rate, **options)
     return result["right_fork_density_xt"] + result["left_fork_density_xt"]
+
+
+def map_firing_and_speed_to_fork_density_xt_simulation(source, **kwargs):
+    options = {"time_stats_xtQ": True}
+    options.update({
+        key: value
+        for key, value in kwargs.items()
+        if key in _RSIM_ASSUMPTION_NAMES
+    })
+    options["fork_speed"] = source["fork_speed"]
+    result = rsim(firing_rate=source["firing_rate"], **options)
+    return result["right_fork_density_xt"] + result["left_fork_density_xt"]
+
+
+_FORWARD_TIMING_OPTIONS = {
+    "resolution",
+    "neighbourhood_range",
+    "perQ",
+    "n_bins",
+}
+
+_TIMING_TO_CONSTANT_FIRING_OPTIONS = {
+    "resolution",
+    "neighbourhood_range",
+    "fit_step",
+    "maxiter",
+    "err_threshold",
+    "rate_bounds",
+    "verbose",
+    "print_every",
+    "perQ",
+    "n_bins",
+}
+
+_TIMING_TO_SPATIAL_FIRING_OPTIONS = {
+    "resolution",
+    "neighbourhood_range",
+    "fit_step",
+    "maxiter",
+    "sim_number",
+    "err_threshold",
+    "deviation_threshold",
+    "verbose",
+    "print_every",
+    "perQ",
+    "stall_rate",
+    "tau",
+}
+
+_TIMING_TO_CONSTANT_SPEED_OPTIONS = {
+    "resolution",
+    "neighbourhood_range",
+    "fit_step",
+    "maxiter",
+    "speed_bounds",
+    "initial_fork_speed",
+    "verbose",
+    "print_every",
+    "perQ",
+    "n_bins",
+}
+
+_TIMING_TO_SPATIAL_SPEED_OPTIONS = {
+    "resolution",
+    "neighbourhood_range",
+    "fit_step",
+    "maxiter",
+    "speed_bounds",
+    "initial_fork_speed",
+    "smoothw",
+    "verbose",
+    "print_every",
+    "perQ",
+    "n_bins",
+}
+
+_DIRECTIONALITY_OPTIONS = {
+    "resolution",
+    "T0",
+    "smoothw",
+    "perQ",
+}
+
+
+def _options(kwargs, names):
+    return {key: value for key, value in kwargs.items() if key in names}
+
+
+def map_firing_and_speed_to_timing(source, **kwargs):
+    return map_firing_timing(
+        source["firing_rate"],
+        fork_speed=source["fork_speed"],
+        **_options(kwargs, _FORWARD_TIMING_OPTIONS),
+    )
+
+
+def map_timing_and_speed_to_constant_firing(source, **kwargs):
+    return map_timing_constant_firing(
+        source["replication_timing"],
+        fork_speed=source["fork_speed"],
+        **_options(kwargs, _TIMING_TO_CONSTANT_FIRING_OPTIONS),
+    )
+
+
+def map_timing_and_speed_to_firing(source, **kwargs):
+    return map_timing_firing(
+        source["replication_timing"],
+        fork_speed=source["fork_speed"],
+        **_options(kwargs, _TIMING_TO_SPATIAL_FIRING_OPTIONS),
+    )
+
+
+def map_timing_and_speed_to_directionality(source, **kwargs):
+    return map_timing_directionality(
+        source["replication_timing"],
+        fork_speed=source["fork_speed"],
+        **_options(kwargs, _DIRECTIONALITY_OPTIONS),
+    )
+
+
+def map_directionality_and_speed_to_timing(source, **kwargs):
+    return map_directionality_timing(
+        source["fork_directionality"],
+        fork_speed=source["fork_speed"],
+        **_options(kwargs, _DIRECTIONALITY_OPTIONS),
+    )
+
+
+def map_timing_and_firing_to_spatial_speed(source, **kwargs):
+    return map_timing_firing_spatial_speed(
+        source,
+        **_options(kwargs, _TIMING_TO_SPATIAL_SPEED_OPTIONS),
+    )
 
 
 class DataTypeMapper:
@@ -239,6 +445,7 @@ class DataTypeMapper:
         default_assumptions=None,
         source_kinds=(),
         assumption_kinds=(),
+        assumption_values=(),
         implemented=True,
         description="",
     ):
@@ -274,6 +481,10 @@ class DataTypeMapper:
                 (_canonical_assumption(name), (kinds,) if isinstance(kinds, str) else tuple(kinds))
                 for name, kinds in assumption_kinds
             ),
+            assumption_values=tuple(
+                (_canonical_assumption(name), (values,) if isinstance(values, str) else tuple(values))
+                for name, values in assumption_values
+            ),
             description=description,
         )
         self._specs.append(spec)
@@ -289,6 +500,7 @@ class DataTypeMapper:
         default_assumptions=None,
         source_kinds=(),
         assumption_kinds=(),
+        assumption_values=(),
         description="",
     ):
         return self.register(
@@ -301,6 +513,7 @@ class DataTypeMapper:
             default_assumptions=default_assumptions,
             source_kinds=source_kinds,
             assumption_kinds=assumption_kinds,
+            assumption_values=assumption_values,
             implemented=False,
             description=description,
         )
@@ -356,6 +569,10 @@ class DataTypeMapper:
                 f"{name}: {'/'.join(kinds)}"
                 for name, kinds in spec.assumption_kinds
             )
+            value_req = ", ".join(
+                f"{name}: {'/'.join(str(_canonical_form(value)) for value in values if value is not None)}"
+                for name, values in spec.assumption_values
+            )
             src_req = ", ".join(
                 f"{name}: {'/'.join(kinds)}"
                 for name, kinds in spec.source_kinds
@@ -366,6 +583,8 @@ class DataTypeMapper:
                 expected.append(f"source {src_req}")
             if req:
                 expected.append(f"assumptions {req}")
+            if value_req:
+                expected.append(f"assumption values {value_req}")
             details.append(
                 f"{spec.method} expects {', '.join(expected) or 'no specific field kinds'}{missing_msg}"
             )
@@ -437,6 +656,7 @@ class DataTypeMapper:
                 "required_assumptions": spec.required_assumptions,
                 "optional_assumptions": spec.optional_assumptions,
                 "source_kinds": spec.source_kinds,
+                "assumption_values": spec.assumption_values,
                 "description": spec.description,
             }
         return values
@@ -474,6 +694,10 @@ class DataTypeMapper:
                 f"{name}: {'/'.join(kinds)}"
                 for name, kinds in spec.assumption_kinds
             )
+            value_req = ", ".join(
+                f"{name}: {'/'.join(str(_canonical_form(value)) for value in values if value is not None)}"
+                for name, values in spec.assumption_values
+            )
             details = []
             if required:
                 details.append(f"requires {required}")
@@ -481,6 +705,8 @@ class DataTypeMapper:
                 details.append(f"source {src_req}")
             if req:
                 details.append(f"supports {req}")
+            if value_req:
+                details.append(f"values {value_req}")
             suffix = f" [{'; '.join(details)}]" if details else ""
             print(f"  {src} -> {spec.target} via {spec.method} ({status}){suffix}")
 
@@ -493,26 +719,201 @@ class DataTypeMapper:
 
 rmap = DataTypeMapper()
 rmap.register(
+    ("firing_rate", "fork_speed"),
+    "replication_timing",
+    map_firing_and_speed_to_timing,
+    method="firing_and_speed_to_timing_deterministic",
+    optional_assumptions=("resolution", "neighbourhood_range", "perQ", "n_bins"),
+    source_kinds=(
+        ("firing_rate", ("scalar", "x")),
+        ("fork_speed", ("scalar", "x")),
+    ),
+    description="Deterministic mapping for I0 or I(x) with v0 or spatial effective v(x).",
+)
+rmap.register_placeholder(
+    ("firing_rate", "fork_speed"),
+    "replication_timing",
+    method="firing_and_variable_speed_to_timing",
+    optional_assumptions=("resolution", "neighbourhood_range", "perQ", "n_bins"),
+    source_kinds=(
+        ("firing_rate", ("scalar", "x", "t", "xt")),
+        ("fork_speed", ("t", "xt")),
+    ),
+    description="Forward timing maps with time-only or space-time fork speed need dedicated methods.",
+)
+rmap.register(
+    ("replication_timing", "fork_speed"),
+    "firing_rate",
+    map_timing_and_speed_to_constant_firing,
+    method="timing_and_speed_to_constant_firing_rate",
+    required_assumptions=("target_form",),
+    optional_assumptions=(
+        "resolution",
+        "neighbourhood_range",
+        "fit_step",
+        "maxiter",
+        "err_threshold",
+        "rate_bounds",
+        "verbose",
+        "print_every",
+        "perQ",
+        "n_bins",
+    ),
+    default_assumptions={"verbose": True},
+    source_kinds=(
+        ("replication_timing", ("x",)),
+        ("fork_speed", ("scalar",)),
+    ),
+    assumption_values=(("target_form", ("scalar", "I0", "constant")),),
+    description="Scalar fit of I0 from timing and constant fork speed.",
+)
+rmap.register(
+    ("replication_timing", "fork_speed"),
+    "firing_rate",
+    map_timing_and_speed_to_firing,
+    method="timing_and_speed_to_firing_rate",
+    optional_assumptions=(
+        "resolution",
+        "neighbourhood_range",
+        "fit_step",
+        "maxiter",
+        "sim_number",
+        "err_threshold",
+        "deviation_threshold",
+        "verbose",
+        "print_every",
+        "perQ",
+        "stall_rate",
+        "tau",
+        "target_form",
+    ),
+    default_assumptions={"verbose": True},
+    source_kinds=(
+        ("replication_timing", ("x",)),
+        ("fork_speed", ("scalar",)),
+    ),
+    assumption_values=(("target_form", (None, "x", "I(x)", "spatial")),),
+    description="Iterative fit of I(x) from timing and constant fork speed.",
+)
+rmap.register_placeholder(
+    ("replication_timing", "fork_speed"),
+    "firing_rate",
+    method="timing_and_variable_speed_to_firing_rate",
+    optional_assumptions=(
+        "resolution",
+        "neighbourhood_range",
+        "fit_step",
+        "maxiter",
+        "sim_number",
+        "verbose",
+        "print_every",
+        "perQ",
+        "target_form",
+    ),
+    source_kinds=(
+        ("replication_timing", ("x",)),
+        ("fork_speed", ("x", "t", "xt")),
+    ),
+    description="Fitting firing rate from timing with variable fork speed needs a dedicated method.",
+)
+rmap.register(
+    ("replication_timing", "firing_rate"),
+    "fork_speed",
+    map_timing_firing_constant_speed,
+    method="timing_and_firing_to_constant_fork_speed",
+    optional_assumptions=(
+        "resolution",
+        "neighbourhood_range",
+        "fit_step",
+        "maxiter",
+        "speed_bounds",
+        "initial_fork_speed",
+        "verbose",
+        "print_every",
+        "perQ",
+        "n_bins",
+        "target_form",
+    ),
+    default_assumptions={"verbose": True},
+    source_kinds=(
+        ("replication_timing", ("x",)),
+        ("firing_rate", ("scalar", "x")),
+    ),
+    assumption_values=(("target_form", (None, "scalar", "v0", "constant")),),
+    description="Scalar fit of v0 from timing and firing rate.",
+)
+rmap.register(
+    ("replication_timing", "firing_rate"),
+    "fork_speed",
+    map_timing_and_firing_to_spatial_speed,
+    method="timing_and_firing_to_spatial_fork_speed",
+    optional_assumptions=(
+        "resolution",
+        "neighbourhood_range",
+        "fit_step",
+        "maxiter",
+        "speed_bounds",
+        "initial_fork_speed",
+        "smoothw",
+        "verbose",
+        "print_every",
+        "perQ",
+        "n_bins",
+        "target_form",
+    ),
+    default_assumptions={"verbose": True},
+    source_kinds=(
+        ("replication_timing", ("x",)),
+        ("firing_rate", ("scalar", "x")),
+    ),
+    assumption_values=(("target_form", ("x", "v(x)", "spatial")),),
+    description="Spatial effective fit of v(x) from timing and firing rate.",
+)
+rmap.register(
+    ("replication_timing", "fork_speed"),
+    "fork_directionality",
+    map_timing_and_speed_to_directionality,
+    method="timing_and_speed_to_directionality",
+    optional_assumptions=("resolution", "T0", "smoothw", "perQ"),
+    source_kinds=(
+        ("replication_timing", ("x",)),
+        ("fork_speed", ("scalar",)),
+    ),
+    description="Gradient-based fork-directionality mapping.",
+)
+rmap.register(
+    ("fork_directionality", "fork_speed"),
+    "replication_timing",
+    map_directionality_and_speed_to_timing,
+    method="directionality_and_speed_to_timing",
+    optional_assumptions=("resolution", "T0", "smoothw", "perQ"),
+    source_kinds=(
+        ("fork_directionality", ("x",)),
+        ("fork_speed", ("scalar",)),
+    ),
+    description="Integration of fork directionality to timing.",
+)
+rmap.register(
     "firing_rate",
     "replication_timing",
     map_firing_timing,
     method="firing_to_timing_deterministic",
     required_assumptions=("fork_speed",),
-    optional_assumptions=("resolution", "neighbourhood_range", "perQ"),
+    optional_assumptions=("resolution", "neighbourhood_range", "perQ", "n_bins"),
     default_assumptions={"fork_speed": 1.4},
-    source_kinds=(("firing_rate", ("x",)),),
-    assumption_kinds=(("fork_speed", ("scalar",)),),
-    description="Deterministic mapping with constant fork speed.",
+    source_kinds=(("firing_rate", ("scalar", "x")),),
+    assumption_kinds=(("fork_speed", ("scalar", "x")),),
+    description="Deterministic mapping for I0 or I(x) with v0 or spatial effective v(x).",
 )
 rmap.register_placeholder(
     "firing_rate",
     "replication_timing",
     method="firing_to_timing_variable_fork_speed",
     required_assumptions=("fork_speed",),
-    optional_assumptions=("resolution", "neighbourhood_range", "perQ"),
-    source_kinds=(("firing_rate", ("x",)),),
-    assumption_kinds=(("fork_speed", ("x", "t", "xt")),),
-    description="Variable fork-speed deterministic mapping needs a dedicated solver.",
+    optional_assumptions=("resolution", "neighbourhood_range", "perQ", "n_bins"),
+    source_kinds=(("firing_rate", ("scalar", "x")),),
+    assumption_kinds=(("fork_speed", ("t", "xt")),),
+    description="Time-only or space-time fork-speed timing maps need dedicated methods.",
 )
 rmap.register_placeholder(
     "firing_rate",
@@ -520,9 +921,33 @@ rmap.register_placeholder(
     method="firing_to_timing_general_firing_form",
     required_assumptions=("fork_speed",),
     optional_assumptions=("resolution", "neighbourhood_range", "perQ"),
-    source_kinds=(("firing_rate", ("scalar", "t", "xt")),),
+    source_kinds=(("firing_rate", ("t", "xt")),),
     assumption_kinds=(("fork_speed", ("scalar", "x", "t", "xt")),),
-    description="Forward timing maps for constant, time-only, or space-time firing need dedicated methods.",
+    description="Forward timing maps for time-only or space-time firing need dedicated methods.",
+)
+rmap.register(
+    "replication_timing",
+    "firing_rate",
+    map_timing_constant_firing,
+    method="timing_to_constant_firing_rate_constant_fork_speed",
+    required_assumptions=("fork_speed", "target_form"),
+    optional_assumptions=(
+        "resolution",
+        "neighbourhood_range",
+        "fit_step",
+        "maxiter",
+        "err_threshold",
+        "rate_bounds",
+        "verbose",
+        "print_every",
+        "perQ",
+        "n_bins",
+    ),
+    default_assumptions={"fork_speed": 1.4, "verbose": True},
+    source_kinds=(("replication_timing", ("x",)),),
+    assumption_kinds=(("fork_speed", ("scalar",)),),
+    assumption_values=(("target_form", ("scalar", "I0", "constant")),),
+    description="Scalar fit of I0 by optimising the deterministic timing mismatch.",
 )
 rmap.register(
     "replication_timing",
@@ -539,13 +964,16 @@ rmap.register(
         "err_threshold",
         "deviation_threshold",
         "verbose",
+        "print_every",
         "perQ",
         "stall_rate",
         "tau",
+        "target_form",
     ),
-    default_assumptions={"fork_speed": 1.4},
+    default_assumptions={"fork_speed": 1.4, "verbose": True},
     source_kinds=(("replication_timing", ("x",)),),
     assumption_kinds=(("fork_speed", ("scalar",)),),
+    assumption_values=(("target_form", (None, "x", "I(x)", "spatial")),),
     description="Iterative fit of a space-dependent firing rate with constant fork speed.",
 )
 rmap.register_placeholder(
@@ -560,6 +988,7 @@ rmap.register_placeholder(
         "maxiter",
         "sim_number",
         "verbose",
+        "print_every",
         "perQ",
     ),
     source_kinds=(("replication_timing", ("x",)),),
@@ -569,13 +998,14 @@ rmap.register_placeholder(
 rmap.register_placeholder(
     ("replication_timing", "fork_speed"),
     "firing_rate",
-    method="timing_and_fork_speed_to_firing",
-    optional_assumptions=("resolution", "geometry", "perQ"),
+    method="timing_and_speed_to_general_firing_rate",
+    optional_assumptions=("resolution", "geometry", "verbose", "print_every", "perQ", "target_form"),
     source_kinds=(
         ("replication_timing", ("x",)),
         ("fork_speed", ("scalar", "x", "t", "xt")),
     ),
-    description="Use assumptions={'fork_speed': scalar} for the implemented constant-speed route.",
+    assumption_values=(("target_form", ("t", "I(t)", "xt", "I(x,t)")),),
+    description="Time-only or space-time firing-rate targets need dedicated methods.",
 )
 rmap.register(
     "replication_timing",
@@ -618,6 +1048,22 @@ _SIMULATION_DERIVED_FEATURES = {
 
 for _target, _defaults in _SIMULATION_DERIVED_FEATURES.items():
     rmap.register(
+        ("firing_rate", "fork_speed"),
+        _target,
+        _simulation_source_feature_mapper(_target, _defaults),
+        method=f"firing_and_speed_to_{_target}_simulation",
+        optional_assumptions=_RSIM_ASSUMPTION_NAMES,
+        default_assumptions={
+            "verbose": False,
+            **_defaults,
+        },
+        source_kinds=(
+            ("firing_rate", ("scalar", "x", "t", "xt")),
+            ("fork_speed", ("scalar", "x", "t", "xt")),
+        ),
+        description="Simulation-derived feature generated with rsim.",
+    )
+    rmap.register(
         "firing_rate",
         _target,
         _simulation_feature_mapper(_target, _defaults),
@@ -633,6 +1079,23 @@ for _target, _defaults in _SIMULATION_DERIVED_FEATURES.items():
         assumption_kinds=(("fork_speed", ("scalar", "x", "t", "xt")),),
         description="Simulation-derived feature generated with rsim.",
     )
+
+rmap.register(
+    ("firing_rate", "fork_speed"),
+    "fork_density_xt",
+    map_firing_and_speed_to_fork_density_xt_simulation,
+    method="firing_and_speed_to_fork_density_xt_simulation",
+    optional_assumptions=_RSIM_ASSUMPTION_NAMES,
+    default_assumptions={
+        "time_stats_xtQ": True,
+        "verbose": False,
+    },
+    source_kinds=(
+        ("firing_rate", ("scalar", "x", "t", "xt")),
+        ("fork_speed", ("scalar", "x", "t", "xt")),
+    ),
+    description="Simulation-derived total fork-density field generated with rsim.",
+)
 
 rmap.register(
     "firing_rate",
@@ -660,7 +1123,7 @@ rmap.register_placeholder(
         ("replication_timing", ("x",)),
         ("firing_rate", ("scalar", "x", "t", "xt")),
     ),
-    description="Fitting fork speed from timing and firing rate needs a dedicated optimisation method.",
+    description="Variable fork-speed targets need dedicated optimisation methods.",
 )
 rmap.register_placeholder(
     "replication_timing",
