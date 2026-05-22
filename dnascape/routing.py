@@ -72,9 +72,46 @@ _CANONICAL_FEATURES = {
     "left_fork_density_xt",
 }
 
+_FEATURE_DESCRIPTIONS = {
+    "firing_rate": "Origin firing activity to be inferred or supplied as a kinetic profile.",
+    "fork_speed": "Fork progression speed to be inferred or supplied as a kinetic profile.",
+    "replication_timing": "Replication timing profile along genomic position.",
+    "fork_directionality": "Net fork movement directionality along genomic position.",
+    "replicated_fraction": "Fraction of replicated DNA over time.",
+    "replicated_fraction_xt": "Space-time replicated-fraction field.",
+    "fork_density": "Active fork density over time.",
+    "fork_density_xt": "Space-time active fork-density field.",
+    "right_fork_density": "Right-moving fork density over time.",
+    "left_fork_density": "Left-moving fork density over time.",
+    "right_fork_density_xt": "Space-time right-moving fork-density field.",
+    "left_fork_density_xt": "Space-time left-moving fork-density field.",
+    "origin_efficiency": "Origin efficiency estimated from simulated initiation usage.",
+    "inter_origin_distance": "Distances between neighbouring fired origins.",
+    "completion_time": "Replication completion time across simulated S phases.",
+    "num_origins": "Number of origins fired across simulated S phases.",
+    "initiation_events": "Initiation-event summary generated from simulation.",
+    "coalescence_events": "Coalescence-event summary generated from simulation.",
+    "initiation_events_xt": "Space-time initiation-event field.",
+    "coalescence_events_xt": "Space-time coalescence-event field.",
+}
+
+_PUBLIC_MAPPING_TARGETS = (
+    "firing_rate",
+    "fork_speed",
+    "replication_timing",
+    "fork_directionality",
+)
+
 _ASSUMPTION_ALIASES = {
+    "resolution_x": "resolution",
+    "resolution_x_kb": "resolution",
     "resolution_space": "resolution",
     "bin_size": "resolution",
+    "resolution_kb": "resolution",
+    "dx": "resolution",
+    "resolution_t": "resolution_time",
+    "resolution_t_min": "resolution_time",
+    "dt": "resolution_time",
     "periodic": "perQ",
     "perq": "perQ",
 }
@@ -137,29 +174,30 @@ def _canonical_form(value):
         return None
     text = str(value).strip().lower().replace(" ", "")
     aliases = {
-        "0": "scalar",
-        "scalar": "scalar",
-        "constant": "scalar",
-        "const": "scalar",
-        "i0": "scalar",
-        "v0": "scalar",
-        "x": "x",
-        "spatial": "x",
-        "space": "x",
-        "i(x)": "x",
-        "v(x)": "x",
-        "t": "t",
-        "temporal": "t",
-        "time": "t",
-        "i(t)": "t",
-        "v(t)": "t",
-        "xt": "xt",
-        "x,t": "xt",
-        "(x,t)": "xt",
-        "space-time": "xt",
-        "spacetime": "xt",
-        "i(x,t)": "xt",
-        "v(x,t)": "xt",
+        "0": "constant",
+        "scalar": "constant",
+        "constant": "constant",
+        "const": "constant",
+        "i0": "constant",
+        "v0": "constant",
+        "x": "space",
+        "spatial": "space",
+        "space": "space",
+        "i(x)": "space",
+        "v(x)": "space",
+        "t": "time",
+        "temporal": "time",
+        "time": "time",
+        "i(t)": "time",
+        "v(t)": "time",
+        "xt": "spacetime",
+        "x,t": "spacetime",
+        "(x,t)": "spacetime",
+        "space-time": "spacetime",
+        "space_time": "spacetime",
+        "spacetime": "spacetime",
+        "i(x,t)": "spacetime",
+        "v(x,t)": "spacetime",
     }
     return aliases.get(text, text)
 
@@ -303,6 +341,8 @@ _FORWARD_TIMING_OPTIONS = {
     "neighbourhood_range",
     "perQ",
     "n_bins",
+    "genome_length",
+    "interval_kb",
 }
 
 _TIMING_TO_CONSTANT_FIRING_OPTIONS = {
@@ -433,6 +473,18 @@ class DataTypeMapper:
     @staticmethod
     def canonical(name):
         return _canonical_feature(name)
+
+    def __repr__(self):
+        n_routes = len(self._specs)
+        n_implemented = sum(spec.implemented for spec in self._specs)
+        targets = ", ".join(sorted({spec.target for spec in self._specs}))
+        return (
+            "DNAscape rmap route registry\n"
+            f"  routes: {n_implemented} implemented / {n_routes} registered\n"
+            f"  targets: {targets}\n"
+            "  use rmap.available() for a user-facing table and "
+            "rmap.development() for the full internal registry"
+        )
 
     def register(
         self,
@@ -680,6 +732,187 @@ class DataTypeMapper:
             **kwargs,
         )
 
+    @staticmethod
+    def _join(values):
+        values = tuple(value for value in values if value)
+        return ", ".join(values) if values else "-"
+
+    @staticmethod
+    def _display_assumption_name(name):
+        display_names = {
+            "resolution": "resolution_x",
+            "resolution_time": "resolution_t",
+        }
+        return display_names.get(name, name)
+
+    @classmethod
+    def _join_assumption_names(cls, values):
+        values = tuple(cls._display_assumption_name(value) for value in values if value)
+        return cls._join(values)
+
+    @staticmethod
+    def _unique(values):
+        out = []
+        for value in values:
+            if value and value not in out:
+                out.append(value)
+        return tuple(out)
+
+    @staticmethod
+    def _join_pairs(pairs):
+        pairs = tuple(pairs)
+        if not pairs:
+            return "-"
+        return "; ".join(
+            f"{name}: {'/'.join(str(value) for value in values)}"
+            for name, values in pairs
+        )
+
+    @staticmethod
+    def _join_assumption_values(pairs):
+        pairs = tuple(pairs)
+        if not pairs:
+            return "-"
+        formatted = []
+        for name, values in pairs:
+            forms = []
+            for value in values:
+                form = _canonical_form(value)
+                if form is not None and form not in forms:
+                    forms.append(form)
+            formatted.append(f"{name}: {'/'.join(forms)}")
+        return "; ".join(formatted)
+
+    @classmethod
+    def _assumption_names(cls, specs):
+        omitted = {"verbose", "print_every", "n_bins"}
+        names = []
+        for spec in specs:
+            for name in spec.required_assumptions + spec.optional_assumptions:
+                if name not in omitted and name not in _CANONICAL_FEATURES:
+                    names.append(name)
+            for pairs in (spec.assumption_kinds, spec.assumption_values):
+                for name, _ in pairs:
+                    if name not in omitted and name not in _CANONICAL_FEATURES:
+                        names.append(name)
+        return cls._join_assumption_names(cls._unique(names))
+
+    @classmethod
+    def _required_data(cls, spec):
+        names = list(spec.source)
+        for name in spec.required_assumptions:
+            if name in _CANONICAL_FEATURES:
+                names.append(name)
+        for name, _ in spec.assumption_kinds:
+            if name in _CANONICAL_FEATURES:
+                names.append(name)
+        return cls._unique(names)
+
+    @staticmethod
+    def _target_description(target):
+        return _FEATURE_DESCRIPTIONS.get(target, "Registered DNAscape replication feature.")
+
+    @staticmethod
+    def _table(records, columns):
+        try:
+            import pandas as pd
+        except ImportError:
+            return records
+        return pd.DataFrame.from_records(records, columns=columns)
+
+    def _filtered_specs(self, target=None, source=None, implemented=None):
+        if target is None:
+            target_set = None
+        else:
+            target_names = target if isinstance(target, (tuple, list, set)) else (target,)
+            target_set = {_canonical_feature(name) for name in target_names}
+
+        if source is None:
+            source_set = None
+        else:
+            source_names = source if isinstance(source, (tuple, list, set)) else (source,)
+            source_set = {_canonical_feature(name) for name in source_names}
+
+        specs = []
+        for spec in self._specs:
+            if target_set is not None and spec.target not in target_set:
+                continue
+            if source_set is not None and set(spec.source) != source_set:
+                continue
+            if implemented is not None and spec.implemented != bool(implemented):
+                continue
+            specs.append(spec)
+        return specs
+
+    def _grouped_specs(self, target=None, source=None, implemented=None):
+        groups = {}
+        for spec in self._filtered_specs(target=target, source=source, implemented=implemented):
+            key = (spec.target, self._required_data(spec))
+            groups.setdefault(key, []).append(spec)
+        return tuple(
+            groups[key]
+            for key in sorted(groups, key=lambda item: (item[0], item[1]))
+        )
+
+    def available(self, target=None, source=None, implemented=None):
+        """Return a user-facing table of available mapping inputs.
+
+        By default the table shows the core mapping targets: firing_rate,
+        fork_speed, replication_timing, and fork_directionality. It is grouped
+        by target and conceptual required data, so each data combination
+        appears once even when some data are supplied through assumptions with
+        defaults. Parameters can narrow or expand the catalogue, e.g.
+        ``rmap.available(target="firing_rate")`` or
+        ``rmap.available(target=("replicated_fraction", "fork_density"))``.
+        """
+        target = _PUBLIC_MAPPING_TARGETS if target is None else target
+        columns = ("target", "source (required data)", "assumptions", "target description")
+        records = [
+            {
+                "target": specs[0].target,
+                "source (required data)": self._join(self._required_data(specs[0])),
+                "assumptions": self._assumption_names(specs),
+                "target description": self._target_description(specs[0].target),
+            }
+            for specs in self._grouped_specs(target=target, source=source, implemented=implemented)
+        ]
+        return self._table(records, columns)
+
+    def requirements(self, target=None, source=None, implemented=None):
+        """Return the user-facing data requirements for mapping routes."""
+        return self.available(target=target, source=source, implemented=implemented)
+
+    def development(self, target=None, source=None, implemented=None):
+        """Return the full per-route registry for internal development."""
+        columns = (
+            "target",
+            "required data",
+            "data forms",
+            "required assumptions",
+            "optional assumptions",
+            "assumption forms",
+            "assumption values",
+            "method",
+            "status",
+            "description",
+        )
+        records = [
+            {
+                "target": spec.target,
+                "required data": self._join(spec.source),
+                "data forms": self._join_pairs(spec.source_kinds),
+                "required assumptions": self._join_assumption_names(spec.required_assumptions),
+                "optional assumptions": self._join_assumption_names(spec.optional_assumptions),
+                "assumption forms": self._join_pairs(spec.assumption_kinds),
+                "assumption values": self._join_assumption_values(spec.assumption_values),
+                "method": spec.method,
+                "status": spec.implemented_status(),
+                "description": spec.description,
+            }
+            for spec in self._filtered_specs(target=target, source=source, implemented=implemented)
+        ]
+        return self._table(records, columns)
+
     def describe(self):
         print("Available replication feature mappings:")
         for spec in self._specs:
@@ -723,7 +956,14 @@ rmap.register(
     "replication_timing",
     map_firing_and_speed_to_timing,
     method="firing_and_speed_to_timing_deterministic",
-    optional_assumptions=("resolution", "neighbourhood_range", "perQ", "n_bins"),
+    optional_assumptions=(
+        "resolution",
+        "neighbourhood_range",
+        "perQ",
+        "n_bins",
+        "genome_length",
+        "interval_kb",
+    ),
     source_kinds=(
         ("firing_rate", ("scalar", "x")),
         ("fork_speed", ("scalar", "x")),
@@ -734,7 +974,14 @@ rmap.register_placeholder(
     ("firing_rate", "fork_speed"),
     "replication_timing",
     method="firing_and_variable_speed_to_timing",
-    optional_assumptions=("resolution", "neighbourhood_range", "perQ", "n_bins"),
+    optional_assumptions=(
+        "resolution",
+        "neighbourhood_range",
+        "perQ",
+        "n_bins",
+        "genome_length",
+        "interval_kb",
+    ),
     source_kinds=(
         ("firing_rate", ("scalar", "x", "t", "xt")),
         ("fork_speed", ("t", "xt")),
@@ -764,7 +1011,7 @@ rmap.register(
         ("replication_timing", ("x",)),
         ("fork_speed", ("scalar",)),
     ),
-    assumption_values=(("target_form", ("scalar", "I0", "constant")),),
+    assumption_values=(("target_form", ("constant",)),),
     description="Scalar fit of I0 from timing and constant fork speed.",
 )
 rmap.register(
@@ -787,12 +1034,12 @@ rmap.register(
         "tau",
         "target_form",
     ),
-    default_assumptions={"verbose": True},
+    default_assumptions={"verbose": True, "target_form": "space"},
     source_kinds=(
         ("replication_timing", ("x",)),
         ("fork_speed", ("scalar",)),
     ),
-    assumption_values=(("target_form", (None, "x", "I(x)", "spatial")),),
+    assumption_values=(("target_form", ("space",)),),
     description="Iterative fit of I(x) from timing and constant fork speed.",
 )
 rmap.register_placeholder(
@@ -810,11 +1057,13 @@ rmap.register_placeholder(
         "perQ",
         "target_form",
     ),
+    default_assumptions={"target_form": "space"},
     source_kinds=(
         ("replication_timing", ("x",)),
         ("fork_speed", ("x", "t", "xt")),
     ),
-    description="Fitting firing rate from timing with variable fork speed needs a dedicated method.",
+    assumption_values=(("target_form", ("constant", "space")),),
+    description="Fitting scalar or space-dependent firing rate from timing with variable fork speed needs a dedicated method.",
 )
 rmap.register(
     ("replication_timing", "firing_rate"),
@@ -839,7 +1088,7 @@ rmap.register(
         ("replication_timing", ("x",)),
         ("firing_rate", ("scalar", "x")),
     ),
-    assumption_values=(("target_form", (None, "scalar", "v0", "constant")),),
+    assumption_values=(("target_form", ("constant",)),),
     description="Scalar fit of v0 from timing and firing rate.",
 )
 rmap.register(
@@ -861,12 +1110,12 @@ rmap.register(
         "n_bins",
         "target_form",
     ),
-    default_assumptions={"verbose": True},
+    default_assumptions={"verbose": True, "target_form": "space"},
     source_kinds=(
         ("replication_timing", ("x",)),
         ("firing_rate", ("scalar", "x")),
     ),
-    assumption_values=(("target_form", ("x", "v(x)", "spatial")),),
+    assumption_values=(("target_form", ("space",)),),
     description="Spatial effective fit of v(x) from timing and firing rate.",
 )
 rmap.register(
@@ -899,7 +1148,14 @@ rmap.register(
     map_firing_timing,
     method="firing_to_timing_deterministic",
     required_assumptions=("fork_speed",),
-    optional_assumptions=("resolution", "neighbourhood_range", "perQ", "n_bins"),
+    optional_assumptions=(
+        "resolution",
+        "neighbourhood_range",
+        "perQ",
+        "n_bins",
+        "genome_length",
+        "interval_kb",
+    ),
     default_assumptions={"fork_speed": 1.4},
     source_kinds=(("firing_rate", ("scalar", "x")),),
     assumption_kinds=(("fork_speed", ("scalar", "x")),),
@@ -910,7 +1166,14 @@ rmap.register_placeholder(
     "replication_timing",
     method="firing_to_timing_variable_fork_speed",
     required_assumptions=("fork_speed",),
-    optional_assumptions=("resolution", "neighbourhood_range", "perQ", "n_bins"),
+    optional_assumptions=(
+        "resolution",
+        "neighbourhood_range",
+        "perQ",
+        "n_bins",
+        "genome_length",
+        "interval_kb",
+    ),
     source_kinds=(("firing_rate", ("scalar", "x")),),
     assumption_kinds=(("fork_speed", ("t", "xt")),),
     description="Time-only or space-time fork-speed timing maps need dedicated methods.",
@@ -946,7 +1209,7 @@ rmap.register(
     default_assumptions={"fork_speed": 1.4, "verbose": True},
     source_kinds=(("replication_timing", ("x",)),),
     assumption_kinds=(("fork_speed", ("scalar",)),),
-    assumption_values=(("target_form", ("scalar", "I0", "constant")),),
+    assumption_values=(("target_form", ("constant",)),),
     description="Scalar fit of I0 by optimising the deterministic timing mismatch.",
 )
 rmap.register(
@@ -970,10 +1233,10 @@ rmap.register(
         "tau",
         "target_form",
     ),
-    default_assumptions={"fork_speed": 1.4, "verbose": True},
+    default_assumptions={"fork_speed": 1.4, "verbose": True, "target_form": "space"},
     source_kinds=(("replication_timing", ("x",)),),
     assumption_kinds=(("fork_speed", ("scalar",)),),
-    assumption_values=(("target_form", (None, "x", "I(x)", "spatial")),),
+    assumption_values=(("target_form", ("space",)),),
     description="Iterative fit of a space-dependent firing rate with constant fork speed.",
 )
 rmap.register_placeholder(
@@ -990,10 +1253,13 @@ rmap.register_placeholder(
         "verbose",
         "print_every",
         "perQ",
+        "target_form",
     ),
+    default_assumptions={"target_form": "space"},
     source_kinds=(("replication_timing", ("x",)),),
     assumption_kinds=(("fork_speed", ("x", "t", "xt")),),
-    description="Fitting firing rate from timing with variable fork speed needs a dedicated method.",
+    assumption_values=(("target_form", ("constant", "space")),),
+    description="Fitting scalar or space-dependent firing rate from timing with variable fork speed needs a dedicated method.",
 )
 rmap.register_placeholder(
     ("replication_timing", "fork_speed"),
@@ -1004,7 +1270,7 @@ rmap.register_placeholder(
         ("replication_timing", ("x",)),
         ("fork_speed", ("scalar", "x", "t", "xt")),
     ),
-    assumption_values=(("target_form", ("t", "I(t)", "xt", "I(x,t)")),),
+    assumption_values=(("target_form", ("time", "spacetime")),),
     description="Time-only or space-time firing-rate targets need dedicated methods.",
 )
 rmap.register(
@@ -1118,11 +1384,13 @@ rmap.register_placeholder(
     ("replication_timing", "firing_rate"),
     "fork_speed",
     method="timing_and_firing_to_fork_speed",
-    optional_assumptions=("resolution", "geometry", "perQ"),
+    optional_assumptions=("resolution", "geometry", "perQ", "target_form"),
     source_kinds=(
         ("replication_timing", ("x",)),
         ("firing_rate", ("scalar", "x", "t", "xt")),
     ),
+    default_assumptions={"target_form": "space"},
+    assumption_values=(("target_form", ("constant", "space", "time", "spacetime")),),
     description="Variable fork-speed targets need dedicated optimisation methods.",
 )
 rmap.register_placeholder(
@@ -1130,9 +1398,11 @@ rmap.register_placeholder(
     "fork_speed",
     method="timing_to_fork_speed_with_fixed_firing",
     required_assumptions=("firing_rate",),
-    optional_assumptions=("resolution", "geometry", "perQ"),
+    optional_assumptions=("resolution", "geometry", "perQ", "target_form"),
     source_kinds=(("replication_timing", ("x",)),),
     assumption_kinds=(("firing_rate", ("scalar", "x", "t", "xt")),),
+    default_assumptions={"target_form": "space"},
+    assumption_values=(("target_form", ("constant", "space", "time", "spacetime")),),
     description="Pass firing_rate as an assumption once this fitting route is implemented.",
 )
 

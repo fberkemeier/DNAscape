@@ -26,7 +26,12 @@ _SOURCE_ALIASES = {
 _ASSUMPTION_ALIASES = {
     "bin_size": "resolution",
     "resolution_kb": "resolution",
+    "resolution_x": "resolution_space",
+    "resolution_x_kb": "resolution_space",
     "resolution_space_kb": "resolution_space",
+    "resolution_t": "resolution_time",
+    "resolution_t_min": "resolution_time",
+    "dt": "resolution_time",
     "periodic": "perQ",
     "perq": "perQ",
     "time_stats": "time_statsQ",
@@ -41,7 +46,31 @@ def _normalise_structured_key(name, aliases):
     return aliases.get(key, text)
 
 
-def _resolve_n_bins(firing_rate, fork_speed, n_bins=None):
+def _n_bins_from_interval(resolution_space, genome_length=None, interval_kb=None):
+    if interval_kb is not None:
+        if len(interval_kb) != 2:
+            raise ValueError("interval_kb must be a (start_kb, end_kb) pair.")
+        start_kb, end_kb = map(float, interval_kb)
+        genome_length = end_kb - start_kb
+    if genome_length is None:
+        return None
+    genome_length = float(genome_length)
+    if not np.isfinite(genome_length) or genome_length <= 0:
+        raise ValueError("genome_length must be a finite positive value in kb.")
+    n = int(np.ceil(genome_length / resolution_space))
+    if n <= 0:
+        raise ValueError("genome_length/resolution_x must define at least one bin.")
+    return n
+
+
+def _resolve_n_bins(
+    firing_rate,
+    fork_speed,
+    n_bins=None,
+    resolution_space=1.0,
+    genome_length=None,
+    interval_kb=None,
+):
     """Infer the spatial genome length from spatial or space-time inputs."""
     candidates = []
 
@@ -66,6 +95,13 @@ def _resolve_n_bins(firing_rate, fork_speed, n_bins=None):
 
     add_candidate(firing_rate, "firing_rate")
     add_candidate(fork_speed, "fork_speed")
+    interval_n = _n_bins_from_interval(
+        resolution_space,
+        genome_length=genome_length,
+        interval_kb=interval_kb,
+    )
+    if interval_n is not None:
+        candidates.append(("interval", interval_n))
 
     if n_bins is not None:
         n = int(n_bins)
@@ -84,7 +120,8 @@ def _resolve_n_bins(firing_rate, fork_speed, n_bins=None):
         raise ValueError(f"Spatial field lengths disagree ({detail}).")
     raise ValueError(
         "Cannot infer genome length from scalar or time-only inputs. "
-        "Pass n_bins, or provide at least one spatial profile or space-time field."
+        "Pass n_bins, genome_length, interval_kb, or provide at least one spatial "
+        "profile or space-time field."
     )
 
 
@@ -185,6 +222,8 @@ def simulate_replication(
     fork_speed=1.4,
     resolution_space=1.0,
     resolution_time=1.0,
+    resolution_x=None,
+    resolution_t=None,
     rng=None,
     perQ=False,
     stall_rate=0.0,
@@ -198,6 +237,8 @@ def simulate_replication(
     time_grid=None,
     max_rep_time=1200.0,
     n_bins=None,
+    genome_length=None,
+    interval_kb=None,
     ori_rate=None,
     initiation_rate=None,
 ):
@@ -205,26 +246,38 @@ def simulate_replication(
 
     ``firing_rate`` and ``fork_speed`` may be scalar, spatial ``(n,)``,
     time-only ``(1, T)``, or space-time ``(T, n)`` fields. If neither input
-    contains a spatial axis, pass ``n_bins`` explicitly.
+    contains a spatial axis, pass ``n_bins``, ``genome_length``, or
+    ``interval_kb``.
     """
     rng = np.random.default_rng() if rng is None else rng
     if time_stats_densQ is not None:
         time_stats_xtQ = bool(time_stats_densQ)
+    if resolution_x is not None:
+        resolution_space = resolution_x
+    if resolution_t is not None:
+        resolution_time = resolution_t
 
     resolution_space = float(resolution_space)
     if not np.isfinite(resolution_space) or resolution_space <= 0:
-        raise ValueError("resolution_space must be a finite positive number.")
+        raise ValueError("resolution_x must be a finite positive number.")
 
     resolution_time = float(resolution_time)
     if not np.isfinite(resolution_time) or resolution_time <= 0:
-        raise ValueError("resolution_time must be a finite positive number.")
+        raise ValueError("resolution_t must be a finite positive number.")
 
     firing_rate = _normalise_firing_rate(
         firing_rate=firing_rate,
         ori_rate=ori_rate,
         initiation_rate=initiation_rate,
     )
-    n = _resolve_n_bins(firing_rate, fork_speed, n_bins=n_bins)
+    n = _resolve_n_bins(
+        firing_rate,
+        fork_speed,
+        n_bins=n_bins,
+        resolution_space=resolution_space,
+        genome_length=genome_length,
+        interval_kb=interval_kb,
+    )
 
     I_kind, I_val, TI = _as_rate_field(firing_rate, "firing_rate", n_bins=n)
     v_kind, v_val, Tv = _as_speed_field(fork_speed, "fork_speed", n_bins=n)
@@ -711,6 +764,8 @@ def rsim(
     sim_number=50,
     resolution_space=1.0,
     resolution_time=1.0,
+    resolution_x=None,
+    resolution_t=None,
     perQ=False,
     stall_rate=0.0,
     tau=np.inf,
@@ -728,6 +783,8 @@ def rsim(
     dens_block_n=4096,
     dens_memmap_dir=None,
     n_bins=None,
+    genome_length=None,
+    interval_kb=None,
     ori_rate=None,
     initiation_rate=None,
     geometry=None,
@@ -740,8 +797,8 @@ def rsim(
     ``firing_rate`` is the preferred name for origin-initiation propensity.
     ``ori_rate`` and ``initiation_rate`` are accepted as compatibility aliases.
     Firing rate and fork speed support four field forms: scalar, ``(n,)``,
-    ``(1, T)``, and ``(T, n)``. Use ``n_bins`` when both kinetic inputs lack a
-    spatial axis.
+    ``(1, T)``, and ``(T, n)``. If both kinetic inputs lack a spatial axis,
+    pass ``n_bins``, ``genome_length``, or ``interval_kb``.
 
     For consistency with ``rmap``, kinetic inputs can also be supplied as
     ``source={"firing_rate": ..., "fork_speed": ...}``, while simulation
@@ -753,6 +810,8 @@ def rsim(
         "sim_number": sim_number,
         "resolution_space": resolution_space,
         "resolution_time": resolution_time,
+        "resolution_x": resolution_x,
+        "resolution_t": resolution_t,
         "perQ": perQ,
         "stall_rate": stall_rate,
         "tau": tau,
@@ -770,6 +829,8 @@ def rsim(
         "dens_block_n": dens_block_n,
         "dens_memmap_dir": dens_memmap_dir,
         "n_bins": n_bins,
+        "genome_length": genome_length,
+        "interval_kb": interval_kb,
         "ori_rate": ori_rate,
         "initiation_rate": initiation_rate,
         "geometry": geometry,
@@ -819,6 +880,8 @@ def rsim(
     sim_number = params["sim_number"]
     resolution_space = params["resolution_space"]
     resolution_time = params["resolution_time"]
+    resolution_x = params["resolution_x"]
+    resolution_t = params["resolution_t"]
     perQ = params["perQ"]
     stall_rate = params["stall_rate"]
     tau = params["tau"]
@@ -836,6 +899,8 @@ def rsim(
     dens_block_n = params["dens_block_n"]
     dens_memmap_dir = params["dens_memmap_dir"]
     n_bins = params["n_bins"]
+    genome_length = params["genome_length"]
+    interval_kb = params["interval_kb"]
     ori_rate = params["ori_rate"]
     initiation_rate = params["initiation_rate"]
     geometry = params["geometry"]
@@ -852,6 +917,10 @@ def rsim(
 
     if resolution is not None:
         resolution_space = resolution
+    if resolution_x is not None:
+        resolution_space = resolution_x
+    if resolution_t is not None:
+        resolution_time = resolution_t
 
     if geometry is not None:
         if not isinstance(geometry, str):
@@ -864,7 +933,14 @@ def rsim(
         else:
             raise ValueError("geometry must be 'linear' or 'periodic'.")
 
-    n = _resolve_n_bins(firing_rate, fork_speed, n_bins=n_bins)
+    n = _resolve_n_bins(
+        firing_rate,
+        fork_speed,
+        n_bins=n_bins,
+        resolution_space=resolution_space,
+        genome_length=genome_length,
+        interval_kb=interval_kb,
+    )
 
     sim_number = int(sim_number)
 
@@ -951,6 +1027,8 @@ def rsim(
             fork_speed=fork_speed,
             resolution_space=resolution_space,
             resolution_time=resolution_time,
+            resolution_x=None,
+            resolution_t=None,
             rng=g,
             perQ=perQ,
             stall_rate=stall_rate,
@@ -964,6 +1042,8 @@ def rsim(
             time_grid=time_grid,
             max_rep_time=max_rep_time,
             n_bins=n,
+            genome_length=None,
+            interval_kb=None,
         )
 
         rep_times_per_sim[i - 1, :] = rep_time

@@ -11,6 +11,22 @@ from scipy.ndimage import zoom
 from .io import load_gene_models_from_gtf_gz
 from .utils import match_yaxis_scales
 
+
+def _sampled_axis_end(x):
+    """Return the displayed upper edge for a regularly sampled x-axis."""
+    x = np.asarray(x, dtype=float)
+    x = x[np.isfinite(x)]
+    if x.size < 2:
+        return float(np.nanmax(x)) if x.size else 0.0
+
+    diffs = np.diff(x)
+    if np.all(diffs > 0):
+        step = float(np.median(diffs))
+        if step > 0 and np.allclose(diffs, step):
+            return float(x[-1] + step)
+    return float(np.nanmax(x))
+
+
 def plot_gene_track(
     genes,
     chrom: str,
@@ -443,7 +459,7 @@ def mplotf(marrays, mlabels=None, mx_array=None, mdual_axis=None, mresolution=No
             raise ValueError("First mx_array length must match the length of the first plotted array.")
 
     xk_start = float(np.nanmin(xk))
-    xk_end   = float(np.nanmax(xk))
+    xk_end   = _sampled_axis_end(xk)
 
     gene_start_bp = int(np.floor(xk_start * 1000.0))
     gene_end_bp   = int(np.ceil(xk_end   * 1000.0))

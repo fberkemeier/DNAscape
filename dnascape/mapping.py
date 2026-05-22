@@ -5,6 +5,73 @@ from scipy.integrate import cumulative_trapezoid
 
 from .utils import fast_shift_add, interp_nans, logistic, smoothf
 
+
+def _normalise_resolution_x(resolution=1.0, resolution_x=None):
+    if resolution_x is not None:
+        resolution = resolution_x
+    resolution = float(resolution)
+    if not np.isfinite(resolution) or resolution <= 0:
+        raise ValueError("resolution_x must be a finite positive value.")
+    return resolution
+
+
+def _n_bins_from_interval(resolution_x, genome_length=None, interval_kb=None):
+    if interval_kb is not None:
+        if len(interval_kb) != 2:
+            raise ValueError("interval_kb must be a (start_kb, end_kb) pair.")
+        start_kb, end_kb = map(float, interval_kb)
+        genome_length = end_kb - start_kb
+    if genome_length is None:
+        return None
+    genome_length = float(genome_length)
+    if not np.isfinite(genome_length) or genome_length <= 0:
+        raise ValueError("genome_length must be a finite positive value in kb.")
+    n = int(np.ceil(genome_length / resolution_x))
+    if n <= 0:
+        raise ValueError("genome_length/resolution_x must define at least one bin.")
+    return n
+
+
+def _spatial_length(field):
+    arr = np.asarray(field)
+    if arr.size == 1:
+        return None
+    if arr.ndim == 1:
+        return int(arr.size)
+    if arr.ndim == 2:
+        if arr.shape[0] == 1 and arr.shape[1] > 1:
+            return None
+        if arr.shape[1] == 1 and arr.shape[0] > 1:
+            return int(arr.shape[0])
+        return int(arr.shape[1])
+    return None
+
+
+def _resolve_n_bins_from_fields(*fields, n_bins=None, resolution_x=1.0, genome_length=None, interval_kb=None):
+    candidates = [length for length in (_spatial_length(field) for field in fields) if length is not None]
+    interval_n = _n_bins_from_interval(
+        resolution_x,
+        genome_length=genome_length,
+        interval_kb=interval_kb,
+    )
+    if interval_n is not None:
+        candidates.append(interval_n)
+
+    if n_bins is not None:
+        n = int(n_bins)
+        if n <= 0:
+            raise ValueError("n_bins must be a positive integer.")
+        if any(candidate != n for candidate in candidates):
+            raise ValueError("n_bins is inconsistent with supplied spatial fields or interval.")
+        return n
+
+    unique = set(candidates)
+    if len(unique) == 1:
+        return unique.pop()
+    if len(unique) > 1:
+        raise ValueError("Spatial fields or interval imply inconsistent numbers of bins.")
+    return None
+
 def bwmap(chrom, cell_line='Rat', bin_size=10_000,
           bins=["S1","S2","S3","S4"],
           min_total=1e-9, fill_nans=True):
@@ -57,24 +124,39 @@ def map_firing_timing(
     firing_rate,
     fork_speed=1.4,
     resolution=1,
+    resolution_x=None,
     neighbourhood_range=2000,
     perQ=False,
     n_bins=None,
+    genome_length=None,
+    interval_kb=None,
 ):
     """Map firing rate to replication timing.
 
-    ``firing_rate`` may be a spatial profile ``I(x)`` or a scalar ``I0``. For
-    scalar firing, pass ``n_bins`` so the constant rate can be expanded over a
-    genomic interval. ``fork_speed`` may be a scalar ``v0`` or a spatial
-    effective speed profile ``v(x)`` with the same length as the firing profile.
+    ``firing_rate`` may be a spatial profile ``I(x)`` or a scalar ``I0``.
+    Scalar inputs are expanded using the length inferred from any spatial input,
+    or from ``n_bins``, ``genome_length`` or ``interval_kb``. ``fork_speed`` may
+    be a scalar ``v0`` or a spatial effective speed profile ``v(x)`` with the
+    same length as the firing profile.
     """
+    resolution = _normalise_resolution_x(resolution, resolution_x=resolution_x)
+    n_bins = _resolve_n_bins_from_fields(
+        firing_rate,
+        fork_speed,
+        n_bins=n_bins,
+        resolution_x=resolution,
+        genome_length=genome_length,
+        interval_kb=interval_kb,
+    )
+
     x = np.asarray(firing_rate, dtype=float)
     if x.size == 1:
         if n_bins is None:
-            raise ValueError("n_bins is required when firing_rate is scalar.")
-        n_bins = int(n_bins)
-        if n_bins <= 0:
-            raise ValueError("n_bins must be a positive integer.")
+            raise ValueError(
+                "Cannot infer the number of genomic bins from scalar inputs. "
+                "Provide a spatial firing_rate/fork_speed profile, or pass "
+                "n_bins, genome_length, or interval_kb."
+            )
         value = float(x.reshape(-1)[0])
         x = np.full(n_bins, value, dtype=float)
     elif x.ndim == 1:
@@ -90,10 +172,6 @@ def map_firing_timing(
 
     if np.any(~np.isfinite(x)) or np.any(x < 0):
         raise ValueError("firing_rate must contain finite values >= 0.")
-
-    resolution = float(resolution)
-    if not np.isfinite(resolution) or resolution <= 0:
-        raise ValueError("resolution must be a finite positive value.")
 
     n = x.size
     fork_speed_arr = np.asarray(fork_speed, dtype=float)
@@ -150,10 +228,12 @@ def map_timing_directionality(
     timing,
     fork_speed=1.4,
     resolution=1.0,
+    resolution_x=None,
     T0=None,
     smoothw=None,
     perQ=False,
 ):
+    resolution = _normalise_resolution_x(resolution, resolution_x=resolution_x)
     T = np.asarray(timing, dtype=float)
     if T0 is None:
         T0 = T[0] if T.size else 0.0
@@ -183,10 +263,12 @@ def map_directionality_timing(
     rfd,
     fork_speed=1.4,
     resolution=1.0,
+    resolution_x=None,
     T0=0.0,
     smoothw=None,
     perQ=False,
 ):
+    resolution = _normalise_resolution_x(resolution, resolution_x=resolution_x)
     rfd = np.asarray(rfd, dtype=float)
 
     # optional smoothing of RFD before integration

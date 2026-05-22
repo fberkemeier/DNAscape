@@ -8,7 +8,7 @@ import numpy as np
 
 from .constants import mapt
 from .io import _resolve_data_path, savecsv
-from .mapping import map_firing_timing
+from .mapping import _normalise_resolution_x, map_firing_timing
 from .simulation import rsim
 from .utils import etaferr, mean_squared_error, smoothf
 
@@ -146,6 +146,7 @@ def map_timing_firing(
     stall_rate=0.,
     tau=np.inf,
     resolution=1.0,
+    resolution_x=None,
     neighbourhood_range=2000,
     fit_step=0.6,
     maxiter=10,
@@ -163,6 +164,7 @@ def map_timing_firing(
     ``fork_speed`` is the canonical argument name. ``fork_speeds`` is accepted
     as an older compatibility alias.
     """
+    resolution = _normalise_resolution_x(resolution, resolution_x=resolution_x)
 
     mse_list = []
 
@@ -305,6 +307,7 @@ def map_timing_constant_firing(
     observed_timing,
     fork_speed=1.4,
     resolution=1.0,
+    resolution_x=None,
     neighbourhood_range=2000,
     fit_step=0.6,
     maxiter=10,
@@ -316,6 +319,7 @@ def map_timing_constant_firing(
     print_every=1,
 ):
     """Infer one constant firing rate from timing with constant fork speed."""
+    resolution = _normalise_resolution_x(resolution, resolution_x=resolution_x)
     T = np.asarray(observed_timing, dtype=float)
     if T.ndim != 1:
         raise ValueError("observed_timing must be a one-dimensional array.")
@@ -330,10 +334,6 @@ def map_timing_constant_firing(
     fork_speed = float(fork_speed_arr.reshape(-1)[0])
     if not np.isfinite(fork_speed) or fork_speed <= 0:
         raise ValueError("fork_speed must be a finite positive scalar.")
-
-    resolution = float(resolution)
-    if not np.isfinite(resolution) or resolution <= 0:
-        raise ValueError("resolution must be a finite positive value.")
 
     lm = int(1000 / resolution)
     if perQ:
@@ -402,6 +402,7 @@ def map_timing_constant_firing(
 def map_timing_firing_constant_speed(
     source,
     resolution=1.0,
+    resolution_x=None,
     neighbourhood_range=2000,
     fit_step=0.6,
     maxiter=10,
@@ -413,6 +414,7 @@ def map_timing_firing_constant_speed(
     print_every=1,
 ):
     """Infer one constant fork speed from timing and firing rate."""
+    resolution = _normalise_resolution_x(resolution, resolution_x=resolution_x)
     if not isinstance(source, dict):
         raise ValueError("source must contain replication_timing and firing_rate.")
     if "replication_timing" not in source or "firing_rate" not in source:
@@ -425,10 +427,6 @@ def map_timing_firing_constant_speed(
         raise ValueError("replication_timing must contain at least one value.")
     if n_bins is not None and int(n_bins) != T.size:
         raise ValueError("n_bins must match the length of replication_timing.")
-
-    resolution = float(resolution)
-    if not np.isfinite(resolution) or resolution <= 0:
-        raise ValueError("resolution must be a finite positive value.")
 
     speed = float(initial_fork_speed)
     if not np.isfinite(speed) or speed <= 0:
@@ -490,6 +488,7 @@ def map_timing_firing_constant_speed(
 def map_timing_firing_spatial_speed(
     source,
     resolution=1.0,
+    resolution_x=None,
     neighbourhood_range=2000,
     fit_step=0.4,
     maxiter=10,
@@ -502,6 +501,7 @@ def map_timing_firing_spatial_speed(
     print_every=1,
 ):
     """Infer a spatial effective fork-speed profile from timing and firing."""
+    resolution = _normalise_resolution_x(resolution, resolution_x=resolution_x)
     if not isinstance(source, dict):
         raise ValueError("source must contain replication_timing and firing_rate.")
     if "replication_timing" not in source or "firing_rate" not in source:
@@ -527,10 +527,6 @@ def map_timing_firing_spatial_speed(
         firing_rate = float(firing_rate.reshape(-1)[0])
         if not np.isfinite(firing_rate) or firing_rate < 0:
             raise ValueError("firing_rate scalar must be finite and >= 0.")
-
-    resolution = float(resolution)
-    if not np.isfinite(resolution) or resolution <= 0:
-        raise ValueError("resolution must be a finite positive value.")
 
     initial = np.asarray(initial_fork_speed, dtype=float)
     if initial.size == 1:
@@ -565,6 +561,25 @@ def map_timing_firing_spatial_speed(
     else:
         crop = slice(lm, -lm) if 2 * lm < T.size else slice(None)
 
+    def fill_nonperiodic_edges(profile):
+        if perQ or crop == slice(None):
+            return profile
+        start = 0 if crop.start is None else int(crop.start)
+        stop = T.size if crop.stop is None else int(crop.stop)
+        if stop < 0:
+            stop = T.size + stop
+        start = max(0, min(start, T.size))
+        stop = max(0, min(stop, T.size))
+        if stop <= start:
+            return profile
+        if start > 0:
+            profile[:start] = profile[start]
+        if stop < T.size:
+            profile[stop:] = profile[stop - 1]
+        return profile
+
+    speed = fill_nonperiodic_edges(speed)
+
     maxiter = int(maxiter)
     print_every = max(1, int(print_every))
     start_time = time.time()
@@ -597,6 +612,7 @@ def map_timing_firing_spatial_speed(
         if smoothw is not None:
             speed = smoothf(speed, smoothw)
         speed = np.clip(speed, low, high)
+        speed = fill_nonperiodic_edges(speed)
 
         if verbose and (it % print_every == 0 or it == maxiter):
             etaferr(it=it, maxiter=maxiter, start_time=start_time, err=mse)
@@ -621,6 +637,7 @@ def rfit(
     chr_number=1,
     fork_speed=1.4,
     resolution=1.0,
+    resolution_x=None,
     saveQ=False,
     return_info=False,
     source_feature=None,
@@ -685,6 +702,8 @@ def rfit(
         )
     if "fork_speed" not in merged_assumptions and "fork_speed" not in source_features:
         merged_assumptions["fork_speed"] = fork_speed
+    if resolution_x is not None:
+        resolution = resolution_x
     if "resolution" not in merged_assumptions:
         merged_assumptions["resolution"] = resolution
 

@@ -41,6 +41,8 @@ If you already manage Python environments another way, run the final two `pip in
 
 For a guided first pass, we recommend starting with `examples/0_quickstart.ipynb`. The minimal Python workflow below shows the same basic logic in script form.
 
+DNAscape treats arrays as kinetic profiles on regular grids. Use `resolution_x` for the genomic bin size in kb and `resolution_t` for the simulation time step in minutes. If all kinetic inputs are constants, provide a genomic interval or length, for example `interval_kb=(0, 60000)`, so DNAscape can determine how many spatial bins to simulate or map.
+
 First import the core mapping and simulation functions.
 
 ```python
@@ -68,7 +70,7 @@ Map initiation activity to an expected replication-timing profile.
 timing = map_firing_timing(
     firing_rate,
     fork_speed=1.4,
-    resolution=1.0,
+    resolution_x=1.0,
 )
 ```
 
@@ -79,7 +81,7 @@ Map the timing profile to fork directionality.
 fork_directionality = map_timing_directionality(
     timing,
     fork_speed=1.4,
-    resolution=1.0,
+    resolution_x=1.0,
 )
 ```
 
@@ -90,7 +92,7 @@ Fit or infer initiation activity back from the timing profile under the same ass
 recovered_firing_rate = map_timing_firing(
     timing,
     fork_speed=1.4,
-    resolution=1.0,
+    resolution_x=1.0,
     maxiter=8,
     verbose=False,
 )
@@ -107,7 +109,8 @@ sim = rsim(
     },
     assumptions={
         "sim_number": 50,
-        "resolution": 1.0,
+        "resolution_x": 1.0,
+        "resolution_t": 1.0,
         "seed": 1,
         "verbose": False,
     },
