@@ -4,6 +4,7 @@ import numpy as np
 import matplotlib.pyplot as plt
 import seaborn as sns
 import matplotlib.ticker as mticker
+from matplotlib.colors import LogNorm
 from scipy import stats
 from scipy.stats import gaussian_kde, mode
 from scipy.ndimage import zoom
@@ -186,17 +187,24 @@ def plotf(*arrays, labels=None, x_array=None, dual_axis=False, resolution=1, reg
           invyQ=False, figsize=(10, 4), xlims=(None, None), ylims=(None, None), title='',
           xtitle='Index', ytitle='Value', x_show=True, y_show=True, logyQ=False, logxQ=False,
           scale_matchQ=False, saveQ=False, sname='test', ext='pdf', layout_rect=(0.12, 0.15, 0.98, 0.95),
-          fig=None, ax=None, showQ=True, return_handles=False):
+          fig=None, ax=None, showQ=True, return_handles=False, time_array=None, resolution_t=1,
+          cmap='viridis', colorbarQ=True, logzQ=False):
 
     arrays = [np.asarray(a) for a in arrays]
     n = len(arrays)
+    heatmapQ = (
+        n == 1
+        and arrays[0].ndim == 2
+        and not (arrays[0].shape[1] == 1 and arrays[0].shape[0] > 1)
+        and not dual_axis
+    )
 
     show_labels = not (labels is None and n == 1)
 
     if scale_matchQ and not (dual_axis and n == 2):
         raise ValueError("scale_matchQ=True only makes sense for dual_axis with exactly two arrays.")
 
-    if x_array is not None:
+    if x_array is not None and not heatmapQ:
         # Allow either:
         # 1) one shared x-array for all y-arrays, or
         # 2) one x-array per y-array.
@@ -221,7 +229,7 @@ def plotf(*arrays, labels=None, x_array=None, dual_axis=False, resolution=1, reg
                 raise ValueError(f"x_array[{i}] must be 1D")
             if len(xi) != len(yi):
                 raise ValueError(f"x_array[{i}] and arrays[{i}] must have same length")
-    else:
+    elif not heatmapQ:
         xs = [np.arange(len(arr)) * resolution for arr in arrays]
 
     def draw_region(ax_):
@@ -258,6 +266,116 @@ def plotf(*arrays, labels=None, x_array=None, dual_axis=False, resolution=1, reg
                              right=layout_rect[2], top=layout_rect[3])
 
     created_axes = ax is None
+
+    if heatmapQ:
+        arr = arrays[0].astype(float, copy=False)
+
+        if x_array is None:
+            if arr.shape[0] == 1:
+                data = arr.reshape(-1, 1)
+                x_values = np.array([0.0])
+            else:
+                data = arr
+                x_values = np.arange(arr.shape[1], dtype=float) * float(resolution)
+        else:
+            x_values = np.asarray(x_array, dtype=float)
+            if x_values.ndim != 1 or x_values.size == 0:
+                raise ValueError("x_array must be a non-empty one-dimensional array for heatmaps.")
+            if arr.shape[1] == x_values.size:
+                data = arr
+            elif arr.shape[0] == 1:
+                data = np.repeat(arr.reshape(-1, 1), x_values.size, axis=1)
+            else:
+                raise ValueError(
+                    "For heatmaps, arrays must have shape (time, positions), or shape (1, time) "
+                    "when a chromosome-position x_array is supplied."
+                )
+
+        if time_array is None:
+            time_values = np.arange(data.shape[0], dtype=float) * float(resolution_t)
+        else:
+            time_values = np.asarray(time_array, dtype=float)
+            if time_values.ndim != 1 or time_values.size != data.shape[0]:
+                raise ValueError("time_array must be one-dimensional and match the heatmap time axis.")
+
+        if ax is None:
+            if fig is None:
+                fig = plt.figure(figsize=figsize)
+            ax = fig.add_subplot(111)
+        else:
+            if fig is None:
+                fig = ax.figure
+
+        x_start = float(np.nanmin(x_values))
+        x_end = _sampled_axis_end(x_values)
+        t_start = float(np.nanmin(time_values))
+        t_end = _sampled_axis_end(time_values)
+        image_data = data
+        norm = None
+        if logzQ:
+            finite_positive = data[np.isfinite(data) & (data > 0)]
+            if finite_positive.size == 0:
+                raise ValueError("logzQ=True requires at least one positive heatmap value.")
+            vmin = float(np.nanmin(finite_positive))
+            vmax = float(np.nanmax(finite_positive))
+            if vmax <= vmin:
+                vmax = vmin * 10.0
+            image_data = np.ma.masked_where(~np.isfinite(data) | (data <= 0), data)
+            norm = LogNorm(vmin=vmin, vmax=vmax)
+
+        im = ax.imshow(
+            image_data,
+            aspect='auto',
+            origin='lower',
+            interpolation='nearest',
+            extent=(x_start, x_end, t_start, t_end),
+            cmap=cmap,
+            norm=norm,
+        )
+        draw_region(ax)
+
+        ax.set_xlabel(xtitle)
+        ax.set_ylabel(ytitle)
+        ax.set_xlim(
+            x_start if xlims[0] is None else xlims[0],
+            x_end if xlims[1] is None else xlims[1],
+        )
+        ax.set_ylim(
+            t_start if ylims[0] is None else ylims[0],
+            t_end if ylims[1] is None else ylims[1],
+        )
+        if invyQ:
+            ax.invert_yaxis()
+
+        label = None
+        if labels is not None:
+            label = labels[0] if isinstance(labels, (list, tuple)) and labels else labels
+        if colorbarQ:
+            cax = ax.inset_axes([1.01, 0.0, 0.018, 1.0], transform=ax.transAxes)
+            cbar = fig.colorbar(im, cax=cax)
+            if label:
+                cbar.set_label(label)
+
+        if not x_show:
+            ax.set_xlabel("")
+            ax.tick_params(axis="x", which="both", bottom=False, labelbottom=False)
+        if not y_show:
+            ax.set_ylabel("")
+            ax.tick_params(axis="y", which="both", left=False, labelleft=False)
+
+        _no_offset(ax)
+        ax.set_title(title)
+
+        if created_axes:
+            _apply_layout(fig)
+            if saveQ:
+                fig.savefig(f"figures/plot_{sname}.{ext}", bbox_inches="tight")
+            if showQ:
+                plt.show()
+
+        if return_handles:
+            return fig, ax
+        return None
 
     if n == 2 and dual_axis:
         if ax is None:
@@ -432,6 +550,7 @@ def plotf(*arrays, labels=None, x_array=None, dual_axis=False, resolution=1, reg
 def mplotf(marrays, mlabels=None, mx_array=None, mdual_axis=None, mresolution=None, mregion_high=None, mrname=None,
            minvyQ=None, mfigsize=None, mxlims=None, mylims=None, mxtitle=None, mytitle=None,
            my_show=None, mlogyQ=None, mscale_matchQ=None, msaveQ=None, msname=None, mext=None,
+           mtime_array=None, mresolution_t=None, mcmap=None, mcolorbarQ=None, mlogzQ=None,
            showgeneQ=False, gtf_gz_path="data/other/gencode/gencode.v49.annotation.gtf.gz", gene_chrom=1,
            gene_denseQ=True, gene_show_names=True, gene_show_direction=False,
            figsize=(10, 4), layout_rect=(0.12, 0.15, 0.98, 0.95), hspace=0.15):
@@ -444,18 +563,28 @@ def mplotf(marrays, mlabels=None, mx_array=None, mdual_axis=None, mresolution=No
             return v[i] if i < len(v) else default
         return v if v is not None else default
 
-    def first_len():
-        g0 = marrays[0]
-        return len(g0[0]) if isinstance(g0, (list, tuple)) else len(g0)
+    def first_array(g):
+        return np.asarray(g[0] if isinstance(g, (list, tuple)) else g)
 
-    n0 = first_len()
+    def spatial_len(g):
+        arr = first_array(g)
+        if arr.ndim == 2:
+            if arr.shape[0] == 1 and arr.shape[1] > 1:
+                return None
+            if arr.shape[1] == 1 and arr.shape[0] > 1:
+                return arr.shape[0]
+            return arr.shape[1]
+        return len(arr)
+
     x0_in = at(mx_array, 0, None)
     if x0_in is None:
+        n0 = spatial_len(marrays[0]) or 1
         res0 = at(mresolution, 0, 1)
         xk = np.arange(n0, dtype=float) * float(res0)  # kb
     else:
         xk = np.asarray(x0_in, float)
-        if xk.size != n0:
+        n0 = spatial_len(marrays[0])
+        if n0 is not None and xk.size != n0:
             raise ValueError("First mx_array length must match the length of the first plotted array.")
 
     xk_start = float(np.nanmin(xk))
@@ -539,7 +668,12 @@ def mplotf(marrays, mlabels=None, mx_array=None, mdual_axis=None, mresolution=No
               layout_rect=layout_rect,
               fig=fig,
               ax=ax,
-              showQ=False)
+              showQ=False,
+              time_array=at(mtime_array, i, None),
+              resolution_t=at(mresolution_t, i, 1),
+              cmap=at(mcmap, i, 'viridis'),
+              colorbarQ=at(mcolorbarQ, i, True),
+              logzQ=at(mlogzQ, i, False))
 
     axs[-1].set_xlim(xk_start, xk_end)
 

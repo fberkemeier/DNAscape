@@ -10,6 +10,11 @@ from .fitting import (
     map_timing_firing,
     map_timing_firing_constant_speed,
     map_timing_firing_spatial_speed,
+    map_timing_firing_spacetime_speed,
+    map_timing_firing_spacetime,
+    map_timing_firing_temporal_speed,
+    map_timing_firing_time,
+    map_timing_joint_spacetime_kinetics,
 )
 from .mapping import map_directionality_timing, map_firing_timing, map_timing_directionality
 from .simulation import rsim
@@ -35,6 +40,13 @@ _FEATURE_ALIASES = {
     "fork_speeds": "fork_speed",
     "ori_rate": "firing_rate",
     "origin_rate": "firing_rate",
+    "kinetics": "kinetic_fields",
+    "replication_kinetics": "kinetic_fields",
+    "kinetic_profile": "kinetic_fields",
+    "kinetic_profiles": "kinetic_fields",
+    "firing_and_fork_speed": "kinetic_fields",
+    "firing_rate_and_fork_speed": "kinetic_fields",
+    "initiation_and_fork_speed": "kinetic_fields",
     "eff": "origin_efficiency",
     "efficiency": "origin_efficiency",
     "iod": "inter_origin_distance",
@@ -52,6 +64,7 @@ _FEATURE_ALIASES = {
 _CANONICAL_FEATURES = {
     "firing_rate",
     "fork_speed",
+    "kinetic_fields",
     "replication_timing",
     "fork_directionality",
     "replicated_fraction",
@@ -75,6 +88,7 @@ _CANONICAL_FEATURES = {
 _FEATURE_DESCRIPTIONS = {
     "firing_rate": "Origin firing activity to be inferred or supplied as a kinetic profile.",
     "fork_speed": "Fork progression speed to be inferred or supplied as a kinetic profile.",
+    "kinetic_fields": "Jointly fitted firing-rate and fork-speed fields.",
     "replication_timing": "Replication timing profile along genomic position.",
     "fork_directionality": "Net fork movement directionality along genomic position.",
     "replicated_fraction": "Fraction of replicated DNA over time.",
@@ -98,6 +112,7 @@ _FEATURE_DESCRIPTIONS = {
 _PUBLIC_MAPPING_TARGETS = (
     "firing_rate",
     "fork_speed",
+    "kinetic_fields",
     "replication_timing",
     "fork_directionality",
 )
@@ -112,6 +127,14 @@ _ASSUMPTION_ALIASES = {
     "resolution_t": "resolution_time",
     "resolution_t_min": "resolution_time",
     "dt": "resolution_time",
+    "x_fit_step": "space_fit_step",
+    "x_maxiter": "space_maxiter",
+    "time_fit_step": "temporal_fit_step",
+    "time_maxiter": "temporal_maxiter",
+    "time_sim_number": "temporal_sim_number",
+    "xt_fit_step": "spacetime_fit_step",
+    "xt_maxiter": "spacetime_maxiter",
+    "xt_sim_number": "spacetime_sim_number",
     "periodic": "perQ",
     "perq": "perQ",
 }
@@ -366,11 +389,35 @@ _TIMING_TO_SPATIAL_FIRING_OPTIONS = {
     "sim_number",
     "err_threshold",
     "deviation_threshold",
+    "space_fit_step",
+    "space_maxiter",
     "verbose",
     "print_every",
     "perQ",
     "stall_rate",
     "tau",
+}
+
+_TIMING_TO_GENERAL_FIRING_OPTIONS = _TIMING_TO_SPATIAL_FIRING_OPTIONS | {
+    "resolution_time",
+    "time_grid",
+    "T0",
+    "temporal_smoothw",
+    "space_fit_step",
+    "space_maxiter",
+    "temporal_fit_step",
+    "temporal_maxiter",
+    "temporal_sim_number",
+    "spacetime_fit_step",
+    "spacetime_space_fit_step",
+    "spacetime_time_fit_step",
+    "spacetime_maxiter",
+    "spacetime_sim_number",
+    "refine_ratio_bounds",
+    "refine_edge_kb",
+    "refine_seed",
+    "refine_verbose",
+    "floor",
 }
 
 _TIMING_TO_CONSTANT_SPEED_OPTIONS = {
@@ -391,6 +438,8 @@ _TIMING_TO_SPATIAL_SPEED_OPTIONS = {
     "neighbourhood_range",
     "fit_step",
     "maxiter",
+    "space_fit_step",
+    "space_maxiter",
     "speed_bounds",
     "initial_fork_speed",
     "smoothw",
@@ -398,6 +447,56 @@ _TIMING_TO_SPATIAL_SPEED_OPTIONS = {
     "print_every",
     "perQ",
     "n_bins",
+}
+
+_TIMING_TO_GENERAL_SPEED_OPTIONS = _TIMING_TO_SPATIAL_SPEED_OPTIONS | {
+    "resolution_time",
+    "time_grid",
+    "T0",
+    "temporal_smoothw",
+    "temporal_fit_step",
+    "temporal_maxiter",
+    "temporal_sim_number",
+    "spacetime_fit_step",
+    "spacetime_space_fit_step",
+    "spacetime_time_fit_step",
+    "spacetime_maxiter",
+    "spacetime_sim_number",
+    "refine_ratio_bounds",
+    "refine_edge_kb",
+    "refine_seed",
+    "refine_verbose",
+}
+
+_TIMING_TO_JOINT_KINETICS_OPTIONS = {
+    "resolution",
+    "resolution_time",
+    "time_grid",
+    "T0",
+    "initial_firing_rate",
+    "initial_fork_speed",
+    "initial_kinetics",
+    "target_form",
+    "space_init_fit_step",
+    "space_init_maxiter",
+    "space_init_sim_number",
+    "joint_maxiter",
+    "joint_sim_number",
+    "firing_space_fit_step",
+    "firing_time_fit_step",
+    "speed_space_fit_step",
+    "speed_time_fit_step",
+    "firing_bounds",
+    "speed_bounds",
+    "firing_floor",
+    "refine_ratio_bounds",
+    "refine_edge_kb",
+    "refine_seed",
+    "spatial_smoothw",
+    "temporal_smoothw",
+    "perQ",
+    "verbose",
+    "print_every",
 }
 
 _DIRECTIONALITY_OPTIONS = {
@@ -436,6 +535,24 @@ def map_timing_and_speed_to_firing(source, **kwargs):
     )
 
 
+def map_timing_and_speed_to_general_firing(source, **kwargs):
+    target_form = _canonical_form(kwargs.get("target_form", "space"))
+    options = _options(kwargs, _TIMING_TO_GENERAL_FIRING_OPTIONS)
+    if target_form == "time":
+        return map_timing_firing_time(
+            source["replication_timing"],
+            fork_speed=source["fork_speed"],
+            **options,
+        )
+    if target_form == "spacetime":
+        return map_timing_firing_spacetime(
+            source["replication_timing"],
+            fork_speed=source["fork_speed"],
+            **options,
+        )
+    raise ValueError("target_form must be 'time' or 'spacetime' for this route.")
+
+
 def map_timing_and_speed_to_directionality(source, **kwargs):
     return map_timing_directionality(
         source["replication_timing"],
@@ -456,6 +573,23 @@ def map_timing_and_firing_to_spatial_speed(source, **kwargs):
     return map_timing_firing_spatial_speed(
         source,
         **_options(kwargs, _TIMING_TO_SPATIAL_SPEED_OPTIONS),
+    )
+
+
+def map_timing_and_firing_to_general_speed(source, **kwargs):
+    target_form = _canonical_form(kwargs.get("target_form", "space"))
+    options = _options(kwargs, _TIMING_TO_GENERAL_SPEED_OPTIONS)
+    if target_form == "time":
+        return map_timing_firing_temporal_speed(source, **options)
+    if target_form == "spacetime":
+        return map_timing_firing_spacetime_speed(source, **options)
+    raise ValueError("target_form must be 'time' or 'spacetime' for this route.")
+
+
+def map_timing_to_kinetic_fields(timing, **kwargs):
+    return map_timing_joint_spacetime_kinetics(
+        timing,
+        **_options(kwargs, _TIMING_TO_JOINT_KINETICS_OPTIONS),
     )
 
 
@@ -858,10 +992,11 @@ class DataTypeMapper:
         """Return a user-facing table of available mapping inputs.
 
         By default the table shows the core mapping targets: firing_rate,
-        fork_speed, replication_timing, and fork_directionality. It is grouped
-        by target and conceptual required data, so each data combination
-        appears once even when some data are supplied through assumptions with
-        defaults. Parameters can narrow or expand the catalogue, e.g.
+        fork_speed, kinetic_fields, replication_timing, and
+        fork_directionality. It is grouped by target and conceptual required
+        data, so each data combination appears once even when some data are
+        supplied through assumptions with defaults. Parameters can narrow or
+        expand the catalogue, e.g.
         ``rmap.available(target="firing_rate")`` or
         ``rmap.available(target=("replicated_fraction", "fork_density"))``.
         """
@@ -1027,6 +1162,8 @@ rmap.register(
         "sim_number",
         "err_threshold",
         "deviation_threshold",
+        "space_fit_step",
+        "space_maxiter",
         "verbose",
         "print_every",
         "perQ",
@@ -1101,6 +1238,8 @@ rmap.register(
         "neighbourhood_range",
         "fit_step",
         "maxiter",
+        "space_fit_step",
+        "space_maxiter",
         "speed_bounds",
         "initial_fork_speed",
         "smoothw",
@@ -1117,6 +1256,88 @@ rmap.register(
     ),
     assumption_values=(("target_form", ("space",)),),
     description="Spatial effective fit of v(x) from timing and firing rate.",
+)
+rmap.register(
+    ("replication_timing", "firing_rate"),
+    "fork_speed",
+    map_timing_and_firing_to_general_speed,
+    method="timing_and_firing_to_time_fork_speed",
+    optional_assumptions=(
+        "resolution",
+        "resolution_time",
+        "neighbourhood_range",
+        "fit_step",
+        "maxiter",
+        "space_fit_step",
+        "space_maxiter",
+        "speed_bounds",
+        "initial_fork_speed",
+        "smoothw",
+        "temporal_smoothw",
+        "temporal_fit_step",
+        "temporal_maxiter",
+        "temporal_sim_number",
+        "refine_ratio_bounds",
+        "refine_edge_kb",
+        "refine_seed",
+        "refine_verbose",
+        "verbose",
+        "print_every",
+        "perQ",
+        "n_bins",
+        "target_form",
+        "time_grid",
+        "T0",
+    ),
+    default_assumptions={"verbose": True, "target_form": "time"},
+    source_kinds=(
+        ("replication_timing", ("x",)),
+        ("firing_rate", ("x",)),
+    ),
+    assumption_values=(("target_form", ("time",)),),
+    description="Time-only effective fit of v(t) from timing and spatial firing rate.",
+)
+rmap.register(
+    ("replication_timing", "firing_rate"),
+    "fork_speed",
+    map_timing_and_firing_to_general_speed,
+    method="timing_and_firing_to_spacetime_fork_speed",
+    optional_assumptions=(
+        "resolution",
+        "resolution_time",
+        "neighbourhood_range",
+        "fit_step",
+        "maxiter",
+        "space_fit_step",
+        "space_maxiter",
+        "speed_bounds",
+        "initial_fork_speed",
+        "smoothw",
+        "temporal_smoothw",
+        "spacetime_fit_step",
+        "spacetime_space_fit_step",
+        "spacetime_time_fit_step",
+        "spacetime_maxiter",
+        "spacetime_sim_number",
+        "refine_ratio_bounds",
+        "refine_edge_kb",
+        "refine_seed",
+        "refine_verbose",
+        "verbose",
+        "print_every",
+        "perQ",
+        "n_bins",
+        "target_form",
+        "time_grid",
+        "T0",
+    ),
+    default_assumptions={"verbose": True, "target_form": "spacetime"},
+    source_kinds=(
+        ("replication_timing", ("x",)),
+        ("firing_rate", ("xt",)),
+    ),
+    assumption_values=(("target_form", ("spacetime",)),),
+    description="Space-time effective fit of v(x,t) from timing and space-time firing rate.",
 )
 rmap.register(
     ("replication_timing", "fork_speed"),
@@ -1226,6 +1447,8 @@ rmap.register(
         "sim_number",
         "err_threshold",
         "deviation_threshold",
+        "space_fit_step",
+        "space_maxiter",
         "verbose",
         "print_every",
         "perQ",
@@ -1261,17 +1484,131 @@ rmap.register_placeholder(
     assumption_values=(("target_form", ("constant", "space")),),
     description="Fitting scalar or space-dependent firing rate from timing with variable fork speed needs a dedicated method.",
 )
-rmap.register_placeholder(
+rmap.register(
     ("replication_timing", "fork_speed"),
     "firing_rate",
-    method="timing_and_speed_to_general_firing_rate",
-    optional_assumptions=("resolution", "geometry", "verbose", "print_every", "perQ", "target_form"),
+    map_timing_and_speed_to_general_firing,
+    method="timing_and_speed_to_time_firing_rate",
+    optional_assumptions=(
+        "resolution",
+        "resolution_time",
+        "neighbourhood_range",
+        "fit_step",
+        "maxiter",
+        "sim_number",
+        "err_threshold",
+        "deviation_threshold",
+        "space_fit_step",
+        "space_maxiter",
+        "verbose",
+        "print_every",
+        "perQ",
+        "stall_rate",
+        "tau",
+        "target_form",
+        "time_grid",
+        "T0",
+        "temporal_smoothw",
+        "temporal_fit_step",
+        "temporal_maxiter",
+        "temporal_sim_number",
+        "refine_ratio_bounds",
+        "refine_edge_kb",
+        "refine_seed",
+        "refine_verbose",
+        "floor",
+    ),
+    default_assumptions={"verbose": True, "target_form": "time"},
     source_kinds=(
         ("replication_timing", ("x",)),
-        ("fork_speed", ("scalar", "x", "t", "xt")),
+        ("fork_speed", ("scalar",)),
     ),
-    assumption_values=(("target_form", ("time", "spacetime")),),
-    description="Time-only or space-time firing-rate targets need dedicated methods.",
+    assumption_values=(("target_form", ("time",)),),
+    description="Time-only firing-rate target lifted from the fitted spatial firing profile.",
+)
+rmap.register(
+    ("replication_timing", "fork_speed"),
+    "firing_rate",
+    map_timing_and_speed_to_general_firing,
+    method="timing_and_speed_to_spacetime_firing_rate",
+    optional_assumptions=(
+        "resolution",
+        "resolution_time",
+        "neighbourhood_range",
+        "fit_step",
+        "maxiter",
+        "sim_number",
+        "err_threshold",
+        "deviation_threshold",
+        "space_fit_step",
+        "space_maxiter",
+        "verbose",
+        "print_every",
+        "perQ",
+        "stall_rate",
+        "tau",
+        "target_form",
+        "time_grid",
+        "T0",
+        "temporal_smoothw",
+        "spacetime_fit_step",
+        "spacetime_space_fit_step",
+        "spacetime_time_fit_step",
+        "spacetime_maxiter",
+        "spacetime_sim_number",
+        "refine_ratio_bounds",
+        "refine_edge_kb",
+        "refine_seed",
+        "refine_verbose",
+        "floor",
+    ),
+    default_assumptions={"verbose": True, "target_form": "spacetime"},
+    source_kinds=(
+        ("replication_timing", ("x",)),
+        ("fork_speed", ("scalar",)),
+    ),
+    assumption_values=(("target_form", ("spacetime",)),),
+    description="Space-time firing-rate target lifted from the fitted spatial firing profile.",
+)
+rmap.register(
+    "replication_timing",
+    "kinetic_fields",
+    map_timing_to_kinetic_fields,
+    method="timing_to_joint_spacetime_kinetic_fields",
+    optional_assumptions=(
+        "resolution",
+        "resolution_time",
+        "time_grid",
+        "T0",
+        "initial_firing_rate",
+        "initial_fork_speed",
+        "initial_kinetics",
+        "target_form",
+        "space_init_fit_step",
+        "space_init_maxiter",
+        "space_init_sim_number",
+        "joint_maxiter",
+        "joint_sim_number",
+        "firing_space_fit_step",
+        "firing_time_fit_step",
+        "speed_space_fit_step",
+        "speed_time_fit_step",
+        "firing_bounds",
+        "speed_bounds",
+        "firing_floor",
+        "refine_ratio_bounds",
+        "refine_edge_kb",
+        "refine_seed",
+        "spatial_smoothw",
+        "temporal_smoothw",
+        "verbose",
+        "print_every",
+        "perQ",
+    ),
+    default_assumptions={"verbose": True, "target_form": "spacetime"},
+    source_kinds=(("replication_timing", ("x",)),),
+    assumption_values=(("target_form", ("spacetime",)),),
+    description="Simultaneous effective fit of I(x,t) and v(x,t) from replication timing.",
 )
 rmap.register(
     "replication_timing",
@@ -1378,31 +1715,5 @@ rmap.register(
     source_kinds=(("firing_rate", ("scalar", "x", "t", "xt")),),
     assumption_kinds=(("fork_speed", ("scalar", "x", "t", "xt")),),
     description="Simulation-derived total fork-density field generated with rsim.",
-)
-
-rmap.register_placeholder(
-    ("replication_timing", "firing_rate"),
-    "fork_speed",
-    method="timing_and_firing_to_fork_speed",
-    optional_assumptions=("resolution", "geometry", "perQ", "target_form"),
-    source_kinds=(
-        ("replication_timing", ("x",)),
-        ("firing_rate", ("scalar", "x", "t", "xt")),
-    ),
-    default_assumptions={"target_form": "space"},
-    assumption_values=(("target_form", ("constant", "space", "time", "spacetime")),),
-    description="Variable fork-speed targets need dedicated optimisation methods.",
-)
-rmap.register_placeholder(
-    "replication_timing",
-    "fork_speed",
-    method="timing_to_fork_speed_with_fixed_firing",
-    required_assumptions=("firing_rate",),
-    optional_assumptions=("resolution", "geometry", "perQ", "target_form"),
-    source_kinds=(("replication_timing", ("x",)),),
-    assumption_kinds=(("firing_rate", ("scalar", "x", "t", "xt")),),
-    default_assumptions={"target_form": "space"},
-    assumption_values=(("target_form", ("constant", "space", "time", "spacetime")),),
-    description="Pass firing_rate as an assumption once this fitting route is implemented.",
 )
 
