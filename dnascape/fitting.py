@@ -226,6 +226,8 @@ def map_timing_firing(
         perQ=perQ,
     )
     mse = mean_squared_error(T[crop], y[crop])
+    best_x = np.asarray(x, dtype=float).copy()
+    best_mse = mse
 
     if stall_rate > 0. or variable_fork_speed:
         maxiter0 = 0
@@ -245,6 +247,9 @@ def map_timing_firing(
             perQ=perQ
         )
         mse = mean_squared_error(T[crop], y[crop])
+        if mse < best_mse:
+            best_mse = mse
+            best_x = np.asarray(x, dtype=float).copy()
 
         if verbose and (it % print_every == 0 or it == maxiter0):
             etaferr(it=it, maxiter=maxiter0, start_time=start_time, err=mse)
@@ -271,6 +276,8 @@ def map_timing_firing(
     
         hist_mse = []
         T_pred = None
+        best_rates = rates.copy()
+        best_mse = np.inf
         start_time = time.time()
     
         for k in range(iterations):
@@ -286,20 +293,25 @@ def map_timing_firing(
             )
             T_pred = simres['replication_timing']
     
+            mse = T_pred - T_target
+            mse = float(np.mean(mse**2))
+            hist_mse.append(mse)
+            if mse < best_mse:
+                best_mse = mse
+                best_rates = rates.copy()
+
             eps = 1e-12
             ratio = (T_pred + eps) / (T_target + eps)
             rates *= np.power(ratio, alpha)
             np.clip(rates, rate_min, rate_max, out=rates)
     
-            mse = T_pred - T_target
-            mse = float(np.mean(mse**2))
-            hist_mse.append(mse)
-    
             if verbose and ((k + 1) % print_every == 0 or (k + 1) == iterations):
                 etaferr(it=k+1, maxiter=iterations, start_time=start_time, err=mse)
                 mse_list.append(mse)
 
-        x = rates
+        x = best_rates
+    else:
+        x = best_x
 
     #np.savetxt(f"data/fit_error/mse_chr{chr_number}.txt", mse_list, fmt="%.6f")
 
@@ -461,8 +473,8 @@ def _refine_temporal_firing(
     resolution_time,
     T0=None,
     temporal_fit_step=0.35,
-    temporal_maxiter=0,
-    temporal_sim_number=25,
+    temporal_maxiter=4,
+    temporal_sim_number=50,
     refine_ratio_bounds=(0.25, 4.0),
     refine_edge_kb=1000,
     refine_seed=None,
@@ -489,6 +501,8 @@ def _refine_temporal_firing(
         raise ValueError("temporal_fit_step must be finite and >= 0.")
 
     verbose = bool(refine_verbose) if refine_verbose is not None else False
+    best_rates = rates.copy()
+    best_err = np.inf
     start_time = time.time()
     for it in range(1, maxiter + 1):
         seed = None if refine_seed is None else int(refine_seed) + it - 1
@@ -506,6 +520,10 @@ def _refine_temporal_firing(
         valid = crop & np.isfinite(T) & np.isfinite(T_pred) & (T > 0) & (T_pred > 0)
         if not np.any(valid):
             break
+        err = mean_squared_error(T[valid], T_pred[valid])
+        if err < best_err:
+            best_err = err
+            best_rates = rates.copy()
         ratio = np.ones(n, dtype=float)
         ratio[valid] = np.clip(T_pred[valid] / T[valid], low, high)
         updates = _mean_ratio_by_bin(ratio, bins, n_time, valid)
@@ -513,10 +531,9 @@ def _refine_temporal_firing(
         np.maximum(rates, floor, out=rates)
 
         if verbose:
-            err = mean_squared_error(T[valid], T_pred[valid])
             etaferr(it=it, maxiter=maxiter, start_time=start_time, err=err)
 
-    return rates
+    return best_rates
 
 
 def _refine_spacetime_firing(
@@ -529,8 +546,8 @@ def _refine_spacetime_firing(
     spacetime_fit_step=0.25,
     spacetime_space_fit_step=None,
     spacetime_time_fit_step=None,
-    spacetime_maxiter=0,
-    spacetime_sim_number=25,
+    spacetime_maxiter=4,
+    spacetime_sim_number=50,
     refine_ratio_bounds=(0.25, 4.0),
     refine_edge_kb=1000,
     refine_seed=None,
@@ -564,6 +581,8 @@ def _refine_spacetime_firing(
         raise ValueError("spacetime_time_fit_step must be finite and >= 0.")
 
     verbose = bool(refine_verbose) if refine_verbose is not None else False
+    best_rates = rates.copy()
+    best_err = np.inf
     start_time = time.time()
     for it in range(1, maxiter + 1):
         seed = None if refine_seed is None else int(refine_seed) + it - 1
@@ -581,6 +600,10 @@ def _refine_spacetime_firing(
         valid = crop & np.isfinite(T) & np.isfinite(T_pred) & (T > 0) & (T_pred > 0)
         if not np.any(valid):
             break
+        err = mean_squared_error(T[valid], T_pred[valid])
+        if err < best_err:
+            best_err = err
+            best_rates = rates.copy()
         ratio = np.ones(n, dtype=float)
         ratio[valid] = np.clip(T_pred[valid] / T[valid], low, high)
         rates[:, valid] *= ratio[valid][None, :] ** space_step
@@ -589,10 +612,9 @@ def _refine_spacetime_firing(
         np.maximum(rates, floor, out=rates)
 
         if verbose:
-            err = mean_squared_error(T[valid], T_pred[valid])
             etaferr(it=it, maxiter=maxiter, start_time=start_time, err=err)
 
-    return rates
+    return best_rates
 
 
 def map_timing_firing_time(
@@ -607,8 +629,8 @@ def map_timing_firing_time(
     space_fit_step=None,
     space_maxiter=None,
     temporal_fit_step=0.35,
-    temporal_maxiter=0,
-    temporal_sim_number=25,
+    temporal_maxiter=4,
+    temporal_sim_number=50,
     refine_ratio_bounds=(0.25, 4.0),
     refine_edge_kb=1000,
     refine_seed=None,
@@ -677,8 +699,8 @@ def map_timing_firing_spacetime(
     spacetime_fit_step=0.25,
     spacetime_space_fit_step=None,
     spacetime_time_fit_step=None,
-    spacetime_maxiter=0,
-    spacetime_sim_number=25,
+    spacetime_maxiter=4,
+    spacetime_sim_number=50,
     refine_ratio_bounds=(0.25, 4.0),
     refine_edge_kb=1000,
     refine_seed=None,
@@ -805,6 +827,8 @@ def map_timing_constant_firing(
 
     maxiter = int(maxiter)
     print_every = max(1, int(print_every))
+    best_rate = rate
+    best_mse = np.inf
     start_time = time.time()
 
     for it in range(1, maxiter + 1):
@@ -827,6 +851,9 @@ def map_timing_constant_firing(
         if not np.any(ok):
             break
         mse = mean_squared_error(observed[ok], predicted[ok])
+        if mse < best_mse:
+            best_mse = mse
+            best_rate = rate
         ratio = float(np.nanmedian(predicted[ok] / observed[ok]))
         if not np.isfinite(ratio) or ratio <= 0:
             break
@@ -835,7 +862,7 @@ def map_timing_constant_firing(
         if verbose and (it % print_every == 0 or it == maxiter):
             etaferr(it=it, maxiter=maxiter, start_time=start_time, err=mse)
 
-    return rate
+    return best_rate
 
 
 def map_timing_firing_constant_speed(
@@ -891,6 +918,8 @@ def map_timing_firing_constant_speed(
     firing_rate = source["firing_rate"]
     maxiter = int(maxiter)
     print_every = max(1, int(print_every))
+    best_speed = speed
+    best_mse = np.inf
     start_time = time.time()
 
     for it in range(1, maxiter + 1):
@@ -913,6 +942,9 @@ def map_timing_firing_constant_speed(
         if not np.any(ok):
             break
         mse = mean_squared_error(observed[ok], predicted[ok])
+        if mse < best_mse:
+            best_mse = mse
+            best_speed = speed
         ratio = float(np.nanmedian(predicted[ok] / observed[ok]))
         if not np.isfinite(ratio) or ratio <= 0:
             break
@@ -921,7 +953,7 @@ def map_timing_firing_constant_speed(
         if verbose and (it % print_every == 0 or it == maxiter):
             etaferr(it=it, maxiter=maxiter, start_time=start_time, err=mse)
 
-    return speed
+    return best_speed
 
 
 def map_timing_firing_spatial_speed(
@@ -930,12 +962,12 @@ def map_timing_firing_spatial_speed(
     resolution_x=None,
     neighbourhood_range=2000,
     fit_step=0.4,
-    maxiter=10,
+    maxiter=40,
     space_fit_step=None,
     space_maxiter=None,
     speed_bounds=None,
     initial_fork_speed=1.4,
-    smoothw=50,
+    smoothw=100,
     perQ=False,
     n_bins=None,
     verbose=True,
@@ -1027,6 +1059,8 @@ def map_timing_firing_spatial_speed(
 
     maxiter = int(maxiter)
     print_every = max(1, int(print_every))
+    best_speed = speed.copy()
+    best_mse = np.inf
     start_time = time.time()
 
     for it in range(1, maxiter + 1):
@@ -1050,6 +1084,9 @@ def map_timing_firing_spatial_speed(
             break
 
         mse = mean_squared_error(observed[ok_crop], predicted_crop[ok_crop])
+        if mse < best_mse:
+            best_mse = mse
+            best_speed = speed.copy()
         ratio = np.ones(T.size, dtype=float)
         ratio_view = ratio[crop]
         ratio_view[ok_crop] = predicted_crop[ok_crop] / observed[ok_crop]
@@ -1062,7 +1099,7 @@ def map_timing_firing_spatial_speed(
         if verbose and (it % print_every == 0 or it == maxiter):
             etaferr(it=it, maxiter=maxiter, start_time=start_time, err=mse)
 
-    return speed
+    return best_speed
 
 
 def _validate_timing_and_firing_for_speed(source):
@@ -1153,8 +1190,8 @@ def _refine_temporal_speed(
     resolution_time,
     T0=None,
     temporal_fit_step=0.35,
-    temporal_maxiter=0,
-    temporal_sim_number=25,
+    temporal_maxiter=4,
+    temporal_sim_number=50,
     speed_bounds=None,
     refine_ratio_bounds=(0.25, 4.0),
     refine_edge_kb=1000,
@@ -1182,6 +1219,8 @@ def _refine_temporal_speed(
         raise ValueError("temporal_fit_step must be finite and >= 0.")
 
     verbose = bool(refine_verbose) if refine_verbose is not None else False
+    best_speed = speed.copy()
+    best_err = np.inf
     start_time = time.time()
     for it in range(1, maxiter + 1):
         seed = None if refine_seed is None else int(refine_seed) + it - 1
@@ -1199,6 +1238,10 @@ def _refine_temporal_speed(
         valid = crop & np.isfinite(T) & np.isfinite(T_pred) & (T > 0) & (T_pred > 0)
         if not np.any(valid):
             break
+        err = mean_squared_error(T[valid], T_pred[valid])
+        if err < best_err:
+            best_err = err
+            best_speed = speed.copy()
         ratio = np.ones(n, dtype=float)
         ratio[valid] = np.clip(T_pred[valid] / T[valid], low_ratio, high_ratio)
         updates = _mean_ratio_by_bin(ratio, bins, n_time, valid)
@@ -1206,10 +1249,9 @@ def _refine_temporal_speed(
         np.clip(speed, low_speed, high_speed, out=speed)
 
         if verbose:
-            err = mean_squared_error(T[valid], T_pred[valid])
             etaferr(it=it, maxiter=maxiter, start_time=start_time, err=err)
 
-    return speed
+    return best_speed
 
 
 def _refine_spacetime_speed(
@@ -1222,8 +1264,8 @@ def _refine_spacetime_speed(
     spacetime_fit_step=0.25,
     spacetime_space_fit_step=None,
     spacetime_time_fit_step=None,
-    spacetime_maxiter=0,
-    spacetime_sim_number=25,
+    spacetime_maxiter=4,
+    spacetime_sim_number=50,
     speed_bounds=None,
     refine_ratio_bounds=(0.25, 4.0),
     refine_edge_kb=1000,
@@ -1258,6 +1300,8 @@ def _refine_spacetime_speed(
         raise ValueError("spacetime_time_fit_step must be finite and >= 0.")
 
     verbose = bool(refine_verbose) if refine_verbose is not None else False
+    best_speed = speed.copy()
+    best_err = np.inf
     start_time = time.time()
     for it in range(1, maxiter + 1):
         seed = None if refine_seed is None else int(refine_seed) + it - 1
@@ -1275,6 +1319,10 @@ def _refine_spacetime_speed(
         valid = crop & np.isfinite(T) & np.isfinite(T_pred) & (T > 0) & (T_pred > 0)
         if not np.any(valid):
             break
+        err = mean_squared_error(T[valid], T_pred[valid])
+        if err < best_err:
+            best_err = err
+            best_speed = speed.copy()
         ratio = np.ones(n, dtype=float)
         ratio[valid] = np.clip(T_pred[valid] / T[valid], low_ratio, high_ratio)
         speed[:, valid] *= ratio[valid][None, :] ** space_step
@@ -1283,10 +1331,9 @@ def _refine_spacetime_speed(
         np.clip(speed, low_speed, high_speed, out=speed)
 
         if verbose:
-            err = mean_squared_error(T[valid], T_pred[valid])
             etaferr(it=it, maxiter=maxiter, start_time=start_time, err=err)
 
-    return speed
+    return best_speed
 
 
 def map_timing_firing_temporal_speed(
@@ -1299,15 +1346,15 @@ def map_timing_firing_temporal_speed(
     temporal_smoothw=None,
     neighbourhood_range=2000,
     fit_step=0.4,
-    maxiter=10,
+    maxiter=40,
     space_fit_step=None,
     space_maxiter=None,
     temporal_fit_step=0.35,
-    temporal_maxiter=0,
-    temporal_sim_number=25,
+    temporal_maxiter=4,
+    temporal_sim_number=50,
     speed_bounds=None,
     initial_fork_speed=1.4,
-    smoothw=50,
+    smoothw=100,
     perQ=False,
     n_bins=None,
     refine_ratio_bounds=(0.25, 4.0),
@@ -1380,17 +1427,17 @@ def map_timing_firing_spacetime_speed(
     temporal_smoothw=None,
     neighbourhood_range=2000,
     fit_step=0.4,
-    maxiter=10,
+    maxiter=40,
     space_fit_step=None,
     space_maxiter=None,
     spacetime_fit_step=0.25,
     spacetime_space_fit_step=None,
     spacetime_time_fit_step=None,
-    spacetime_maxiter=0,
-    spacetime_sim_number=25,
+    spacetime_maxiter=4,
+    spacetime_sim_number=50,
     speed_bounds=None,
     initial_fork_speed=1.4,
-    smoothw=50,
+    smoothw=100,
     perQ=False,
     n_bins=None,
     refine_ratio_bounds=(0.25, 4.0),
@@ -1546,14 +1593,14 @@ def map_timing_joint_spacetime_kinetics(
     initial_kinetics=None,
     target_form="spacetime",
     space_init_fit_step=0.6,
-    space_init_maxiter=4,
+    space_init_maxiter=10,
     space_init_sim_number=100,
-    joint_maxiter=4,
-    joint_sim_number=25,
-    firing_space_fit_step=0.12,
-    firing_time_fit_step=0.08,
-    speed_space_fit_step=0.12,
-    speed_time_fit_step=0.08,
+    joint_maxiter=6,
+    joint_sim_number=40,
+    firing_space_fit_step=0.15,
+    firing_time_fit_step=0.1,
+    speed_space_fit_step=0.15,
+    speed_time_fit_step=0.1,
     firing_bounds=None,
     speed_bounds=None,
     firing_floor=1e-12,
@@ -1712,6 +1759,10 @@ def map_timing_joint_spacetime_kinetics(
     )
     fit_history = []
     T_pred = None
+    best_firing_rate = firing_rate.copy()
+    best_fork_speed = fork_speed.copy()
+    best_timing_fit = None
+    best_err = np.inf
     print_every = max(1, int(print_every))
     start_time = time.time()
 
@@ -1732,6 +1783,14 @@ def map_timing_joint_spacetime_kinetics(
         if not np.any(valid):
             break
 
+        err = mean_squared_error(T[valid], T_pred[valid])
+        fit_history.append(err)
+        if err < best_err:
+            best_err = err
+            best_firing_rate = firing_rate.copy()
+            best_fork_speed = fork_speed.copy()
+            best_timing_fit = T_pred.copy()
+
         ratio = np.ones(n_positions, dtype=float)
         ratio[valid] = np.clip(T_pred[valid] / T[valid], low_ratio, high_ratio)
         spatial_update = _maybe_smooth_positive(ratio, spatial_smoothw, 1e-12)
@@ -1746,15 +1805,13 @@ def map_timing_joint_spacetime_kinetics(
         np.clip(firing_rate, low_firing, high_firing, out=firing_rate)
         np.clip(fork_speed, low_speed, high_speed, out=fork_speed)
 
-        err = mean_squared_error(T[valid], T_pred[valid])
-        fit_history.append(err)
         if verbose and (it % print_every == 0 or it == maxiter):
             etaferr(it=it, maxiter=maxiter, start_time=start_time, err=err)
 
     return {
-        "firing_rate": firing_rate,
-        "fork_speed": fork_speed,
-        "replication_timing_fit": T_pred,
+        "firing_rate": best_firing_rate,
+        "fork_speed": best_fork_speed,
+        "replication_timing_fit": best_timing_fit,
         "fit_history": np.asarray(fit_history, dtype=float),
         "time_grid": time_axis,
     }

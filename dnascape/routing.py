@@ -477,6 +477,7 @@ _TIMING_TO_JOINT_KINETICS_OPTIONS = {
     "initial_fork_speed",
     "initial_kinetics",
     "target_form",
+    "maxiter",
     "space_init_fit_step",
     "space_init_maxiter",
     "space_init_sim_number",
@@ -511,6 +512,28 @@ def _options(kwargs, names):
     return {key: value for key, value in kwargs.items() if key in names}
 
 
+def _apply_global_maxiter(options, target_form=None, shape_specific=()):
+    """Let maxiter act as the broad fitting-effort knob for routed fits."""
+    if "maxiter" not in options:
+        return options
+
+    out = dict(options)
+    maxiter = out["maxiter"]
+    form = _canonical_form(target_form if target_form is not None else out.get("target_form"))
+
+    if form == "time":
+        out.setdefault("space_maxiter", maxiter)
+        out.setdefault("temporal_maxiter", maxiter)
+    elif form == "spacetime":
+        out.setdefault("space_maxiter", maxiter)
+        out.setdefault("spacetime_maxiter", maxiter)
+
+    for name in shape_specific:
+        out.setdefault(name, maxiter)
+
+    return out
+
+
 def map_firing_and_speed_to_timing(source, **kwargs):
     return map_firing_timing(
         source["firing_rate"],
@@ -538,6 +561,7 @@ def map_timing_and_speed_to_firing(source, **kwargs):
 def map_timing_and_speed_to_general_firing(source, **kwargs):
     target_form = _canonical_form(kwargs.get("target_form", "space"))
     options = _options(kwargs, _TIMING_TO_GENERAL_FIRING_OPTIONS)
+    options = _apply_global_maxiter(options, target_form=target_form)
     if target_form == "time":
         return map_timing_firing_time(
             source["replication_timing"],
@@ -579,6 +603,7 @@ def map_timing_and_firing_to_spatial_speed(source, **kwargs):
 def map_timing_and_firing_to_general_speed(source, **kwargs):
     target_form = _canonical_form(kwargs.get("target_form", "space"))
     options = _options(kwargs, _TIMING_TO_GENERAL_SPEED_OPTIONS)
+    options = _apply_global_maxiter(options, target_form=target_form)
     if target_form == "time":
         return map_timing_firing_temporal_speed(source, **options)
     if target_form == "spacetime":
@@ -587,9 +612,14 @@ def map_timing_and_firing_to_general_speed(source, **kwargs):
 
 
 def map_timing_to_kinetic_fields(timing, **kwargs):
+    options = _options(kwargs, _TIMING_TO_JOINT_KINETICS_OPTIONS)
+    if "maxiter" in options:
+        maxiter = options.pop("maxiter")
+        options.setdefault("space_init_maxiter", maxiter)
+        options.setdefault("joint_maxiter", maxiter)
     return map_timing_joint_spacetime_kinetics(
         timing,
-        **_options(kwargs, _TIMING_TO_JOINT_KINETICS_OPTIONS),
+        **options,
     )
 
 
@@ -1584,6 +1614,7 @@ rmap.register(
         "initial_fork_speed",
         "initial_kinetics",
         "target_form",
+        "maxiter",
         "space_init_fit_step",
         "space_init_maxiter",
         "space_init_sim_number",
