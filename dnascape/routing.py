@@ -10,6 +10,10 @@ from .fitting import (
     map_timing_firing,
     map_timing_firing_constant_speed,
     map_timing_firing_spatial_speed,
+    map_timing_firing_constant_speed_simulated,
+    map_timing_firing_spatial_speed_simulated,
+    map_timing_firing_temporal_speed_simulated,
+    map_timing_firing_spacetime_speed_simulated,
     map_timing_firing_spacetime_speed,
     map_timing_firing_spacetime,
     map_timing_firing_temporal_speed,
@@ -86,11 +90,11 @@ _CANONICAL_FEATURES = {
 }
 
 _FEATURE_DESCRIPTIONS = {
-    "firing_rate": "Origin firing activity to be inferred or supplied as a kinetic profile.",
-    "fork_speed": "Fork progression speed to be inferred or supplied as a kinetic profile.",
+    "firing_rate": "Origin firing activity to infer or supply.",
+    "fork_speed": "Fork progression speed to infer or supply.",
     "kinetic_fields": "Jointly fitted firing-rate and fork-speed fields.",
-    "replication_timing": "Replication timing profile along genomic position.",
-    "fork_directionality": "Net fork movement directionality along genomic position.",
+    "replication_timing": "Replication timing along genomic position.",
+    "fork_directionality": "Net fork movement directionality along position.",
     "replicated_fraction": "Fraction of replicated DNA over time.",
     "replicated_fraction_xt": "Space-time replicated-fraction field.",
     "fork_density": "Active fork density over time.",
@@ -109,6 +113,140 @@ _FEATURE_DESCRIPTIONS = {
     "coalescence_events_xt": "Space-time coalescence-event field.",
 }
 
+_ASSUMPTION_DESCRIPTIONS = {
+    "target_form": "Requested output form: scalar (constant in space and time), array (space-dependent), transposed array (time-dependent), or matrix (space-time dependent).",
+    "resolution": "Spatial resolution along the genome, in kb.",
+    "resolution_time": "Temporal resolution, in minutes.",
+    "time_grid": "Explicit time axis to use for time-dependent fields.",
+    "T0": "Reference start time used when converting timing values to a relative time axis.",
+    "neighbourhood_range": "Spatial range, in kb, used by deterministic neighbourhood mappings.",
+    "fit_step": "Global multiplicative update size. For x,t targets it sets fit_step_x and fit_step_t unless those are supplied explicitly.",
+    "maxiter": "Global iteration count. For x,t targets it overrides maxiter_x and maxiter_t, setting both to the same value.",
+    "sim_number": "Global number of stochastic simulations used by the active fitting phase when a route calls rsim.",
+    "err_threshold": "Lower numerical floor for fitted firing-rate values.",
+    "deviation_threshold": "Tolerance below which a spatial firing update can be left unchanged.",
+    "rate_bounds": "Allowed lower and upper bounds for scalar firing-rate fitting.",
+    "speed_bounds": "Allowed lower and upper bounds for fork-speed fitting.",
+    "initial_fork_speed": "Starting fork-speed value or profile for fork-speed fitting.",
+    "initial_firing_rate": "Starting firing-rate value or field for joint kinetic fitting.",
+    "initial_kinetics": "Dictionary with initial firing_rate and/or fork_speed fields.",
+    "space_fit_step": "Spatial x-phase update size; overrides fit_step for x-only initialization or refinement.",
+    "space_maxiter": "Number of x-phase iterations; for mixed x,t fits it contributes to the mixed iteration count.",
+    "temporal_smoothw": "Optional smoothing window for t-dependent profiles.",
+    "temporal_fit_step": "Time-profile t-phase update size; controls t targets and factorized x,t targets.",
+    "temporal_maxiter": "Number of t-phase refinement iterations; for mixed x,t fits it contributes to the mixed iteration count.",
+    "temporal_sim_number": "Number of simulations per t-phase refinement iteration.",
+    "spacetime_fit_step": "Mixed local x,t update size; used only when spacetime_update='mixed'.",
+    "spacetime_space_fit_step": "Legacy internal x component for factorized x,t corrections.",
+    "spacetime_time_fit_step": "Legacy internal t component for factorized x,t corrections.",
+    "spacetime_sim_number": "Number of simulations per mixed x,t refinement iteration.",
+    "spacetime_update": "Space-time update rule: 'factorized' separates x and t phases; 'mixed' fits local x,t corrections.",
+    "spacetime_order": "Order of factorized x,t phases: 'space_then_time' by default, or 'time_then_space'.",
+    "spacetime_kernel_t": "Temporal kernel width, in time bins, for mixed x,t corrections.",
+    "refine_ratio_bounds": "Bounds applied to timing-ratio updates during simulation refinement.",
+    "refine_edge_kb": "Non-periodic chromosome edge width, in kb, ignored during refinement.",
+    "refine_seed": "Seed offset for simulation-refined fitting routes.",
+    "refine_verbose": "Whether refinement sub-loops print ETA and fitting error.",
+    "floor": "Lower numerical floor for fitted firing-rate fields.",
+    "smoothw": "Spatial smoothing window for fitted profiles.",
+    "stall_rate": "Fork-stalling rate used when fitting with stochastic simulation.",
+    "tau": "Fork-stall lifetime parameter used by stochastic simulation.",
+    "perQ": "Whether the genome is treated as periodic/circular.",
+    "genome_length": "Genome or interval length, in kb, used to infer n_bins.",
+    "interval_kb": "Genomic interval, in kb, used to infer or select a region.",
+    "space_init_fit_step": "x-phase update size for the initial joint-kinetics firing fit.",
+    "space_init_maxiter": "Iterations for the initial joint-kinetics x fit.",
+    "space_init_sim_number": "Simulation count for the initial joint-kinetics x fit.",
+    "joint_maxiter": "Iterations for simultaneous firing-rate and fork-speed fitting.",
+    "joint_sim_number": "Simulations per joint fitting iteration.",
+    "firing_space_fit_step": "x update size for firing rate in joint fitting.",
+    "firing_time_fit_step": "t update size for firing rate in joint fitting.",
+    "speed_space_fit_step": "x update size for fork speed in joint fitting.",
+    "speed_time_fit_step": "t update size for fork speed in joint fitting.",
+    "firing_bounds": "Allowed lower and upper bounds for firing-rate fields.",
+    "firing_floor": "Lower numerical floor for joint-fitted firing-rate fields.",
+    "spatial_smoothw": "x smoothing window used in joint kinetic fitting.",
+}
+
+_ASSUMPTION_ORDER = (
+    "target_form",
+    "resolution",
+    "resolution_time",
+    "time_grid",
+    "T0",
+    "interval_kb",
+    "genome_length",
+    "perQ",
+    "neighbourhood_range",
+    "initial_firing_rate",
+    "initial_fork_speed",
+    "initial_kinetics",
+    "rate_bounds",
+    "speed_bounds",
+    "firing_bounds",
+    "fit_step",
+    "maxiter",
+    "sim_number",
+    "space_fit_step",
+    "space_maxiter",
+    "temporal_fit_step",
+    "temporal_maxiter",
+    "temporal_sim_number",
+    "temporal_smoothw",
+    "spacetime_fit_step",
+    "spacetime_sim_number",
+    "spacetime_update",
+    "spacetime_order",
+    "spacetime_kernel_t",
+    "space_init_fit_step",
+    "space_init_maxiter",
+    "space_init_sim_number",
+    "joint_maxiter",
+    "joint_sim_number",
+    "firing_space_fit_step",
+    "firing_time_fit_step",
+    "speed_space_fit_step",
+    "speed_time_fit_step",
+    "err_threshold",
+    "deviation_threshold",
+    "floor",
+    "firing_floor",
+    "smoothw",
+    "spatial_smoothw",
+    "refine_ratio_bounds",
+    "refine_edge_kb",
+    "refine_seed",
+    "refine_verbose",
+    "stall_rate",
+    "tau",
+)
+
+_ASSUMPTION_FALLBACK_DEFAULTS = {
+    "temporal_fit_step": 0.35,
+    "temporal_maxiter": 4,
+    "temporal_sim_number": 100,
+    "spacetime_fit_step": 0.25,
+    "spacetime_sim_number": 100,
+    "spacetime_update": "factorized",
+    "spacetime_order": "space_then_time",
+    "spacetime_kernel_t": 1.0,
+    "sim_number": 100,
+    "space_init_sim_number": 100,
+    "joint_sim_number": 100,
+}
+
+_FORM_DESCRIPTIONS = {
+    "scalar": "scalar (constant in space and time)",
+    "constant": "scalar (constant in space and time)",
+    "x": "array (space-dependent)",
+    "space": "array (space-dependent)",
+    "t": "transposed array (time-dependent)",
+    "time": "transposed array (time-dependent)",
+    "xt": "matrix (space-time dependent)",
+    "spacetime": "matrix (space-time dependent)",
+    "supplied": "supplied data",
+}
+
 _PUBLIC_MAPPING_TARGETS = (
     "firing_rate",
     "fork_speed",
@@ -121,20 +259,67 @@ _ASSUMPTION_ALIASES = {
     "resolution_x": "resolution",
     "resolution_x_kb": "resolution",
     "resolution_space": "resolution",
+    "resolution_space_kb": "resolution",
     "bin_size": "resolution",
     "resolution_kb": "resolution",
     "dx": "resolution",
     "resolution_t": "resolution_time",
     "resolution_t_min": "resolution_time",
     "dt": "resolution_time",
+    "fit_step_x": "space_fit_step",
     "x_fit_step": "space_fit_step",
+    "space_fit_step": "space_fit_step",
+    "maxiter_x": "space_maxiter",
     "x_maxiter": "space_maxiter",
+    "space_maxiter": "space_maxiter",
+    "fit_step_t": "temporal_fit_step",
+    "t_fit_step": "temporal_fit_step",
     "time_fit_step": "temporal_fit_step",
+    "temporal_fit_step": "temporal_fit_step",
+    "maxiter_t": "temporal_maxiter",
+    "t_maxiter": "temporal_maxiter",
     "time_maxiter": "temporal_maxiter",
+    "temporal_maxiter": "temporal_maxiter",
+    "sim_number_t": "temporal_sim_number",
+    "t_sim_number": "temporal_sim_number",
     "time_sim_number": "temporal_sim_number",
+    "temporal_sim_number": "temporal_sim_number",
+    "smoothw_t": "temporal_smoothw",
+    "t_smoothw": "temporal_smoothw",
+    "temporal_smoothw": "temporal_smoothw",
+    "fit_step_xt": "spacetime_fit_step",
     "xt_fit_step": "spacetime_fit_step",
-    "xt_maxiter": "spacetime_maxiter",
+    "spacetime_fit_step": "spacetime_fit_step",
+    "fit_step_xt_x": "spacetime_space_fit_step",
+    "xt_x_fit_step": "spacetime_space_fit_step",
+    "spacetime_space_fit_step": "spacetime_space_fit_step",
+    "fit_step_xt_t": "spacetime_time_fit_step",
+    "xt_t_fit_step": "spacetime_time_fit_step",
+    "spacetime_time_fit_step": "spacetime_time_fit_step",
+    "sim_number_xt": "spacetime_sim_number",
     "xt_sim_number": "spacetime_sim_number",
+    "spacetime_sim_number": "spacetime_sim_number",
+    "spacetime_update": "spacetime_update",
+    "update_xt": "spacetime_update",
+    "xt_update": "spacetime_update",
+    "spacetime_order": "spacetime_order",
+    "fit_order": "spacetime_order",
+    "spacetime_fit_order": "spacetime_order",
+    "factorized_order": "spacetime_order",
+    "factorised_order": "spacetime_order",
+    "kernel_xt_t": "spacetime_kernel_t",
+    "xt_t_kernel": "spacetime_kernel_t",
+    "spacetime_kernel_t": "spacetime_kernel_t",
+    "fit_step_init_x": "space_init_fit_step",
+    "maxiter_init_x": "space_init_maxiter",
+    "sim_number_init_x": "space_init_sim_number",
+    "maxiter_joint": "joint_maxiter",
+    "sim_number_joint": "joint_sim_number",
+    "fit_step_firing_x": "firing_space_fit_step",
+    "fit_step_firing_t": "firing_time_fit_step",
+    "fit_step_speed_x": "speed_space_fit_step",
+    "fit_step_speed_t": "speed_time_fit_step",
+    "smoothw_x": "spatial_smoothw",
     "periodic": "perQ",
     "perq": "perQ",
 }
@@ -204,16 +389,26 @@ def _canonical_form(value):
         "i0": "constant",
         "v0": "constant",
         "x": "space",
+        "array": "space",
+        "1d": "space",
+        "profile": "space",
         "spatial": "space",
         "space": "space",
         "i(x)": "space",
         "v(x)": "space",
         "t": "time",
+        "transposedarray": "time",
+        "transposed_array": "time",
+        "rowvector": "time",
+        "row_vector": "time",
         "temporal": "time",
         "time": "time",
         "i(t)": "time",
         "v(t)": "time",
         "xt": "spacetime",
+        "matrix": "spacetime",
+        "2d": "spacetime",
+        "field": "spacetime",
         "x,t": "spacetime",
         "(x,t)": "spacetime",
         "space-time": "spacetime",
@@ -221,6 +416,21 @@ def _canonical_form(value):
         "spacetime": "spacetime",
         "i(x,t)": "spacetime",
         "v(x,t)": "spacetime",
+    }
+    return aliases.get(text, text)
+
+
+def _canonical_spacetime_update(value):
+    text = str(value).strip().lower().replace("-", "_").replace(" ", "_")
+    aliases = {
+        "factorised": "factorized",
+        "factorized": "factorized",
+        "separable": "factorized",
+        "row_column": "factorized",
+        "mixed": "mixed",
+        "cellwise": "mixed",
+        "cell_wise": "mixed",
+        "local": "mixed",
     }
     return aliases.get(text, text)
 
@@ -370,11 +580,14 @@ _FORWARD_TIMING_OPTIONS = {
 
 _TIMING_TO_CONSTANT_FIRING_OPTIONS = {
     "resolution",
+    "resolution_time",
     "neighbourhood_range",
     "fit_step",
     "maxiter",
+    "sim_number",
     "err_threshold",
     "rate_bounds",
+    "refine_seed",
     "verbose",
     "print_every",
     "perQ",
@@ -409,10 +622,10 @@ _TIMING_TO_GENERAL_FIRING_OPTIONS = _TIMING_TO_SPATIAL_FIRING_OPTIONS | {
     "temporal_maxiter",
     "temporal_sim_number",
     "spacetime_fit_step",
-    "spacetime_space_fit_step",
-    "spacetime_time_fit_step",
-    "spacetime_maxiter",
     "spacetime_sim_number",
+    "spacetime_update",
+    "spacetime_order",
+    "spacetime_kernel_t",
     "refine_ratio_bounds",
     "refine_edge_kb",
     "refine_seed",
@@ -422,11 +635,14 @@ _TIMING_TO_GENERAL_FIRING_OPTIONS = _TIMING_TO_SPATIAL_FIRING_OPTIONS | {
 
 _TIMING_TO_CONSTANT_SPEED_OPTIONS = {
     "resolution",
+    "resolution_time",
     "neighbourhood_range",
     "fit_step",
     "maxiter",
+    "sim_number",
     "speed_bounds",
     "initial_fork_speed",
+    "refine_seed",
     "verbose",
     "print_every",
     "perQ",
@@ -435,14 +651,17 @@ _TIMING_TO_CONSTANT_SPEED_OPTIONS = {
 
 _TIMING_TO_SPATIAL_SPEED_OPTIONS = {
     "resolution",
+    "resolution_time",
     "neighbourhood_range",
     "fit_step",
     "maxiter",
     "space_fit_step",
     "space_maxiter",
+    "sim_number",
     "speed_bounds",
     "initial_fork_speed",
     "smoothw",
+    "refine_seed",
     "verbose",
     "print_every",
     "perQ",
@@ -458,10 +677,10 @@ _TIMING_TO_GENERAL_SPEED_OPTIONS = _TIMING_TO_SPATIAL_SPEED_OPTIONS | {
     "temporal_maxiter",
     "temporal_sim_number",
     "spacetime_fit_step",
-    "spacetime_space_fit_step",
-    "spacetime_time_fit_step",
-    "spacetime_maxiter",
     "spacetime_sim_number",
+    "spacetime_update",
+    "spacetime_order",
+    "spacetime_kernel_t",
     "refine_ratio_bounds",
     "refine_edge_kb",
     "refine_seed",
@@ -477,7 +696,9 @@ _TIMING_TO_JOINT_KINETICS_OPTIONS = {
     "initial_fork_speed",
     "initial_kinetics",
     "target_form",
+    "fit_step",
     "maxiter",
+    "sim_number",
     "space_init_fit_step",
     "space_init_maxiter",
     "space_init_sim_number",
@@ -512,25 +733,39 @@ def _options(kwargs, names):
     return {key: value for key, value in kwargs.items() if key in names}
 
 
-def _apply_global_maxiter(options, target_form=None, shape_specific=()):
-    """Let maxiter act as the broad fitting-effort knob for routed fits."""
-    if "maxiter" not in options:
-        return options
+def _apply_global_fit_controls(options, target_form=None):
+    """Map global fit controls to the active target phase.
 
+    For t targets, ``maxiter`` tunes the temporal phase. For x,t targets,
+    ``maxiter`` overrides the phase-specific counts by setting both
+    ``maxiter_x`` and ``maxiter_t`` to the same value.
+    """
     out = dict(options)
-    maxiter = out["maxiter"]
     form = _canonical_form(target_form if target_form is not None else out.get("target_form"))
-
+    spacetime_update = _canonical_spacetime_update(out.get("spacetime_update", "factorized"))
     if form == "time":
-        out.setdefault("space_maxiter", maxiter)
-        out.setdefault("temporal_maxiter", maxiter)
+        if "maxiter" in out:
+            out["temporal_maxiter"] = out.pop("maxiter")
+        if "fit_step" in out:
+            out.setdefault("temporal_fit_step", out.pop("fit_step"))
+        if "sim_number" in out:
+            out.setdefault("temporal_sim_number", out.pop("sim_number"))
     elif form == "spacetime":
-        out.setdefault("space_maxiter", maxiter)
-        out.setdefault("spacetime_maxiter", maxiter)
-
-    for name in shape_specific:
-        out.setdefault(name, maxiter)
-
+        if "maxiter" in out:
+            maxiter = out.pop("maxiter")
+            out["space_maxiter"] = maxiter
+            out["temporal_maxiter"] = maxiter
+        if "fit_step" in out:
+            fit_step = out.pop("fit_step")
+            out.setdefault("space_fit_step", fit_step)
+            out.setdefault("temporal_fit_step", fit_step)
+            if spacetime_update == "mixed":
+                out.setdefault("spacetime_fit_step", fit_step)
+        if "sim_number" in out:
+            sim_number = out.pop("sim_number")
+            out.setdefault("temporal_sim_number", sim_number)
+            if spacetime_update == "mixed":
+                out.setdefault("spacetime_sim_number", sim_number)
     return out
 
 
@@ -561,7 +796,7 @@ def map_timing_and_speed_to_firing(source, **kwargs):
 def map_timing_and_speed_to_general_firing(source, **kwargs):
     target_form = _canonical_form(kwargs.get("target_form", "space"))
     options = _options(kwargs, _TIMING_TO_GENERAL_FIRING_OPTIONS)
-    options = _apply_global_maxiter(options, target_form=target_form)
+    options = _apply_global_fit_controls(options, target_form=target_form)
     if target_form == "time":
         return map_timing_firing_time(
             source["replication_timing"],
@@ -603,7 +838,7 @@ def map_timing_and_firing_to_spatial_speed(source, **kwargs):
 def map_timing_and_firing_to_general_speed(source, **kwargs):
     target_form = _canonical_form(kwargs.get("target_form", "space"))
     options = _options(kwargs, _TIMING_TO_GENERAL_SPEED_OPTIONS)
-    options = _apply_global_maxiter(options, target_form=target_form)
+    options = _apply_global_fit_controls(options, target_form=target_form)
     if target_form == "time":
         return map_timing_firing_temporal_speed(source, **options)
     if target_form == "spacetime":
@@ -614,9 +849,15 @@ def map_timing_and_firing_to_general_speed(source, **kwargs):
 def map_timing_to_kinetic_fields(timing, **kwargs):
     options = _options(kwargs, _TIMING_TO_JOINT_KINETICS_OPTIONS)
     if "maxiter" in options:
-        maxiter = options.pop("maxiter")
-        options.setdefault("space_init_maxiter", maxiter)
-        options.setdefault("joint_maxiter", maxiter)
+        options.setdefault("joint_maxiter", options.pop("maxiter"))
+    if "sim_number" in options:
+        options.setdefault("joint_sim_number", options.pop("sim_number"))
+    if "fit_step" in options:
+        fit_step = options.pop("fit_step")
+        options.setdefault("firing_space_fit_step", fit_step)
+        options.setdefault("firing_time_fit_step", fit_step)
+        options.setdefault("speed_space_fit_step", fit_step)
+        options.setdefault("speed_time_fit_step", fit_step)
     return map_timing_joint_spacetime_kinetics(
         timing,
         **options,
@@ -906,6 +1147,27 @@ class DataTypeMapper:
         display_names = {
             "resolution": "resolution_x",
             "resolution_time": "resolution_t",
+            "space_fit_step": "fit_step_x",
+            "space_maxiter": "maxiter_x",
+            "temporal_fit_step": "fit_step_t",
+            "temporal_maxiter": "maxiter_t",
+            "temporal_sim_number": "sim_number_t",
+            "temporal_smoothw": "smoothw_t",
+            "spacetime_fit_step": "fit_step_xt",
+            "spacetime_space_fit_step": "fit_step_xt_x",
+            "spacetime_time_fit_step": "fit_step_xt_t",
+            "spacetime_sim_number": "sim_number_xt",
+            "spacetime_kernel_t": "kernel_xt_t",
+            "space_init_fit_step": "fit_step_init_x",
+            "space_init_maxiter": "maxiter_init_x",
+            "space_init_sim_number": "sim_number_init_x",
+            "joint_maxiter": "maxiter_joint",
+            "joint_sim_number": "sim_number_joint",
+            "firing_space_fit_step": "fit_step_firing_x",
+            "firing_time_fit_step": "fit_step_firing_t",
+            "speed_space_fit_step": "fit_step_speed_x",
+            "speed_time_fit_step": "fit_step_speed_t",
+            "spatial_smoothw": "smoothw_x",
         }
         return display_names.get(name, name)
 
@@ -948,7 +1210,21 @@ class DataTypeMapper:
         return "; ".join(formatted)
 
     @classmethod
-    def _assumption_names(cls, specs):
+    def _order_assumption_names(cls, names):
+        names = cls._unique(names)
+        order = {name: idx for idx, name in enumerate(_ASSUMPTION_ORDER)}
+        return tuple(
+            sorted(
+                names,
+                key=lambda name: (
+                    order.get(name, len(order)),
+                    cls._display_assumption_name(name),
+                ),
+            )
+        )
+
+    @classmethod
+    def _assumption_name_tuple(cls, specs):
         omitted = {"verbose", "print_every", "n_bins"}
         names = []
         for spec in specs:
@@ -959,7 +1235,11 @@ class DataTypeMapper:
                 for name, _ in pairs:
                     if name not in omitted and name not in _CANONICAL_FEATURES:
                         names.append(name)
-        return cls._join_assumption_names(cls._unique(names))
+        return cls._order_assumption_names(names)
+
+    @classmethod
+    def _assumption_names(cls, specs):
+        return cls._join_assumption_names(cls._assumption_name_tuple(specs))
 
     @classmethod
     def _required_data(cls, spec):
@@ -976,13 +1256,155 @@ class DataTypeMapper:
     def _target_description(target):
         return _FEATURE_DESCRIPTIONS.get(target, "Registered DNAscape replication feature.")
 
+    @classmethod
+    def _form_label(cls, form):
+        return _FORM_DESCRIPTIONS.get(form, str(form))
+
+    @classmethod
+    def _source_data_form_records(cls, specs):
+        names = cls._unique(name for spec in specs for name in cls._required_data(spec))
+        forms_by_name = {name: [] for name in names}
+        for spec in specs:
+            for pairs in (spec.source_kinds, spec.assumption_kinds):
+                for name, kinds in pairs:
+                    if name not in forms_by_name:
+                        continue
+                    for kind in kinds:
+                        if kind not in forms_by_name[name]:
+                            forms_by_name[name].append(kind)
+        records = []
+        for name in names:
+            forms = forms_by_name[name] or ["supplied"]
+            for form in forms:
+                records.append(
+                    {
+                        "role": "source",
+                        "quantity": name,
+                        "form": cls._form_label(form),
+                        "target_form": "-",
+                    }
+                )
+        return records
+
+    @classmethod
+    def _target_form_records(cls, specs):
+        forms = []
+        for spec in specs:
+            for name, values in spec.assumption_values:
+                if name != "target_form":
+                    continue
+                for value in values:
+                    form = _canonical_form(value)
+                    if form is not None and form not in forms:
+                        forms.append(form)
+        if not forms:
+            forms = ["space"]
+        return [
+            {
+                "role": "target",
+                "quantity": specs[0].target,
+                "form": cls._form_label(form),
+                "target_form": form,
+            }
+            for form in forms
+        ]
+
+    @classmethod
+    def _data_form_records(cls, grouped_specs):
+        records = []
+        seen = set()
+        for specs in grouped_specs:
+            for record in cls._source_data_form_records(specs) + cls._target_form_records(specs):
+                key = (record["role"], record["quantity"], record["form"], record["target_form"])
+                if key in seen:
+                    continue
+                seen.add(key)
+                records.append(record)
+        return records
+
     @staticmethod
-    def _table(records, columns):
+    def _format_default_value(value):
+        if isinstance(value, str):
+            return value
+        if value is None:
+            return "None"
+        return repr(value)
+
+    @classmethod
+    def _assumption_default_value(cls, name, specs):
+        values = []
+        missing = False
+        for spec in specs:
+            defaults = spec.defaults_dict()
+            if name in defaults:
+                values.append(cls._format_default_value(defaults[name]))
+                continue
+            if spec.func is not None:
+                try:
+                    params = inspect.signature(spec.func).parameters
+                except (TypeError, ValueError):
+                    params = {}
+                param = params.get(name)
+                if param is not None and param.default is not inspect._empty:
+                    values.append(cls._format_default_value(param.default))
+                    continue
+            missing = True
+        values = cls._unique(values)
+        fallback = _ASSUMPTION_FALLBACK_DEFAULTS.get(name)
+        if fallback is not None and not values:
+            return cls._format_default_value(fallback)
+        if fallback is not None and "None" in values:
+            fallback_value = cls._format_default_value(fallback)
+            values = tuple(fallback_value if value == "None" else value for value in values)
+            values = cls._unique(values)
+        if not values:
+            return "None"
+        if name == "target_form" and "space" in values:
+            return "space"
+        if len(values) == 1:
+            return values[0]
+        prefix = "route-dependent: " if missing else ""
+        return prefix + cls._join(values)
+
+    @classmethod
+    def _assumption_detail_records(cls, grouped_specs):
+        all_specs = tuple(spec for specs in grouped_specs for spec in specs)
+        names = cls._order_assumption_names(
+            name
+            for specs in grouped_specs
+            for name in cls._assumption_name_tuple(specs)
+        )
+        records = []
+        for name in names:
+            related_specs = tuple(
+                spec
+                for spec in all_specs
+                if name in cls._assumption_name_tuple((spec,))
+            )
+            records.append(
+                {
+                    "assumption": cls._display_assumption_name(name),
+                    "default": cls._assumption_default_value(name, related_specs),
+                    "description": _ASSUMPTION_DESCRIPTIONS.get(
+                        name,
+                        "Route-specific option passed to the selected mapping method.",
+                    ),
+                }
+            )
+        return records
+
+    @staticmethod
+    def _table(records, columns, transpose=False):
         try:
             import pandas as pd
         except ImportError:
             return records
-        return pd.DataFrame.from_records(records, columns=columns)
+        pd.set_option("display.max_colwidth", None)
+        table = pd.DataFrame.from_records(records, columns=columns)
+        if transpose:
+            table = table.T
+            table.columns = [""] * table.shape[1]
+        return table
 
     def _filtered_specs(self, target=None, source=None, implemented=None):
         if target is None:
@@ -1019,19 +1441,76 @@ class DataTypeMapper:
         )
 
     def available(self, target=None, source=None, implemented=None):
-        """Return a user-facing table of available mapping inputs.
+        """Return a compact catalogue of available mapping targets.
 
-        By default the table shows the core mapping targets: firing_rate,
-        fork_speed, kinetic_fields, replication_timing, and
-        fork_directionality. It is grouped by target and conceptual required
-        data, so each data combination appears once even when some data are
-        supplied through assumptions with defaults. Parameters can narrow or
-        expand the catalogue, e.g.
+        By default the table shows implemented core mapping targets. Use
+        ``requirements`` for the source data and assumptions needed for a
+        specific target. Parameters can narrow or expand the catalogue, e.g.
         ``rmap.available(target="firing_rate")`` or
         ``rmap.available(target=("replicated_fraction", "fork_density"))``.
         """
-        target = _PUBLIC_MAPPING_TARGETS if target is None else target
-        columns = ("target", "source (required data)", "assumptions", "target description")
+        if implemented is None:
+            implemented = True
+        target_names = _PUBLIC_MAPPING_TARGETS if target is None else target
+        target_names = target_names if isinstance(target_names, (tuple, list, set)) else (target_names,)
+        target_order = tuple(_canonical_feature(name) for name in target_names)
+        columns = ("target", "description")
+        filtered = self._filtered_specs(target=target_order, source=source, implemented=implemented)
+        available_targets = {spec.target for spec in filtered}
+        records = []
+        for target_name in target_order:
+            if target_name not in available_targets:
+                continue
+            records.append(
+                {
+                    "target": target_name,
+                    "description": self._target_description(target_name),
+                }
+            )
+        return self._table(records, columns)
+
+    def requirements(
+        self,
+        target=None,
+        source=None,
+        implemented=None,
+        show_data=False,
+        explain_assumptions=False,
+        detail=False,
+    ):
+        """Return the user-facing data requirements for mapping routes.
+
+        By default only implemented routes are shown. ``show_data=True``
+        returns only the source/target data forms.
+        ``explain_assumptions=True`` returns only the assumptions and their
+        shared definitions. ``detail=True`` returns both tables in a
+        dictionary.
+        """
+        if implemented is None:
+            implemented = True
+        groups = self._grouped_specs(target=target, source=source, implemented=implemented)
+        if detail:
+            return {
+                "data": self._table(
+                    self._data_form_records(groups),
+                    ("role", "quantity", "form", "target_form"),
+                ),
+                "assumptions": self._table(
+                    self._assumption_detail_records(groups),
+                    ("assumption", "default", "description"),
+                ),
+            }
+        if show_data:
+            return self._table(
+                self._data_form_records(groups),
+                ("role", "quantity", "form", "target_form"),
+            )
+        if explain_assumptions:
+            return self._table(
+                self._assumption_detail_records(groups),
+                ("assumption", "default", "description"),
+            )
+        columns = ["target", "source (required data)", "assumptions", "target description"]
         records = [
             {
                 "target": specs[0].target,
@@ -1039,13 +1518,9 @@ class DataTypeMapper:
                 "assumptions": self._assumption_names(specs),
                 "target description": self._target_description(specs[0].target),
             }
-            for specs in self._grouped_specs(target=target, source=source, implemented=implemented)
+            for specs in groups
         ]
-        return self._table(records, columns)
-
-    def requirements(self, target=None, source=None, implemented=None):
-        """Return the user-facing data requirements for mapping routes."""
-        return self.available(target=target, source=source, implemented=implemented)
+        return self._table(records, columns, transpose=True)
 
     def development(self, target=None, source=None, implemented=None):
         """Return the full per-route registry for internal development."""
@@ -1209,28 +1684,64 @@ rmap.register(
     assumption_values=(("target_form", ("space",)),),
     description="Iterative fit of I(x) from timing and constant fork speed.",
 )
-rmap.register_placeholder(
+rmap.register(
     ("replication_timing", "fork_speed"),
     "firing_rate",
+    map_timing_and_speed_to_constant_firing,
     method="timing_and_variable_speed_to_firing_rate",
+    required_assumptions=("target_form",),
+    optional_assumptions=(
+        "resolution",
+        "resolution_time",
+        "neighbourhood_range",
+        "fit_step",
+        "maxiter",
+        "sim_number",
+        "err_threshold",
+        "rate_bounds",
+        "refine_seed",
+        "verbose",
+        "print_every",
+        "perQ",
+        "n_bins",
+    ),
+    default_assumptions={"verbose": True},
+    source_kinds=(
+        ("replication_timing", ("x",)),
+        ("fork_speed", ("x", "t", "xt")),
+    ),
+    assumption_values=(("target_form", ("constant",)),),
+    description="Scalar effective fit of I0 from timing with variable fork speed.",
+)
+rmap.register(
+    ("replication_timing", "fork_speed"),
+    "firing_rate",
+    map_timing_and_speed_to_firing,
+    method="timing_and_variable_speed_to_spatial_firing_rate",
     optional_assumptions=(
         "resolution",
         "neighbourhood_range",
         "fit_step",
         "maxiter",
         "sim_number",
+        "err_threshold",
+        "deviation_threshold",
+        "space_fit_step",
+        "space_maxiter",
         "verbose",
         "print_every",
         "perQ",
+        "stall_rate",
+        "tau",
         "target_form",
     ),
-    default_assumptions={"target_form": "space"},
+    default_assumptions={"verbose": True, "target_form": "space"},
     source_kinds=(
         ("replication_timing", ("x",)),
         ("fork_speed", ("x", "t", "xt")),
     ),
-    assumption_values=(("target_form", ("constant", "space")),),
-    description="Fitting scalar or space-dependent firing rate from timing with variable fork speed needs a dedicated method.",
+    assumption_values=(("target_form", ("space",)),),
+    description="Space-dependent effective fit of I(x) from timing with variable fork speed.",
 )
 rmap.register(
     ("replication_timing", "firing_rate"),
@@ -1261,6 +1772,35 @@ rmap.register(
 rmap.register(
     ("replication_timing", "firing_rate"),
     "fork_speed",
+    map_timing_firing_constant_speed_simulated,
+    method="timing_and_time_firing_to_constant_fork_speed",
+    required_assumptions=("target_form",),
+    optional_assumptions=(
+        "resolution",
+        "resolution_time",
+        "fit_step",
+        "maxiter",
+        "sim_number",
+        "speed_bounds",
+        "initial_fork_speed",
+        "refine_seed",
+        "verbose",
+        "print_every",
+        "perQ",
+        "n_bins",
+        "target_form",
+    ),
+    default_assumptions={"verbose": True},
+    source_kinds=(
+        ("replication_timing", ("x",)),
+        ("firing_rate", ("t", "xt")),
+    ),
+    assumption_values=(("target_form", ("constant",)),),
+    description="Scalar effective fit of v0 from timing and time-dependent firing rate.",
+)
+rmap.register(
+    ("replication_timing", "firing_rate"),
+    "fork_speed",
     map_timing_and_firing_to_spatial_speed,
     method="timing_and_firing_to_spatial_fork_speed",
     optional_assumptions=(
@@ -1286,6 +1826,37 @@ rmap.register(
     ),
     assumption_values=(("target_form", ("space",)),),
     description="Spatial effective fit of v(x) from timing and firing rate.",
+)
+rmap.register(
+    ("replication_timing", "firing_rate"),
+    "fork_speed",
+    map_timing_firing_spatial_speed_simulated,
+    method="timing_and_time_firing_to_spatial_fork_speed",
+    optional_assumptions=(
+        "resolution",
+        "resolution_time",
+        "fit_step",
+        "maxiter",
+        "space_fit_step",
+        "space_maxiter",
+        "sim_number",
+        "speed_bounds",
+        "initial_fork_speed",
+        "smoothw",
+        "refine_seed",
+        "verbose",
+        "print_every",
+        "perQ",
+        "n_bins",
+        "target_form",
+    ),
+    default_assumptions={"verbose": True, "target_form": "space"},
+    source_kinds=(
+        ("replication_timing", ("x",)),
+        ("firing_rate", ("t", "xt")),
+    ),
+    assumption_values=(("target_form", ("space",)),),
+    description="Spatial effective fit of v(x) from timing and time-dependent firing rate.",
 )
 rmap.register(
     ("replication_timing", "firing_rate"),
@@ -1322,10 +1893,46 @@ rmap.register(
     default_assumptions={"verbose": True, "target_form": "time"},
     source_kinds=(
         ("replication_timing", ("x",)),
-        ("firing_rate", ("x",)),
+        ("firing_rate", ("scalar", "x")),
     ),
     assumption_values=(("target_form", ("time",)),),
     description="Time-only effective fit of v(t) from timing and spatial firing rate.",
+)
+rmap.register(
+    ("replication_timing", "firing_rate"),
+    "fork_speed",
+    map_timing_firing_temporal_speed_simulated,
+    method="timing_and_time_firing_to_time_fork_speed",
+    optional_assumptions=(
+        "resolution",
+        "resolution_time",
+        "time_grid",
+        "T0",
+        "temporal_smoothw",
+        "fit_step",
+        "maxiter",
+        "temporal_fit_step",
+        "temporal_maxiter",
+        "temporal_sim_number",
+        "speed_bounds",
+        "initial_fork_speed",
+        "refine_ratio_bounds",
+        "refine_edge_kb",
+        "refine_seed",
+        "refine_verbose",
+        "verbose",
+        "print_every",
+        "perQ",
+        "n_bins",
+        "target_form",
+    ),
+    default_assumptions={"verbose": True, "target_form": "time"},
+    source_kinds=(
+        ("replication_timing", ("x",)),
+        ("firing_rate", ("t", "xt")),
+    ),
+    assumption_values=(("target_form", ("time",)),),
+    description="Time-only effective fit of v(t) from timing and time-dependent firing rate.",
 )
 rmap.register(
     ("replication_timing", "firing_rate"),
@@ -1344,11 +1951,14 @@ rmap.register(
         "initial_fork_speed",
         "smoothw",
         "temporal_smoothw",
+        "temporal_fit_step",
+        "temporal_maxiter",
+        "temporal_sim_number",
         "spacetime_fit_step",
-        "spacetime_space_fit_step",
-        "spacetime_time_fit_step",
-        "spacetime_maxiter",
         "spacetime_sim_number",
+        "spacetime_update",
+        "spacetime_order",
+        "spacetime_kernel_t",
         "refine_ratio_bounds",
         "refine_edge_kb",
         "refine_seed",
@@ -1368,6 +1978,48 @@ rmap.register(
     ),
     assumption_values=(("target_form", ("spacetime",)),),
     description="Space-time effective fit of v(x,t) from timing and space-time firing rate.",
+)
+rmap.register(
+    ("replication_timing", "firing_rate"),
+    "fork_speed",
+    map_timing_firing_spacetime_speed_simulated,
+    method="timing_and_general_firing_to_spacetime_fork_speed",
+    optional_assumptions=(
+        "resolution",
+        "resolution_time",
+        "time_grid",
+        "T0",
+        "fit_step",
+        "maxiter",
+        "space_fit_step",
+        "space_maxiter",
+        "temporal_fit_step",
+        "temporal_maxiter",
+        "temporal_sim_number",
+        "spacetime_fit_step",
+        "spacetime_sim_number",
+        "spacetime_update",
+        "spacetime_order",
+        "spacetime_kernel_t",
+        "speed_bounds",
+        "initial_fork_speed",
+        "refine_ratio_bounds",
+        "refine_edge_kb",
+        "refine_seed",
+        "refine_verbose",
+        "verbose",
+        "print_every",
+        "perQ",
+        "n_bins",
+        "target_form",
+    ),
+    default_assumptions={"verbose": True, "target_form": "spacetime"},
+    source_kinds=(
+        ("replication_timing", ("x",)),
+        ("firing_rate", ("scalar", "x", "t")),
+    ),
+    assumption_values=(("target_form", ("spacetime",)),),
+    description="Space-time effective fit of v(x,t) from timing and general firing rate.",
 )
 rmap.register(
     ("replication_timing", "fork_speed"),
@@ -1492,10 +2144,39 @@ rmap.register(
     assumption_values=(("target_form", ("space",)),),
     description="Iterative fit of a space-dependent firing rate with constant fork speed.",
 )
-rmap.register_placeholder(
+rmap.register(
     "replication_timing",
     "firing_rate",
-    method="timing_to_firing_variable_fork_speed",
+    map_timing_constant_firing,
+    method="timing_to_constant_firing_rate_variable_fork_speed",
+    required_assumptions=("fork_speed", "target_form"),
+    optional_assumptions=(
+        "resolution",
+        "resolution_time",
+        "neighbourhood_range",
+        "fit_step",
+        "maxiter",
+        "sim_number",
+        "err_threshold",
+        "rate_bounds",
+        "refine_seed",
+        "verbose",
+        "print_every",
+        "perQ",
+        "n_bins",
+        "target_form",
+    ),
+    default_assumptions={"verbose": True},
+    source_kinds=(("replication_timing", ("x",)),),
+    assumption_kinds=(("fork_speed", ("x", "t", "xt")),),
+    assumption_values=(("target_form", ("constant",)),),
+    description="Scalar effective fit of I0 from timing with variable fork speed.",
+)
+rmap.register(
+    "replication_timing",
+    "firing_rate",
+    map_timing_firing,
+    method="timing_to_spatial_firing_rate_variable_fork_speed",
     required_assumptions=("fork_speed",),
     optional_assumptions=(
         "resolution",
@@ -1503,16 +2184,22 @@ rmap.register_placeholder(
         "fit_step",
         "maxiter",
         "sim_number",
+        "err_threshold",
+        "deviation_threshold",
+        "space_fit_step",
+        "space_maxiter",
         "verbose",
         "print_every",
         "perQ",
+        "stall_rate",
+        "tau",
         "target_form",
     ),
-    default_assumptions={"target_form": "space"},
+    default_assumptions={"verbose": True, "target_form": "space"},
     source_kinds=(("replication_timing", ("x",)),),
     assumption_kinds=(("fork_speed", ("x", "t", "xt")),),
-    assumption_values=(("target_form", ("constant", "space")),),
-    description="Fitting scalar or space-dependent firing rate from timing with variable fork speed needs a dedicated method.",
+    assumption_values=(("target_form", ("space",)),),
+    description="Space-dependent effective fit of I(x) from timing with variable fork speed.",
 )
 rmap.register(
     ("replication_timing", "fork_speed"),
@@ -1551,7 +2238,7 @@ rmap.register(
     default_assumptions={"verbose": True, "target_form": "time"},
     source_kinds=(
         ("replication_timing", ("x",)),
-        ("fork_speed", ("scalar",)),
+        ("fork_speed", ("scalar", "x", "t", "xt")),
     ),
     assumption_values=(("target_form", ("time",)),),
     description="Time-only firing-rate target lifted from the fitted spatial firing profile.",
@@ -1581,11 +2268,14 @@ rmap.register(
         "time_grid",
         "T0",
         "temporal_smoothw",
+        "temporal_fit_step",
+        "temporal_maxiter",
+        "temporal_sim_number",
         "spacetime_fit_step",
-        "spacetime_space_fit_step",
-        "spacetime_time_fit_step",
-        "spacetime_maxiter",
         "spacetime_sim_number",
+        "spacetime_update",
+        "spacetime_order",
+        "spacetime_kernel_t",
         "refine_ratio_bounds",
         "refine_edge_kb",
         "refine_seed",
@@ -1595,7 +2285,7 @@ rmap.register(
     default_assumptions={"verbose": True, "target_form": "spacetime"},
     source_kinds=(
         ("replication_timing", ("x",)),
-        ("fork_speed", ("scalar",)),
+        ("fork_speed", ("scalar", "x", "t", "xt")),
     ),
     assumption_values=(("target_form", ("spacetime",)),),
     description="Space-time firing-rate target lifted from the fitted spatial firing profile.",
