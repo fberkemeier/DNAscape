@@ -20,7 +20,13 @@ from .fitting import (
     map_timing_firing_time,
     map_timing_joint_spacetime_kinetics,
 )
-from .mapping import map_directionality_timing, map_firing_timing, map_timing_directionality
+from .mapping import (
+    map_directionality_timing,
+    map_firing_timing,
+    map_replicated_fraction,
+    map_replicated_fraction_xt,
+    map_timing_directionality,
+)
 from .simulation import rsim
 
 __all__ = ["MappingSpec", "DataTypeMapper", "rmap"]
@@ -569,6 +575,50 @@ def map_firing_and_speed_to_fork_density_xt_simulation(source, **kwargs):
     return result["right_fork_density_xt"] + result["left_fork_density_xt"]
 
 
+_REPLICATED_FRACTION_OPTIONS = (
+    "resolution",
+    "resolution_time",
+    "time_grid",
+    "max_time",
+    "max_rep_time",
+    "n_bins",
+    "genome_length",
+    "interval_kb",
+    "perQ",
+)
+_REPLICATED_FRACTION_WITH_SPEED_OPTIONS = _REPLICATED_FRACTION_OPTIONS + ("fork_speed",)
+
+
+def map_firing_and_speed_to_replicated_fraction_xt(source, **kwargs):
+    return map_replicated_fraction_xt(
+        source["firing_rate"],
+        fork_speed=source["fork_speed"],
+        **_options(kwargs, _REPLICATED_FRACTION_OPTIONS),
+    )
+
+
+def map_firing_to_replicated_fraction_xt(firing_rate, **kwargs):
+    return map_replicated_fraction_xt(
+        firing_rate,
+        **_options(kwargs, _REPLICATED_FRACTION_WITH_SPEED_OPTIONS),
+    )
+
+
+def map_firing_and_speed_to_replicated_fraction(source, **kwargs):
+    return map_replicated_fraction(
+        source["firing_rate"],
+        fork_speed=source["fork_speed"],
+        **_options(kwargs, _REPLICATED_FRACTION_OPTIONS),
+    )
+
+
+def map_firing_to_replicated_fraction(firing_rate, **kwargs):
+    return map_replicated_fraction(
+        firing_rate,
+        **_options(kwargs, _REPLICATED_FRACTION_WITH_SPEED_OPTIONS),
+    )
+
+
 _FORWARD_TIMING_OPTIONS = {
     "resolution",
     "neighbourhood_range",
@@ -820,6 +870,14 @@ def map_timing_and_speed_to_directionality(source, **kwargs):
     )
 
 
+def map_timing_and_spatial_speed_to_directionality(source, **kwargs):
+    return map_timing_directionality(
+        source["replication_timing"],
+        fork_speed=source["fork_speed"],
+        **_options(kwargs, _DIRECTIONALITY_OPTIONS),
+    )
+
+
 def map_directionality_and_speed_to_timing(source, **kwargs):
     return map_directionality_timing(
         source["fork_directionality"],
@@ -997,7 +1055,106 @@ class DataTypeMapper:
             raise ValueError("rmap requires data when source is passed as a feature name.")
         return {_canonical_feature(source): data}
 
+    def _ensure_directionality_routes(self):
+        """Keep autoreloaded rmap instances aligned with new directionality routes."""
+        methods = {spec.method for spec in self._specs}
+
+        if "timing_and_spatial_speed_to_directionality" not in methods:
+            self.register(
+                ("replication_timing", "fork_speed"),
+                "fork_directionality",
+                map_timing_and_spatial_speed_to_directionality,
+                method="timing_and_spatial_speed_to_directionality",
+                optional_assumptions=("resolution", "T0", "smoothw", "perQ"),
+                source_kinds=(
+                    ("replication_timing", ("x",)),
+                    ("fork_speed", ("x",)),
+                ),
+                description="Gradient-based fork-directionality mapping with spatial fork speed.",
+            )
+
+        if "timing_to_directionality_spatial_speed" not in methods:
+            self.register(
+                "replication_timing",
+                "fork_directionality",
+                map_timing_directionality,
+                method="timing_to_directionality_spatial_speed",
+                required_assumptions=("fork_speed",),
+                optional_assumptions=("resolution", "T0", "smoothw", "perQ"),
+                source_kinds=(("replication_timing", ("x",)),),
+                assumption_kinds=(("fork_speed", ("x",)),),
+                description="Gradient-based fork-directionality mapping with spatial fork speed.",
+            )
+
+    def _ensure_replicated_fraction_routes(self):
+        self._specs = [
+            spec for spec in self._specs
+            if not (
+                spec.target in {"replicated_fraction", "replicated_fraction_xt"}
+                and spec.method.endswith("_simulation")
+            )
+        ]
+        methods = {spec.method for spec in self._specs}
+
+        if "firing_and_speed_to_replicated_fraction_xt_lightcone" not in methods:
+            self.register(
+                ("firing_rate", "fork_speed"),
+                "replicated_fraction_xt",
+                map_firing_and_speed_to_replicated_fraction_xt,
+                method="firing_and_speed_to_replicated_fraction_xt_lightcone",
+                optional_assumptions=_REPLICATED_FRACTION_OPTIONS,
+                source_kinds=(
+                    ("firing_rate", ("scalar", "x", "t", "xt")),
+                    ("fork_speed", ("scalar", "x", "t", "xt")),
+                ),
+                description="Analytical light-cone map of f(x,t) from initiation rate and fork speed.",
+            )
+        if "firing_to_replicated_fraction_xt_lightcone" not in methods:
+            self.register(
+                "firing_rate",
+                "replicated_fraction_xt",
+                map_firing_to_replicated_fraction_xt,
+                method="firing_to_replicated_fraction_xt_lightcone",
+                required_assumptions=("fork_speed",),
+                optional_assumptions=_REPLICATED_FRACTION_OPTIONS,
+                default_assumptions={"fork_speed": 1.4},
+                source_kinds=(("firing_rate", ("scalar", "x", "t", "xt")),),
+                assumption_kinds=(("fork_speed", ("scalar", "x", "t", "xt")),),
+                description="Analytical light-cone map of f(x,t) from initiation rate and fork speed.",
+            )
+        if "firing_and_speed_to_replicated_fraction_lightcone" not in methods:
+            self.register(
+                ("firing_rate", "fork_speed"),
+                "replicated_fraction",
+                map_firing_and_speed_to_replicated_fraction,
+                method="firing_and_speed_to_replicated_fraction_lightcone",
+                optional_assumptions=_REPLICATED_FRACTION_OPTIONS,
+                source_kinds=(
+                    ("firing_rate", ("scalar", "x", "t", "xt")),
+                    ("fork_speed", ("scalar", "x", "t", "xt")),
+                ),
+                description="Analytical light-cone map of the spatial mean replicated fraction.",
+            )
+        if "firing_to_replicated_fraction_lightcone" not in methods:
+            self.register(
+                "firing_rate",
+                "replicated_fraction",
+                map_firing_to_replicated_fraction,
+                method="firing_to_replicated_fraction_lightcone",
+                required_assumptions=("fork_speed",),
+                optional_assumptions=_REPLICATED_FRACTION_OPTIONS,
+                default_assumptions={"fork_speed": 1.4},
+                source_kinds=(("firing_rate", ("scalar", "x", "t", "xt")),),
+                assumption_kinds=(("fork_speed", ("scalar", "x", "t", "xt")),),
+                description="Analytical light-cone map of the spatial mean replicated fraction.",
+            )
+
     def _candidate_specs(self, source_names, target, method):
+        target = _canonical_feature(target)
+        if target == "fork_directionality":
+            self._ensure_directionality_routes()
+        if target in {"replicated_fraction", "replicated_fraction_xt"}:
+            self._ensure_replicated_fraction_routes()
         source_set = set(source_names)
         out = []
         for spec in self._specs:
@@ -2031,7 +2188,19 @@ rmap.register(
         ("replication_timing", ("x",)),
         ("fork_speed", ("scalar",)),
     ),
-    description="Gradient-based fork-directionality mapping.",
+    description="Gradient-based fork-directionality mapping with constant fork speed.",
+)
+rmap.register(
+    ("replication_timing", "fork_speed"),
+    "fork_directionality",
+    map_timing_and_spatial_speed_to_directionality,
+    method="timing_and_spatial_speed_to_directionality",
+    optional_assumptions=("resolution", "T0", "smoothw", "perQ"),
+    source_kinds=(
+        ("replication_timing", ("x",)),
+        ("fork_speed", ("x",)),
+    ),
+    description="Gradient-based fork-directionality mapping with spatial fork speed.",
 )
 rmap.register(
     ("fork_directionality", "fork_speed"),
@@ -2341,7 +2510,18 @@ rmap.register(
     default_assumptions={"fork_speed": 1.4},
     source_kinds=(("replication_timing", ("x",)),),
     assumption_kinds=(("fork_speed", ("scalar",)),),
-    description="Gradient-based fork-directionality mapping.",
+    description="Gradient-based fork-directionality mapping with constant fork speed.",
+)
+rmap.register(
+    "replication_timing",
+    "fork_directionality",
+    map_timing_directionality,
+    method="timing_to_directionality_spatial_speed",
+    required_assumptions=("fork_speed",),
+    optional_assumptions=("resolution", "T0", "smoothw", "perQ"),
+    source_kinds=(("replication_timing", ("x",)),),
+    assumption_kinds=(("fork_speed", ("x",)),),
+    description="Gradient-based fork-directionality mapping with spatial fork speed.",
 )
 rmap.register(
     "fork_directionality",
@@ -2356,14 +2536,61 @@ rmap.register(
     description="Integration of fork directionality to timing.",
 )
 
+rmap.register(
+    ("firing_rate", "fork_speed"),
+    "replicated_fraction_xt",
+    map_firing_and_speed_to_replicated_fraction_xt,
+    method="firing_and_speed_to_replicated_fraction_xt_lightcone",
+    optional_assumptions=_REPLICATED_FRACTION_OPTIONS,
+    source_kinds=(
+        ("firing_rate", ("scalar", "x", "t", "xt")),
+        ("fork_speed", ("scalar", "x", "t", "xt")),
+    ),
+    description="Analytical light-cone map of f(x,t) from initiation rate and fork speed.",
+)
+rmap.register(
+    "firing_rate",
+    "replicated_fraction_xt",
+    map_firing_to_replicated_fraction_xt,
+    method="firing_to_replicated_fraction_xt_lightcone",
+    required_assumptions=("fork_speed",),
+    optional_assumptions=_REPLICATED_FRACTION_OPTIONS,
+    default_assumptions={"fork_speed": 1.4},
+    source_kinds=(("firing_rate", ("scalar", "x", "t", "xt")),),
+    assumption_kinds=(("fork_speed", ("scalar", "x", "t", "xt")),),
+    description="Analytical light-cone map of f(x,t) from initiation rate and fork speed.",
+)
+rmap.register(
+    ("firing_rate", "fork_speed"),
+    "replicated_fraction",
+    map_firing_and_speed_to_replicated_fraction,
+    method="firing_and_speed_to_replicated_fraction_lightcone",
+    optional_assumptions=_REPLICATED_FRACTION_OPTIONS,
+    source_kinds=(
+        ("firing_rate", ("scalar", "x", "t", "xt")),
+        ("fork_speed", ("scalar", "x", "t", "xt")),
+    ),
+    description="Analytical light-cone map of the spatial mean replicated fraction.",
+)
+rmap.register(
+    "firing_rate",
+    "replicated_fraction",
+    map_firing_to_replicated_fraction,
+    method="firing_to_replicated_fraction_lightcone",
+    required_assumptions=("fork_speed",),
+    optional_assumptions=_REPLICATED_FRACTION_OPTIONS,
+    default_assumptions={"fork_speed": 1.4},
+    source_kinds=(("firing_rate", ("scalar", "x", "t", "xt")),),
+    assumption_kinds=(("fork_speed", ("scalar", "x", "t", "xt")),),
+    description="Analytical light-cone map of the spatial mean replicated fraction.",
+)
+
 _SIMULATION_DERIVED_FEATURES = {
     "origin_efficiency": {},
     "inter_origin_distance": {},
     "completion_time": {},
     "num_origins": {},
     "fork_directionality": {},
-    "replicated_fraction": {"time_statsQ": True},
-    "replicated_fraction_xt": {"time_stats_xtQ": True},
     "initiation_events_xt": {"time_stats_xtQ": True},
     "coalescence_events_xt": {"time_stats_xtQ": True},
     "right_fork_density_xt": {"time_stats_xtQ": True},
