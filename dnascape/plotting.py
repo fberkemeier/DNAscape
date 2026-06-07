@@ -188,7 +188,7 @@ def plotf(*arrays, labels=None, x_array=None, dual_axis=False, resolution=1, reg
           xtitle='Index', ytitle='Value', x_show=True, y_show=True, logyQ=False, logxQ=False,
           scale_matchQ=False, saveQ=False, sname='test', ext='pdf', layout_rect=(0.12, 0.15, 0.98, 0.95),
           fig=None, ax=None, showQ=True, return_handles=False, time_array=None, resolution_t=1,
-          cmap='viridis', colorbarQ=True, logzQ=False):
+          cmap='viridis', colorbarQ=True, logzQ=False, zlims=None):
 
     arrays = [np.asarray(a) for a in arrays]
     n = len(arrays)
@@ -312,17 +312,33 @@ def plotf(*arrays, labels=None, x_array=None, dual_axis=False, resolution=1, reg
         t_end = _sampled_axis_end(time_values)
         image_data = data
         norm = None
+        if zlims is None:
+            vmin = vmax = None
+        else:
+            if not isinstance(zlims, (list, tuple)) or len(zlims) != 2:
+                raise ValueError("zlims must be a (minimum, maximum) pair.")
+            vmin, vmax = zlims
+            vmin = None if vmin is None else float(vmin)
+            vmax = None if vmax is None else float(vmax)
+            if vmin is not None and vmax is not None and vmax <= vmin:
+                raise ValueError("zlims maximum must be greater than its minimum.")
+
         if logzQ:
             finite_positive = data[np.isfinite(data) & (data > 0)]
             if finite_positive.size == 0:
                 raise ValueError("logzQ=True requires at least one positive heatmap value.")
-            vmin = float(np.nanmin(finite_positive))
-            vmax = float(np.nanmax(finite_positive))
+            if vmin is None:
+                vmin = float(np.nanmin(finite_positive))
+            if vmax is None:
+                vmax = float(np.nanmax(finite_positive))
+            if vmin <= 0:
+                raise ValueError("logzQ=True requires a positive zlims minimum.")
             if vmax <= vmin:
                 vmax = vmin * 10.0
             image_data = np.ma.masked_where(~np.isfinite(data) | (data <= 0), data)
             norm = LogNorm(vmin=vmin, vmax=vmax)
 
+        image_options = {"norm": norm} if norm is not None else {"vmin": vmin, "vmax": vmax}
         im = ax.imshow(
             image_data,
             aspect='auto',
@@ -330,7 +346,7 @@ def plotf(*arrays, labels=None, x_array=None, dual_axis=False, resolution=1, reg
             interpolation='nearest',
             extent=(x_start, x_end, t_start, t_end),
             cmap=cmap,
-            norm=norm,
+            **image_options,
         )
         draw_region(ax)
 
@@ -550,10 +566,11 @@ def plotf(*arrays, labels=None, x_array=None, dual_axis=False, resolution=1, reg
 def mplotf(marrays, mlabels=None, mx_array=None, mdual_axis=None, mresolution=None, mregion_high=None, mrname=None,
            minvyQ=None, mfigsize=None, mxlims=None, mylims=None, mxtitle=None, mytitle=None,
            my_show=None, mlogyQ=None, mscale_matchQ=None, msaveQ=None, msname=None, mext=None,
-           mtime_array=None, mresolution_t=None, mcmap=None, mcolorbarQ=None, mlogzQ=None,
+           mtime_array=None, mresolution_t=None, mcmap=None, mcolorbarQ=None, mlogzQ=None, mzlims=None,
            showgeneQ=False, gtf_gz_path="data/other/gencode/gencode.v49.annotation.gtf.gz", gene_chrom=1,
            gene_denseQ=True, gene_show_names=True, gene_show_direction=False,
-           figsize=(10, 4), layout_rect=(0.12, 0.15, 0.98, 0.95), hspace=0.15):
+           figsize=(10, 4), layout_rect=(0.12, 0.15, 0.98, 0.95), hspace=0.15,
+           mheight_ratios=None):
 
     k = len(marrays)
     W, H = figsize
@@ -594,7 +611,23 @@ def mplotf(marrays, mlabels=None, mx_array=None, mdual_axis=None, mresolution=No
     gene_end_bp   = int(np.ceil(xk_end   * 1000.0))
 
     nrows = k + (1 if showgeneQ else 0)
-    fig, axs = plt.subplots(nrows, 1, figsize=(W, H * nrows), sharex=True)
+    if mheight_ratios is None:
+        height_ratios = None
+    else:
+        height_ratios = np.asarray(mheight_ratios, dtype=float)
+        if height_ratios.ndim != 1 or height_ratios.size != nrows:
+            raise ValueError("mheight_ratios must contain one value per subplot.")
+        if not np.all(np.isfinite(height_ratios)) or np.any(height_ratios <= 0):
+            raise ValueError("mheight_ratios values must be finite and greater than zero.")
+
+    gridspec_kw = None if height_ratios is None else {"height_ratios": height_ratios}
+    fig, axs = plt.subplots(
+        nrows,
+        1,
+        figsize=(W, H * nrows),
+        sharex=True,
+        gridspec_kw=gridspec_kw,
+    )
     if nrows == 1:
         axs = [axs]
 
@@ -673,7 +706,8 @@ def mplotf(marrays, mlabels=None, mx_array=None, mdual_axis=None, mresolution=No
               resolution_t=at(mresolution_t, i, 1),
               cmap=at(mcmap, i, 'viridis'),
               colorbarQ=at(mcolorbarQ, i, True),
-              logzQ=at(mlogzQ, i, False))
+              logzQ=at(mlogzQ, i, False),
+              zlims=at(mzlims, i, None))
 
     axs[-1].set_xlim(xk_start, xk_end)
 
