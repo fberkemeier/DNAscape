@@ -351,6 +351,505 @@ def map_replicated_fraction(*args, **kwargs):
     return np.nanmean(map_replicated_fraction_xt(*args, **kwargs), axis=1)
 
 
+def map_fork_densities_xt(
+    firing_rate,
+    fork_speed=1.4,
+    resolution=1.0,
+    resolution_x=None,
+    resolution_time=1.0,
+    resolution_t=None,
+    time_grid=None,
+    max_time=None,
+    max_rep_time=None,
+    n_bins=None,
+    genome_length=None,
+    interval_kb=None,
+    perQ=False,
+    cfl=0.8,
+):
+    """Map initiation and fork speed to mean-field directional fork densities.
+
+    ``firing_rate`` and ``fork_speed`` may each be scalar, x-dependent,
+    t-dependent, or space-time dependent. Fork speed is currently interpreted
+    symmetrically, so the same field is used for right- and left-moving forks.
+    """
+    resolution = _normalise_resolution_x(resolution, resolution_x=resolution_x)
+    if resolution_t is not None:
+        resolution_time = resolution_t
+    if max_rep_time is not None and max_time is None:
+        max_time = max_rep_time
+
+    cfl = float(cfl)
+    if not np.isfinite(cfl) or not 0 < cfl <= 1:
+        raise ValueError("cfl must be finite and satisfy 0 < cfl <= 1.")
+
+    n_bins = _resolve_n_bins_from_fields(
+        firing_rate,
+        fork_speed,
+        n_bins=n_bins,
+        resolution_x=resolution,
+        genome_length=genome_length,
+        interval_kb=interval_kb,
+    )
+    if n_bins is None:
+        raise ValueError(
+            "Cannot infer genomic length. Provide an x-dependent field, "
+            "n_bins, genome_length, or interval_kb."
+        )
+
+    n_bins = int(n_bins)
+    t = _fraction_time_axis(
+        (firing_rate, fork_speed),
+        n_bins,
+        resolution_time=resolution_time,
+        time_grid=time_grid,
+        max_time=max_time,
+    )
+    I = _expand_space_time_field(
+        firing_rate,
+        t.size,
+        n_bins,
+        t,
+        resolution_time,
+        "firing_rate",
+    )
+    v = _expand_space_time_field(
+        fork_speed,
+        t.size,
+        n_bins,
+        t,
+        resolution_time,
+        "fork_speed",
+        positive=True,
+    )
+
+    replicated = np.zeros(n_bins, dtype=float)
+    right = np.zeros(n_bins, dtype=float)
+    left = np.zeros(n_bins, dtype=float)
+    replicated_xt = np.zeros((t.size, n_bins), dtype=float)
+    right_xt = np.zeros_like(replicated_xt)
+    left_xt = np.zeros_like(replicated_xt)
+
+    for time_index in range(1, t.size):
+        interval = float(t[time_index] - t[time_index - 1])
+        max_speed = float(np.max(v[time_index - 1:time_index + 1]))
+        n_substeps = max(1, int(np.ceil(max_speed * interval / (cfl * resolution))))
+        dt = interval / n_substeps
+
+        for substep in range(n_substeps):
+            weight = (substep + 0.5) / n_substeps
+            initiation = (
+                (1.0 - weight) * I[time_index - 1]
+                + weight * I[time_index]
+            )
+            speed = (
+                (1.0 - weight) * v[time_index - 1]
+                + weight * v[time_index]
+            )
+
+            right_flux = speed * right
+            left_flux = -speed * left
+            if perQ:
+                right_in = np.roll(right_flux, 1)
+                left_out = np.roll(left_flux, -1)
+            else:
+                right_in = np.empty_like(right_flux)
+                right_in[0] = 0.0
+                right_in[1:] = right_flux[:-1]
+                left_out = np.empty_like(left_flux)
+                left_out[:-1] = left_flux[1:]
+                left_out[-1] = 0.0
+
+            right_transport = right - dt * (right_flux - right_in) / resolution
+            left_transport = left - dt * (left_out - left_flux) / resolution
+            right_transport = np.maximum(right_transport, 0.0)
+            left_transport = np.maximum(left_transport, 0.0)
+
+            unreplicated = np.maximum(1.0 - replicated, 0.0)
+            source = initiation * unreplicated
+            denominator = np.maximum(unreplicated, 1e-12)
+            sink = 2.0 * speed * right_transport * left_transport / denominator
+            max_sink = source + np.minimum(right_transport, left_transport) / dt
+            sink = np.minimum(sink, max_sink)
+
+            right_new = np.maximum(right_transport + dt * (source - sink), 0.0)
+            left_new = np.maximum(left_transport + dt * (source - sink), 0.0)
+            replication_rate = speed * (
+                0.5 * (right_transport + right_new)
+                + 0.5 * (left_transport + left_new)
+            )
+            replicated += np.minimum(dt * replication_rate, unreplicated)
+            replicated = np.clip(replicated, 0.0, 1.0)
+            right = right_new
+            left = left_new
+
+            completed = replicated >= 1.0 - 1e-12
+            right[completed] = 0.0
+            left[completed] = 0.0
+
+        replicated_xt[time_index] = replicated
+        right_xt[time_index] = right
+        left_xt[time_index] = left
+
+    return {
+        "replicated_fraction_xt": replicated_xt,
+        "right_fork_density_xt": right_xt,
+        "left_fork_density_xt": left_xt,
+        "fork_density_xt": right_xt + left_xt,
+    }
+
+
+def map_fork_densities_directionality(
+    right_fork_density,
+    left_fork_density,
+    resolution_time=1.0,
+    time_grid=None,
+):
+    right = np.asarray(right_fork_density, dtype=float)
+    left = np.asarray(left_fork_density, dtype=float)
+    if right.shape != left.shape:
+        raise ValueError(
+            "right_fork_density and left_fork_density must have the same shape."
+        )
+
+    if right.ndim == 1:
+        right_integral = right
+        left_integral = left
+    elif right.ndim == 2:
+        if right.shape[0] == 1:
+            right_integral = right[0]
+            left_integral = left[0]
+        elif time_grid is None:
+            integrator = np.trapezoid if hasattr(np, "trapezoid") else np.trapz
+            right_integral = integrator(right, dx=float(resolution_time), axis=0)
+            left_integral = integrator(left, dx=float(resolution_time), axis=0)
+        else:
+            t = np.asarray(time_grid, dtype=float)
+            if t.ndim != 1 or t.size != right.shape[0]:
+                raise ValueError(
+                    "time_grid must be one-dimensional and match the fork-density time axis."
+                )
+            integrator = np.trapezoid if hasattr(np, "trapezoid") else np.trapz
+            right_integral = integrator(right, x=t, axis=0)
+            left_integral = integrator(left, x=t, axis=0)
+    else:
+        raise ValueError(
+            "fork-density fields must be 1D spatial profiles or 2D space-time fields."
+        )
+
+    denominator = right_integral + left_integral
+    return np.divide(
+        right_integral - left_integral,
+        denominator,
+        out=np.zeros_like(denominator, dtype=float),
+        where=denominator > 0,
+    )
+
+
+def _integrate_time_field(field_xt, resolution_time=1.0, time_grid=None, name="field"):
+    field = np.asarray(field_xt, dtype=float)
+    if field.ndim != 2:
+        raise ValueError(f"{name} must be a time-by-position matrix.")
+
+    if field.shape[0] == 1:
+        return field[0]
+
+    integrator = np.trapezoid if hasattr(np, "trapezoid") else np.trapz
+    if time_grid is None:
+        return integrator(field, dx=float(resolution_time), axis=0)
+
+    t = np.asarray(time_grid, dtype=float)
+    if t.ndim != 1 or t.size != field.shape[0]:
+        raise ValueError(f"time_grid must match the time axis of {name}.")
+    return integrator(field, x=t, axis=0)
+
+
+def map_initiation_events_xt(
+    firing_rate,
+    replicated_fraction_xt,
+    resolution_time=1.0,
+    time_grid=None,
+):
+    replicated = np.asarray(replicated_fraction_xt, dtype=float)
+    if replicated.ndim != 2:
+        raise ValueError("replicated_fraction_xt must be a time-by-position matrix.")
+
+    if time_grid is None:
+        time_grid = np.arange(replicated.shape[0], dtype=float) * float(resolution_time)
+    else:
+        time_grid = np.asarray(time_grid, dtype=float)
+        if time_grid.ndim != 1 or time_grid.size != replicated.shape[0]:
+            raise ValueError("time_grid must match the time axis of replicated_fraction_xt.")
+
+    initiation = _expand_space_time_field(
+        firing_rate,
+        replicated.shape[0],
+        replicated.shape[1],
+        time_grid,
+        resolution_time,
+        "firing_rate",
+        positive=True,
+    )
+    unreplicated = np.clip(1.0 - replicated, 0.0, 1.0)
+    return initiation * unreplicated
+
+
+def map_initiation_events(
+    firing_rate,
+    replicated_fraction_xt,
+    resolution_time=1.0,
+    time_grid=None,
+):
+    events_xt = map_initiation_events_xt(
+        firing_rate,
+        replicated_fraction_xt,
+        resolution_time=resolution_time,
+        time_grid=time_grid,
+    )
+    return map_initiation_events_profile(
+        events_xt,
+        resolution_time=resolution_time,
+        time_grid=time_grid,
+    )
+
+
+def map_initiation_events_profile(
+    initiation_events_xt,
+    resolution_time=1.0,
+    time_grid=None,
+):
+    return _integrate_time_field(
+        initiation_events_xt,
+        resolution_time=resolution_time,
+        time_grid=time_grid,
+        name="initiation_events_xt",
+    )
+
+
+def _spatial_axis(n_positions, resolution=1.0, x_array=None):
+    if x_array is None:
+        return np.arange(int(n_positions), dtype=float) * float(resolution)
+    x = np.asarray(x_array, dtype=float)
+    if x.ndim != 1 or x.size != int(n_positions):
+        raise ValueError("x_array must be one-dimensional and match the spatial axis.")
+    if np.any(~np.isfinite(x)) or (x.size > 1 and np.any(np.diff(x) <= 0)):
+        raise ValueError("x_array must contain finite, strictly increasing positions.")
+    return x
+
+
+def _integrate_spatial_profile(profile, resolution=1.0, x_array=None):
+    profile = np.asarray(profile, dtype=float)
+    if profile.ndim != 1:
+        raise ValueError("profile must be one-dimensional.")
+    if profile.size == 1:
+        return float(profile[0]) * float(resolution)
+    if x_array is None:
+        x = np.arange(profile.size, dtype=float) * float(resolution)
+    else:
+        x = np.asarray(x_array, dtype=float)
+        if x.ndim != 1 or x.size != profile.size:
+            raise ValueError("x_array must be one-dimensional and match the spatial axis.")
+        if np.any(~np.isfinite(x)) or np.any(np.diff(x) <= 0):
+            raise ValueError("x_array must contain finite, strictly increasing positions.")
+    integrator = np.trapezoid if hasattr(np, "trapezoid") else np.trapz
+    return float(integrator(profile, x=x))
+
+
+def _integrate_space_time_density(
+    density_xt,
+    resolution=1.0,
+    x_array=None,
+    resolution_time=1.0,
+    time_grid=None,
+    name="density_xt",
+):
+    profile = _integrate_time_field(
+        density_xt,
+        resolution_time=resolution_time,
+        time_grid=time_grid,
+        name=name,
+    )
+    return _integrate_spatial_profile(
+        profile,
+        resolution=resolution,
+        x_array=x_array,
+    )
+
+
+def map_probability_density_xt(
+    event_density_xt,
+    resolution=1.0,
+    x_array=None,
+    resolution_time=1.0,
+    time_grid=None,
+    name="event_density_xt",
+):
+    density = np.asarray(event_density_xt, dtype=float)
+    if density.ndim != 2:
+        raise ValueError(f"{name} must be a time-by-position matrix.")
+    if np.any(~np.isfinite(density)) or np.any(density < 0):
+        raise ValueError(f"{name} must contain finite values >= 0.")
+
+    total = _integrate_space_time_density(
+        density,
+        resolution=resolution,
+        x_array=x_array,
+        resolution_time=resolution_time,
+        time_grid=time_grid,
+        name=name,
+    )
+    if not np.isfinite(total) or total <= 0:
+        raise ValueError(f"{name} must have a positive space-time integral.")
+    return density / total
+
+
+def map_probability_density_profile(
+    probability_density_xt,
+    resolution_time=1.0,
+    time_grid=None,
+):
+    return _integrate_time_field(
+        probability_density_xt,
+        resolution_time=resolution_time,
+        time_grid=time_grid,
+        name="probability_density_xt",
+    )
+
+
+def _normalise_regions(regions, region_names=None):
+    if regions is None:
+        raise ValueError("regions must be supplied as a pair, list of pairs, or dict.")
+
+    names = region_names
+    if isinstance(regions, dict):
+        names = list(regions.keys())
+        values = list(regions.values())
+    else:
+        values = regions
+
+    arr = np.asarray(values, dtype=float)
+    if arr.ndim == 1:
+        if arr.size != 2:
+            raise ValueError("A single region must be a (start, end) pair.")
+        arr = arr.reshape(1, 2)
+    if arr.ndim != 2 or arr.shape[1] != 2:
+        raise ValueError("regions must contain (start, end) pairs.")
+    if np.any(~np.isfinite(arr)):
+        raise ValueError("regions must contain finite coordinates.")
+
+    arr = np.sort(arr, axis=1)
+    if np.any(arr[:, 1] <= arr[:, 0]):
+        raise ValueError("Each region must have positive width.")
+
+    if names is None:
+        names = [f"region_{i + 1}" for i in range(arr.shape[0])]
+    if len(names) != arr.shape[0]:
+        raise ValueError("region_names must match the number of regions.")
+    return arr, np.asarray(names, dtype=object)
+
+
+def _integrate_profile_regions(profile, x, regions):
+    values = np.zeros(regions.shape[0], dtype=float)
+    for i, (left, right) in enumerate(regions):
+        left = max(float(left), float(x[0]))
+        right = min(float(right), float(x[-1]))
+        if right <= left:
+            continue
+        internal = x[(x > left) & (x < right)]
+        xi = np.concatenate(([left], internal, [right]))
+        yi = np.interp(xi, x, profile)
+        values[i] = np.trapezoid(yi, x=xi) if hasattr(np, "trapezoid") else np.trapz(yi, x=xi)
+    return values
+
+
+def map_origin_efficiency(
+    initiation_events,
+    regions,
+    resolution=1.0,
+    x_array=None,
+    region_names=None,
+    resolution_time=1.0,
+    time_grid=None,
+):
+    events = np.asarray(initiation_events, dtype=float)
+    if events.ndim == 2:
+        profile = map_initiation_events_profile(
+            events,
+            resolution_time=resolution_time,
+            time_grid=time_grid,
+        )
+    elif events.ndim == 1:
+        profile = events
+    else:
+        raise ValueError("initiation_events must be a spatial profile or space-time field.")
+
+    x = _spatial_axis(profile.size, resolution=resolution, x_array=x_array)
+    regions, names = _normalise_regions(regions, region_names=region_names)
+    expected_events = _integrate_profile_regions(profile, x, regions)
+    return {
+        "names": names,
+        "regions": regions,
+        "expected_events": expected_events,
+        "efficiency": expected_events,
+    }
+
+
+def map_coalescence_events_xt(
+    fork_speed,
+    replicated_fraction_xt,
+    right_fork_density_xt,
+    left_fork_density_xt,
+    resolution_time=1.0,
+    time_grid=None,
+    unreplicated_floor=1e-12,
+):
+    replicated = np.asarray(replicated_fraction_xt, dtype=float)
+    right = np.asarray(right_fork_density_xt, dtype=float)
+    left = np.asarray(left_fork_density_xt, dtype=float)
+    if replicated.ndim != 2:
+        raise ValueError("replicated_fraction_xt must be a time-by-position matrix.")
+    if right.shape != replicated.shape or left.shape != replicated.shape:
+        raise ValueError("fork-density fields must match replicated_fraction_xt.")
+
+    if time_grid is None:
+        time_grid = np.arange(replicated.shape[0], dtype=float) * float(resolution_time)
+    else:
+        time_grid = np.asarray(time_grid, dtype=float)
+        if time_grid.ndim != 1 or time_grid.size != replicated.shape[0]:
+            raise ValueError("time_grid must match the time axis of replicated_fraction_xt.")
+
+    speed = _expand_space_time_field(
+        fork_speed,
+        replicated.shape[0],
+        replicated.shape[1],
+        time_grid,
+        resolution_time,
+        "fork_speed",
+        positive=True,
+    )
+    unreplicated = np.clip(1.0 - replicated, 0.0, 1.0)
+    numerator = 2.0 * speed * np.maximum(right, 0.0) * np.maximum(left, 0.0)
+    return np.divide(
+        numerator,
+        unreplicated,
+        out=np.zeros_like(numerator, dtype=float),
+        where=unreplicated > float(unreplicated_floor),
+    )
+
+
+def map_coalescence_events_profile(
+    coalescence_events_xt,
+    resolution_time=1.0,
+    time_grid=None,
+):
+    return _integrate_time_field(
+        coalescence_events_xt,
+        resolution_time=resolution_time,
+        time_grid=time_grid,
+        name="coalescence_events_xt",
+    )
+
+
 def bwmap(chrom, cell_line='Rat', bin_size=10_000,
           bins=["S1","S2","S3","S4"],
           min_total=1e-9, fill_nans=True):

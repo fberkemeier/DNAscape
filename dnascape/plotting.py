@@ -191,6 +191,12 @@ def plotf(*arrays, labels=None, x_array=None, dual_axis=False, resolution=1, reg
           cmap='viridis', colorbarQ=True, logzQ=False, zlims=None):
 
     arrays = [np.asarray(a) for a in arrays]
+    xlims = (None, None) if xlims is None else xlims
+    ylims = (None, None) if ylims is None else ylims
+    if not isinstance(xlims, (list, tuple)) or len(xlims) != 2:
+        raise ValueError("xlims must be None or a (minimum, maximum) pair.")
+    if not isinstance(ylims, (list, tuple)) or len(ylims) != 2:
+        raise ValueError("ylims must be None or a (minimum, maximum) pair.")
     n = len(arrays)
     heatmapQ = (
         n == 1
@@ -352,14 +358,31 @@ def plotf(*arrays, labels=None, x_array=None, dual_axis=False, resolution=1, reg
 
         ax.set_xlabel(xtitle)
         ax.set_ylabel(ytitle)
-        ax.set_xlim(
-            x_start if xlims[0] is None else xlims[0],
-            x_end if xlims[1] is None else xlims[1],
-        )
-        ax.set_ylim(
-            t_start if ylims[0] is None else ylims[0],
-            t_end if ylims[1] is None else ylims[1],
-        )
+        x_lower = x_start if xlims[0] is None else xlims[0]
+        x_upper = x_end if xlims[1] is None else xlims[1]
+        y_lower = t_start if ylims[0] is None else ylims[0]
+        y_upper = t_end if ylims[1] is None else ylims[1]
+
+        if logxQ:
+            positive_x = x_values[np.isfinite(x_values) & (x_values > 0)]
+            if positive_x.size == 0 or x_upper <= 0:
+                raise ValueError("logxQ=True requires positive heatmap x-axis values.")
+            if x_lower <= 0:
+                x_lower = float(np.nanmin(positive_x))
+
+        if logyQ:
+            positive_t = time_values[np.isfinite(time_values) & (time_values > 0)]
+            if positive_t.size == 0 or y_upper <= 0:
+                raise ValueError("logyQ=True requires positive heatmap y-axis values.")
+            if y_lower <= 0:
+                y_lower = float(np.nanmin(positive_t))
+
+        ax.set_xlim(x_lower, x_upper)
+        ax.set_ylim(y_lower, y_upper)
+        if logxQ:
+            ax.set_xscale('log')
+        if logyQ:
+            ax.set_yscale('log')
         if invyQ:
             ax.invert_yaxis()
 
@@ -570,7 +593,7 @@ def mplotf(marrays, mlabels=None, mx_array=None, mdual_axis=None, mresolution=No
            showgeneQ=False, gtf_gz_path="data/other/gencode/gencode.v49.annotation.gtf.gz", gene_chrom=1,
            gene_denseQ=True, gene_show_names=True, gene_show_direction=False,
            figsize=(10, 4), layout_rect=(0.12, 0.15, 0.98, 0.95), hspace=0.15,
-           mheight_ratios=None):
+           mheight_ratios=None, mlogxQ=None):
 
     k = len(marrays)
     W, H = figsize
@@ -693,6 +716,7 @@ def mplotf(marrays, mlabels=None, mx_array=None, mdual_axis=None, mresolution=No
               ytitle=at(mytitle, i, 'Value'),
               x_show=(i == k - 1),   # bottom plot only (among plotf panels)
               y_show=at(my_show, i, True),
+              logxQ=at(mlogxQ, i, False),
               logyQ=at(mlogyQ, i, False),
               scale_matchQ=at(mscale_matchQ, i, False),
               saveQ=False,
@@ -709,7 +733,14 @@ def mplotf(marrays, mlabels=None, mx_array=None, mdual_axis=None, mresolution=No
               logzQ=at(mlogzQ, i, False),
               zlims=at(mzlims, i, None))
 
-    axs[-1].set_xlim(xk_start, xk_end)
+    xlim_start = xk_start
+    if any(bool(at(mlogxQ, i, False)) for i in range(k)) and xlim_start <= 0:
+        positive_xk = xk[np.isfinite(xk) & (xk > 0)]
+        if positive_xk.size == 0:
+            raise ValueError("mlogxQ=True requires positive shared x-axis values.")
+        xlim_start = float(np.nanmin(positive_xk))
+
+    axs[-1].set_xlim(xlim_start, xk_end)
 
     # If the gene axis used set_xticks([]), it would have cleared the shared ticks.
     # Restore auto ticks + ensure bottom axis is visible.
