@@ -167,6 +167,12 @@ _FEATURE_DESCRIPTIONS = {
 
 _ASSUMPTION_DESCRIPTIONS = {
     "target_form": "Requested output form: scalar (constant in space and time), array (space-dependent), transposed array (time-dependent), or matrix (space-time dependent).",
+    "target_shape": "Optional parametric shape for the target field. Use 'free' for the default unconstrained fit or 'weibull' for Weibull-shaped firing-rate targets I(t) and I(x,t).",
+    "weibull_shape": "Weibull shape parameter k used when target_shape='weibull'. k=2 gives a linearly increasing hazard; k=1 recovers the exponential case.",
+    "weibull_delay": "Optional activation delay d(x), in minutes, for Weibull firing-rate targets. Scalar delays shift all positions; arrays can specify x-dependent delays.",
+    "fit_weibull_shape": "Whether to optimise the Weibull shape parameter k in addition to alpha(x). By default k is fixed.",
+    "alpha_smooth": "Smoothness regularisation strength applied to log(alpha) for Weibull firing-rate fits.",
+    "alpha_prior": "Prior regularisation strength keeping log(alpha) close to its local uniform initialisation.",
     "resolution": "Spatial resolution along the genome, in kb.",
     "resolution_time": "Temporal resolution, in minutes.",
     "time_grid": "Explicit time axis to use for time-dependent fields.",
@@ -227,6 +233,10 @@ _ASSUMPTION_DESCRIPTIONS = {
 
 _ASSUMPTION_ORDER = (
     "target_form",
+    "target_shape",
+    "weibull_shape",
+    "weibull_delay",
+    "fit_weibull_shape",
     "resolution",
     "resolution_time",
     "time_grid",
@@ -245,6 +255,8 @@ _ASSUMPTION_ORDER = (
     "rate_bounds",
     "speed_bounds",
     "firing_bounds",
+    "alpha_smooth",
+    "alpha_prior",
     "fit_step",
     "maxiter",
     "sim_number",
@@ -284,6 +296,12 @@ _ASSUMPTION_ORDER = (
 )
 
 _ASSUMPTION_FALLBACK_DEFAULTS = {
+    "target_shape": "free",
+    "weibull_shape": 2.0,
+    "weibull_delay": 0.0,
+    "fit_weibull_shape": False,
+    "alpha_smooth": 1e-2,
+    "alpha_prior": 0.0,
     "temporal_fit_step": 0.35,
     "temporal_maxiter": 4,
     "temporal_sim_number": 100,
@@ -328,6 +346,12 @@ _ASSUMPTION_ALIASES = {
     "resolution_t": "resolution_time",
     "resolution_t_min": "resolution_time",
     "dt": "resolution_time",
+    "target_distribution": "target_shape",
+    "target_model": "target_shape",
+    "weibull_k": "weibull_shape",
+    "k_weibull": "weibull_shape",
+    "activation_delay": "weibull_delay",
+    "firing_delay": "weibull_delay",
     "fit_step_x": "space_fit_step",
     "x_fit_step": "space_fit_step",
     "space_fit_step": "space_fit_step",
@@ -1025,6 +1049,12 @@ _TIMING_TO_SPATIAL_FIRING_OPTIONS = {
 }
 
 _TIMING_TO_GENERAL_FIRING_OPTIONS = _TIMING_TO_SPATIAL_FIRING_OPTIONS | {
+    "target_shape",
+    "weibull_shape",
+    "weibull_delay",
+    "fit_weibull_shape",
+    "alpha_smooth",
+    "alpha_prior",
     "resolution_time",
     "time_grid",
     "T0",
@@ -1417,6 +1447,48 @@ class DataTypeMapper:
         if data is None:
             raise ValueError("rmap requires data when source is passed as a feature name.")
         return {_canonical_feature(source): data}
+
+    def _ensure_forward_timing_routes(self):
+        """Keep autoreloaded rmap instances aligned with timing forward routes."""
+        stale_methods = {
+            "firing_and_variable_speed_to_timing",
+            "firing_to_timing_variable_fork_speed",
+            "firing_to_timing_general_firing_form",
+        }
+        self._specs = [
+            spec for spec in self._specs
+            if spec.method not in stale_methods
+        ]
+        methods = {spec.method for spec in self._specs}
+
+        if "firing_and_speed_to_timing_simulation" not in methods:
+            self.register(
+                ("firing_rate", "fork_speed"),
+                "replication_timing",
+                _simulation_source_feature_mapper("replication_timing"),
+                method="firing_and_speed_to_timing_simulation",
+                optional_assumptions=_RSIM_ASSUMPTION_NAMES,
+                default_assumptions={"verbose": False},
+                source_kinds=(
+                    ("firing_rate", ("scalar", "x", "t", "xt")),
+                    ("fork_speed", ("scalar", "x", "t", "xt")),
+                ),
+                description="Simulation-backed timing map for kinetic fields with time dependence.",
+            )
+
+        if "firing_to_timing_simulation" not in methods:
+            self.register(
+                "firing_rate",
+                "replication_timing",
+                _simulation_feature_mapper("replication_timing"),
+                method="firing_to_timing_simulation",
+                required_assumptions=("fork_speed",),
+                optional_assumptions=_RSIM_OPTION_NAMES,
+                default_assumptions={"fork_speed": 1.4, "verbose": False},
+                source_kinds=(("firing_rate", ("scalar", "x", "t", "xt")),),
+                assumption_kinds=(("fork_speed", ("scalar", "x", "t", "xt")),),
+                description="Simulation-backed timing map for kinetic fields with time dependence.",
+            )
 
     def _ensure_directionality_routes(self):
         """Keep autoreloaded rmap instances aligned with new directionality routes."""
@@ -2059,6 +2131,9 @@ class DataTypeMapper:
 
     def _candidate_specs(self, source_names, target, method):
         target = _canonical_feature(target)
+        source_set = {_canonical_feature(name) for name in source_names}
+        if target == "replication_timing" and "firing_rate" in source_set:
+            self._ensure_forward_timing_routes()
         if target == "fork_directionality":
             self._ensure_directionality_routes()
         if target in {"replicated_fraction", "replicated_fraction_xt"}:
@@ -2080,7 +2155,6 @@ class DataTypeMapper:
             "left_fork_density_xt",
         }:
             self._ensure_fork_density_routes()
-        source_set = set(source_names)
         out = []
         for spec in self._specs:
             if set(spec.source) != source_set or spec.target != target:
@@ -2185,7 +2259,7 @@ class DataTypeMapper:
         values = spec.func(payload, **self._function_kwargs(spec, assumptions))
 
         if return_info:
-            return {
+            info = {
                 "target": spec.target,
                 "values": values,
                 "method": spec.method,
@@ -2198,6 +2272,10 @@ class DataTypeMapper:
                 "assumption_values": spec.assumption_values,
                 "description": spec.description,
             }
+            rmap_info = getattr(values, "_rmap_info", None)
+            if rmap_info:
+                info.update(rmap_info)
+            return info
         return values
 
     def get(self, from_type, to_type, method="auto", assumptions=None, **kwargs):
@@ -2692,23 +2770,18 @@ rmap.register(
     ),
     description="Deterministic mapping for I0 or I(x) with v0 or spatial effective v(x).",
 )
-rmap.register_placeholder(
+rmap.register(
     ("firing_rate", "fork_speed"),
     "replication_timing",
-    method="firing_and_variable_speed_to_timing",
-    optional_assumptions=(
-        "resolution",
-        "neighbourhood_range",
-        "perQ",
-        "n_bins",
-        "genome_length",
-        "interval_kb",
-    ),
+    _simulation_source_feature_mapper("replication_timing"),
+    method="firing_and_speed_to_timing_simulation",
+    optional_assumptions=_RSIM_ASSUMPTION_NAMES,
+    default_assumptions={"verbose": False},
     source_kinds=(
         ("firing_rate", ("scalar", "x", "t", "xt")),
-        ("fork_speed", ("t", "xt")),
+        ("fork_speed", ("scalar", "x", "t", "xt")),
     ),
-    description="Forward timing maps with time-only or space-time fork speed need dedicated methods.",
+    description="Simulation-backed timing map for kinetic fields with time dependence.",
 )
 rmap.register(
     ("replication_timing", "fork_speed"),
@@ -3158,32 +3231,17 @@ rmap.register(
     assumption_kinds=(("fork_speed", ("scalar", "x")),),
     description="Deterministic mapping for I0 or I(x) with v0 or spatial effective v(x).",
 )
-rmap.register_placeholder(
+rmap.register(
     "firing_rate",
     "replication_timing",
-    method="firing_to_timing_variable_fork_speed",
+    _simulation_feature_mapper("replication_timing"),
+    method="firing_to_timing_simulation",
     required_assumptions=("fork_speed",),
-    optional_assumptions=(
-        "resolution",
-        "neighbourhood_range",
-        "perQ",
-        "n_bins",
-        "genome_length",
-        "interval_kb",
-    ),
-    source_kinds=(("firing_rate", ("scalar", "x")),),
-    assumption_kinds=(("fork_speed", ("t", "xt")),),
-    description="Time-only or space-time fork-speed timing maps need dedicated methods.",
-)
-rmap.register_placeholder(
-    "firing_rate",
-    "replication_timing",
-    method="firing_to_timing_general_firing_form",
-    required_assumptions=("fork_speed",),
-    optional_assumptions=("resolution", "neighbourhood_range", "perQ"),
-    source_kinds=(("firing_rate", ("t", "xt")),),
+    optional_assumptions=_RSIM_OPTION_NAMES,
+    default_assumptions={"fork_speed": 1.4, "verbose": False},
+    source_kinds=(("firing_rate", ("scalar", "x", "t", "xt")),),
     assumption_kinds=(("fork_speed", ("scalar", "x", "t", "xt")),),
-    description="Forward timing maps for time-only or space-time firing need dedicated methods.",
+    description="Simulation-backed timing map for kinetic fields with time dependence.",
 )
 rmap.register(
     "replication_timing",
@@ -3317,6 +3375,12 @@ rmap.register(
         "stall_rate",
         "tau",
         "target_form",
+        "target_shape",
+        "weibull_shape",
+        "weibull_delay",
+        "fit_weibull_shape",
+        "alpha_smooth",
+        "alpha_prior",
         "time_grid",
         "T0",
         "temporal_smoothw",
@@ -3329,12 +3393,21 @@ rmap.register(
         "refine_verbose",
         "floor",
     ),
-    default_assumptions={"verbose": True, "target_form": "time"},
+    default_assumptions={
+        "verbose": True,
+        "target_form": "time",
+        "target_shape": "free",
+        "weibull_shape": 2.0,
+        "weibull_delay": 0.0,
+        "fit_weibull_shape": False,
+        "alpha_smooth": 1e-2,
+        "alpha_prior": 0.0,
+    },
     source_kinds=(
         ("replication_timing", ("x",)),
         ("fork_speed", ("scalar", "x", "t", "xt")),
     ),
-    assumption_values=(("target_form", ("time",)),),
+    assumption_values=(("target_form", ("time",)), ("target_shape", ("free", "weibull"))),
     description="Time-only firing-rate target lifted from the fitted spatial firing profile.",
 )
 rmap.register(
@@ -3359,6 +3432,12 @@ rmap.register(
         "stall_rate",
         "tau",
         "target_form",
+        "target_shape",
+        "weibull_shape",
+        "weibull_delay",
+        "fit_weibull_shape",
+        "alpha_smooth",
+        "alpha_prior",
         "time_grid",
         "T0",
         "temporal_smoothw",
@@ -3376,12 +3455,21 @@ rmap.register(
         "refine_verbose",
         "floor",
     ),
-    default_assumptions={"verbose": True, "target_form": "spacetime"},
+    default_assumptions={
+        "verbose": True,
+        "target_form": "spacetime",
+        "target_shape": "free",
+        "weibull_shape": 2.0,
+        "weibull_delay": 0.0,
+        "fit_weibull_shape": False,
+        "alpha_smooth": 1e-2,
+        "alpha_prior": 0.0,
+    },
     source_kinds=(
         ("replication_timing", ("x",)),
         ("fork_speed", ("scalar", "x", "t", "xt")),
     ),
-    assumption_values=(("target_form", ("spacetime",)),),
+    assumption_values=(("target_form", ("spacetime",)), ("target_shape", ("free", "weibull"))),
     description="Space-time firing-rate target lifted from the fitted spatial firing profile.",
 )
 rmap.register(

@@ -5,6 +5,9 @@ import math
 import time
 
 import numpy as np
+from scipy.optimize import minimize
+from scipy.signal import fftconvolve
+from scipy.special import gamma
 
 from .constants import mapt
 from .io import _resolve_data_path, savecsv
@@ -506,6 +509,42 @@ def _canonical_spacetime_order(value):
     return aliases[text]
 
 
+def _canonical_target_shape(value):
+    if value is None:
+        return "free"
+    text = str(value).strip().lower().replace("-", "_").replace(" ", "_")
+    aliases = {
+        "default": "free",
+        "free": "free",
+        "unconstrained": "free",
+        "nonparametric": "free",
+        "non_parametric": "free",
+        "current": "free",
+        "weibull": "weibull",
+        "weibull_hazard": "weibull",
+    }
+    if text not in aliases:
+        raise ValueError("target_shape must be 'free' or 'weibull'.")
+    return aliases[text]
+
+
+def _canonical_weibull_target_form(value):
+    text = str(value).strip().lower().replace("-", "_").replace(" ", "_")
+    aliases = {
+        "t": "time",
+        "time": "time",
+        "temporal": "time",
+        "row_vector": "time",
+        "transposed_array": "time",
+        "xt": "spacetime",
+        "x_t": "spacetime",
+        "space_time": "spacetime",
+        "spacetime": "spacetime",
+        "matrix": "spacetime",
+    }
+    return aliases.get(text, text)
+
+
 def _resolve_spacetime_phase_controls(
     fit_step=None,
     maxiter=None,
@@ -545,6 +584,530 @@ def _resolve_spacetime_phase_controls(
         int(temporal_maxiter),
         int(temporal_sim_number),
     )
+
+
+class _RmapInfoArray(np.ndarray):
+    def __new__(cls, array, info=None):
+        obj = np.asarray(array, dtype=float).view(cls)
+        obj._rmap_info = dict(info or {})
+        return obj
+
+    def __array_finalize__(self, obj):
+        self._rmap_info = getattr(obj, "_rmap_info", {})
+
+
+def _trapz_weights(time_axis):
+    t = np.asarray(time_axis, dtype=float)
+    if t.ndim != 1 or t.size == 0:
+        raise ValueError("time_grid must be a non-empty one-dimensional array.")
+    if t.size == 1:
+        return np.ones(1, dtype=float)
+    if np.any(~np.isfinite(t)) or np.any(np.diff(t) <= 0):
+        raise ValueError("time_grid must contain finite, strictly increasing values.")
+    weights = np.empty(t.size, dtype=float)
+    weights[0] = 0.5 * (t[1] - t[0])
+    weights[-1] = 0.5 * (t[-1] - t[-2])
+    if t.size > 2:
+        weights[1:-1] = 0.5 * (t[2:] - t[:-2])
+    return weights
+
+
+def _symmetric_convolution(values, kernel):
+    kernel = np.asarray(kernel, dtype=float)
+    full_kernel = np.concatenate((kernel[:0:-1], kernel))
+    out = fftconvolve(np.asarray(values, dtype=float), full_kernel, mode="same")
+    if out.size != values.size:
+        start = (out.size - values.size) // 2
+        out = out[start:start + values.size]
+    return out
+
+
+def _weibull_time_axis_for_timing(
+    target_timing,
+    resolution_time=1.0,
+    time_grid=None,
+    tmax_factor=3.0,
+):
+    if time_grid is not None:
+        return _time_axis_from_timing(
+            np.asarray(target_timing, dtype=float),
+            resolution_time=resolution_time,
+            time_grid=time_grid,
+        )
+    resolution_time = float(resolution_time)
+    if not np.isfinite(resolution_time) or resolution_time <= 0:
+        raise ValueError("resolution_t must be finite and positive.")
+    finite = np.asarray(target_timing, dtype=float)
+    finite = finite[np.isfinite(finite) & (finite > 0)]
+    max_timing = float(np.nanmax(finite)) if finite.size else resolution_time
+    max_time = max(max_timing * float(tmax_factor), max_timing + 5.0 * resolution_time)
+    return np.arange(0.0, max_time + resolution_time, resolution_time)
+
+
+def _weibull_delay_profile(delay, n):
+    arr = np.asarray(delay, dtype=float)
+    if arr.size == 1:
+        value = float(arr.reshape(-1)[0])
+        if not np.isfinite(value) or value < 0:
+            raise ValueError("weibull_delay must be finite and >= 0.")
+        return np.full(int(n), value, dtype=float)
+    arr = arr.reshape(-1)
+    if arr.size != int(n):
+        raise ValueError("weibull_delay must be scalar or match observed_timing.")
+    if np.any(~np.isfinite(arr)) or np.any(arr < 0):
+        raise ValueError("weibull_delay must contain finite values >= 0.")
+    return arr.astype(float, copy=False)
+
+
+def _weibull_alpha_initial(target_timing, fork_speed, shape=2.0, floor=1e-12):
+    T = np.asarray(target_timing, dtype=float)
+    speed_values = np.asarray(fork_speed, dtype=float).reshape(-1)
+    speed = float(np.nanmedian(speed_values[np.isfinite(speed_values) & (speed_values > 0)]))
+    if not np.isfinite(speed) or speed <= 0:
+        raise ValueError("fork_speed must contain finite positive values.")
+    k = float(shape)
+    T_safe = np.maximum(T, 1e-9)
+    coeff = (k + 1.0) / (2.0 * speed)
+    alpha = coeff * np.power(gamma(1.0 + 1.0 / (k + 1.0)) / T_safe, k + 1.0)
+    finite_positive = alpha[np.isfinite(alpha) & (alpha > 0)]
+    fill = float(np.nanmedian(finite_positive)) if finite_positive.size else 1e-9
+    alpha = np.where(np.isfinite(alpha) & (alpha > 0), alpha, fill)
+    return np.maximum(alpha, float(floor))
+
+
+def _weibull_travel_backend(fork_speed, n, resolution, delay):
+    speed = np.asarray(fork_speed, dtype=float)
+    if speed.size == 1:
+        v = float(speed.reshape(-1)[0])
+        if not np.isfinite(v) or v <= 0:
+            raise ValueError("fork_speed must be finite and positive.")
+        delay_is_uniform = np.allclose(delay, delay[0])
+        if delay_is_uniform:
+            distances = np.arange(int(n), dtype=float) * float(resolution) / v
+            return "constant_fft", v, distances
+        if int(n) > 1500:
+            raise NotImplementedError(
+                "x-dependent Weibull delays currently use the pairwise backend; "
+                "use a smaller interval or a scalar weibull_delay."
+            )
+        x = np.arange(int(n), dtype=float) * float(resolution)
+        return "pairwise", v, np.abs(x[:, None] - x[None, :]) / v
+
+    speed = np.squeeze(speed)
+    if speed.ndim == 1:
+        if speed.size != int(n):
+            raise ValueError("fork_speed must be scalar or match observed_timing.")
+        if np.any(~np.isfinite(speed)) or np.any(speed <= 0):
+            raise ValueError("fork_speed must contain finite positive values.")
+        if int(n) > 1500:
+            raise NotImplementedError(
+                "Weibull fitting with v(x) currently uses a pairwise travel-time "
+                "backend; use a smaller interval for this route."
+            )
+        inv_v = 1.0 / speed
+        phi = np.zeros(int(n), dtype=float)
+        if int(n) > 1:
+            phi[1:] = np.cumsum(0.5 * (inv_v[1:] + inv_v[:-1]) * float(resolution))
+        return "pairwise", speed.copy(), np.abs(phi[:, None] - phi[None, :])
+
+    raise NotImplementedError(
+        "Weibull fitting currently implements constant fork speed, with a "
+        "pairwise prototype for v(x). v(t) and v(x,t) need the planned "
+        "cumulative-distance or transport backends."
+    )
+
+
+def _weibull_survival_fields(
+    alpha,
+    fork_speed,
+    shape=2.0,
+    resolution=1.0,
+    resolution_time=1.0,
+    time_grid=None,
+    delay=0.0,
+):
+    alpha = np.asarray(alpha, dtype=float).reshape(-1)
+    if alpha.size == 0:
+        raise ValueError("alpha must be a non-empty spatial profile.")
+    if np.any(~np.isfinite(alpha)) or np.any(alpha <= 0):
+        raise ValueError("alpha must contain finite positive values.")
+    k = float(shape)
+    if not np.isfinite(k) or k <= 0:
+        raise ValueError("weibull_shape must be finite and positive.")
+
+    t = np.asarray(time_grid, dtype=float)
+    if t.ndim != 1 or t.size == 0:
+        raise ValueError("time_grid must be a non-empty one-dimensional array.")
+    weights = _trapz_weights(t)
+    delay = _weibull_delay_profile(delay, alpha.size)
+    mode, speed_used, travel = _weibull_travel_backend(
+        fork_speed,
+        alpha.size,
+        resolution,
+        delay,
+    )
+
+    A = np.zeros((t.size, alpha.size), dtype=float)
+    if mode == "constant_fft":
+        offset = float(delay[0])
+        for idx, time_value in enumerate(t):
+            lag = np.maximum(time_value - offset - travel, 0.0)
+            kernel = np.power(lag, k)
+            A[idx] = float(resolution) * _symmetric_convolution(alpha, kernel)
+    else:
+        source_delay = delay[None, :]
+        for idx, time_value in enumerate(t):
+            power = np.power(np.maximum(time_value - source_delay - travel, 0.0), k)
+            A[idx] = float(resolution) * power.dot(alpha)
+
+    A = np.maximum(A, 0.0)
+    survival = np.exp(-np.clip(A, 0.0, 700.0))
+    predicted_timing = weights @ survival
+    firing_rate = (
+        k
+        * alpha[None, :]
+        * np.power(np.maximum(t[:, None] - delay[None, :], 0.0), k - 1.0)
+    )
+    scale = np.power(alpha, -1.0 / k)
+    return {
+        "alpha": alpha,
+        "lambda": scale,
+        "firing_rate": firing_rate,
+        "predicted_timing": predicted_timing,
+        "survival": survival,
+        "extended_volume": A,
+        "fork_speed": speed_used,
+        "weibull_shape": k,
+        "weibull_delay": delay,
+        "time_grid": t,
+    }
+
+
+def _weibull_constant_speed_loss_grad(
+    z,
+    target_timing,
+    fit_mask,
+    fork_speed,
+    shape,
+    resolution,
+    time_grid,
+    delay,
+    offset=0.0,
+    variable_alpha=True,
+    z0=None,
+    alpha_smooth=0.0,
+    alpha_prior=0.0,
+    floor=1e-12,
+):
+    z = np.asarray(z, dtype=float)
+    n = target_timing.size
+    if variable_alpha:
+        alpha = np.exp(z)
+    else:
+        alpha = np.full(n, float(np.exp(z[0])), dtype=float)
+
+    speed = float(np.asarray(fork_speed, dtype=float).reshape(-1)[0])
+    delay_value = float(np.asarray(delay, dtype=float).reshape(-1)[0])
+    t = np.asarray(time_grid, dtype=float)
+    weights = _trapz_weights(t)
+    distances = np.arange(n, dtype=float) * float(resolution) / speed
+
+    A = np.zeros((t.size, n), dtype=float)
+    survival = np.zeros_like(A)
+    predicted_relative = np.zeros(n, dtype=float)
+
+    for idx, time_value in enumerate(t):
+        lag = np.maximum(time_value - delay_value - distances, 0.0)
+        kernel = np.power(lag, shape)
+        A[idx] = float(resolution) * _symmetric_convolution(alpha, kernel)
+        survival[idx] = np.exp(-np.clip(A[idx], 0.0, 700.0))
+        predicted_relative += weights[idx] * survival[idx]
+
+    residual = predicted_relative - target_timing
+    residual_weighted = np.zeros_like(residual)
+    residual_weighted[fit_mask] = residual[fit_mask]
+    data_loss = 0.5 * float(np.dot(residual_weighted, residual_weighted))
+
+    grad_alpha = np.zeros(n, dtype=float)
+    for idx, time_value in enumerate(t):
+        lag = np.maximum(time_value - delay_value - distances, 0.0)
+        kernel = np.power(lag, shape)
+        q = -weights[idx] * residual_weighted * survival[idx]
+        grad_alpha += float(resolution) * _symmetric_convolution(q, kernel)
+
+    if variable_alpha:
+        grad = grad_alpha * alpha
+    else:
+        grad = np.array([float(np.dot(grad_alpha, alpha))], dtype=float)
+
+    regularisation = 0.0
+    if variable_alpha and alpha_smooth > 0 and z.size > 1:
+        dz = np.diff(z)
+        regularisation += 0.5 * alpha_smooth * float(np.dot(dz, dz))
+        smooth_grad = np.zeros_like(z)
+        smooth_grad[:-1] -= dz
+        smooth_grad[1:] += dz
+        grad += alpha_smooth * smooth_grad
+    if alpha_prior > 0 and z0 is not None:
+        dz0 = z - z0[:z.size]
+        regularisation += 0.5 * alpha_prior * float(np.dot(dz0, dz0))
+        grad += alpha_prior * dz0
+
+    firing_rate = (
+        shape
+        * alpha[None, :]
+        * np.power(np.maximum(t[:, None] - delay_value, 0.0), shape - 1.0)
+    )
+    fields = {
+        "alpha": alpha,
+        "lambda": np.power(alpha, -1.0 / shape),
+        "firing_rate": firing_rate,
+        "predicted_timing": predicted_relative + offset,
+        "residual": predicted_relative + offset - (target_timing + offset),
+        "survival": survival,
+        "extended_volume": A,
+        "fork_speed": speed,
+        "weibull_shape": shape,
+        "weibull_delay": np.full(n, delay_value, dtype=float),
+        "time_grid": t,
+        "objective": data_loss + regularisation,
+        "data_loss": data_loss,
+        "regularisation": regularisation,
+        "target_shape": "weibull",
+    }
+    return data_loss + regularisation, grad, fields
+
+
+def _fit_weibull_survival_firing(
+    observed_timing,
+    fork_speed,
+    resolution=1.0,
+    resolution_time=1.0,
+    time_grid=None,
+    T0=None,
+    target_form="spacetime",
+    weibull_shape=2.0,
+    weibull_delay=0.0,
+    fit_weibull_shape=False,
+    alpha_smooth=1e-2,
+    alpha_prior=0.0,
+    maxiter=40,
+    refine_edge_kb=1000,
+    refine_verbose=None,
+    perQ=False,
+    floor=1e-12,
+):
+    if perQ:
+        raise NotImplementedError("Weibull survival fitting currently supports linear geometry only.")
+    T_obs = np.asarray(observed_timing, dtype=float)
+    if T_obs.ndim != 1 or T_obs.size == 0:
+        raise ValueError("observed_timing must be a non-empty one-dimensional array.")
+
+    offset = 0.0 if T0 is None else float(T0)
+    if not np.isfinite(offset):
+        raise ValueError("T0 must be finite when supplied.")
+    target_timing = T_obs - offset
+    valid = np.isfinite(T_obs) & np.isfinite(target_timing) & (target_timing > 0)
+    crop = _refinement_crop_mask(T_obs.size, resolution, perQ=False, refine_edge_kb=refine_edge_kb)
+    fit_mask = valid & crop
+    if not np.any(fit_mask):
+        raise ValueError("observed_timing must contain finite positive values after edge filtering.")
+
+    target_form = _canonical_weibull_target_form(target_form)
+    if target_form not in {"time", "spacetime"}:
+        raise ValueError("Weibull target_shape is implemented for target_form='time' or 'spacetime'.")
+
+    k0 = float(weibull_shape)
+    if not np.isfinite(k0) or k0 <= 0:
+        raise ValueError("weibull_shape must be finite and positive.")
+    t = _weibull_time_axis_for_timing(
+        target_timing[fit_mask],
+        resolution_time=resolution_time,
+        time_grid=time_grid,
+    )
+    delay = _weibull_delay_profile(weibull_delay, T_obs.size)
+
+    alpha_init = _weibull_alpha_initial(
+        np.where(valid, target_timing, np.nanmedian(target_timing[fit_mask])),
+        fork_speed,
+        shape=k0,
+        floor=floor,
+    )
+    if target_form == "time":
+        alpha0 = np.full(T_obs.size, float(np.nanmedian(alpha_init[fit_mask])), dtype=float)
+        variable_alpha = False
+    else:
+        alpha0 = alpha_init
+        variable_alpha = True
+
+    z0 = np.log(np.maximum(alpha0 if variable_alpha else alpha0[:1], float(floor)))
+    if fit_weibull_shape:
+        params0 = np.concatenate([z0, [math.log(k0)]])
+    else:
+        params0 = z0
+
+    smooth = float(alpha_smooth)
+    prior = float(alpha_prior)
+    if smooth < 0 or prior < 0:
+        raise ValueError("alpha_smooth and alpha_prior must be >= 0.")
+    verbose = bool(refine_verbose) if refine_verbose is not None else False
+    start_time = time.time()
+    calls = 0
+    best = {"loss": np.inf, "fields": None}
+    maxiter = int(maxiter)
+
+    def unpack(params):
+        if fit_weibull_shape:
+            z = params[:-1]
+            k = float(np.clip(np.exp(params[-1]), 0.25, 8.0))
+        else:
+            z = params
+            k = k0
+        if variable_alpha:
+            alpha = np.exp(z)
+        else:
+            alpha = np.full(T_obs.size, float(np.exp(z[0])), dtype=float)
+        return z, alpha, k
+
+    def objective(params):
+        nonlocal calls
+        params = np.asarray(params, dtype=float)
+        if np.any(~np.isfinite(params)):
+            return 1e30
+        z, alpha, k = unpack(params)
+        try:
+            fields = _weibull_survival_fields(
+                alpha,
+                fork_speed=fork_speed,
+                shape=k,
+                resolution=resolution,
+                resolution_time=resolution_time,
+                time_grid=t,
+                delay=delay,
+            )
+        except Exception:
+            return 1e30
+        predicted = fields["predicted_timing"] + offset
+        residual = predicted - T_obs
+        data_loss = 0.5 * float(np.dot(residual[fit_mask], residual[fit_mask]))
+        reg = 0.0
+        if variable_alpha and smooth > 0 and z.size > 1:
+            dz = np.diff(z)
+            reg += 0.5 * smooth * float(np.dot(dz, dz))
+        if prior > 0:
+            dz0 = z - z0[:z.size]
+            reg += 0.5 * prior * float(np.dot(dz0, dz0))
+        loss = data_loss + reg
+        calls += 1
+        if loss < best["loss"]:
+            fields["predicted_timing"] = predicted
+            fields["residual"] = residual
+            fields["objective"] = loss
+            fields["data_loss"] = data_loss
+            fields["regularisation"] = reg
+            fields["target_form"] = target_form
+            fields["target_shape"] = "weibull"
+            best["loss"] = loss
+            best["fields"] = fields
+        if verbose and calls <= max(1, maxiter):
+            etaferr(
+                it=min(calls, max(1, maxiter)),
+                maxiter=max(1, maxiter),
+                start_time=start_time,
+                err=data_loss / max(1, int(np.count_nonzero(fit_mask))),
+            )
+        return loss
+
+    bounds = [(math.log(float(floor)), None)] * z0.size
+    if fit_weibull_shape:
+        bounds.append((math.log(0.25), math.log(8.0)))
+
+    speed_arr = np.asarray(fork_speed, dtype=float)
+    analytic_constant_speed = (
+        not fit_weibull_shape
+        and speed_arr.size == 1
+        and np.allclose(delay, delay[0])
+    )
+
+    if analytic_constant_speed:
+        def objective_grad(params):
+            nonlocal calls
+            loss, grad, fields = _weibull_constant_speed_loss_grad(
+                params,
+                target_timing=target_timing,
+                fit_mask=fit_mask,
+                fork_speed=fork_speed,
+                shape=k0,
+                resolution=resolution,
+                time_grid=t,
+                delay=delay,
+                offset=offset,
+                variable_alpha=variable_alpha,
+                z0=z0,
+                alpha_smooth=smooth,
+                alpha_prior=prior,
+                floor=floor,
+            )
+            fields["target_form"] = target_form
+            calls += 1
+            if loss < best["loss"]:
+                best["loss"] = loss
+                best["fields"] = fields
+            if verbose and calls <= max(1, maxiter):
+                etaferr(
+                    it=min(calls, max(1, maxiter)),
+                    maxiter=max(1, maxiter),
+                    start_time=start_time,
+                    err=fields["data_loss"] / max(1, int(np.count_nonzero(fit_mask))),
+                )
+            return loss, grad
+
+        result = minimize(
+            objective_grad,
+            params0,
+            method="L-BFGS-B",
+            jac=True,
+            bounds=bounds,
+            options={
+                "maxiter": maxiter,
+                "maxfun": maxiter,
+                "ftol": 1e-8,
+                "maxls": 20,
+            },
+        )
+    else:
+        result = minimize(
+            objective,
+            params0,
+            method="L-BFGS-B",
+            bounds=bounds,
+            options={
+                "maxiter": maxiter,
+                "maxfun": max(maxiter * 4, maxiter + 1),
+                "ftol": 1e-8,
+                "maxls": 20,
+            },
+        )
+
+    fields = dict(best["fields"])
+    fields["optimisation_success"] = bool(result.success)
+    fields["optimisation_message"] = str(result.message)
+    values = fields["firing_rate"]
+    if target_form == "time":
+        values = np.nanmean(values, axis=1, keepdims=True).T
+    info_array_cls = globals().get("_RmapInfoArray")
+    if info_array_cls is None:
+        class _LocalRmapInfoArray(np.ndarray):
+            def __new__(cls, array, info=None):
+                obj = np.asarray(array, dtype=float).view(cls)
+                obj._rmap_info = dict(info or {})
+                return obj
+
+            def __array_finalize__(self, obj):
+                self._rmap_info = getattr(obj, "_rmap_info", {})
+
+        info_array_cls = _LocalRmapInfoArray
+    return info_array_cls(values, fields)
 
 
 def _mixed_spacetime_correction(ratio, bins, n_time, mask, kernel_t=1.0):
@@ -742,6 +1305,12 @@ def map_timing_firing_time(
     resolution_time=1.0,
     time_grid=None,
     T0=None,
+    target_shape="free",
+    weibull_shape=2.0,
+    weibull_delay=0.0,
+    fit_weibull_shape=False,
+    alpha_smooth=1e-2,
+    alpha_prior=0.0,
     temporal_smoothw=None,
     space_fit_step=None,
     space_maxiter=None,
@@ -761,6 +1330,32 @@ def map_timing_firing_time(
     projects that fit onto the timing coordinate. The returned row vector has
     shape ``(1, n_time)`` so it is interpreted as ``I(t)`` by ``rsim``.
     """
+    target_shape = _canonical_target_shape(target_shape)
+    if target_shape == "weibull":
+        if refine_verbose is None:
+            refine_verbose = bool(kwargs.get("verbose", False))
+        if refine_verbose:
+            print("\nFitting Weibull-shaped time-dependent firing rate...")
+        return _fit_weibull_survival_firing(
+            observed_timing,
+            fork_speed=fork_speed,
+            resolution=_normalise_resolution_x(resolution, resolution_x=resolution_x),
+            resolution_time=resolution_time,
+            time_grid=time_grid,
+            T0=T0,
+            target_form="time",
+            weibull_shape=weibull_shape,
+            weibull_delay=weibull_delay,
+            fit_weibull_shape=fit_weibull_shape,
+            alpha_smooth=alpha_smooth,
+            alpha_prior=alpha_prior,
+            maxiter=temporal_maxiter,
+            refine_edge_kb=refine_edge_kb,
+            refine_verbose=refine_verbose,
+            perQ=kwargs.get("perQ", False),
+            floor=max(float(floor), 1e-12),
+        )
+
     fit_kwargs = _spatial_firing_fit_kwargs(kwargs)
     if space_fit_step is not None:
         fit_kwargs["fit_step"] = space_fit_step
@@ -774,7 +1369,7 @@ def map_timing_firing_time(
         resolution_x=resolution_x,
         **fit_kwargs,
     )
-    temporal, _ = _temporal_profile_from_spatial_fit(
+    temporal, time_axis = _temporal_profile_from_spatial_fit(
         observed_timing,
         firing_rate_space,
         resolution_time=resolution_time,
@@ -814,6 +1409,12 @@ def map_timing_firing_spacetime(
     resolution_time=1.0,
     time_grid=None,
     T0=None,
+    target_shape="free",
+    weibull_shape=2.0,
+    weibull_delay=0.0,
+    fit_weibull_shape=False,
+    alpha_smooth=1e-2,
+    alpha_prior=0.0,
     temporal_smoothw=None,
     space_fit_step=None,
     space_maxiter=None,
@@ -840,6 +1441,40 @@ def map_timing_firing_spacetime(
     projection, and refines the x and t components in ``spacetime_order``.
     ``spacetime_update='mixed'`` refines local x,t corrections directly.
     """
+    target_shape = _canonical_target_shape(target_shape)
+    if target_shape == "weibull":
+        global_maxiter = kwargs.get("maxiter", None)
+        if global_maxiter is not None:
+            space_maxiter = global_maxiter
+            temporal_maxiter = global_maxiter
+        if refine_verbose is None:
+            refine_verbose = bool(kwargs.get("verbose", False))
+        if refine_verbose:
+            print("\nFitting Weibull-shaped space-time firing rate...")
+        phase_maxiter = max(
+            40 if space_maxiter is None else int(space_maxiter),
+            40 if temporal_maxiter is None else int(temporal_maxiter),
+        )
+        return _fit_weibull_survival_firing(
+            observed_timing,
+            fork_speed=fork_speed,
+            resolution=_normalise_resolution_x(resolution, resolution_x=resolution_x),
+            resolution_time=resolution_time,
+            time_grid=time_grid,
+            T0=T0,
+            target_form="spacetime",
+            weibull_shape=weibull_shape,
+            weibull_delay=weibull_delay,
+            fit_weibull_shape=fit_weibull_shape,
+            alpha_smooth=alpha_smooth,
+            alpha_prior=alpha_prior,
+            maxiter=phase_maxiter,
+            refine_edge_kb=refine_edge_kb,
+            refine_verbose=refine_verbose,
+            perQ=kwargs.get("perQ", False),
+            floor=max(float(floor), 1e-12),
+        )
+
     update_mode = _canonical_spacetime_update(spacetime_update)
     order = _canonical_spacetime_order(spacetime_order)
     fit_kwargs = _spatial_firing_fit_kwargs(kwargs)
@@ -886,7 +1521,7 @@ def map_timing_firing_spacetime(
         resolution_x=resolution_x,
         **fit_kwargs,
     )
-    temporal, _ = _temporal_profile_from_spatial_fit(
+    temporal, time_axis = _temporal_profile_from_spatial_fit(
         observed_timing,
         firing_rate_space,
         resolution_time=resolution_time,
