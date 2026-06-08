@@ -725,6 +725,7 @@ def _weibull_survival_fields(
     resolution_time=1.0,
     time_grid=None,
     delay=0.0,
+    rate_floor=1e-12,
 ):
     alpha = np.asarray(alpha, dtype=float).reshape(-1)
     if alpha.size == 0:
@@ -738,6 +739,9 @@ def _weibull_survival_fields(
     t = np.asarray(time_grid, dtype=float)
     if t.ndim != 1 or t.size == 0:
         raise ValueError("time_grid must be a non-empty one-dimensional array.")
+    rate_floor = float(rate_floor)
+    if not np.isfinite(rate_floor) or rate_floor < 0:
+        raise ValueError("rate_floor must be finite and >= 0.")
     weights = _trapz_weights(t)
     delay = _weibull_delay_profile(delay, alpha.size)
     mode, speed_used, travel = _weibull_travel_backend(
@@ -768,6 +772,8 @@ def _weibull_survival_fields(
         * alpha[None, :]
         * np.power(np.maximum(t[:, None] - delay[None, :], 0.0), k - 1.0)
     )
+    if rate_floor > 0:
+        firing_rate = np.maximum(firing_rate, rate_floor)
     scale = np.power(alpha, -1.0 / k)
     return {
         "alpha": alpha,
@@ -798,8 +804,15 @@ def _weibull_constant_speed_loss_grad(
     alpha_smooth=0.0,
     alpha_prior=0.0,
     floor=1e-12,
+    fit_shape=False,
 ):
-    z = np.asarray(z, dtype=float)
+    params = np.asarray(z, dtype=float)
+    if fit_shape:
+        z = params[:-1]
+        shape = float(np.exp(params[-1]))
+    else:
+        z = params
+        shape = float(shape)
     n = target_timing.size
     if variable_alpha:
         alpha = np.exp(z)
@@ -815,6 +828,7 @@ def _weibull_constant_speed_loss_grad(
     A = np.zeros((t.size, n), dtype=float)
     survival = np.zeros_like(A)
     predicted_relative = np.zeros(n, dtype=float)
+    predicted_shape_grad = np.zeros(n, dtype=float) if fit_shape else None
 
     for idx, time_value in enumerate(t):
         lag = np.maximum(time_value - delay_value - distances, 0.0)
@@ -822,6 +836,12 @@ def _weibull_constant_speed_loss_grad(
         A[idx] = float(resolution) * _symmetric_convolution(alpha, kernel)
         survival[idx] = np.exp(-np.clip(A[idx], 0.0, 700.0))
         predicted_relative += weights[idx] * survival[idx]
+        if fit_shape:
+            kernel_log = np.zeros_like(kernel)
+            positive = lag > 0
+            kernel_log[positive] = kernel[positive] * np.log(lag[positive])
+            A_shape_grad = float(resolution) * _symmetric_convolution(alpha, kernel_log)
+            predicted_shape_grad += -weights[idx] * survival[idx] * A_shape_grad
 
     residual = predicted_relative - target_timing
     residual_weighted = np.zeros_like(residual)
@@ -852,12 +872,16 @@ def _weibull_constant_speed_loss_grad(
         dz0 = z - z0[:z.size]
         regularisation += 0.5 * alpha_prior * float(np.dot(dz0, dz0))
         grad += alpha_prior * dz0
+    if fit_shape:
+        grad_shape = float(np.dot(residual_weighted, predicted_shape_grad))
+        grad = np.concatenate((grad, [grad_shape * shape]))
 
     firing_rate = (
         shape
         * alpha[None, :]
         * np.power(np.maximum(t[:, None] - delay_value, 0.0), shape - 1.0)
     )
+    firing_rate = np.maximum(firing_rate, float(floor))
     fields = {
         "alpha": alpha,
         "lambda": np.power(alpha, -1.0 / shape),
@@ -984,6 +1008,7 @@ def _fit_weibull_survival_firing(
                 resolution_time=resolution_time,
                 time_grid=t,
                 delay=delay,
+                rate_floor=floor,
             )
         except Exception:
             return 1e30
@@ -1024,8 +1049,7 @@ def _fit_weibull_survival_firing(
 
     speed_arr = np.asarray(fork_speed, dtype=float)
     analytic_constant_speed = (
-        not fit_weibull_shape
-        and speed_arr.size == 1
+        speed_arr.size == 1
         and np.allclose(delay, delay[0])
     )
 
@@ -1047,6 +1071,7 @@ def _fit_weibull_survival_firing(
                 alpha_smooth=smooth,
                 alpha_prior=prior,
                 floor=floor,
+                fit_shape=fit_weibull_shape,
             )
             fields["target_form"] = target_form
             calls += 1
@@ -1070,7 +1095,7 @@ def _fit_weibull_survival_firing(
             bounds=bounds,
             options={
                 "maxiter": maxiter,
-                "maxfun": maxiter,
+                "maxfun": max(maxiter * 10, maxiter + 20),
                 "ftol": 1e-8,
                 "maxls": 20,
             },

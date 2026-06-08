@@ -34,6 +34,7 @@ class WeibullMappingTests(unittest.TestCase):
 
         self.assertTrue(np.allclose(fields["predicted_timing"], survival_timing))
         self.assertFalse(np.allclose(fields["predicted_timing"], replicated_integral))
+        self.assertGreaterEqual(float(np.nanmin(fields["firing_rate"])), 1e-12)
 
     def test_spacetime_weibull_fit_recovers_synthetic_timing(self):
         n = 24
@@ -69,7 +70,46 @@ class WeibullMappingTests(unittest.TestCase):
 
         self.assertEqual(fit["values"].shape, (time_grid.size, n))
         self.assertTrue(np.all(fit["alpha"] > 0))
+        self.assertGreaterEqual(float(np.nanmin(fit["values"])), 1e-12)
         self.assertLess(float(np.nanmean(np.abs(fit["residual"]))), 0.5)
+
+    def test_weibull_shape_fit_updates_shape_parameter(self):
+        n = 18
+        fork_speed = 1.3
+        true_shape = 3.0
+        initial_shape = 2.0
+        alpha = np.full(n, 2.0e-5)
+        time_grid = np.arange(0.0, 180.0, 3.0)
+        synthetic = _weibull_survival_fields(
+            alpha,
+            fork_speed=fork_speed,
+            shape=true_shape,
+            resolution=1.0,
+            resolution_time=3.0,
+            time_grid=time_grid,
+        )
+
+        fit = rmap(
+            source={
+                "replication_timing": synthetic["predicted_timing"],
+                "fork_speed": fork_speed,
+            },
+            target="firing_rate",
+            assumptions={
+                "target_form": "spacetime",
+                "target_shape": "weibull",
+                "weibull_shape": initial_shape,
+                "fit_weibull_shape": True,
+                "resolution_t": 3.0,
+                "time_grid": time_grid,
+                "maxiter": 40,
+                "verbose": False,
+            },
+            return_info=True,
+        )
+
+        self.assertGreater(abs(float(fit["weibull_shape"]) - initial_shape), 0.05)
+        self.assertLess(float(np.nanmean(np.abs(fit["residual"]))), 0.2)
 
     def test_alpha_speed_and_delay_monotonicity(self):
         n = 20
