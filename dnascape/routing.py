@@ -166,8 +166,8 @@ _FEATURE_DESCRIPTIONS = {
 }
 
 _ASSUMPTION_DESCRIPTIONS = {
-    "target_form": "Requested output form: scalar (constant in space and time), array (space-dependent), transposed array (time-dependent), or matrix (space-time dependent).",
-    "target_shape": "Optional parametric shape for the target field. Use 'free' for the default unconstrained fit or 'weibull' for Weibull-shaped firing-rate targets I(t) and I(x,t).",
+    "target_form": "Requested output form: scalar (constant in space and time), array (space-dependent), transposed array (time-dependent), or matrix (space-time dependent, positions by time).",
+    "target_shape": "Optional parametric shape for the target field. For firing-rate targets I(t) and I(x,t), rmap defaults to 'weibull'; use 'free' for the unconstrained fit. For fork-speed targets v(t) and v(x,t), use 'exponential' for v0 exp(a_x x_norm + a_t t_norm), with centred normalised axes, or 'free' for the default unconstrained fit.",
     "weibull_shape": "Weibull shape parameter k used when target_shape='weibull'. k=2 gives a linearly increasing hazard; k=1 recovers the exponential case.",
     "weibull_delay": "Optional activation delay d(x), in minutes, for Weibull firing-rate targets. Scalar delays shift all positions; arrays can specify x-dependent delays.",
     "fit_weibull_shape": "Whether to optimise the Weibull shape parameter k in addition to alpha(x). By default k is fixed.",
@@ -180,6 +180,7 @@ _ASSUMPTION_DESCRIPTIONS = {
     "neighbourhood_range": "Spatial range, in kb, used by deterministic neighbourhood mappings.",
     "fit_step": "Global multiplicative update size. For x,t targets it sets fit_step_x and fit_step_t unless those are supplied explicitly.",
     "maxiter": "Global iteration count. For x,t targets it overrides maxiter_x and maxiter_t, setting both to the same value.",
+    "error": "Optional MSE threshold for early stopping during fitting. The default None leaves early stopping off.",
     "sim_number": "Global number of stochastic simulations used by the active fitting phase when a route calls rsim.",
     "err_threshold": "Lower numerical floor for fitted firing-rate values.",
     "deviation_threshold": "Tolerance below which a spatial firing update can be left unchanged.",
@@ -259,6 +260,7 @@ _ASSUMPTION_ORDER = (
     "alpha_prior",
     "fit_step",
     "maxiter",
+    "error",
     "sim_number",
     "space_fit_step",
     "space_maxiter",
@@ -297,13 +299,16 @@ _ASSUMPTION_ORDER = (
 
 _ASSUMPTION_FALLBACK_DEFAULTS = {
     "target_shape": "free",
+    "error": None,
+    "maxiter": 10,
     "weibull_shape": 2.0,
     "weibull_delay": 0.0,
     "fit_weibull_shape": False,
     "alpha_smooth": 1e-2,
     "alpha_prior": 0.0,
+    "space_maxiter": 10,
     "temporal_fit_step": 0.35,
-    "temporal_maxiter": 4,
+    "temporal_maxiter": 10,
     "temporal_sim_number": 100,
     "spacetime_fit_step": 0.25,
     "spacetime_sim_number": 100,
@@ -311,7 +316,9 @@ _ASSUMPTION_FALLBACK_DEFAULTS = {
     "spacetime_order": "space_then_time",
     "spacetime_kernel_t": 1.0,
     "sim_number": 100,
+    "space_init_maxiter": 10,
     "space_init_sim_number": 100,
+    "joint_maxiter": 10,
     "joint_sim_number": 100,
 }
 
@@ -322,8 +329,8 @@ _FORM_DESCRIPTIONS = {
     "space": "array (space-dependent)",
     "t": "transposed array (time-dependent)",
     "time": "transposed array (time-dependent)",
-    "xt": "matrix (space-time dependent)",
-    "spacetime": "matrix (space-time dependent)",
+    "xt": "matrix (space-time dependent; positions by time)",
+    "spacetime": "matrix (space-time dependent; positions by time)",
     "supplied": "supplied data",
 }
 
@@ -332,7 +339,25 @@ _PUBLIC_MAPPING_TARGETS = (
     "fork_speed",
     "kinetic_fields",
     "replication_timing",
+    "replicated_fraction_xt",
+    "replicated_fraction",
     "fork_directionality",
+    "fork_densities_xt",
+    "right_fork_density_xt",
+    "left_fork_density_xt",
+    "fork_density_xt",
+    "initiation_events_xt",
+    "initiation_pdf_xt",
+    "initiation_events",
+    "initiation_pdf",
+    "origin_efficiency",
+    "coalescence_events_xt",
+    "coalescence_pdf_xt",
+    "coalescence_events",
+    "coalescence_pdf",
+    "inter_origin_distance",
+    "completion_time",
+    "num_origins",
 )
 
 _ASSUMPTION_ALIASES = {
@@ -452,7 +477,7 @@ def _field_kind(value):
     Scalars are constant in space and time. One-dimensional arrays are
     interpreted as spatial profiles. Two-dimensional row vectors are treated
     as time-only profiles, while other two-dimensional arrays are treated as
-    space-time fields.
+    position-by-time space-time fields.
     """
     arr = np.asarray(value)
     if arr.size == 1:
@@ -685,7 +710,7 @@ def map_firing_to_replicated_fraction(firing_rate, **kwargs):
 
 _INITIATION_EVENT_OPTIONS = ("resolution_time", "time_grid")
 _INITIATION_EVENT_DEFAULTS = {
-    "resolution_time": 1.0,
+    "resolution_time": 5.0,
     "time_grid": None,
 }
 _INITIATION_FORWARD_OPTIONS = tuple(dict.fromkeys(
@@ -693,7 +718,7 @@ _INITIATION_FORWARD_OPTIONS = tuple(dict.fromkeys(
 ))
 _INITIATION_FORWARD_DEFAULTS = {
     "resolution": 1.0,
-    "resolution_time": 1.0,
+    "resolution_time": 5.0,
     "time_grid": None,
     "max_time": None,
     "max_rep_time": None,
@@ -705,7 +730,7 @@ _INITIATION_FORWARD_DEFAULTS = {
 _PDF_OPTIONS = ("resolution", "resolution_time", "time_grid", "x_array")
 _PDF_DEFAULTS = {
     "resolution": 1.0,
-    "resolution_time": 1.0,
+    "resolution_time": 5.0,
     "time_grid": None,
     "x_array": None,
 }
@@ -817,7 +842,7 @@ _ORIGIN_EFFICIENCY_OPTIONS = (
 )
 _ORIGIN_EFFICIENCY_DEFAULTS = {
     "resolution": 1.0,
-    "resolution_time": 1.0,
+    "resolution_time": 5.0,
     "time_grid": None,
     "x_array": None,
     "region_names": None,
@@ -837,13 +862,13 @@ _COALESCENCE_EVENT_OPTIONS = (
     "unreplicated_floor",
 )
 _COALESCENCE_EVENT_DEFAULTS = {
-    "resolution_time": 1.0,
+    "resolution_time": 5.0,
     "time_grid": None,
     "unreplicated_floor": 1e-12,
 }
 _COALESCENCE_PROFILE_OPTIONS = ("resolution_time", "time_grid")
 _COALESCENCE_PROFILE_DEFAULTS = {
-    "resolution_time": 1.0,
+    "resolution_time": 5.0,
     "time_grid": None,
 }
 _COALESCENCE_PDF_OPTIONS = tuple(dict.fromkeys(
@@ -949,7 +974,7 @@ _COALESCENCE_PDF_FORWARD_OPTIONS = tuple(dict.fromkeys(
 _FORK_DENSITY_DIRECTIONALITY_OPTIONS = ("time_grid", "resolution_time")
 _FORK_DENSITY_DIRECTIONALITY_DEFAULTS = {
     "time_grid": None,
-    "resolution_time": 1.0,
+    "resolution_time": 5.0,
 }
 
 
@@ -1021,6 +1046,7 @@ _TIMING_TO_CONSTANT_FIRING_OPTIONS = {
     "neighbourhood_range",
     "fit_step",
     "maxiter",
+    "error",
     "sim_number",
     "err_threshold",
     "rate_bounds",
@@ -1036,6 +1062,7 @@ _TIMING_TO_SPATIAL_FIRING_OPTIONS = {
     "neighbourhood_range",
     "fit_step",
     "maxiter",
+    "error",
     "sim_number",
     "err_threshold",
     "deviation_threshold",
@@ -1082,6 +1109,7 @@ _TIMING_TO_CONSTANT_SPEED_OPTIONS = {
     "neighbourhood_range",
     "fit_step",
     "maxiter",
+    "error",
     "sim_number",
     "speed_bounds",
     "initial_fork_speed",
@@ -1093,11 +1121,13 @@ _TIMING_TO_CONSTANT_SPEED_OPTIONS = {
 }
 
 _TIMING_TO_SPATIAL_SPEED_OPTIONS = {
+    "target_shape",
     "resolution",
     "resolution_time",
     "neighbourhood_range",
     "fit_step",
     "maxiter",
+    "error",
     "space_fit_step",
     "space_maxiter",
     "sim_number",
@@ -1112,6 +1142,7 @@ _TIMING_TO_SPATIAL_SPEED_OPTIONS = {
 }
 
 _TIMING_TO_GENERAL_SPEED_OPTIONS = _TIMING_TO_SPATIAL_SPEED_OPTIONS | {
+    "target_shape",
     "resolution_time",
     "time_grid",
     "T0",
@@ -1141,6 +1172,7 @@ _TIMING_TO_JOINT_KINETICS_OPTIONS = {
     "target_form",
     "fit_step",
     "maxiter",
+    "error",
     "sim_number",
     "space_init_fit_step",
     "space_init_maxiter",
@@ -1338,7 +1370,7 @@ class DataTypeMapper:
             "DNAscape rmap route registry\n"
             f"  routes: {n_implemented} implemented / {n_routes} registered\n"
             f"  targets: {targets}\n"
-            "  use rmap.available() for a user-facing table and "
+            "  use rmap.targets() for a user-facing target table and "
             "rmap.development() for the full internal registry"
         )
 
@@ -1842,7 +1874,7 @@ class DataTypeMapper:
         methods = {spec.method for spec in self._specs}
         forward_defaults = {
             "resolution": 1.0,
-            "resolution_time": 1.0,
+            "resolution_time": 5.0,
             "time_grid": None,
             "max_time": None,
             "max_rep_time": None,
@@ -2076,7 +2108,7 @@ class DataTypeMapper:
         methods = {spec.method for spec in self._specs}
         defaults = {
             "resolution": 1.0,
-            "resolution_time": 1.0,
+            "resolution_time": 5.0,
             "time_grid": None,
             "max_time": None,
             "max_rep_time": None,
@@ -2600,14 +2632,14 @@ class DataTypeMapper:
             for key in sorted(groups, key=lambda item: (item[0], item[1]))
         )
 
-    def available(self, target=None, source=None, implemented=None):
-        """Return a compact catalogue of available mapping targets.
+    def targets(self, target=None, source=None, implemented=None):
+        """Return a compact catalogue of mapping targets.
 
         By default the table shows implemented core mapping targets. Use
         ``requirements`` for the source data and assumptions needed for a
         specific target. Parameters can narrow or expand the catalogue, e.g.
-        ``rmap.available(target="firing_rate")`` or
-        ``rmap.available(target=("replicated_fraction", "fork_density"))``.
+        ``rmap.targets(target="firing_rate")`` or
+        ``rmap.targets(target=("replicated_fraction", "fork_density"))``.
         """
         if implemented is None:
             implemented = True
@@ -2615,8 +2647,15 @@ class DataTypeMapper:
         target_names = target_names if isinstance(target_names, (tuple, list, set)) else (target_names,)
         target_order = tuple(_canonical_feature(name) for name in target_names)
         columns = ("target", "description")
-        filtered = self._filtered_specs(target=target_order, source=source, implemented=implemented)
+        filtered = self._filtered_specs(
+            target=target_order if target is not None else None,
+            source=source,
+            implemented=implemented,
+        )
         available_targets = {spec.target for spec in filtered}
+        if target is None:
+            extra_targets = tuple(sorted(available_targets.difference(target_order)))
+            target_order = target_order + extra_targets
         records = []
         for target_name in target_order:
             if target_name not in available_targets:
@@ -2628,6 +2667,10 @@ class DataTypeMapper:
                 }
             )
         return self._table(records, columns)
+
+    def available(self, target=None, source=None, implemented=None):
+        """Backward-compatible alias for ``rmap.targets()``."""
+        return self.targets(target=target, source=source, implemented=implemented)
 
     def requirements(
         self,
@@ -2794,6 +2837,7 @@ rmap.register(
         "neighbourhood_range",
         "fit_step",
         "maxiter",
+        "error",
         "err_threshold",
         "rate_bounds",
         "verbose",
@@ -2819,6 +2863,7 @@ rmap.register(
         "neighbourhood_range",
         "fit_step",
         "maxiter",
+        "error",
         "sim_number",
         "err_threshold",
         "deviation_threshold",
@@ -2851,6 +2896,7 @@ rmap.register(
         "neighbourhood_range",
         "fit_step",
         "maxiter",
+        "error",
         "sim_number",
         "err_threshold",
         "rate_bounds",
@@ -2878,6 +2924,7 @@ rmap.register(
         "neighbourhood_range",
         "fit_step",
         "maxiter",
+        "error",
         "sim_number",
         "err_threshold",
         "deviation_threshold",
@@ -2908,6 +2955,7 @@ rmap.register(
         "neighbourhood_range",
         "fit_step",
         "maxiter",
+        "error",
         "speed_bounds",
         "initial_fork_speed",
         "verbose",
@@ -2935,6 +2983,7 @@ rmap.register(
         "resolution_time",
         "fit_step",
         "maxiter",
+        "error",
         "sim_number",
         "speed_bounds",
         "initial_fork_speed",
@@ -2963,10 +3012,12 @@ rmap.register(
         "neighbourhood_range",
         "fit_step",
         "maxiter",
+        "error",
         "space_fit_step",
         "space_maxiter",
         "speed_bounds",
         "initial_fork_speed",
+        "target_shape",
         "smoothw",
         "verbose",
         "print_every",
@@ -2974,12 +3025,12 @@ rmap.register(
         "n_bins",
         "target_form",
     ),
-    default_assumptions={"verbose": True, "target_form": "space"},
+    default_assumptions={"verbose": True, "target_form": "space", "target_shape": "free"},
     source_kinds=(
         ("replication_timing", ("x",)),
         ("firing_rate", ("scalar", "x")),
     ),
-    assumption_values=(("target_form", ("space",)),),
+    assumption_values=(("target_form", ("space",)), ("target_shape", ("free", "exponential"))),
     description="Spatial effective fit of v(x) from timing and firing rate.",
 )
 rmap.register(
@@ -2992,11 +3043,13 @@ rmap.register(
         "resolution_time",
         "fit_step",
         "maxiter",
+        "error",
         "space_fit_step",
         "space_maxiter",
         "sim_number",
         "speed_bounds",
         "initial_fork_speed",
+        "target_shape",
         "smoothw",
         "refine_seed",
         "verbose",
@@ -3005,12 +3058,12 @@ rmap.register(
         "n_bins",
         "target_form",
     ),
-    default_assumptions={"verbose": True, "target_form": "space"},
+    default_assumptions={"verbose": True, "target_form": "space", "target_shape": "free"},
     source_kinds=(
         ("replication_timing", ("x",)),
         ("firing_rate", ("t", "xt")),
     ),
-    assumption_values=(("target_form", ("space",)),),
+    assumption_values=(("target_form", ("space",)), ("target_shape", ("free", "exponential"))),
     description="Spatial effective fit of v(x) from timing and time-dependent firing rate.",
 )
 rmap.register(
@@ -3024,6 +3077,7 @@ rmap.register(
         "neighbourhood_range",
         "fit_step",
         "maxiter",
+        "error",
         "space_fit_step",
         "space_maxiter",
         "speed_bounds",
@@ -3042,15 +3096,16 @@ rmap.register(
         "perQ",
         "n_bins",
         "target_form",
+        "target_shape",
         "time_grid",
         "T0",
     ),
-    default_assumptions={"verbose": True, "target_form": "time"},
+    default_assumptions={"verbose": True, "target_form": "time", "target_shape": "free"},
     source_kinds=(
         ("replication_timing", ("x",)),
         ("firing_rate", ("scalar", "x")),
     ),
-    assumption_values=(("target_form", ("time",)),),
+    assumption_values=(("target_form", ("time",)), ("target_shape", ("free", "exponential"))),
     description="Time-only effective fit of v(t) from timing and spatial firing rate.",
 )
 rmap.register(
@@ -3066,6 +3121,7 @@ rmap.register(
         "temporal_smoothw",
         "fit_step",
         "maxiter",
+        "error",
         "temporal_fit_step",
         "temporal_maxiter",
         "temporal_sim_number",
@@ -3080,13 +3136,14 @@ rmap.register(
         "perQ",
         "n_bins",
         "target_form",
+        "target_shape",
     ),
-    default_assumptions={"verbose": True, "target_form": "time"},
+    default_assumptions={"verbose": True, "target_form": "time", "target_shape": "free"},
     source_kinds=(
         ("replication_timing", ("x",)),
         ("firing_rate", ("t", "xt")),
     ),
-    assumption_values=(("target_form", ("time",)),),
+    assumption_values=(("target_form", ("time",)), ("target_shape", ("free", "exponential"))),
     description="Time-only effective fit of v(t) from timing and time-dependent firing rate.",
 )
 rmap.register(
@@ -3100,6 +3157,7 @@ rmap.register(
         "neighbourhood_range",
         "fit_step",
         "maxiter",
+        "error",
         "space_fit_step",
         "space_maxiter",
         "speed_bounds",
@@ -3123,15 +3181,16 @@ rmap.register(
         "perQ",
         "n_bins",
         "target_form",
+        "target_shape",
         "time_grid",
         "T0",
     ),
-    default_assumptions={"verbose": True, "target_form": "spacetime"},
+    default_assumptions={"verbose": True, "target_form": "spacetime", "target_shape": "free"},
     source_kinds=(
         ("replication_timing", ("x",)),
         ("firing_rate", ("xt",)),
     ),
-    assumption_values=(("target_form", ("spacetime",)),),
+    assumption_values=(("target_form", ("spacetime",)), ("target_shape", ("free", "exponential"))),
     description="Space-time effective fit of v(x,t) from timing and space-time firing rate.",
 )
 rmap.register(
@@ -3146,6 +3205,7 @@ rmap.register(
         "T0",
         "fit_step",
         "maxiter",
+        "error",
         "space_fit_step",
         "space_maxiter",
         "temporal_fit_step",
@@ -3167,13 +3227,14 @@ rmap.register(
         "perQ",
         "n_bins",
         "target_form",
+        "target_shape",
     ),
-    default_assumptions={"verbose": True, "target_form": "spacetime"},
+    default_assumptions={"verbose": True, "target_form": "spacetime", "target_shape": "free"},
     source_kinds=(
         ("replication_timing", ("x",)),
         ("firing_rate", ("scalar", "x", "t")),
     ),
-    assumption_values=(("target_form", ("spacetime",)),),
+    assumption_values=(("target_form", ("spacetime",)), ("target_shape", ("free", "exponential"))),
     description="Space-time effective fit of v(x,t) from timing and general firing rate.",
 )
 rmap.register(
@@ -3254,6 +3315,7 @@ rmap.register(
         "neighbourhood_range",
         "fit_step",
         "maxiter",
+        "error",
         "err_threshold",
         "rate_bounds",
         "verbose",
@@ -3278,6 +3340,7 @@ rmap.register(
         "neighbourhood_range",
         "fit_step",
         "maxiter",
+        "error",
         "sim_number",
         "err_threshold",
         "deviation_threshold",
@@ -3308,6 +3371,7 @@ rmap.register(
         "neighbourhood_range",
         "fit_step",
         "maxiter",
+        "error",
         "sim_number",
         "err_threshold",
         "rate_bounds",
@@ -3335,6 +3399,7 @@ rmap.register(
         "neighbourhood_range",
         "fit_step",
         "maxiter",
+        "error",
         "sim_number",
         "err_threshold",
         "deviation_threshold",
@@ -3364,6 +3429,7 @@ rmap.register(
         "neighbourhood_range",
         "fit_step",
         "maxiter",
+        "error",
         "sim_number",
         "err_threshold",
         "deviation_threshold",
@@ -3396,7 +3462,7 @@ rmap.register(
     default_assumptions={
         "verbose": True,
         "target_form": "time",
-        "target_shape": "free",
+        "target_shape": "weibull",
         "weibull_shape": 2.0,
         "weibull_delay": 0.0,
         "fit_weibull_shape": False,
@@ -3408,7 +3474,7 @@ rmap.register(
         ("fork_speed", ("scalar", "x", "t", "xt")),
     ),
     assumption_values=(("target_form", ("time",)), ("target_shape", ("free", "weibull"))),
-    description="Time-only firing-rate target lifted from the fitted spatial firing profile.",
+    description="Time-only firing-rate target; defaults to a Weibull firing-time model.",
 )
 rmap.register(
     ("replication_timing", "fork_speed"),
@@ -3421,6 +3487,7 @@ rmap.register(
         "neighbourhood_range",
         "fit_step",
         "maxiter",
+        "error",
         "sim_number",
         "err_threshold",
         "deviation_threshold",
@@ -3458,7 +3525,7 @@ rmap.register(
     default_assumptions={
         "verbose": True,
         "target_form": "spacetime",
-        "target_shape": "free",
+        "target_shape": "weibull",
         "weibull_shape": 2.0,
         "weibull_delay": 0.0,
         "fit_weibull_shape": False,
@@ -3470,7 +3537,7 @@ rmap.register(
         ("fork_speed", ("scalar", "x", "t", "xt")),
     ),
     assumption_values=(("target_form", ("spacetime",)), ("target_shape", ("free", "weibull"))),
-    description="Space-time firing-rate target lifted from the fitted spatial firing profile.",
+    description="Space-time firing-rate target; defaults to a Weibull firing-time model.",
 )
 rmap.register(
     "replication_timing",
@@ -3487,6 +3554,7 @@ rmap.register(
         "initial_kinetics",
         "target_form",
         "maxiter",
+        "error",
         "space_init_fit_step",
         "space_init_maxiter",
         "space_init_sim_number",
@@ -3769,7 +3837,7 @@ rmap.register(
 
 _COALESCENCE_FORWARD_DEFAULTS = {
     "resolution": 1.0,
-    "resolution_time": 1.0,
+    "resolution_time": 5.0,
     "time_grid": None,
     "max_time": None,
     "max_rep_time": None,
@@ -4055,7 +4123,7 @@ for _target, _defaults in _SIMULATION_DERIVED_FEATURES.items():
 
 _FORK_DENSITY_DEFAULTS = {
     "resolution": 1.0,
-    "resolution_time": 1.0,
+    "resolution_time": 5.0,
     "time_grid": None,
     "max_time": None,
     "max_rep_time": None,

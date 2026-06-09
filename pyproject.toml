@@ -21,4 +21,4 @@ dependencies = [
 dnascape = "dnascape.cli:main"
 
 [tool.setuptools]
-packages = ["dnascape"]
+packages = ["dnascape", "dnascape.tests"]

@@ -112,24 +112,36 @@ def arrint(a, b):
 def arrcomp(a, b):
     return np.setdiff1d(a, b)
 
-def etaf(it, maxiter, start_time):
+def _eta_label(label):
+    return "" if label is None else f"[{label}]  "
+
+
+def etaf(it, maxiter, start_time, done=None, label=None):
     elapsed = time.time() - start_time
     sims_left = maxiter - it
     avg_time_per_sim = elapsed / it
     eta_sec = sims_left * avg_time_per_sim
+    if done is None:
+        done = it >= maxiter
+    if done:
+        eta_sec = 0.0
     print(
-        f"[{it}/{maxiter}]  Elapsed: {hms(elapsed)}  ETA: {hms(eta_sec)}",
-        end="\r",
+        f"{_eta_label(label)}[{it}/{maxiter}]  Elapsed: {hms(elapsed)}  ETA: {hms(eta_sec)}",
+        end="\n" if done else "\r",
         flush=True,
     )
 
-def etaferr(it, maxiter, start_time, err):
+def etaferr(it, maxiter, start_time, err, done=None, label="rmap"):
     elapsed = time.time() - start_time
     sims_left = maxiter - it
     avg_time_per_sim = elapsed / it
     eta_sec = sims_left * avg_time_per_sim
+    if done is None:
+        done = it >= maxiter
+    if done:
+        eta_sec = 0.0
     print(
-        f"[{it}/{maxiter}]  Elapsed: {hms(elapsed)}  ETA: {hms(eta_sec)}  MSE: {err:.4e}",
-        end="\r",
+        f"{_eta_label(label)}[{it}/{maxiter}]  Elapsed: {hms(elapsed)}  ETA: {hms(eta_sec)}  MSE: {err:.4e}",
+        end="\n" if done else "\r",
         flush=True,
     )

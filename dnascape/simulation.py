@@ -89,9 +89,9 @@ def _resolve_n_bins(
             if arr.shape[1] == 1 and arr.shape[0] > 1:
                 candidates.append((name, int(arr.shape[0])))
                 return
-            candidates.append((name, int(arr.shape[1])))
+            candidates.append((name, int(arr.shape[0])))
             return
-        raise ValueError(f"{name} must be scalar, (n,), (1,T), (n,1), or (T,n).")
+        raise ValueError(f"{name} must be scalar, (n,), (1,T), (n,1), or (n,T).")
 
     add_candidate(firing_rate, "firing_rate")
     add_candidate(fork_speed, "fork_speed")
@@ -151,12 +151,12 @@ def _as_rate_field(field, name, n_bins):
             if np.any(~np.isfinite(values_x)) or np.any(values_x < 0):
                 raise ValueError(f"{name} (n,1) must be finite and >= 0.")
             return "x", values_x.astype(float, copy=False), None
-        if arr.shape[1] != n_bins:
-            raise ValueError(f"{name} (T,n) must have n={n_bins} columns, got {arr.shape[1]}.")
+        if arr.shape[0] != n_bins:
+            raise ValueError(f"{name} (n,T) must have n={n_bins} rows, got {arr.shape[0]}.")
         if np.any(~np.isfinite(arr)) or np.any(arr < 0):
-            raise ValueError(f"{name} (T,n) must be finite and >= 0.")
-        return "xt", arr.astype(float, copy=False), int(arr.shape[0])
-    raise ValueError(f"{name} must be scalar, (n,), (1,T), (n,1), or (T,n).")
+            raise ValueError(f"{name} (n,T) must be finite and >= 0.")
+        return "xt", arr.T.astype(float, copy=False), int(arr.shape[1])
+    raise ValueError(f"{name} must be scalar, (n,), (1,T), (n,1), or (n,T).")
 
 
 def _as_speed_field(field, name, n_bins):
@@ -185,12 +185,12 @@ def _as_speed_field(field, name, n_bins):
             if np.any(~np.isfinite(values_x)) or np.any(values_x <= 0):
                 raise ValueError(f"{name} (n,1) must be finite and > 0.")
             return "x", values_x.astype(float, copy=False), None
-        if arr.shape[1] != n_bins:
-            raise ValueError(f"{name} (T,n) must have n={n_bins} columns, got {arr.shape[1]}.")
+        if arr.shape[0] != n_bins:
+            raise ValueError(f"{name} (n,T) must have n={n_bins} rows, got {arr.shape[0]}.")
         if np.any(~np.isfinite(arr)) or np.any(arr <= 0):
-            raise ValueError(f"{name} (T,n) must be finite and > 0.")
-        return "xt", arr.astype(float, copy=False), int(arr.shape[0])
-    raise ValueError(f"{name} must be scalar, (n,), (1,T), (n,1), or (T,n).")
+            raise ValueError(f"{name} (n,T) must be finite and > 0.")
+        return "xt", arr.T.astype(float, copy=False), int(arr.shape[1])
+    raise ValueError(f"{name} must be scalar, (n,), (1,T), (n,1), or (n,T).")
 
 
 def _normalise_firing_rate(firing_rate=None, ori_rate=None, initiation_rate=None):
@@ -221,7 +221,7 @@ def simulate_replication(
     firing_rate=None,
     fork_speed=1.4,
     resolution_space=1.0,
-    resolution_time=1.0,
+    resolution_time=5.0,
     resolution_x=None,
     resolution_t=None,
     rng=None,
@@ -245,7 +245,7 @@ def simulate_replication(
     """Run one stochastic replication simulation.
 
     ``firing_rate`` and ``fork_speed`` may be scalar, spatial ``(n,)``,
-    time-only ``(1, T)``, or space-time ``(T, n)`` fields. If neither input
+    time-only ``(1, T)``, or space-time ``(n, T)`` fields. If neither input
     contains a spatial axis, pass ``n_bins``, ``genome_length``, or
     ``interval_kb``.
     """
@@ -763,7 +763,7 @@ def rsim(
     fork_speed=1.4,
     sim_number=50,
     resolution_space=1.0,
-    resolution_time=1.0,
+    resolution_time=5.0,
     resolution_x=None,
     resolution_t=None,
     perQ=False,
@@ -797,7 +797,7 @@ def rsim(
     ``firing_rate`` is the preferred name for origin-initiation propensity.
     ``ori_rate`` and ``initiation_rate`` are accepted as compatibility aliases.
     Firing rate and fork speed support four field forms: scalar, ``(n,)``,
-    ``(1, T)``, and ``(T, n)``. If both kinetic inputs lack a spatial axis,
+    ``(1, T)``, and ``(n, T)``. If both kinetic inputs lack a spatial axis,
     pass ``n_bins``, ``genome_length``, or ``interval_kb``.
 
     For consistency with ``rmap``, kinetic inputs can also be supplied as
@@ -1153,7 +1153,7 @@ def rsim(
                             _range_add(sum_left_moving_fork_density_xt, cols0[Lm], j0[Lm], j1[Lm])
 
         if verbose and (i % int(print_every) == 0 or i == int(sim_number)):
-            etaf(it=i, maxiter=int(sim_number), start_time=start_time)
+            etaf(it=i, maxiter=int(sim_number), start_time=start_time, label="rsim")
 
     all_iods_kb = np.concatenate(all_iods) if all_iods else np.array([], dtype=float)
 
@@ -1197,13 +1197,13 @@ def rsim(
             sum_right_moving_fork_density_xt[:, x0:x1] /= float(sim_number)
             sum_left_moving_fork_density_xt[:, x0:x1] /= float(sim_number)
             if verbose:
-                etaf(it=j, maxiter=(n + dens_block_n - 1) // dens_block_n, start_time=post_start)
+                etaf(it=j, maxiter=(n + dens_block_n - 1) // dens_block_n, start_time=post_start, label="rsim")
 
-        avg_replicated_fraction_xt = sum_replicated_fraction_xt
-        avg_initiation_events_xt = sum_initiation_events_xt
-        avg_coalescence_events_xt = sum_coalescence_events_xt
-        avg_right_moving_fork_density_xt = sum_right_moving_fork_density_xt
-        avg_left_moving_fork_density_xt = sum_left_moving_fork_density_xt
+        avg_replicated_fraction_xt = sum_replicated_fraction_xt.T
+        avg_initiation_events_xt = sum_initiation_events_xt.T
+        avg_coalescence_events_xt = sum_coalescence_events_xt.T
+        avg_right_moving_fork_density_xt = sum_right_moving_fork_density_xt.T
+        avg_left_moving_fork_density_xt = sum_left_moving_fork_density_xt.T
         dt_grid_out = float(time_grid[1] - time_grid[0]) if time_grid is not None and time_grid.size >= 2 else 1.0
     else:
         avg_replicated_fraction_xt = None

@@ -184,19 +184,48 @@ def plot_gene_track(
     return ax
 
 def plotf(*arrays, labels=None, x_array=None, dual_axis=False, resolution=1, region_high=None, rname='Region',
-          invyQ=False, figsize=(10, 4), xlims=(None, None), ylims=(None, None), title='',
+          invyQ=False, figsize=(10, 4), limsx=(None, None), limsy=(None, None), title='',
           xtitle='Index', ytitle='Value', x_show=True, y_show=True, logyQ=False, logxQ=False,
           scale_matchQ=False, saveQ=False, sname='test', ext='pdf', layout_rect=(0.12, 0.15, 0.98, 0.95),
-          fig=None, ax=None, showQ=True, return_handles=False, time_array=None, resolution_t=1,
-          cmap='viridis', colorbarQ=True, logzQ=False, zlims=None):
+          fig=None, ax=None, showQ=True, return_handles=False, time_array=None, resolution_t=5,
+          cmap='viridis', colorbarQ=True, logzQ=False, limsz=None, label_loc="lower right", **kwargs):
 
     arrays = [np.asarray(a) for a in arrays]
-    xlims = (None, None) if xlims is None else xlims
-    ylims = (None, None) if ylims is None else ylims
-    if not isinstance(xlims, (list, tuple)) or len(xlims) != 2:
-        raise ValueError("xlims must be None or a (minimum, maximum) pair.")
-    if not isinstance(ylims, (list, tuple)) or len(ylims) != 2:
-        raise ValueError("ylims must be None or a (minimum, maximum) pair.")
+
+    def _is_default_limit(value):
+        return (
+            value is None
+            or (
+                isinstance(value, (list, tuple))
+                and len(value) == 2
+                and value[0] is None
+                and value[1] is None
+            )
+        )
+
+    for old_name, new_name in (("xlims", "limsx"), ("ylims", "limsy"), ("zlims", "limsz")):
+        if old_name in kwargs:
+            if new_name == "limsx":
+                if not _is_default_limit(limsx):
+                    raise ValueError("Pass only one of limsx or xlims.")
+                limsx = kwargs.pop(old_name)
+            elif new_name == "limsy":
+                if not _is_default_limit(limsy):
+                    raise ValueError("Pass only one of limsy or ylims.")
+                limsy = kwargs.pop(old_name)
+            else:
+                if limsz is not None:
+                    raise ValueError("Pass only one of limsz or zlims.")
+                limsz = kwargs.pop(old_name)
+    if kwargs:
+        unknown = ", ".join(sorted(kwargs))
+        raise TypeError(f"plotf() got unexpected keyword argument(s): {unknown}")
+    limsx = (None, None) if limsx is None else limsx
+    limsy = (None, None) if limsy is None else limsy
+    if not isinstance(limsx, (list, tuple)) or len(limsx) != 2:
+        raise ValueError("limsx must be None or a (minimum, maximum) pair.")
+    if not isinstance(limsy, (list, tuple)) or len(limsy) != 2:
+        raise ValueError("limsy must be None or a (minimum, maximum) pair.")
     n = len(arrays)
     heatmapQ = (
         n == 1
@@ -271,6 +300,74 @@ def plotf(*arrays, labels=None, x_array=None, dual_axis=False, resolution=1, reg
         fig_.subplots_adjust(left=layout_rect[0], bottom=layout_rect[1],
                              right=layout_rect[2], top=layout_rect[3])
 
+    def _limit_pair(lims, name):
+        lims = (None, None) if lims is None else lims
+        if not isinstance(lims, (list, tuple)) or len(lims) != 2:
+            raise ValueError(f"{name} must be None or a (minimum, maximum) pair.")
+        return lims[0], lims[1]
+
+    def _dual_limit_pairs(lims, name):
+        lims = (None, None) if lims is None else lims
+        if not isinstance(lims, (list, tuple)) or len(lims) != 2:
+            raise ValueError(
+                f"{name} must be None, a shared (minimum, maximum) pair, "
+                "or a pair of limit pairs for dual axes."
+            )
+        first, second = lims
+        nested = (
+            isinstance(first, (list, tuple))
+            or isinstance(second, (list, tuple))
+        )
+        if nested:
+            return _limit_pair(first, name), _limit_pair(second, name)
+        return _limit_pair(lims, name), _limit_pair(lims, name)
+
+    def _apply_axis_limits(ax_, limsx_=None, limsy_=None, invyQ_=False):
+        if limsx_ is not None:
+            ax_.set_xlim(*_limit_pair(limsx_, "limsx"))
+        if limsy_ is not None:
+            ax_.set_ylim(*_limit_pair(limsy_, "limsy"))
+        if invyQ_:
+            ax_.invert_yaxis()
+
+    def _legend_loc(loc):
+        if loc is None:
+            return None
+        aliases = {
+            "top right": "upper right",
+            "top left": "upper left",
+            "bottom right": "lower right",
+            "bottom left": "lower left",
+            "top center": "upper center",
+            "bottom center": "lower center",
+            "center right": "center right",
+            "center left": "center left",
+        }
+        key = str(loc).strip().lower().replace("_", " ").replace("-", " ")
+        return aliases.get(key, loc)
+
+    def _align_multiline_legend_handles(legend):
+        if legend is None:
+            return
+        handles = getattr(legend, "legend_handles", None)
+        if handles is None:
+            handles = getattr(legend, "legendHandles", ())
+        fontsize = float(legend.prop.get_size_in_points())
+        for handle, text in zip(handles, legend.get_texts()):
+            label = text.get_text()
+            if "\n" not in label:
+                continue
+            text.set_multialignment("left")
+            line_count = label.count("\n") + 1
+            line_spacing = float(getattr(text, "_linespacing", 1.2))
+            shift = 0.5 * (line_count - 1) * fontsize * line_spacing
+            if hasattr(handle, "get_ydata") and hasattr(handle, "set_ydata"):
+                handle.set_ydata(np.asarray(handle.get_ydata(), dtype=float) + shift)
+            elif hasattr(handle, "get_y") and hasattr(handle, "set_y"):
+                handle.set_y(handle.get_y() + shift)
+
+    legend_loc = _legend_loc(label_loc)
+
     created_axes = ax is None
 
     if heatmapQ:
@@ -281,19 +378,19 @@ def plotf(*arrays, labels=None, x_array=None, dual_axis=False, resolution=1, reg
                 data = arr.reshape(-1, 1)
                 x_values = np.array([0.0])
             else:
-                data = arr
-                x_values = np.arange(arr.shape[1], dtype=float) * float(resolution)
+                data = arr.T
+                x_values = np.arange(arr.shape[0], dtype=float) * float(resolution)
         else:
             x_values = np.asarray(x_array, dtype=float)
             if x_values.ndim != 1 or x_values.size == 0:
                 raise ValueError("x_array must be a non-empty one-dimensional array for heatmaps.")
-            if arr.shape[1] == x_values.size:
-                data = arr
+            if arr.shape[0] == x_values.size and arr.shape[1] > 1:
+                data = arr.T
             elif arr.shape[0] == 1:
                 data = np.repeat(arr.reshape(-1, 1), x_values.size, axis=1)
             else:
                 raise ValueError(
-                    "For heatmaps, arrays must have shape (time, positions), or shape (1, time) "
+                    "For heatmaps, arrays must have shape (positions, time), or shape (1, time) "
                     "when a chromosome-position x_array is supplied."
                 )
 
@@ -318,16 +415,16 @@ def plotf(*arrays, labels=None, x_array=None, dual_axis=False, resolution=1, reg
         t_end = _sampled_axis_end(time_values)
         image_data = data
         norm = None
-        if zlims is None:
+        if limsz is None:
             vmin = vmax = None
         else:
-            if not isinstance(zlims, (list, tuple)) or len(zlims) != 2:
-                raise ValueError("zlims must be a (minimum, maximum) pair.")
-            vmin, vmax = zlims
+            if not isinstance(limsz, (list, tuple)) or len(limsz) != 2:
+                raise ValueError("limsz must be a (minimum, maximum) pair.")
+            vmin, vmax = limsz
             vmin = None if vmin is None else float(vmin)
             vmax = None if vmax is None else float(vmax)
             if vmin is not None and vmax is not None and vmax <= vmin:
-                raise ValueError("zlims maximum must be greater than its minimum.")
+                raise ValueError("limsz maximum must be greater than its minimum.")
 
         if logzQ:
             finite_positive = data[np.isfinite(data) & (data > 0)]
@@ -338,7 +435,7 @@ def plotf(*arrays, labels=None, x_array=None, dual_axis=False, resolution=1, reg
             if vmax is None:
                 vmax = float(np.nanmax(finite_positive))
             if vmin <= 0:
-                raise ValueError("logzQ=True requires a positive zlims minimum.")
+                raise ValueError("logzQ=True requires a positive limsz minimum.")
             if vmax <= vmin:
                 vmax = vmin * 10.0
             image_data = np.ma.masked_where(~np.isfinite(data) | (data <= 0), data)
@@ -358,10 +455,10 @@ def plotf(*arrays, labels=None, x_array=None, dual_axis=False, resolution=1, reg
 
         ax.set_xlabel(xtitle)
         ax.set_ylabel(ytitle)
-        x_lower = x_start if xlims[0] is None else xlims[0]
-        x_upper = x_end if xlims[1] is None else xlims[1]
-        y_lower = t_start if ylims[0] is None else ylims[0]
-        y_upper = t_end if ylims[1] is None else ylims[1]
+        x_lower = x_start if limsx[0] is None else limsx[0]
+        x_upper = x_end if limsx[1] is None else limsx[1]
+        y_lower = t_start if limsy[0] is None else limsy[0]
+        y_upper = t_end if limsy[1] is None else limsy[1]
 
         if logxQ:
             positive_x = x_values[np.isfinite(x_values) & (x_values > 0)]
@@ -377,14 +474,11 @@ def plotf(*arrays, labels=None, x_array=None, dual_axis=False, resolution=1, reg
             if y_lower <= 0:
                 y_lower = float(np.nanmin(positive_t))
 
-        ax.set_xlim(x_lower, x_upper)
-        ax.set_ylim(y_lower, y_upper)
         if logxQ:
             ax.set_xscale('log')
         if logyQ:
             ax.set_yscale('log')
-        if invyQ:
-            ax.invert_yaxis()
+        _apply_axis_limits(ax, (x_lower, x_upper), (y_lower, y_upper), invyQ_=invyQ)
 
         label = None
         if labels is not None:
@@ -465,17 +559,12 @@ def plotf(*arrays, labels=None, x_array=None, dual_axis=False, resolution=1, reg
         else:
             invyQ1 = invyQ2 = bool(invyQ)
 
-        if invyQ1:
-            ax1.invert_yaxis()
-        if invyQ2:
-            ax2.invert_yaxis()
-
         if scale_matchQ:
             match_yaxis_scales(ax1, ax2, arrays[0], arrays[1])
 
-        ax1.set_xlim(xlims)
-        ax1.set_ylim(ylims if not isinstance(ylims, tuple) else ylims[0])
-        ax2.set_ylim(ylims if not isinstance(ylims, tuple) else ylims[1])
+        limsy1, limsy2 = _dual_limit_pairs(limsy, "limsy")
+        _apply_axis_limits(ax1, limsx, limsy1, invyQ_=invyQ1)
+        _apply_axis_limits(ax2, None, limsy2, invyQ_=invyQ2)
 
         ax1.set_xlabel(xtitle)
         ax1.set_ylabel(lab1 if lab1 is not None else ytitle, color='tab:blue')
@@ -496,7 +585,8 @@ def plotf(*arrays, labels=None, x_array=None, dual_axis=False, resolution=1, reg
                 handles.append(p2)
                 labels_leg.append(lab2)
             if labels_leg:
-                ax2.legend(handles, labels_leg, loc="upper left")
+                legend = ax2.legend(handles, labels_leg, loc=legend_loc)
+                _align_multiline_legend_handles(legend)
 
         if not x_show:
             ax1.set_xlabel("")
@@ -549,11 +639,7 @@ def plotf(*arrays, labels=None, x_array=None, dual_axis=False, resolution=1, reg
         ax.set_yscale('log')
     if logxQ:
         ax.set_xscale('log')
-    if invyQ:
-        ax.invert_yaxis()
-
-    ax.set_xlim(xlims)
-    ax.set_ylim(ylims)
+    _apply_axis_limits(ax, limsx, limsy, invyQ_=invyQ)
 
     if show_labels:
         handles, labels_leg = ax.get_legend_handles_labels()
@@ -561,7 +647,8 @@ def plotf(*arrays, labels=None, x_array=None, dual_axis=False, resolution=1, reg
             handles = [region_handle] + handles
             labels_leg = [f"{rname}"] + labels_leg
         if labels_leg:
-            ax.legend(handles, labels_leg)
+            legend = ax.legend(handles, labels_leg, loc=legend_loc)
+            _align_multiline_legend_handles(legend)
 
     if not x_show:
         ax.set_xlabel("")
@@ -587,13 +674,13 @@ def plotf(*arrays, labels=None, x_array=None, dual_axis=False, resolution=1, reg
     return None
 
 def mplotf(marrays, mlabels=None, mx_array=None, mdual_axis=None, mresolution=None, mregion_high=None, mrname=None,
-           minvyQ=None, mfigsize=None, mxlims=None, mylims=None, mxtitle=None, mytitle=None,
+           minvyQ=None, mfigsize=None, mlimsx=None, mlimsy=None, mxtitle=None, mytitle=None,
            my_show=None, mlogyQ=None, mscale_matchQ=None, msaveQ=None, msname=None, mext=None,
-           mtime_array=None, mresolution_t=None, mcmap=None, mcolorbarQ=None, mlogzQ=None, mzlims=None,
+           mtime_array=None, mresolution_t=None, mcmap=None, mcolorbarQ=None, mlogzQ=None, mlimsz=None,
            showgeneQ=False, gtf_gz_path="data/other/gencode/gencode.v49.annotation.gtf.gz", gene_chrom=1,
            gene_denseQ=True, gene_show_names=True, gene_show_direction=False,
            figsize=(10, 4), layout_rect=(0.12, 0.15, 0.98, 0.95), hspace=0.15,
-           mheight_ratios=None, mlogxQ=None):
+           mheight_ratios=None, mlogxQ=None, mlabel_loc=None, **kwargs):
 
     k = len(marrays)
     W, H = figsize
@@ -602,6 +689,40 @@ def mplotf(marrays, mlabels=None, mx_array=None, mdual_axis=None, mresolution=No
         if isinstance(v, (list, tuple)):
             return v[i] if i < len(v) else default
         return v if v is not None else default
+
+    def is_limit_pair(v):
+        return (
+            isinstance(v, (list, tuple))
+            and len(v) == 2
+            and all(item is None or np.isscalar(item) for item in v)
+        )
+
+    def at_limits(v, i, default):
+        if v is None:
+            return default
+        if is_limit_pair(v):
+            return v
+        if isinstance(v, (list, tuple)):
+            return v[i] if i < len(v) else default
+        return v
+
+    for old_name, new_name in (("mxlims", "mlimsx"), ("mylims", "mlimsy"), ("mzlims", "mlimsz")):
+        if old_name in kwargs:
+            if new_name == "mlimsx":
+                if mlimsx is not None:
+                    raise ValueError("Pass only one of mlimsx or mxlims.")
+                mlimsx = kwargs.pop(old_name)
+            elif new_name == "mlimsy":
+                if mlimsy is not None:
+                    raise ValueError("Pass only one of mlimsy or mylims.")
+                mlimsy = kwargs.pop(old_name)
+            else:
+                if mlimsz is not None:
+                    raise ValueError("Pass only one of mlimsz or mzlims.")
+                mlimsz = kwargs.pop(old_name)
+    if kwargs:
+        unknown = ", ".join(sorted(kwargs))
+        raise TypeError(f"mplotf() got unexpected keyword argument(s): {unknown}")
 
     def first_array(g):
         return np.asarray(g[0] if isinstance(g, (list, tuple)) else g)
@@ -613,7 +734,7 @@ def mplotf(marrays, mlabels=None, mx_array=None, mdual_axis=None, mresolution=No
                 return None
             if arr.shape[1] == 1 and arr.shape[0] > 1:
                 return arr.shape[0]
-            return arr.shape[1]
+            return arr.shape[0]
         return len(arr)
 
     x0_in = at(mx_array, 0, None)
@@ -710,8 +831,8 @@ def mplotf(marrays, mlabels=None, mx_array=None, mdual_axis=None, mresolution=No
               region_high=at(mregion_high, i, None),
               rname=at(mrname, i, 'Region'),
               invyQ=at(minvyQ, i, False),
-              xlims=at(mxlims, i, (None, None)),
-              ylims=at(mylims, i, (None, None)),
+              limsx=at_limits(mlimsx, i, (None, None)),
+              limsy=at_limits(mlimsy, i, (None, None)),
               xtitle=at(mxtitle, i, 'Index'),
               ytitle=at(mytitle, i, 'Value'),
               x_show=(i == k - 1),   # bottom plot only (among plotf panels)
@@ -727,11 +848,12 @@ def mplotf(marrays, mlabels=None, mx_array=None, mdual_axis=None, mresolution=No
               ax=ax,
               showQ=False,
               time_array=at(mtime_array, i, None),
-              resolution_t=at(mresolution_t, i, 1),
+              resolution_t=at(mresolution_t, i, 5),
               cmap=at(mcmap, i, 'viridis'),
               colorbarQ=at(mcolorbarQ, i, True),
               logzQ=at(mlogzQ, i, False),
-              zlims=at(mzlims, i, None))
+              limsz=at_limits(mlimsz, i, None),
+              label_loc=at(mlabel_loc, i, "lower right"))
 
     xlim_start = xk_start
     if any(bool(at(mlogxQ, i, False)) for i in range(k)) and xlim_start <= 0:
@@ -740,7 +862,16 @@ def mplotf(marrays, mlabels=None, mx_array=None, mdual_axis=None, mresolution=No
             raise ValueError("mlogxQ=True requires positive shared x-axis values.")
         xlim_start = float(np.nanmin(positive_xk))
 
-    axs[-1].set_xlim(xlim_start, xk_end)
+    if mlimsx is None:
+        final_limsx = (xlim_start, xk_end)
+    elif is_limit_pair(mlimsx):
+        final_limsx = mlimsx
+    else:
+        final_limsx = at_limits(mlimsx, k - 1, (xlim_start, xk_end))
+
+    final_x_start = xlim_start if final_limsx[0] is None else final_limsx[0]
+    final_x_end = xk_end if final_limsx[1] is None else final_limsx[1]
+    axs[-1].set_xlim(final_x_start, final_x_end)
 
     # If the gene axis used set_xticks([]), it would have cleared the shared ticks.
     # Restore auto ticks + ensure bottom axis is visible.

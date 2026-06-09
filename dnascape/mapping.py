@@ -43,7 +43,7 @@ def _spatial_length(field):
             return None
         if arr.shape[1] == 1 and arr.shape[0] > 1:
             return int(arr.shape[0])
-        return int(arr.shape[1])
+        return int(arr.shape[0])
     return None
 
 
@@ -123,12 +123,12 @@ def _field_time_length(field, n_positions):
             return int(arr.shape[1])
         if arr.shape[1] == 1:
             return None
-        if arr.shape[1] == n_positions:
-            return int(arr.shape[0])
+        if arr.shape[0] == n_positions:
+            return int(arr.shape[1])
     return None
 
 
-def _fraction_time_axis(fields, n_positions, resolution_time=1.0, time_grid=None, max_time=None):
+def _fraction_time_axis(fields, n_positions, resolution_time=5.0, time_grid=None, max_time=None):
     resolution_time = float(resolution_time)
     if not np.isfinite(resolution_time) or resolution_time <= 0:
         raise ValueError("resolution_t must be a finite positive value.")
@@ -185,8 +185,8 @@ def _expand_space_time_field(field, n_time, n_positions, time_grid, resolution_t
         if arr.shape[0] != n_positions:
             raise ValueError(f"{name} column profiles must match the number of positions.")
         out = np.broadcast_to(arr.reshape(1, -1), (n_time, n_positions)).copy()
-    elif arr.ndim == 2 and arr.shape[1] == n_positions:
-        out = _interp_time_rows(arr, time_grid, resolution_time)
+    elif arr.ndim == 2 and arr.shape[0] == n_positions:
+        out = _interp_time_rows(arr.T, time_grid, resolution_time)
     else:
         raise ValueError(f"{name} must be scalar, x-dependent, time-dependent, or space-time dependent.")
 
@@ -292,7 +292,7 @@ def map_replicated_fraction_xt(
     fork_speed=1.4,
     resolution=1.0,
     resolution_x=None,
-    resolution_time=1.0,
+    resolution_time=5.0,
     resolution_t=None,
     time_grid=None,
     max_time=None,
@@ -344,11 +344,11 @@ def map_replicated_fraction_xt(
     else:
         A = _replicated_fraction_general_speed(x, t, I, v)
 
-    return -np.expm1(-np.maximum(A, 0.0))
+    return -np.expm1(-np.maximum(A, 0.0)).T
 
 
 def map_replicated_fraction(*args, **kwargs):
-    return np.nanmean(map_replicated_fraction_xt(*args, **kwargs), axis=1)
+    return np.nanmean(map_replicated_fraction_xt(*args, **kwargs), axis=0)
 
 
 def map_fork_densities_xt(
@@ -356,7 +356,7 @@ def map_fork_densities_xt(
     fork_speed=1.4,
     resolution=1.0,
     resolution_x=None,
-    resolution_time=1.0,
+    resolution_time=5.0,
     resolution_t=None,
     time_grid=None,
     max_time=None,
@@ -492,17 +492,17 @@ def map_fork_densities_xt(
         left_xt[time_index] = left
 
     return {
-        "replicated_fraction_xt": replicated_xt,
-        "right_fork_density_xt": right_xt,
-        "left_fork_density_xt": left_xt,
-        "fork_density_xt": right_xt + left_xt,
+        "replicated_fraction_xt": replicated_xt.T,
+        "right_fork_density_xt": right_xt.T,
+        "left_fork_density_xt": left_xt.T,
+        "fork_density_xt": (right_xt + left_xt).T,
     }
 
 
 def map_fork_densities_directionality(
     right_fork_density,
     left_fork_density,
-    resolution_time=1.0,
+    resolution_time=5.0,
     time_grid=None,
 ):
     right = np.asarray(right_fork_density, dtype=float)
@@ -516,22 +516,22 @@ def map_fork_densities_directionality(
         right_integral = right
         left_integral = left
     elif right.ndim == 2:
-        if right.shape[0] == 1:
-            right_integral = right[0]
-            left_integral = left[0]
+        if right.shape[1] == 1:
+            right_integral = right[:, 0]
+            left_integral = left[:, 0]
         elif time_grid is None:
             integrator = np.trapezoid if hasattr(np, "trapezoid") else np.trapz
-            right_integral = integrator(right, dx=float(resolution_time), axis=0)
-            left_integral = integrator(left, dx=float(resolution_time), axis=0)
+            right_integral = integrator(right, dx=float(resolution_time), axis=1)
+            left_integral = integrator(left, dx=float(resolution_time), axis=1)
         else:
             t = np.asarray(time_grid, dtype=float)
-            if t.ndim != 1 or t.size != right.shape[0]:
+            if t.ndim != 1 or t.size != right.shape[1]:
                 raise ValueError(
                     "time_grid must be one-dimensional and match the fork-density time axis."
                 )
             integrator = np.trapezoid if hasattr(np, "trapezoid") else np.trapz
-            right_integral = integrator(right, x=t, axis=0)
-            left_integral = integrator(left, x=t, axis=0)
+            right_integral = integrator(right, x=t, axis=1)
+            left_integral = integrator(left, x=t, axis=1)
     else:
         raise ValueError(
             "fork-density fields must be 1D spatial profiles or 2D space-time fields."
@@ -546,58 +546,58 @@ def map_fork_densities_directionality(
     )
 
 
-def _integrate_time_field(field_xt, resolution_time=1.0, time_grid=None, name="field"):
+def _integrate_time_field(field_xt, resolution_time=5.0, time_grid=None, name="field"):
     field = np.asarray(field_xt, dtype=float)
     if field.ndim != 2:
-        raise ValueError(f"{name} must be a time-by-position matrix.")
+        raise ValueError(f"{name} must be a position-by-time matrix.")
 
-    if field.shape[0] == 1:
-        return field[0]
+    if field.shape[1] == 1:
+        return field[:, 0]
 
     integrator = np.trapezoid if hasattr(np, "trapezoid") else np.trapz
     if time_grid is None:
-        return integrator(field, dx=float(resolution_time), axis=0)
+        return integrator(field, dx=float(resolution_time), axis=1)
 
     t = np.asarray(time_grid, dtype=float)
-    if t.ndim != 1 or t.size != field.shape[0]:
+    if t.ndim != 1 or t.size != field.shape[1]:
         raise ValueError(f"time_grid must match the time axis of {name}.")
-    return integrator(field, x=t, axis=0)
+    return integrator(field, x=t, axis=1)
 
 
 def map_initiation_events_xt(
     firing_rate,
     replicated_fraction_xt,
-    resolution_time=1.0,
+    resolution_time=5.0,
     time_grid=None,
 ):
     replicated = np.asarray(replicated_fraction_xt, dtype=float)
     if replicated.ndim != 2:
-        raise ValueError("replicated_fraction_xt must be a time-by-position matrix.")
+        raise ValueError("replicated_fraction_xt must be a position-by-time matrix.")
 
     if time_grid is None:
-        time_grid = np.arange(replicated.shape[0], dtype=float) * float(resolution_time)
+        time_grid = np.arange(replicated.shape[1], dtype=float) * float(resolution_time)
     else:
         time_grid = np.asarray(time_grid, dtype=float)
-        if time_grid.ndim != 1 or time_grid.size != replicated.shape[0]:
+        if time_grid.ndim != 1 or time_grid.size != replicated.shape[1]:
             raise ValueError("time_grid must match the time axis of replicated_fraction_xt.")
 
     initiation = _expand_space_time_field(
         firing_rate,
-        replicated.shape[0],
         replicated.shape[1],
+        replicated.shape[0],
         time_grid,
         resolution_time,
         "firing_rate",
         positive=True,
     )
     unreplicated = np.clip(1.0 - replicated, 0.0, 1.0)
-    return initiation * unreplicated
+    return initiation.T * unreplicated
 
 
 def map_initiation_events(
     firing_rate,
     replicated_fraction_xt,
-    resolution_time=1.0,
+    resolution_time=5.0,
     time_grid=None,
 ):
     events_xt = map_initiation_events_xt(
@@ -615,7 +615,7 @@ def map_initiation_events(
 
 def map_initiation_events_profile(
     initiation_events_xt,
-    resolution_time=1.0,
+    resolution_time=5.0,
     time_grid=None,
 ):
     return _integrate_time_field(
@@ -659,7 +659,7 @@ def _integrate_space_time_density(
     density_xt,
     resolution=1.0,
     x_array=None,
-    resolution_time=1.0,
+    resolution_time=5.0,
     time_grid=None,
     name="density_xt",
 ):
@@ -680,13 +680,13 @@ def map_probability_density_xt(
     event_density_xt,
     resolution=1.0,
     x_array=None,
-    resolution_time=1.0,
+    resolution_time=5.0,
     time_grid=None,
     name="event_density_xt",
 ):
     density = np.asarray(event_density_xt, dtype=float)
     if density.ndim != 2:
-        raise ValueError(f"{name} must be a time-by-position matrix.")
+        raise ValueError(f"{name} must be a position-by-time matrix.")
     if np.any(~np.isfinite(density)) or np.any(density < 0):
         raise ValueError(f"{name} must contain finite values >= 0.")
 
@@ -705,7 +705,7 @@ def map_probability_density_xt(
 
 def map_probability_density_profile(
     probability_density_xt,
-    resolution_time=1.0,
+    resolution_time=5.0,
     time_grid=None,
 ):
     return _integrate_time_field(
@@ -768,7 +768,7 @@ def map_origin_efficiency(
     resolution=1.0,
     x_array=None,
     region_names=None,
-    resolution_time=1.0,
+    resolution_time=5.0,
     time_grid=None,
 ):
     events = np.asarray(initiation_events, dtype=float)
@@ -799,7 +799,7 @@ def map_coalescence_events_xt(
     replicated_fraction_xt,
     right_fork_density_xt,
     left_fork_density_xt,
-    resolution_time=1.0,
+    resolution_time=5.0,
     time_grid=None,
     unreplicated_floor=1e-12,
 ):
@@ -807,28 +807,28 @@ def map_coalescence_events_xt(
     right = np.asarray(right_fork_density_xt, dtype=float)
     left = np.asarray(left_fork_density_xt, dtype=float)
     if replicated.ndim != 2:
-        raise ValueError("replicated_fraction_xt must be a time-by-position matrix.")
+        raise ValueError("replicated_fraction_xt must be a position-by-time matrix.")
     if right.shape != replicated.shape or left.shape != replicated.shape:
         raise ValueError("fork-density fields must match replicated_fraction_xt.")
 
     if time_grid is None:
-        time_grid = np.arange(replicated.shape[0], dtype=float) * float(resolution_time)
+        time_grid = np.arange(replicated.shape[1], dtype=float) * float(resolution_time)
     else:
         time_grid = np.asarray(time_grid, dtype=float)
-        if time_grid.ndim != 1 or time_grid.size != replicated.shape[0]:
+        if time_grid.ndim != 1 or time_grid.size != replicated.shape[1]:
             raise ValueError("time_grid must match the time axis of replicated_fraction_xt.")
 
     speed = _expand_space_time_field(
         fork_speed,
-        replicated.shape[0],
         replicated.shape[1],
+        replicated.shape[0],
         time_grid,
         resolution_time,
         "fork_speed",
         positive=True,
     )
     unreplicated = np.clip(1.0 - replicated, 0.0, 1.0)
-    numerator = 2.0 * speed * np.maximum(right, 0.0) * np.maximum(left, 0.0)
+    numerator = 2.0 * speed.T * np.maximum(right, 0.0) * np.maximum(left, 0.0)
     return np.divide(
         numerator,
         unreplicated,
@@ -839,7 +839,7 @@ def map_coalescence_events_xt(
 
 def map_coalescence_events_profile(
     coalescence_events_xt,
-    resolution_time=1.0,
+    resolution_time=5.0,
     time_grid=None,
 ):
     return _integrate_time_field(

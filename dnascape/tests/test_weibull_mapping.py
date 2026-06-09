@@ -24,12 +24,12 @@ class WeibullMappingTests(unittest.TestCase):
         survival_timing = np.trapezoid(
             fields["survival"],
             x=time_grid,
-            axis=0,
+            axis=1,
         )
         replicated_integral = np.trapezoid(
             1.0 - fields["survival"],
             x=time_grid,
-            axis=0,
+            axis=1,
         )
 
         self.assertTrue(np.allclose(fields["predicted_timing"], survival_timing))
@@ -68,10 +68,48 @@ class WeibullMappingTests(unittest.TestCase):
             return_info=True,
         )
 
-        self.assertEqual(fit["values"].shape, (time_grid.size, n))
+        self.assertEqual(fit["values"].shape, (n, time_grid.size))
         self.assertTrue(np.all(fit["alpha"] > 0))
         self.assertGreaterEqual(float(np.nanmin(fit["values"])), 1e-12)
         self.assertLess(float(np.nanmean(np.abs(fit["residual"]))), 0.5)
+
+    def test_weibull_is_default_for_time_resolved_firing_targets(self):
+        n = 10
+        fork_speed = 1.25
+        time_grid = np.arange(0.0, 120.0, 4.0)
+        synthetic = _weibull_survival_fields(
+            np.full(n, 2.0e-5),
+            fork_speed=fork_speed,
+            shape=2.0,
+            resolution=1.0,
+            resolution_time=4.0,
+            time_grid=time_grid,
+        )
+
+        common = {
+            "resolution_t": 4.0,
+            "time_grid": time_grid,
+            "maxiter": 2,
+            "verbose": False,
+        }
+        for target_form, expected_shape in (("time", (1, time_grid.size)), ("spacetime", (n, time_grid.size))):
+            with self.subTest(target_form=target_form):
+                fit = rmap(
+                    source={
+                        "replication_timing": synthetic["predicted_timing"],
+                        "fork_speed": fork_speed,
+                    },
+                    target="firing_rate",
+                    assumptions={
+                        **common,
+                        "target_form": target_form,
+                    },
+                    return_info=True,
+                )
+
+                self.assertEqual(fit["assumptions"]["target_shape"], "weibull")
+                self.assertEqual(fit["values"].shape, expected_shape)
+                self.assertGreaterEqual(float(np.nanmin(fit["values"])), 1e-12)
 
     def test_weibull_shape_fit_updates_shape_parameter(self):
         n = 18
