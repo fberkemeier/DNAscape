@@ -1,8 +1,10 @@
 import unittest
+from unittest.mock import patch
 
 import numpy as np
 
 from dnascape import rmap
+from dnascape import fitting
 
 
 class ForkSpeedShapeTests(unittest.TestCase):
@@ -116,6 +118,61 @@ class ForkSpeedShapeTests(unittest.TestCase):
 
         self.assertEqual(fit["assumptions"]["target_shape"], "free")
         self.assertEqual(fit["values"].shape, (1, time_grid.size))
+
+    def test_spacetime_fork_speed_runs_space_then_time_phases(self):
+        n = 8
+        time_grid = np.arange(0.0, 40.0, 5.0)
+        timing = np.linspace(15.0, 30.0, n)
+        firing_rate = np.tile(np.linspace(1e-5, 2e-5, n)[:, None], (1, time_grid.size))
+        calls = []
+
+        def fake_refine(field, *args, **kwargs):
+            calls.append((
+                kwargs.get("spacetime_space_fit_step"),
+                kwargs.get("spacetime_time_fit_step"),
+            ))
+            return np.asarray(field, dtype=float)
+
+        with patch("dnascape.fitting._refine_spacetime_speed", side_effect=fake_refine):
+            values = fitting.map_timing_firing_spacetime_speed(
+                {
+                    "replication_timing": timing,
+                    "firing_rate": firing_rate,
+                },
+                target_shape="free",
+                time_grid=time_grid,
+                maxiter=1,
+                verbose=False,
+            )
+
+        self.assertEqual(values.shape, (n, time_grid.size))
+        self.assertEqual(len(calls), 2)
+        self.assertGreater(calls[0][0], 0.0)
+        self.assertEqual(calls[0][1], 0.0)
+        self.assertEqual(calls[1][0], 0.0)
+        self.assertGreater(calls[1][1], 0.0)
+
+    def test_spacetime_exponential_speed_bypasses_factorized_refinement(self):
+        n = 8
+        time_grid = np.arange(0.0, 40.0, 5.0)
+        timing = np.linspace(15.0, 30.0, n)
+        firing_rate = np.tile(np.linspace(1e-5, 2e-5, n)[:, None], (1, time_grid.size))
+
+        with patch("dnascape.fitting._refine_spacetime_speed") as refine_mock:
+            values = fitting.map_timing_firing_spacetime_speed(
+                {
+                    "replication_timing": timing,
+                    "firing_rate": firing_rate,
+                },
+                target_shape="exponential",
+                time_grid=time_grid,
+                maxiter=0,
+                verbose=False,
+            )
+
+        self.assertEqual(values.shape, (n, time_grid.size))
+        self.assertFalse(refine_mock.called)
+        self.assertTrue(np.all(values > 0))
 
 
 if __name__ == "__main__":

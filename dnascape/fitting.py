@@ -11,7 +11,7 @@ from scipy.special import gamma
 
 from .constants import mapt
 from .io import _resolve_data_path, savecsv
-from .mapping import _normalise_resolution_x, map_firing_timing
+from .mapping import _normalise_resolution_x, map_firing_timing, map_replicated_fraction_xt
 from .simulation import rsim
 from .utils import etaferr, mean_squared_error, smoothf
 
@@ -2263,6 +2263,7 @@ def _fit_exponential_speed_shape(
     resolution=1.0,
     resolution_time=5.0,
     time_axis=None,
+    T0=None,
     initial_fork_speed=1.4,
     speed_bounds=None,
     fit_step=0.25,
@@ -2274,10 +2275,19 @@ def _fit_exponential_speed_shape(
     perQ=False,
     error=None,
 ):
-    """Fit v0 * exp(a_x x + a_t t) directly, without a free-field prefit."""
+    """Fit a low-dimensional exponential fork-slowness surface.
+
+    The fitted positive field is represented as
+    v(x,t) = v0 * exp(b_x X + b_t T), equivalently
+    s(x,t) = 1 / v(x,t) = s0 * exp(-b_x X - b_t T).
+    Timing is scored deterministically by integrating survival from the
+    analytical replicated-fraction map, not by stochastic simulation.
+    """
     form = _canonical_weibull_target_form(target_form)
     if form not in {"time", "spacetime"}:
         raise ValueError("direct exponential fork-speed fitting is implemented for v(t) and v(x,t).")
+    if perQ:
+        raise NotImplementedError("direct exponential fork-speed fitting currently supports linear geometry only.")
 
     T = np.asarray(observed_timing, dtype=float)
     if T.ndim != 1 or T.size == 0:
@@ -2301,148 +2311,175 @@ def _fit_exponential_speed_shape(
     fit_step = float(fit_step)
     if not np.isfinite(fit_step) or fit_step < 0:
         raise ValueError("fit_step must be finite and >= 0.")
+    finite_diff_step = max(fit_step, 1e-3)
     maxiter = int(maxiter)
-    sim_number = int(sim_number)
-    if sim_number <= 0:
-        raise ValueError("sim_number must be a positive integer.")
+    offset = 0.0 if T0 is None else float(T0)
+    if not np.isfinite(offset):
+        raise ValueError("T0 must be finite when supplied.")
+    target_timing = T - offset
 
-    n_params = 2 if form == "time" else 3
-    params = np.zeros(n_params, dtype=float)
-    params[0] = math.log(np.clip(reference_speed, low, high))
-    steps = np.full(n_params, max(fit_step, 1e-4), dtype=float)
-    min_step = 1e-4
+    firing = np.asarray(firing_rate, dtype=float)
+    if form == "spacetime":
+        if firing.ndim != 2 or firing.shape[0] != n_positions:
+            raise ValueError("firing_rate must have shape (positions, time) for direct v(x,t) fitting.")
+    elif firing.ndim == 2 and firing.shape[0] == 1:
+        pass
+    elif firing.ndim == 1 and firing.size == n_positions:
+        pass
+    elif firing.size == 1:
+        pass
+    else:
+        raise ValueError("firing_rate must be scalar, x-dependent, time-dependent, or space-time dependent.")
 
-    def clip_params(values):
-        out = np.asarray(values, dtype=float).copy()
-        out[0] = np.clip(out[0], math.log(low), math.log(high))
-        if out.size > 1:
-            out[1:] = np.clip(out[1:], -8.0, 8.0)
-        return out
+    crop = _refinement_crop_mask(n_positions, resolution, perQ=perQ, refine_edge_kb=refine_edge_kb)
+    valid_full = crop & np.isfinite(T) & np.isfinite(target_timing) & (target_timing > 0)
+    if not np.any(valid_full):
+        raise ValueError("replication_timing must contain finite positive values after edge filtering.")
 
-    def make_speed(values, mse=None):
-        values = clip_params(values)
+    max_fit_positions = 1500
+    valid_idx = np.flatnonzero(valid_full)
+    stride = max(1, int(math.ceil(valid_idx.size / max_fit_positions)))
+    fit_idx = valid_idx[::stride]
+    if fit_idx[-1] != valid_idx[-1]:
+        fit_idx = np.concatenate([fit_idx, valid_idx[-1:]])
+    T_fit = T[fit_idx]
+    resolution_fit = float(resolution) * float(stride)
+    x_fit_axis = x_axis[fit_idx]
+    x_fit_norm = _normalised_fit_axis(x_fit_axis)
+
+    if firing.ndim == 2 and firing.shape[0] == n_positions:
+        firing_fit = firing[fit_idx]
+    elif firing.ndim == 1 and firing.size == n_positions:
+        firing_fit = firing[fit_idx]
+    else:
+        firing_fit = firing
+
+    def make_speed_internal(values, full=True, mse=None, predicted=None):
+        values = np.asarray(values, dtype=float)
+        log_v0 = float(np.clip(values[0], math.log(low), math.log(high)))
+        b_t = float(np.clip(values[-1], -8.0, 8.0))
         if form == "time":
-            speed = np.exp(values[0] + values[1] * t_norm)[None, :]
-            ax = 0.0
-            at = float(values[1])
+            b_x = 0.0
+            speed = np.exp(log_v0 + b_t * t_norm)[None, :]
         else:
-            speed = np.exp(
-                values[0]
-                + values[1] * x_norm[None, :]
-                + values[2] * t_norm[:, None]
-            )
-            ax = float(values[1])
-            at = float(values[2])
+            b_x = float(np.clip(values[1], -8.0, 8.0))
+            x_values = x_norm if full else x_fit_norm
+            speed = np.exp(log_v0 + b_x * x_values[None, :] + b_t * t_norm[:, None])
         speed = np.clip(speed, low, high)
         info = {
             "target_shape": "exponential",
-            "fork_speed_v0": float(np.exp(values[0])),
-            "fork_speed_amplitude_x": ax,
-            "fork_speed_amplitude_t": at,
+            "speed_shape": "v0 * exp(b_x * X + b_t * T)",
+            "slowness_shape": "s0 * exp(-b_x * X - b_t * T)",
+            "fork_speed_v0": float(np.exp(log_v0)),
+            "fork_speed_amplitude_x": b_x,
+            "fork_speed_amplitude_t": b_t,
+            "fork_slowness_s0": float(np.exp(-log_v0)),
+            "fork_slowness_amplitude_x": -b_x,
+            "fork_slowness_amplitude_t": -b_t,
             "fit_mse": None if mse is None or not np.isfinite(mse) else float(mse),
         }
+        if predicted is not None:
+            info["replication_timing_fit"] = predicted
+            info["residual"] = predicted - T
         return _RmapInfoArray(speed, info=info)
 
-    fit_mask = np.zeros(n_positions, dtype=bool)
-    fit_mask[_fit_crop(n_positions, resolution, perQ=perQ)] = True
-
-    def score(values, seed=None):
-        speed = make_speed(values)
+    def predict_timing(values):
+        speed = make_speed_internal(values, full=False)
         fork_speed = speed if form == "time" else speed.T
-        predicted = rsim(
-            firing_rate=firing_rate,
+        fraction = map_replicated_fraction_xt(
+            firing_fit,
             fork_speed=fork_speed,
-            sim_number=sim_number,
-            resolution_space=resolution,
+            resolution=resolution_fit,
             resolution_time=resolution_time,
-            n_bins=n_positions,
-            perQ=perQ,
-            seed=seed,
-            verbose=False,
-        )["replication_timing"]
-        predicted = np.asarray(predicted, dtype=float)
-        valid = fit_mask & np.isfinite(T) & np.isfinite(predicted)
-        if not np.any(valid):
-            return np.inf, speed
-        return mean_squared_error(T[valid], predicted[valid]), speed
+            time_grid=time_axis,
+            n_bins=fit_idx.size,
+            perQ=False,
+        )
+        survival = np.clip(1.0 - np.asarray(fraction, dtype=float), 0.0, 1.0)
+        predicted = np.trapezoid(survival, time_axis, axis=1) + offset
+        return predicted
 
-    params = clip_params(params)
-    best_params = params.copy()
-    best_mse = np.inf
-    best_speed = make_speed(params)
+    best = {"loss": np.inf, "mse": np.inf, "params": None, "predicted": None}
     verbose = bool(refine_verbose) if refine_verbose is not None else False
     start_time = time.time()
-    score_count = 0
-    total_scores = max(1, maxiter) * (1 + 2 * n_params)
+    calls = 0
+    maxiter_display = max(1, maxiter)
+    stop_at_call_budget = maxiter > 0
 
-    def record_score(values, mse, speed):
-        nonlocal best_params, best_mse, best_speed, score_count
-        if mse < best_mse:
-            best_mse = mse
-            best_params = clip_params(values)
-            best_speed = make_speed(best_params, mse=best_mse)
-        score_count += 1
-        done = score_count >= total_scores or _error_reached(best_mse, error)
-        if verbose:
-            display_mse = best_mse if np.isfinite(best_mse) else mse
+    params0 = np.zeros(2 if form == "time" else 3, dtype=float)
+    params0[0] = math.log(np.clip(reference_speed, low, high))
+    bounds = [(math.log(low), math.log(high))]
+    if form == "spacetime":
+        bounds.append((-8.0, 8.0))
+    bounds.append((-8.0, 8.0))
+
+    def objective(values):
+        nonlocal calls
+        values = np.asarray(values, dtype=float)
+        if np.any(~np.isfinite(values)):
+            return 1e30
+        try:
+            predicted = predict_timing(values)
+        except Exception:
+            return 1e30
+        valid = np.isfinite(T_fit) & np.isfinite(predicted)
+        if not np.any(valid):
+            mse = np.inf
+            loss = 1e30
+        else:
+            residual = predicted[valid] - T_fit[valid]
+            mse = mean_squared_error(T_fit[valid], predicted[valid])
+            loss = 0.5 * float(np.dot(residual, residual))
+        calls += 1
+        if loss < best["loss"]:
+            best["loss"] = loss
+            best["mse"] = mse
+            best["params"] = values.copy()
+            best["predicted"] = predicted.copy()
+        done = calls >= maxiter_display or _error_reached(mse, error)
+        if verbose and calls <= maxiter_display:
             etaferr(
-                it=total_scores if done else score_count,
-                maxiter=total_scores,
+                it=maxiter_display if done else min(calls, maxiter_display),
+                maxiter=maxiter_display,
                 start_time=start_time,
-                err=display_mse,
+                err=best["mse"] if np.isfinite(best["mse"]) else mse,
                 done=done,
             )
-        return done
+        if (stop_at_call_budget and calls >= maxiter_display) or _error_reached(mse, error):
+            raise _FitConverged
+        return loss
 
     if maxiter <= 0:
-        mse, speed = score(params, seed=refine_seed)
-        if np.isfinite(mse):
-            return make_speed(params, mse=mse)
-        return speed
+        objective(params0)
+    else:
+        try:
+            minimize(
+                objective,
+                params0,
+                method="L-BFGS-B",
+                bounds=bounds,
+                options={
+                    "maxiter": maxiter,
+                    "maxfun": maxiter,
+                    "ftol": 1e-9,
+                    "eps": finite_diff_step,
+                    "maxls": 10,
+                },
+            )
+        except _FitConverged:
+            pass
 
-    for it in range(1, maxiter + 1):
-        seed = None if refine_seed is None else int(refine_seed) + it - 1
-        current_mse, current_speed = score(params, seed=seed)
-        if record_score(params, current_mse, current_speed):
-            break
-
-        trial_params = params.copy()
-        trial_mse = current_mse
-        for j in range(n_params):
-            for direction in (-1.0, 1.0):
-                candidate = params.copy()
-                candidate[j] += direction * steps[j]
-                candidate = clip_params(candidate)
-                candidate_mse, _ = score(candidate, seed=seed)
-                if record_score(candidate, candidate_mse, make_speed(candidate)):
-                    break
-                if candidate_mse < trial_mse:
-                    trial_mse = candidate_mse
-                    trial_params = candidate
-            if _error_reached(best_mse, error):
-                break
-
-        if trial_mse < current_mse:
-            params = trial_params
-        else:
-            steps *= 0.5
-
-        done = it == maxiter or _error_reached(best_mse, error) or np.all(steps <= min_step)
-        if done and it != maxiter:
-            if verbose and score_count < total_scores and not _error_reached(best_mse, error):
-                etaferr(
-                    it=total_scores,
-                    maxiter=total_scores,
-                    start_time=start_time,
-                    err=best_mse,
-                    done=True,
-                )
-            break
-
-    final_speed = make_speed(best_params, mse=best_mse)
-    if np.isfinite(best_mse):
-        return final_speed
-    return best_speed
+    params = best["params"] if best["params"] is not None else params0
+    full_speed = make_speed_internal(params, full=True, mse=best["mse"])
+    try:
+        full_predicted = predict_timing(params)
+        predicted_full = np.full(n_positions, np.nan, dtype=float)
+        predicted_full[fit_idx] = full_predicted
+        full_speed.info["replication_timing_fit"] = predicted_full
+        full_speed.info["residual"] = predicted_full - T
+    except Exception:
+        pass
+    return full_speed
 
 
 def _firing_bounds_from_profile(profile, firing_bounds=None, floor=0.0):
@@ -2821,6 +2858,28 @@ def map_timing_firing_spacetime_speed(
     if time_grid is None:
         time_grid = np.arange(firing_rate_xt.shape[0], dtype=float) * float(resolution_time)
 
+    if target_shape == "exponential":
+        direct_speed = _fit_exponential_speed_shape(
+            T,
+            firing_rate=firing_rate_xt.T,
+            target_form="spacetime",
+            resolution=resolution,
+            resolution_time=resolution_time,
+            time_axis=time_grid,
+            T0=T0,
+            initial_fork_speed=initial_fork_speed,
+            speed_bounds=speed_bounds,
+            fit_step=spacetime_fit_step,
+            maxiter=max(space_maxiter, temporal_maxiter),
+            sim_number=spacetime_sim_number,
+            refine_edge_kb=refine_edge_kb,
+            refine_seed=refine_seed,
+            refine_verbose=refine_verbose if refine_verbose is not None else verbose,
+            perQ=perQ,
+            error=error,
+        )
+        return direct_speed.T
+
     speed_space = map_timing_firing_spatial_speed(
         {"replication_timing": T, "firing_rate": firing_rate_space},
         resolution=resolution,
@@ -2855,15 +2914,6 @@ def map_timing_firing_spacetime_speed(
     speed_spacetime = np.clip(speed_spacetime, low, high)
     if refine_verbose is None:
         refine_verbose = bool(verbose)
-    if target_shape == "exponential":
-        speed_spacetime = _project_exponential_speed_shape(
-            speed_spacetime,
-            "spacetime",
-            resolution=resolution,
-            time_axis=time_grid,
-            speed_bounds=(low, high),
-        )
-        return speed_spacetime.T
 
     if update_mode == "factorized":
         def refine_factorized_phase(field, phase):
@@ -2902,6 +2952,7 @@ def map_timing_firing_spacetime_speed(
             speed_spacetime = refine_factorized_phase(speed_spacetime, "time")
             speed_spacetime = refine_factorized_phase(speed_spacetime, "space")
         else:
+            speed_spacetime = refine_factorized_phase(speed_spacetime, "space")
             speed_spacetime = refine_factorized_phase(speed_spacetime, "time")
         if target_shape == "exponential":
             speed_spacetime = _project_exponential_speed_shape(
