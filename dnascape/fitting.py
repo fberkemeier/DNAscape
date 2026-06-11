@@ -570,9 +570,12 @@ def _canonical_speed_target_shape(value):
         "loglinear": "exponential",
         "log_linear": "exponential",
         "multiplicative": "exponential",
+        "weibull": "weibull",
+        "weibull_hazard": "weibull",
+        "weibull_slowness": "weibull",
     }
     if text not in aliases:
-        raise ValueError("fork-speed target_shape must be 'free' or 'exponential'.")
+        raise ValueError("fork-speed target_shape must be 'free', 'exponential', or 'weibull'.")
     return aliases[text]
 
 
@@ -1965,6 +1968,8 @@ def map_timing_firing_spatial_speed(
     speed_bounds=None,
     initial_fork_speed=1.4,
     target_shape="free",
+    weibull_shape=2.0,
+    weibull_delay=0.0,
     error=None,
     smoothw=100,
     perQ=False,
@@ -2110,6 +2115,15 @@ def map_timing_firing_spatial_speed(
             resolution=resolution,
             speed_bounds=(low, high),
         )
+    if target_shape == "weibull":
+        return _project_weibull_speed_shape(
+            best_speed,
+            "space",
+            resolution=resolution,
+            speed_bounds=(low, high),
+            weibull_shape=weibull_shape,
+            weibull_delay=weibull_delay,
+        )
     return best_speed
 
 
@@ -2254,6 +2268,117 @@ def _project_exponential_speed_shape(
     if form == "spacetime":
         info["fork_speed_amplitude_x"] = float(coeffs[1])
     return _RmapInfoArray(fitted, info=info)
+
+
+def _weibull_speed_time_basis(time_axis, shape=2.0, delay=0.0):
+    time_axis = np.asarray(time_axis, dtype=float).reshape(-1)
+    if time_axis.size == 0 or np.any(~np.isfinite(time_axis)):
+        raise ValueError("time_grid must contain finite values for Weibull fork-speed targets.")
+    if time_axis.size > 1 and np.any(np.diff(time_axis) <= 0):
+        raise ValueError("time_grid must be strictly increasing for Weibull fork-speed targets.")
+    k = float(shape)
+    if not np.isfinite(k) or k <= 0:
+        raise ValueError("weibull_shape must be finite and positive.")
+    d = float(np.asarray(delay, dtype=float).reshape(-1)[0])
+    if not np.isfinite(d):
+        raise ValueError("weibull_delay must be finite for fork-speed targets.")
+    if time_axis.size > 1:
+        dt = float(np.nanmedian(np.diff(time_axis)))
+    else:
+        dt = 1.0
+    if not np.isfinite(dt) or dt <= 0:
+        dt = 1.0
+    elapsed = np.maximum(time_axis - d, 0.0) + 0.5 * dt
+    basis = k * np.power(np.maximum(elapsed, 1e-12), k - 1.0)
+    scale = float(np.nanmedian(basis[np.isfinite(basis) & (basis > 0)]))
+    if not np.isfinite(scale) or scale <= 0:
+        scale = 1.0
+    return basis / scale
+
+
+def _project_weibull_speed_shape(
+    speed_field,
+    target_form,
+    resolution=1.0,
+    time_axis=None,
+    speed_bounds=None,
+    weibull_shape=2.0,
+    weibull_delay=0.0,
+):
+    """Project fork speed through a Weibull-shaped slowness profile.
+
+    The fitted object is movement time per kb, s = 1 / v. For v(x,t),
+    s(x,t) = beta(x) * h_k(t), where h_k is a normalised Weibull hazard
+    shape and beta(x) is fitted independently at each genomic position.
+    """
+    form = _canonical_weibull_target_form(target_form)
+    speed = np.asarray(speed_field, dtype=float)
+    low, high = _speed_bounds_from_profile(speed, speed_bounds=speed_bounds)
+
+    if np.any(~np.isfinite(speed)) or np.any(speed <= 0):
+        raise ValueError("fork-speed field must contain finite positive values.")
+
+    if form == "space":
+        fitted = np.clip(speed.astype(float, copy=True), low, high)
+        beta = 1.0 / np.maximum(fitted, 1e-12)
+        info = {
+            "target_shape": "weibull",
+            "fork_speed_shape": "site-specific v(x)",
+            "fork_slowness_shape": "site-specific beta(x)",
+            "weibull_shape": float(weibull_shape),
+            "weibull_delay": float(np.asarray(weibull_delay, dtype=float).reshape(-1)[0]),
+            "fork_slowness_beta": beta,
+        }
+        return _RmapInfoArray(fitted, info=info)
+
+    if form == "time":
+        values = speed.reshape(-1)
+        if time_axis is None:
+            time_axis = np.arange(values.size, dtype=float)
+        basis = _weibull_speed_time_basis(time_axis, shape=weibull_shape, delay=weibull_delay)
+        slowness = 1.0 / np.maximum(values, 1e-12)
+        ok = np.isfinite(slowness) & np.isfinite(basis) & (basis > 0)
+        beta = float(np.dot(slowness[ok], basis[ok]) / max(np.dot(basis[ok], basis[ok]), 1e-30))
+        beta = max(beta, 1e-12)
+        fitted = 1.0 / np.maximum(beta * basis, 1e-12)
+        fitted = np.clip(fitted, low, high).reshape(speed.shape)
+        info = {
+            "target_shape": "weibull",
+            "fork_speed_shape": "1 / (beta * h_k(t))",
+            "fork_slowness_shape": "beta * h_k(t)",
+            "weibull_shape": float(weibull_shape),
+            "weibull_delay": float(np.asarray(weibull_delay, dtype=float).reshape(-1)[0]),
+            "fork_slowness_beta": beta,
+        }
+        return _RmapInfoArray(fitted, info=info)
+
+    if form == "spacetime":
+        if speed.ndim != 2:
+            raise ValueError("space-time fork speed must be a two-dimensional field.")
+        n_time, n_positions = speed.shape
+        if time_axis is None:
+            time_axis = np.arange(n_time, dtype=float)
+        basis = _weibull_speed_time_basis(time_axis, shape=weibull_shape, delay=weibull_delay)
+        if basis.size != n_time:
+            raise ValueError("time_grid must match the time axis of the speed field.")
+        slowness = 1.0 / np.maximum(speed, 1e-12)
+        denom = max(float(np.dot(basis, basis)), 1e-30)
+        beta = np.nansum(slowness * basis[:, None], axis=0) / denom
+        beta = np.maximum(np.where(np.isfinite(beta), beta, np.nanmedian(beta)), 1e-12)
+        fitted_slowness = beta[None, :] * basis[:, None]
+        fitted = 1.0 / np.maximum(fitted_slowness, 1e-12)
+        fitted = np.clip(fitted, low, high)
+        info = {
+            "target_shape": "weibull",
+            "fork_speed_shape": "1 / (beta(x) * h_k(t))",
+            "fork_slowness_shape": "beta(x) * h_k(t)",
+            "weibull_shape": float(weibull_shape),
+            "weibull_delay": float(np.asarray(weibull_delay, dtype=float).reshape(-1)[0]),
+            "fork_slowness_beta": beta,
+        }
+        return _RmapInfoArray(fitted, info=info)
+
+    raise ValueError("Weibull fork-speed target_shape is implemented for v(x), v(t), and v(x,t).")
 
 
 def _fit_exponential_speed_shape(
@@ -2698,6 +2823,8 @@ def map_timing_firing_temporal_speed(
     temporal_sim_number=100,
     speed_bounds=None,
     initial_fork_speed=1.4,
+    weibull_shape=2.0,
+    weibull_delay=0.0,
     smoothw=100,
     perQ=False,
     n_bins=None,
@@ -2727,6 +2854,8 @@ def map_timing_firing_temporal_speed(
         space_maxiter=space_maxiter,
         speed_bounds=speed_bounds,
         initial_fork_speed=initial_fork_speed,
+        weibull_shape=weibull_shape,
+        weibull_delay=weibull_delay,
         smoothw=smoothw,
         error=error,
         perQ=perQ,
@@ -2751,6 +2880,15 @@ def map_timing_firing_temporal_speed(
             "time",
             time_axis=time_axis,
             speed_bounds=(low, high),
+        )
+    if target_shape == "weibull":
+        return _project_weibull_speed_shape(
+            temporal.reshape(1, -1),
+            "time",
+            time_axis=time_axis,
+            speed_bounds=(low, high),
+            weibull_shape=weibull_shape,
+            weibull_delay=weibull_delay,
         )
     if refine_verbose is None:
         refine_verbose = bool(verbose)
@@ -2780,6 +2918,15 @@ def map_timing_firing_temporal_speed(
             "time",
             time_axis=time_axis,
             speed_bounds=(low, high),
+        )
+    if target_shape == "weibull":
+        speed_time = _project_weibull_speed_shape(
+            speed_time,
+            "time",
+            time_axis=time_axis,
+            speed_bounds=(low, high),
+            weibull_shape=weibull_shape,
+            weibull_delay=weibull_delay,
         )
     return speed_time
 
@@ -2811,6 +2958,8 @@ def map_timing_firing_spacetime_speed(
     spacetime_kernel_t=1.0,
     speed_bounds=None,
     initial_fork_speed=1.4,
+    weibull_shape=2.0,
+    weibull_delay=0.0,
     smoothw=100,
     perQ=False,
     n_bins=None,
@@ -2890,6 +3039,8 @@ def map_timing_firing_spacetime_speed(
         else 0,
         speed_bounds=speed_bounds,
         initial_fork_speed=initial_fork_speed,
+        weibull_shape=weibull_shape,
+        weibull_delay=weibull_delay,
         smoothw=smoothw,
         error=error,
         perQ=perQ,
@@ -2914,6 +3065,17 @@ def map_timing_firing_spacetime_speed(
     speed_spacetime = np.clip(speed_spacetime, low, high)
     if refine_verbose is None:
         refine_verbose = bool(verbose)
+    if target_shape == "weibull":
+        speed_spacetime = _project_weibull_speed_shape(
+            speed_spacetime,
+            "spacetime",
+            resolution=resolution,
+            time_axis=time_grid,
+            speed_bounds=(low, high),
+            weibull_shape=weibull_shape,
+            weibull_delay=weibull_delay,
+        )
+        return speed_spacetime.T
 
     if update_mode == "factorized":
         def refine_factorized_phase(field, phase):
@@ -2962,6 +3124,16 @@ def map_timing_firing_spacetime_speed(
                 time_axis=time_grid,
                 speed_bounds=(low, high),
             )
+        if target_shape == "weibull":
+            speed_spacetime = _project_weibull_speed_shape(
+                speed_spacetime,
+                "spacetime",
+                resolution=resolution,
+                time_axis=time_grid,
+                speed_bounds=(low, high),
+                weibull_shape=weibull_shape,
+                weibull_delay=weibull_delay,
+            )
         return speed_spacetime.T
 
     if refine_verbose:
@@ -2995,6 +3167,16 @@ def map_timing_firing_spacetime_speed(
             resolution=resolution,
             time_axis=time_grid,
             speed_bounds=(low, high),
+        )
+    if target_shape == "weibull":
+        speed_spacetime = _project_weibull_speed_shape(
+            speed_spacetime,
+            "spacetime",
+            resolution=resolution,
+            time_axis=time_grid,
+            speed_bounds=(low, high),
+            weibull_shape=weibull_shape,
+            weibull_delay=weibull_delay,
         )
     return speed_spacetime.T
 
