@@ -762,7 +762,7 @@ def simulate_replication(
 def rsim(
     firing_rate=None,
     fork_speed=1.4,
-    sim_number=50,
+    sim_number=1,
     resolution_space=1.0,
     resolution_time=5.0,
     resolution_x=None,

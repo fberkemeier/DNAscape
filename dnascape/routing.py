@@ -168,9 +168,9 @@ _FEATURE_DESCRIPTIONS = {
 
 _ASSUMPTION_DESCRIPTIONS = {
     "target_form": "Requested output form: scalar (constant in space and time), array (space-dependent), transposed array (time-dependent), or matrix (space-time dependent, positions by time).",
-    "target_shape": "Optional parametric shape for the target field. For firing-rate targets I(t) and I(x,t), rmap defaults to 'weibull'; use 'free' for the unconstrained fit. For fork-speed targets, use 'free', 'exponential', 'weibull', or 'best'. The 'best' fork-speed shape keeps site-specific spatial structure and uses an exponential temporal modulation.",
+    "target_shape": "Optional parametric shape for the target field. For firing-rate targets I(t) and I(x,t), rmap defaults to 'weibull'; use 'free' for the unconstrained fit. Fork-speed targets currently use only 'best': v(x) is site-specific, v(t) uses the current temporal fit, and v(x,t) is factorized as v_x(x) q(t).",
     "weibull_shape": "Weibull shape parameter k used when target_shape='weibull'. k=2 gives a linearly increasing hazard; k=1 recovers the exponential case.",
-    "weibull_delay": "Optional activation delay, in minutes, for Weibull target shapes. For firing-rate targets this delays initiation; for fork-speed targets it delays the slowness time basis.",
+    "weibull_delay": "Optional activation delay, in minutes, for Weibull firing-rate target shapes.",
     "fit_weibull_shape": "Whether to optimise the Weibull shape parameter k in addition to alpha(x). By default k is fixed.",
     "alpha_smooth": "Smoothness regularisation strength applied to log(alpha) for Weibull firing-rate fits.",
     "alpha_prior": "Prior regularisation strength keeping log(alpha) close to its local uniform initialisation.",
@@ -197,8 +197,8 @@ _ASSUMPTION_DESCRIPTIONS = {
     "temporal_maxiter": "Number of t-phase refinement iterations; for mixed x,t fits it contributes to the mixed iteration count.",
     "temporal_sim_number": "Number of simulations per t-phase refinement iteration.",
     "spacetime_fit_step": "Mixed local x,t update size; used only when spacetime_update='mixed'.",
-    "spacetime_space_fit_step": "Legacy internal x component for factorized x,t corrections.",
-    "spacetime_time_fit_step": "Legacy internal t component for factorized x,t corrections.",
+    "spacetime_space_fit_step": "x-phase update size for factorized v(x,t) or I(x,t) refinement.",
+    "spacetime_time_fit_step": "t-phase update size for factorized v(x,t) or I(x,t) refinement.",
     "spacetime_sim_number": "Number of simulations per mixed x,t refinement iteration.",
     "spacetime_update": "Space-time update rule: 'factorized' separates x and t phases; 'mixed' fits local x,t corrections.",
     "spacetime_order": "Order of factorized x,t phases: 'space_then_time' by default, or 'time_then_space'.",
@@ -1093,6 +1093,8 @@ _TIMING_TO_GENERAL_FIRING_OPTIONS = _TIMING_TO_SPATIAL_FIRING_OPTIONS | {
     "temporal_maxiter",
     "temporal_sim_number",
     "spacetime_fit_step",
+    "spacetime_space_fit_step",
+    "spacetime_time_fit_step",
     "spacetime_sim_number",
     "spacetime_update",
     "spacetime_order",
@@ -1105,8 +1107,11 @@ _TIMING_TO_GENERAL_FIRING_OPTIONS = _TIMING_TO_SPATIAL_FIRING_OPTIONS | {
 }
 
 _TIMING_TO_CONSTANT_SPEED_OPTIONS = {
+    "target_shape",
     "resolution",
     "resolution_time",
+    "time_grid",
+    "T0",
     "neighbourhood_range",
     "fit_step",
     "maxiter",
@@ -1114,6 +1119,7 @@ _TIMING_TO_CONSTANT_SPEED_OPTIONS = {
     "sim_number",
     "speed_bounds",
     "initial_fork_speed",
+    "refine_edge_kb",
     "refine_seed",
     "verbose",
     "print_every",
@@ -1123,10 +1129,10 @@ _TIMING_TO_CONSTANT_SPEED_OPTIONS = {
 
 _TIMING_TO_SPATIAL_SPEED_OPTIONS = {
     "target_shape",
-    "weibull_shape",
-    "weibull_delay",
     "resolution",
     "resolution_time",
+    "time_grid",
+    "T0",
     "neighbourhood_range",
     "fit_step",
     "maxiter",
@@ -1137,6 +1143,7 @@ _TIMING_TO_SPATIAL_SPEED_OPTIONS = {
     "speed_bounds",
     "initial_fork_speed",
     "smoothw",
+    "refine_edge_kb",
     "refine_seed",
     "verbose",
     "print_every",
@@ -1146,8 +1153,6 @@ _TIMING_TO_SPATIAL_SPEED_OPTIONS = {
 
 _TIMING_TO_GENERAL_SPEED_OPTIONS = _TIMING_TO_SPATIAL_SPEED_OPTIONS | {
     "target_shape",
-    "weibull_shape",
-    "weibull_delay",
     "resolution_time",
     "time_grid",
     "T0",
@@ -1156,6 +1161,8 @@ _TIMING_TO_GENERAL_SPEED_OPTIONS = _TIMING_TO_SPATIAL_SPEED_OPTIONS | {
     "temporal_maxiter",
     "temporal_sim_number",
     "spacetime_fit_step",
+    "spacetime_space_fit_step",
+    "spacetime_time_fit_step",
     "spacetime_sim_number",
     "spacetime_update",
     "spacetime_order",
@@ -1536,38 +1543,49 @@ class DataTypeMapper:
                 updated.append(spec)
                 continue
 
-            has_target_shape = any(
-                _canonical_assumption(name) == "target_shape"
-                for name, _ in spec.assumption_values
-            )
-            if not has_target_shape:
-                updated.append(spec)
-                continue
-
             assumption_values = []
             spec_changed = False
+            has_target_shape = False
             for name, values in spec.assumption_values:
                 if _canonical_assumption(name) != "target_shape":
                     assumption_values.append((name, values))
                     continue
-                values = tuple(values)
-                if "exponential" in values and (
-                    "weibull" not in values or "best" not in values
-                ):
-                    values = tuple(dict.fromkeys((*values, "weibull", "best")))
+                has_target_shape = True
+                if tuple(values) != ("best",):
                     spec_changed = True
-                assumption_values.append((name, values))
+                assumption_values.append((name, ("best",)))
+            if not has_target_shape:
+                assumption_values.append(("target_shape", ("best",)))
+                spec_changed = True
 
-            optional = tuple(spec.optional_assumptions)
-            for name in ("weibull_shape", "weibull_delay"):
-                if name not in optional:
-                    optional = (*optional, name)
-                    spec_changed = True
+            optional = tuple(
+                name for name in spec.optional_assumptions
+                if name not in {"weibull_shape", "weibull_delay"}
+            )
+            if optional != tuple(spec.optional_assumptions):
+                spec_changed = True
+            if "target_shape" not in optional:
+                optional = (*optional, "target_shape")
+                spec_changed = True
+
+            defaults = dict(spec.default_assumptions)
+            if defaults.get("target_shape") != "best":
+                defaults["target_shape"] = "best"
+                spec_changed = True
+
+            required = tuple(
+                name for name in spec.required_assumptions
+                if name != "target_shape"
+            )
+            if required != tuple(spec.required_assumptions):
+                spec_changed = True
 
             if spec_changed:
                 spec = replace(
                     spec,
+                    required_assumptions=required,
                     optional_assumptions=optional,
+                    default_assumptions=tuple(defaults.items()),
                     assumption_values=tuple(assumption_values),
                 )
                 changed = True
@@ -3008,24 +3026,29 @@ rmap.register(
     method="timing_and_firing_to_constant_fork_speed",
     optional_assumptions=(
         "resolution",
+        "resolution_time",
+        "time_grid",
+        "T0",
         "neighbourhood_range",
         "fit_step",
         "maxiter",
         "error",
         "speed_bounds",
         "initial_fork_speed",
+        "target_shape",
+        "refine_edge_kb",
         "verbose",
         "print_every",
         "perQ",
         "n_bins",
         "target_form",
     ),
-    default_assumptions={"verbose": True},
+    default_assumptions={"verbose": True, "target_shape": "best"},
     source_kinds=(
         ("replication_timing", ("x",)),
         ("firing_rate", ("scalar", "x")),
     ),
-    assumption_values=(("target_form", ("constant",)),),
+    assumption_values=(("target_form", ("constant",)), ("target_shape", ("best",))),
     description="Scalar fit of v0 from timing and firing rate.",
 )
 rmap.register(
@@ -3037,12 +3060,16 @@ rmap.register(
     optional_assumptions=(
         "resolution",
         "resolution_time",
+        "time_grid",
+        "T0",
         "fit_step",
         "maxiter",
         "error",
         "sim_number",
         "speed_bounds",
         "initial_fork_speed",
+        "target_shape",
+        "refine_edge_kb",
         "refine_seed",
         "verbose",
         "print_every",
@@ -3050,12 +3077,12 @@ rmap.register(
         "n_bins",
         "target_form",
     ),
-    default_assumptions={"verbose": True},
+    default_assumptions={"verbose": True, "target_shape": "best"},
     source_kinds=(
         ("replication_timing", ("x",)),
         ("firing_rate", ("t", "xt")),
     ),
-    assumption_values=(("target_form", ("constant",)),),
+    assumption_values=(("target_form", ("constant",)), ("target_shape", ("best",))),
     description="Scalar effective fit of v0 from timing and time-dependent firing rate.",
 )
 rmap.register(
@@ -3074,8 +3101,6 @@ rmap.register(
         "speed_bounds",
         "initial_fork_speed",
         "target_shape",
-        "weibull_shape",
-        "weibull_delay",
         "smoothw",
         "verbose",
         "print_every",
@@ -3083,12 +3108,12 @@ rmap.register(
         "n_bins",
         "target_form",
     ),
-    default_assumptions={"verbose": True, "target_form": "space", "target_shape": "free"},
+    default_assumptions={"verbose": True, "target_form": "space", "target_shape": "best"},
     source_kinds=(
         ("replication_timing", ("x",)),
         ("firing_rate", ("scalar", "x")),
     ),
-    assumption_values=(("target_form", ("space",)), ("target_shape", ("free", "exponential", "weibull", "best"))),
+    assumption_values=(("target_form", ("space",)), ("target_shape", ("best",))),
     description="Spatial effective fit of v(x) from timing and firing rate.",
 )
 rmap.register(
@@ -3099,6 +3124,8 @@ rmap.register(
     optional_assumptions=(
         "resolution",
         "resolution_time",
+        "time_grid",
+        "T0",
         "fit_step",
         "maxiter",
         "error",
@@ -3108,9 +3135,8 @@ rmap.register(
         "speed_bounds",
         "initial_fork_speed",
         "target_shape",
-        "weibull_shape",
-        "weibull_delay",
         "smoothw",
+        "refine_edge_kb",
         "refine_seed",
         "verbose",
         "print_every",
@@ -3118,12 +3144,12 @@ rmap.register(
         "n_bins",
         "target_form",
     ),
-    default_assumptions={"verbose": True, "target_form": "space", "target_shape": "free"},
+    default_assumptions={"verbose": True, "target_form": "space", "target_shape": "best"},
     source_kinds=(
         ("replication_timing", ("x",)),
         ("firing_rate", ("t", "xt")),
     ),
-    assumption_values=(("target_form", ("space",)), ("target_shape", ("free", "exponential", "weibull", "best"))),
+    assumption_values=(("target_form", ("space",)), ("target_shape", ("best",))),
     description="Spatial effective fit of v(x) from timing and time-dependent firing rate.",
 )
 rmap.register(
@@ -3157,17 +3183,15 @@ rmap.register(
         "n_bins",
         "target_form",
         "target_shape",
-        "weibull_shape",
-        "weibull_delay",
         "time_grid",
         "T0",
     ),
-    default_assumptions={"verbose": True, "target_form": "time", "target_shape": "free"},
+    default_assumptions={"verbose": True, "target_form": "time", "target_shape": "best"},
     source_kinds=(
         ("replication_timing", ("x",)),
         ("firing_rate", ("scalar", "x")),
     ),
-    assumption_values=(("target_form", ("time",)), ("target_shape", ("free", "exponential", "weibull", "best"))),
+    assumption_values=(("target_form", ("time",)), ("target_shape", ("best",))),
     description="Time-only effective fit of v(t) from timing and spatial firing rate.",
 )
 rmap.register(
@@ -3199,15 +3223,13 @@ rmap.register(
         "n_bins",
         "target_form",
         "target_shape",
-        "weibull_shape",
-        "weibull_delay",
     ),
-    default_assumptions={"verbose": True, "target_form": "time", "target_shape": "free"},
+    default_assumptions={"verbose": True, "target_form": "time", "target_shape": "best"},
     source_kinds=(
         ("replication_timing", ("x",)),
         ("firing_rate", ("t", "xt")),
     ),
-    assumption_values=(("target_form", ("time",)), ("target_shape", ("free", "exponential", "weibull", "best"))),
+    assumption_values=(("target_form", ("time",)), ("target_shape", ("best",))),
     description="Time-only effective fit of v(t) from timing and time-dependent firing rate.",
 )
 rmap.register(
@@ -3232,6 +3254,8 @@ rmap.register(
         "temporal_maxiter",
         "temporal_sim_number",
         "spacetime_fit_step",
+        "spacetime_space_fit_step",
+        "spacetime_time_fit_step",
         "spacetime_sim_number",
         "spacetime_update",
         "spacetime_order",
@@ -3246,17 +3270,15 @@ rmap.register(
         "n_bins",
         "target_form",
         "target_shape",
-        "weibull_shape",
-        "weibull_delay",
         "time_grid",
         "T0",
     ),
-    default_assumptions={"verbose": True, "target_form": "spacetime", "target_shape": "free"},
+    default_assumptions={"verbose": True, "target_form": "spacetime", "target_shape": "best"},
     source_kinds=(
         ("replication_timing", ("x",)),
         ("firing_rate", ("xt",)),
     ),
-    assumption_values=(("target_form", ("spacetime",)), ("target_shape", ("free", "exponential", "weibull", "best"))),
+    assumption_values=(("target_form", ("spacetime",)), ("target_shape", ("best",))),
     description="Space-time effective fit of v(x,t) from timing and space-time firing rate.",
 )
 rmap.register(
@@ -3278,6 +3300,8 @@ rmap.register(
         "temporal_maxiter",
         "temporal_sim_number",
         "spacetime_fit_step",
+        "spacetime_space_fit_step",
+        "spacetime_time_fit_step",
         "spacetime_sim_number",
         "spacetime_update",
         "spacetime_order",
@@ -3294,15 +3318,13 @@ rmap.register(
         "n_bins",
         "target_form",
         "target_shape",
-        "weibull_shape",
-        "weibull_delay",
     ),
-    default_assumptions={"verbose": True, "target_form": "spacetime", "target_shape": "free"},
+    default_assumptions={"verbose": True, "target_form": "spacetime", "target_shape": "best"},
     source_kinds=(
         ("replication_timing", ("x",)),
         ("firing_rate", ("scalar", "x", "t")),
     ),
-    assumption_values=(("target_form", ("spacetime",)), ("target_shape", ("free", "exponential", "weibull", "best"))),
+    assumption_values=(("target_form", ("spacetime",)), ("target_shape", ("best",))),
     description="Space-time effective fit of v(x,t) from timing and general firing rate.",
 )
 rmap.register(

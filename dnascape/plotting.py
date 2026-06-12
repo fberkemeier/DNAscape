@@ -4,7 +4,7 @@ import numpy as np
 import matplotlib.pyplot as plt
 import seaborn as sns
 import matplotlib.ticker as mticker
-from matplotlib.colors import LogNorm
+from matplotlib.colors import LogNorm, is_color_like
 from scipy import stats
 from scipy.stats import gaussian_kde, mode
 from scipy.ndimage import zoom
@@ -188,7 +188,8 @@ def plotf(*arrays, labels=None, x_array=None, dual_axis=False, resolution=1, reg
           xtitle='Index', ytitle='Value', x_show=True, y_show=True, logyQ=False, logxQ=False,
           scale_matchQ=False, saveQ=False, sname='test', ext='pdf', layout_rect=(0.12, 0.15, 0.98, 0.95),
           fig=None, ax=None, showQ=True, return_handles=False, time_array=None, resolution_t=5,
-          cmap='viridis', colorbarQ=True, logzQ=False, limsz=None, label_loc="lower right", **kwargs):
+          cmap='viridis', colorbarQ=True, logzQ=False, limsz=None, label_loc="lower right",
+          colors=None, statsQ=False, fillupQ=False, filldownQ=False, fillintQ=False, **kwargs):
 
     def _as_plot_array(value):
         try:
@@ -223,6 +224,66 @@ def plotf(*arrays, labels=None, x_array=None, dual_axis=False, resolution=1, reg
             return True
         return False
 
+    def _normalize_colors(color_values, count, name="colors", use_first=False):
+        if color_values is None:
+            return [None] * count
+        if is_color_like(color_values):
+            return [color_values] * count
+        if isinstance(color_values, np.ndarray) and color_values.ndim == 0:
+            value = color_values.item()
+            if value is None:
+                return [None] * count
+            if not is_color_like(value):
+                raise ValueError(f"{name} contains an invalid color: {value!r}")
+            return [value] * count
+
+        values = list(color_values)
+        if len(values) == 0:
+            raise ValueError(f"{name} must contain at least one color.")
+        if len(values) == 1:
+            if values[0] is None:
+                return [None] * count
+            if not is_color_like(values[0]):
+                raise ValueError(f"{name} contains an invalid color: {values[0]!r}")
+            return values * count
+        if len(values) != count:
+            if use_first:
+                if values[0] is None:
+                    return [None]
+                if not is_color_like(values[0]):
+                    raise ValueError(f"{name} contains an invalid color: {values[0]!r}")
+                return [values[0]]
+            raise ValueError(f"{name} must contain one color, or one color per plotted curve.")
+        for value in values:
+            if value is not None and not is_color_like(value):
+                raise ValueError(f"{name} contains an invalid color: {value!r}")
+        return values
+
+    def _color_kwargs(color):
+        return {} if color is None else {"color": color}
+
+    def _normalize_flags(flag_values, count, name, use_first=False):
+        if flag_values is None:
+            return [False] * count
+        if isinstance(flag_values, (bool, np.bool_)):
+            return [bool(flag_values)] * count
+        if isinstance(flag_values, np.ndarray) and flag_values.ndim == 0:
+            return [bool(flag_values.item())] * count
+        try:
+            values = list(flag_values)
+        except TypeError:
+            return [bool(flag_values)] * count
+
+        if len(values) == 0:
+            raise ValueError(f"{name} must contain at least one boolean.")
+        if len(values) == 1:
+            return [bool(values[0])] * count
+        if len(values) != count:
+            if use_first:
+                return [bool(values[0])]
+            raise ValueError(f"{name} must contain one boolean, or one boolean per plotted curve.")
+        return [bool(value) for value in values]
+
     arrays = [_as_plot_array(a) for a in arrays]
     if len(arrays) == 1:
         arr = arrays[0]
@@ -238,6 +299,23 @@ def plotf(*arrays, labels=None, x_array=None, dual_axis=False, resolution=1, reg
         else:
             arrays = [arr]
 
+    if x_array is not None:
+        x_candidate = np.asarray(x_array)
+        if x_candidate.ndim == 1 and x_candidate.size > 1:
+            arrays = [
+                np.full(x_candidate.size, float(arr), dtype=float)
+                if np.asarray(arr).ndim == 0
+                else arr
+                for arr in arrays
+            ]
+    else:
+        arrays = [
+            np.asarray(arr).reshape(1)
+            if np.asarray(arr).ndim == 0
+            else arr
+            for arr in arrays
+        ]
+
     def _is_default_limit(value):
         return (
             value is None
@@ -248,6 +326,11 @@ def plotf(*arrays, labels=None, x_array=None, dual_axis=False, resolution=1, reg
                 and value[1] is None
             )
         )
+
+    if "colours" in kwargs:
+        if colors is not None:
+            raise ValueError("Pass only one of colors or colours.")
+        colors = kwargs.pop("colours")
 
     for old_name, new_name in (("xlims", "limsx"), ("ylims", "limsy"), ("zlims", "limsz")):
         if old_name in kwargs:
@@ -273,14 +356,31 @@ def plotf(*arrays, labels=None, x_array=None, dual_axis=False, resolution=1, reg
     if not isinstance(limsy, (list, tuple)) or len(limsy) != 2:
         raise ValueError("limsy must be None or a (minimum, maximum) pair.")
     n = len(arrays)
+    statsQ = bool(statsQ)
     heatmapQ = (
         n == 1
         and arrays[0].ndim == 2
         and not (arrays[0].shape[1] == 1 and arrays[0].shape[0] > 1)
         and not dual_axis
     )
+    if statsQ and heatmapQ:
+        raise ValueError("statsQ=True summarizes multiple 1D curves and cannot be used with heatmap inputs.")
+    if statsQ and dual_axis:
+        raise ValueError("statsQ=True cannot be combined with dual_axis=True.")
 
-    show_labels = not (labels is None and n == 1)
+    fill_count = 1 if statsQ else n
+    fillup_flags = _normalize_flags(fillupQ, fill_count, "fillupQ", use_first=statsQ)
+    filldown_flags = _normalize_flags(filldownQ, fill_count, "filldownQ", use_first=statsQ)
+    fillintQ = bool(fillintQ)
+    any_fill = any(fillup_flags) or any(filldown_flags)
+    if any_fill and heatmapQ:
+        raise ValueError("fillupQ/filldownQ can only be used with 1D curve plots.")
+    if any_fill and dual_axis:
+        raise ValueError("fillupQ/filldownQ cannot be combined with dual_axis=True.")
+
+    line_colors = None if heatmapQ else _normalize_colors(colors, 1 if statsQ else n, use_first=statsQ)
+
+    show_labels = True if statsQ else not (labels is None and n == 1)
 
     if scale_matchQ and not (dual_axis and n == 2):
         raise ValueError("scale_matchQ=True only makes sense for dual_axis with exactly two arrays.")
@@ -411,6 +511,91 @@ def plotf(*arrays, labels=None, x_array=None, dual_axis=False, resolution=1, reg
                 handle.set_ydata(np.asarray(handle.get_ydata(), dtype=float) + shift)
             elif hasattr(handle, "get_y") and hasattr(handle, "set_y"):
                 handle.set_y(handle.get_y() + shift)
+
+    def _draw_curve_fills(ax_, curve_records):
+        if not any_fill or not curve_records:
+            return
+
+        xlim = ax_.get_xlim()
+        ylim = ax_.get_ylim()
+        y_low, y_high = sorted(ylim)
+        selected = []
+
+        for i, record in enumerate(curve_records):
+            up = fillup_flags[i] if i < len(fillup_flags) else False
+            down = filldown_flags[i] if i < len(filldown_flags) else False
+            if not (up or down):
+                continue
+            x = np.asarray(record["x"], dtype=float)
+            y = np.asarray(record["y"], dtype=float)
+            if x.ndim != 1 or y.ndim != 1 or x.size != y.size:
+                raise ValueError("fillupQ/filldownQ require one-dimensional curves with matching x values.")
+            selected.append((x, y, record["color"], up, down))
+
+        if not selected:
+            return
+
+        alpha = 0.18
+        if fillintQ:
+            x0, y0, color0, up0, down0 = selected[0]
+            lower = np.full_like(y0, y_low, dtype=float)
+            upper = np.full_like(y0, y_high, dtype=float)
+            mask = np.isfinite(x0)
+
+            for x, y, _, up, down in selected:
+                if x.shape != x0.shape or not np.allclose(x, x0, equal_nan=True):
+                    raise ValueError("fillintQ=True requires all selected filled curves to share the same x values.")
+                mask &= np.isfinite(y)
+                if up:
+                    lower = np.maximum(lower, y)
+                if down:
+                    upper = np.minimum(upper, y)
+
+            mask &= lower <= upper
+            if np.any(mask):
+                ax_.fill_between(
+                    x0,
+                    lower,
+                    upper,
+                    where=mask,
+                    interpolate=True,
+                    color=color0,
+                    alpha=alpha,
+                    linewidth=0,
+                    zorder=1,
+                )
+        else:
+            for x, y, color, up, down in selected:
+                mask = np.isfinite(x) & np.isfinite(y)
+                if not np.any(mask):
+                    continue
+                if down:
+                    ax_.fill_between(
+                        x,
+                        y_low,
+                        y,
+                        where=mask,
+                        interpolate=True,
+                        color=color,
+                        alpha=alpha,
+                        linewidth=0,
+                        zorder=1,
+                    )
+                if up:
+                    ax_.fill_between(
+                        x,
+                        y,
+                        y_high,
+                        where=mask,
+                        interpolate=True,
+                        color=color,
+                        alpha=alpha,
+                        linewidth=0,
+                        zorder=1,
+                    )
+
+        ax_.set_xlim(xlim)
+        ax_.set_ylim(ylim)
 
     legend_loc = _legend_loc(label_loc)
 
@@ -577,8 +762,10 @@ def plotf(*arrays, labels=None, x_array=None, dual_axis=False, resolution=1, reg
         else:
             lab1, lab2 = ("array_1", "array_2") if show_labels else (None, None)
 
-        p1, = ax1.plot(xs[0], arrays[0], color='tab:blue')
-        p2, = ax2.plot(xs[1], arrays[1], color='tab:red')
+        color1 = line_colors[0] if line_colors[0] is not None else 'tab:blue'
+        color2 = line_colors[1] if line_colors[1] is not None else 'tab:red'
+        p1, = ax1.plot(xs[0], arrays[0], color=color1)
+        p2, = ax2.plot(xs[1], arrays[1], color=color2)
 
         if isinstance(logyQ, tuple):
             logyQ1, logyQ2 = logyQ
@@ -613,8 +800,8 @@ def plotf(*arrays, labels=None, x_array=None, dual_axis=False, resolution=1, reg
         _apply_axis_limits(ax2, None, limsy2, invyQ_=invyQ2)
 
         ax1.set_xlabel(xtitle)
-        ax1.set_ylabel(lab1 if lab1 is not None else ytitle, color='tab:blue')
-        ax2.set_ylabel(lab2 if lab2 is not None else ytitle, color='tab:red')
+        ax1.set_ylabel(lab1 if lab1 is not None else ytitle, color=color1)
+        ax2.set_ylabel(lab2 if lab2 is not None else ytitle, color=color2)
 
         ax1.set_title(title)
 
@@ -667,16 +854,56 @@ def plotf(*arrays, labels=None, x_array=None, dual_axis=False, resolution=1, reg
             fig = ax.figure
 
     region_handle = draw_region(ax)
+    curve_records = []
 
-    for i, arr in enumerate(arrays):
-        if labels is not None:
-            if i >= len(labels):
-                raise ValueError("labels length must match number of arrays (or be None).")
-            lab = labels[i] if show_labels else None
-        else:
-            lab = (f"array_{i+1}" if show_labels else None)
+    if statsQ:
+        x0 = np.asarray(xs[0], dtype=float)
+        if x0.ndim != 1:
+            raise ValueError("statsQ=True requires one-dimensional x values.")
 
-        ax.plot(xs[i], arr, label=lab)
+        y_stack = []
+        for i, (xi, arr) in enumerate(zip(xs, arrays)):
+            xi = np.asarray(xi, dtype=float)
+            yi = np.asarray(arr, dtype=float)
+            if xi.ndim != 1:
+                raise ValueError(f"x_array[{i}] must be 1D when statsQ=True.")
+            if yi.ndim != 1:
+                raise ValueError(f"arrays[{i}] must be 1D when statsQ=True.")
+            if xi.size != x0.size or yi.size != x0.size:
+                raise ValueError("statsQ=True requires all curves to have the same length.")
+            if not np.allclose(xi, x0, equal_nan=True):
+                raise ValueError("statsQ=True requires all curves to share the same x values.")
+            y_stack.append(yi)
+
+        y_stack = np.vstack(y_stack)
+        mean_y = np.nanmean(y_stack, axis=0)
+        std_y = np.nanstd(y_stack, axis=0)
+        summary_color = line_colors[0]
+        mean_kwargs = _color_kwargs(summary_color)
+        mean_line, = ax.plot(x0, mean_y, label="Mean", zorder=3, **mean_kwargs)
+        summary_color = mean_line.get_color()
+        curve_records.append({"x": x0, "y": mean_y, "color": summary_color})
+        ax.fill_between(
+            x0,
+            mean_y - std_y,
+            mean_y + std_y,
+            color=summary_color,
+            alpha=0.22,
+            linewidth=0,
+            label="+/- std",
+            zorder=2,
+        )
+    else:
+        for i, arr in enumerate(arrays):
+            if labels is not None:
+                if i >= len(labels):
+                    raise ValueError("labels length must match number of arrays (or be None).")
+                lab = labels[i] if show_labels else None
+            else:
+                lab = (f"array_{i+1}" if show_labels else None)
+
+            line, = ax.plot(xs[i], arr, label=lab, **_color_kwargs(line_colors[i]))
+            curve_records.append({"x": xs[i], "y": arr, "color": line.get_color()})
 
     ax.set_xlabel(xtitle)
     ax.set_ylabel(ytitle)
@@ -686,6 +913,7 @@ def plotf(*arrays, labels=None, x_array=None, dual_axis=False, resolution=1, reg
     if logxQ:
         ax.set_xscale('log')
     _apply_axis_limits(ax, limsx, limsy, invyQ_=invyQ)
+    _draw_curve_fills(ax, curve_records)
 
     if show_labels:
         handles, labels_leg = ax.get_legend_handles_labels()
@@ -721,8 +949,11 @@ def plotf(*arrays, labels=None, x_array=None, dual_axis=False, resolution=1, reg
 
 def mplotf(marrays, mlabels=None, mx_array=None, mdual_axis=None, mresolution=None, mregion_high=None, mrname=None,
            minvyQ=None, mfigsize=None, mlimsx=None, mlimsy=None, mxtitle=None, mytitle=None,
-           my_show=None, mlogyQ=None, mscale_matchQ=None, msaveQ=None, msname=None, mext=None,
+           my_show=None, mlogyQ=None, mscale_matchQ=None, mstatsQ=None,
+           mfillupQ=None, mfilldownQ=None, mfillintQ=None,
+           msaveQ=None, msname=None, mext=None,
            mtime_array=None, mresolution_t=None, mcmap=None, mcolorbarQ=None, mlogzQ=None, mlimsz=None,
+           mcolors=None,
            showgeneQ=False, gtf_gz_path="data/other/gencode/gencode.v49.annotation.gtf.gz", gene_chrom=1,
            gene_denseQ=True, gene_show_names=True, gene_show_direction=False,
            figsize=(10, 4), layout_rect=(0.12, 0.15, 0.98, 0.95), hspace=0.15,
@@ -735,6 +966,11 @@ def mplotf(marrays, mlabels=None, mx_array=None, mdual_axis=None, mresolution=No
         if isinstance(v, (list, tuple)):
             return v[i] if i < len(v) else default
         return v if v is not None else default
+
+    def at_bool(v, i, default):
+        if isinstance(v, np.ndarray) and v.ndim > 0:
+            return bool(v[i]) if i < len(v) else default
+        return bool(at(v, i, default))
 
     def is_limit_pair(v):
         return (
@@ -751,6 +987,70 @@ def mplotf(marrays, mlabels=None, mx_array=None, mdual_axis=None, mresolution=No
         if isinstance(v, (list, tuple)):
             return v[i] if i < len(v) else default
         return v
+
+    def is_panel_color_collection(v):
+        if v is None or is_color_like(v):
+            return False
+        if not isinstance(v, (list, tuple, np.ndarray)):
+            return False
+        values = list(v)
+        if len(values) == 0:
+            return False
+        return all(
+            item is None
+            or (
+                isinstance(item, (list, tuple, np.ndarray))
+                and not is_color_like(item)
+            )
+            for item in values
+        )
+
+    def at_colors(v, i):
+        if v is None:
+            return None
+        if is_panel_color_collection(v):
+            return list(v)[i] if i < len(v) else None
+        return v
+
+    def is_panel_flag_collection(v):
+        if v is None or isinstance(v, (bool, np.bool_)):
+            return False
+        if isinstance(v, np.ndarray):
+            return v.ndim > 0
+        if not isinstance(v, (list, tuple)):
+            return False
+        values = list(v)
+        if len(values) == 0:
+            return False
+        return all(
+            item is None
+            or isinstance(item, (bool, np.bool_, list, tuple, np.ndarray))
+            for item in values
+        )
+
+    def at_flags(v, i):
+        if v is None:
+            return None
+        if is_panel_flag_collection(v):
+            return list(v)[i] if i < len(v) else None
+        return v
+
+    if "mcolours" in kwargs:
+        if mcolors is not None:
+            raise ValueError("Pass only one of mcolors or mcolours.")
+        mcolors = kwargs.pop("mcolours")
+    if "fillupQ" in kwargs:
+        if mfillupQ is not None:
+            raise ValueError("Pass only one of mfillupQ or fillupQ.")
+        mfillupQ = kwargs.pop("fillupQ")
+    if "filldownQ" in kwargs:
+        if mfilldownQ is not None:
+            raise ValueError("Pass only one of mfilldownQ or filldownQ.")
+        mfilldownQ = kwargs.pop("filldownQ")
+    if "fillintQ" in kwargs:
+        if mfillintQ is not None:
+            raise ValueError("Pass only one of mfillintQ or fillintQ.")
+        mfillintQ = kwargs.pop("fillintQ")
 
     for old_name, new_name in (("mxlims", "mlimsx"), ("mylims", "mlimsy"), ("mzlims", "mlimsz")):
         if old_name in kwargs:
@@ -788,7 +1088,19 @@ def mplotf(marrays, mlabels=None, mx_array=None, mdual_axis=None, mresolution=No
     def first_array(g):
         return np.asarray(g[0] if isinstance(g, (list, tuple)) else g)
 
-    def spatial_len(g, x_axis=None, time_axis=None):
+    def spatial_len(g, x_axis=None, time_axis=None, stats_panel=False):
+        if stats_panel:
+            try:
+                arr = np.asarray(g)
+            except ValueError:
+                arr = np.asarray(g, dtype=object)
+            if arr.ndim == 2 and arr.dtype != object:
+                return arr.shape[1]
+            first = first_array(g)
+            if first.ndim == 0:
+                return 1
+            return len(first)
+
         if isinstance(g, (list, tuple)):
             mat = regular_matrix(g)
             if mat is not None:
@@ -803,17 +1115,23 @@ def mplotf(marrays, mlabels=None, mx_array=None, mdual_axis=None, mresolution=No
             if arr.shape[1] == 1 and arr.shape[0] > 1:
                 return arr.shape[0]
             return arr.shape[0]
+        if arr.ndim == 0:
+            axis = np.asarray(x_axis) if x_axis is not None else None
+            if axis is not None and axis.ndim == 1:
+                return axis.size
+            return 1
         return len(arr)
 
     x0_in = at(mx_array, 0, None)
     t0_in = at(mtime_array, 0, None)
+    stats0 = at_bool(mstatsQ, 0, False)
     if x0_in is None:
-        n0 = spatial_len(marrays[0], x0_in, t0_in) or 1
+        n0 = spatial_len(marrays[0], x0_in, t0_in, stats_panel=stats0) or 1
         res0 = at(mresolution, 0, 1)
         xk = np.arange(n0, dtype=float) * float(res0)  # kb
     else:
         xk = np.asarray(x0_in, float)
-        n0 = spatial_len(marrays[0], x0_in, t0_in)
+        n0 = spatial_len(marrays[0], x0_in, t0_in, stats_panel=stats0)
         if n0 is not None and xk.size != n0:
             raise ValueError("First mx_array length must match the length of the first plotted array.")
 
@@ -911,7 +1229,12 @@ def mplotf(marrays, mlabels=None, mx_array=None, mdual_axis=None, mresolution=No
               y_show=at(my_show, i, True),
               logxQ=at(mlogxQ, i, False),
               logyQ=at(mlogyQ, i, False),
+              colors=at_colors(mcolors, i),
               scale_matchQ=at(mscale_matchQ, i, False),
+              statsQ=at_bool(mstatsQ, i, False),
+              fillupQ=at_flags(mfillupQ, i),
+              filldownQ=at_flags(mfilldownQ, i),
+              fillintQ=at_bool(mfillintQ, i, False),
               saveQ=False,
               sname=at(msname, i, 'test'),
               ext=at(mext, i, 'pdf'),

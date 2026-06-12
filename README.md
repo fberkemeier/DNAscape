@@ -1,3 +1,4 @@
+````markdown
 <p align="center">
   <img src="docs/source/_static/dnascape_logo.svg" alt="DNAscape logo" width="50%">
 </p>
@@ -6,23 +7,26 @@
 
 [![Documentation Status](https://readthedocs.org/projects/dnascape/badge/?version=latest)](https://dnascape.readthedocs.io/en/latest/)
 
-DNAscape is software for mapping and simulating DNA replication kinetics across genomic space and S-phase time. It connects origin initiation and replication fork dynamics to measurable features of the replication programme, including replication timing, origin activity and fork dynamics, providing a platform for researchers to move between sequencing data, inferred kinetic features and simulated replication programmes within a common mechanistic framework.
+DNAscape is software for building quantitative models of DNA replication from genomic sequencing data. It maps measured replication tracks to kinetic quantities, such as timing, origin activity, and fork dynamics, simulates replication programmes from mechanistic assumptions, and compares predicted features across genomic position and S-phase time.
 
-Built on Kolmogorov-Johnson-Mehl-Avrami (KJMA)-style models of replication kinetics, DNAscape connects Repli-seq, scRepli-seq, EdU-seq, SNS-seq, Ini-seq, OK-seq, FORK-seq-style profiles, and custom genomic signals to kinetic features that can be inferred, predicted, or simulated: replication timing, origin firing rate, effective fork speed, fork directionality/RFD, replicated fraction, fork density, initiation events, coalescence events, origin efficiency, completion time, and perturbation responses.
+DNAscape is particularly designed for kinetic interpretations of replication data from Repli-seq, BrdU-seq, EdU-seq, SNS-seq, ini-seq, bubble-seq, OK-seq, FORK-seq, DNAscent-style nanopore profiles, single-cell variants of these approaches, and custom genomic tracks.
+
+By keeping data, kinetic inputs, and modelling assumptions explicit, DNAscape is a useful tool to test how perturbations in origin initiation, fork movement, genome geometry, or replication stress shape the replication programme across organisms and cell types.
 
 ## Core functionality
 
 With DNAscape, you can
 
-- **Map** replication features from different data sources, including replication timing, firing rate, fork speed, and related outputs.
-- **Simulate** DNA replication programmes in space and time from specified origin initiation and fork speed assumptions.
-- **Test perturbations** such as altered initiation, reduced fork speed, fork stalling, dormant-origin activation, or changes in domain structure.
-- **Validate pipelines** using synthetic replication programmes where the ground truth is known.
-- **Visualise** replication tracks, origin-fork distributions, genomic contexts, among others.
+- **Infer kinetic features** from replication timing, origin activity, fork directionality, and related genomic tracks.
+- **Simulate replication programmes** from specified origin firing and fork-speed assumptions.
+- **Predict measurable outputs** such as replication timing, replicated fraction, fork densities, initiation events, coalescence events, and completion times.
+- **Test perturbations** including altered initiation, reduced fork speed, fork stalling, dormant-origin activation, and changes in domain structure.
+- **Benchmark analyses** with synthetic replication programmes where the ground truth is known.
+- **Visualise outputs** as genomic tracks, time courses, origin-fork distributions, and related summaries.
 
 ## Installation
 
-DNAscape requires Python 3.9 or later, and is available in 3 different modes.
+DNAscape requires Python 3.9 or later and can be installed in three ways.
 
 ### Python package
 
@@ -30,7 +34,7 @@ For the standard Python package install:
 
 ```bash
 pip install dnascape
-```
+````
 
 ### Build from source
 
@@ -50,24 +54,24 @@ A Streamlit app is planned for browser-based data upload, visual exploration, si
 
 ## Workflows
 
-DNAscape has two main workflows: `rmap` for kinetic inference and feature mapping, and `rsim` for stochastic replication simulation.
+DNAscape is organised around two main workflows: `rmap` for kinetic inference and feature mapping, and `rsim` for stochastic replication simulation.
 
 ### `rmap`: feature inference and mapping
 
-`rmap` moves between replication features under stated assumptions. It can infer kinetic quantities from data, predict observables from a proposed model, or translate between compatible experimental readouts.
+`rmap` maps one replication feature to another under stated assumptions. Use it to infer kinetic quantities from data, predict observables from a proposed model, or translate between compatible experimental readouts.
 
 Examples of `rmap` targets include:
 
-- `firing_rate`
-- `fork_speed`
-- `replication_timing`
-- `fork_directionality`
-- `replicated_fraction`
-- `replicated_fraction_xt`
-- `fork_densities_xt`
-- `initiation_events`
-- `coalescence_events`
-- `origin_efficiency`
+* `firing_rate`
+* `fork_speed`
+* `replication_timing`
+* `fork_directionality`
+* `replicated_fraction`
+* `replicated_fraction_xt`
+* `fork_densities_xt`
+* `initiation_events`
+* `coalescence_events`
+* `origin_efficiency`
 
 ```python
 firing_rate = rmap(
@@ -105,7 +109,7 @@ simulation = rsim(
 replication_timing = simulation["replication_timing"]
 ```
 
-`rmap` and `rsim` share the same input style:
+`rmap` and `rsim` use the same input style:
 
 ```text
 source       measured data or kinetic inputs
@@ -113,7 +117,7 @@ target       requested feature, for rmap
 assumptions  resolution, geometry, fitting controls, and biological constraints
 ```
 
-This makes it natural to infer kinetic fields with `rmap`, pass them into `rsim`, and compare simulated features back to measured data.
+This makes it natural to infer kinetic fields with `rmap`, pass them into `rsim`, and compare simulated outputs back to measured data.
 
 ## Documentation
 
@@ -121,10 +125,10 @@ Full documentation is available at https://dnascape.readthedocs.io/en/latest/.
 
 Recommended starting points:
 
-- `examples/0-quickstart.ipynb`: first pass through `rmap` and `rsim`
-- `examples/2-mapping.ipynb`: mapping and inference atlas
-- `examples/3-simulation.ipynb`: stochastic simulation atlas
-- `examples/4-neat_examples.ipynb`: compact biological examples
+* `examples/0-quickstart.ipynb`: first pass through `rmap` and `rsim`
+* `examples/2-mapping.ipynb`: mapping and inference atlas
+* `examples/3-simulation.ipynb`: stochastic simulation atlas
+* `examples/4-neat_examples.ipynb`: compact biological examples
 
 DNAscape treats inputs as regular genomic and time grids. Use `resolution_x` for genomic bin size in kb and `resolution_t` for simulation time step in minutes. If kinetic inputs are constants, provide a genomic length, number of bins, or interval so DNAscape can build the domain.
 
@@ -145,9 +149,6 @@ dnascape/      Python package: mapping, simulation, fitting, plotting, IO
 examples/      Jupyter notebooks and compact analysis examples
 docs/          ReadTheDocs source
 data/          small bundled data used by examples
-figures/       figures and visual outputs
-paper/         manuscript-related material
-ROADMAP.md     active development notes
 ```
 
 ## Project Status
@@ -162,4 +163,7 @@ If you use DNAscape in your research, please cite the corresponding publication 
 
 Please open issues at https://github.com/fberkemeier/DNAscape/issues.
 
-For technical questions or collaboration requests, contact Francisco Berkemeier at fp409@cam.ac.uk.
+For technical questions or collaboration requests, contact Francisco Berkemeier at [fp409@cam.ac.uk](mailto:fp409@cam.ac.uk).
+
+```
+```
