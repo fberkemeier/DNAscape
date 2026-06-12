@@ -249,6 +249,31 @@ def _replicated_fraction_constant_speed(x, time_grid, firing_rate_xt, fork_speed
     return A
 
 
+def _replicated_fraction_time_speed(x, time_grid, firing_rate_xt, fork_speed_t):
+    I_mid = 0.5 * (firing_rate_xt[:-1] + firing_rate_xt[1:])
+    cdf = _cumtrapz_rows(I_mid, x)
+    v = np.asarray(fork_speed_t, dtype=float).reshape(-1)
+    if v.size != time_grid.size:
+        source_time = time_grid[0] + np.arange(v.size, dtype=float) * float(
+            time_grid[1] - time_grid[0] if time_grid.size > 1 else 1.0
+        )
+        v = np.interp(time_grid, source_time, v)
+    C = np.zeros(time_grid.size, dtype=float)
+    if time_grid.size > 1:
+        dt = np.diff(time_grid)
+        C[1:] = np.cumsum(0.5 * (v[:-1] + v[1:]) * dt)
+
+    A = np.zeros_like(firing_rate_xt, dtype=float)
+    for n in range(1, time_grid.size):
+        total = np.zeros(x.size, dtype=float)
+        for k in range(n):
+            dt = time_grid[k + 1] - time_grid[k]
+            radius = max(C[n] - 0.5 * (C[k] + C[k + 1]), 0.0)
+            total += dt * _integrate_cdf_between(cdf[k], x, x - radius, x + radius)
+        A[n] = total
+    return A
+
+
 def _replicated_fraction_general_speed(x, time_grid, firing_rate_xt, fork_speed_xt):
     I_mid = 0.5 * (firing_rate_xt[:-1] + firing_rate_xt[1:])
     cdf = _cumtrapz_rows(I_mid, x)
@@ -341,6 +366,8 @@ def map_replicated_fraction_xt(
             A = _replicated_fraction_constant_speed_static_I(x, t, I[0], speed)
         else:
             A = _replicated_fraction_constant_speed(x, t, I, speed)
+    elif v_raw.ndim == 2 and v_raw.shape[0] == 1 and v_raw.shape[1] > 1:
+        A = _replicated_fraction_time_speed(x, t, I, v_raw.reshape(-1))
     else:
         A = _replicated_fraction_general_speed(x, t, I, v)
 

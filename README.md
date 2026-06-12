@@ -6,34 +6,53 @@
 
 [![Documentation Status](https://readthedocs.org/projects/dnascape/badge/?version=latest)](https://dnascape.readthedocs.io/en/latest/)
 
-DNAscape turns DNA replication sequencing data into quantitative kinetic models.
+DNAscape is software for mapping and simulating DNA replication kinetics across genomic space and S-phase time. It connects origin initiation and replication fork dynamics to measurable features of the replication programme, including replication timing, origin activity and fork dynamics, providing a platform for researchers to move between sequencing data, inferred kinetic features and simulated replication programmes within a common mechanistic framework.
 
-It is built for biologists who measure replication timing, origin activity, fork movement, or replication stress and want to move from genomic tracks to testable mechanisms.
+Built on Kolmogorov-Johnson-Mehl-Avrami (KJMA)-style models of replication kinetics, DNAscape connects Repli-seq, scRepli-seq, EdU-seq, SNS-seq, Ini-seq, OK-seq, FORK-seq-style profiles, and custom genomic signals to kinetic features that can be inferred, predicted, or simulated: replication timing, origin firing rate, effective fork speed, fork directionality/RFD, replicated fraction, fork density, initiation events, coalescence events, origin efficiency, completion time, and perturbation responses.
 
-Built on Kolmogorov-Johnson-Mehl-Avrami (KJMA)-style models of replication kinetics, DNAscape provides a common framework for interpreting replication dynamics across genomic space and S-phase time.
+## Core functionality
 
-DNAscape connects Repli-seq, scRepli-seq, EdU-seq, SNS-seq, Ini-seq, OK-seq, FORK-seq-style profiles, and custom genomic signals to kinetic features that can be inferred, predicted, or simulated: replication timing, origin firing rate, effective fork speed, fork directionality/RFD, replicated fraction, fork density, initiation events, coalescence events, origin efficiency, completion time, and perturbation responses.
+With DNAscape, you can
 
-## From Sequencing Tracks to Kinetics
+- **Map** replication features from different data sources, including replication timing, firing rate, fork speed, and related outputs.
+- **Simulate** DNA replication programmes in space and time from specified origin initiation and fork speed assumptions.
+- **Test perturbations** such as altered initiation, reduced fork speed, fork stalling, dormant-origin activation, or changes in domain structure.
+- **Validate pipelines** using synthetic replication programmes where the ground truth is known.
+- **Visualise** replication tracks, origin-fork distributions, genomic contexts, among others.
 
-DNAscape treats replication assays as different views of the same underlying replication programme. A timing profile, an origin-enrichment profile, a fork-directionality track, or a simulated landscape can each be used as a starting point for model-based inference.
+## Installation
 
-The outputs are not only fitted curves. DNAscape returns interpretable replication features that can be compared across cell types, treatments, perturbations, and candidate mechanisms.
+DNAscape requires Python 3.9 or later, and is available in 3 different modes.
 
-| Starting point | DNAscape can infer or generate |
-| --- | --- |
-| Replication timing profiles | origin firing, effective fork speed, predicted RFD, replicated fraction |
-| Origin-activity assays | timing, origin efficiency, initiation-event density, simulated S phases |
-| Fork-directionality or fork-density data | effective fork propagation, coalescence profiles, replication-domain structure |
-| User-defined kinetic landscapes | stochastic replication ensembles, completion times, perturbation responses |
+### Python package
 
-The central design principle is that assumptions should be explicit: the same analysis records the data used, the kinetic feature requested, and the biological or numerical constraints imposed.
+For the standard Python package install:
 
-## Core Workflows
+```bash
+pip install dnascape
+```
+
+### Build from source
+
+Use the source install for the latest development version, including examples, documentation, and notebooks.
+
+```bash
+git clone https://github.com/fberkemeier/DNAscape.git
+cd DNAscape
+
+pip install -r requirements.txt
+pip install .
+```
+
+### Streamlit app
+
+A Streamlit app is planned for browser-based data upload, visual exploration, simulation, download, zooming, and reproducible code export. Until then, use the Python package and example notebooks.
+
+## Workflows
 
 DNAscape has two main workflows: `rmap` for kinetic inference and feature mapping, and `rsim` for stochastic replication simulation.
 
-### `rmap`: Feature Inference and Mapping
+### `rmap`: feature inference and mapping
 
 `rmap` moves between replication features under stated assumptions. It can infer kinetic quantities from data, predict observables from a proposed model, or translate between compatible experimental readouts.
 
@@ -51,8 +70,6 @@ Examples of `rmap` targets include:
 - `origin_efficiency`
 
 ```python
-from dnascape import rmap
-
 firing_rate = rmap(
     source={
         "replication_timing": timing,
@@ -66,20 +83,11 @@ firing_rate = rmap(
 )
 ```
 
-Inspect available mappings and required inputs:
-
-```python
-rmap.targets()
-rmap.requirements(target="firing_rate")
-```
-
-### `rsim`: Replication Simulation
+### `rsim`: replication simulation
 
 `rsim` generates stochastic S phases from origin firing and fork-speed assumptions. Use it to compare fitted models with data, explore perturbations, estimate cell-to-cell variability, and generate synthetic replication landscapes.
 
 ```python
-from dnascape import rsim
-
 simulation = rsim(
     source={
         "firing_rate": firing_rate,
@@ -106,36 +114,6 @@ assumptions  resolution, geometry, fitting controls, and biological constraints
 ```
 
 This makes it natural to infer kinetic fields with `rmap`, pass them into `rsim`, and compare simulated features back to measured data.
-
-## Installation
-
-DNAscape requires Python 3.9 or later.
-
-### Python Package
-
-```bash
-python -m pip install dnascape
-```
-
-### Streamlit App
-
-A Streamlit interface is planned for interactive data upload, visual exploration, simulation, download, zooming, and reproducible code export. Until then, the Python package and notebooks are the main interfaces.
-
-### Build From Source
-
-Use the source install for the latest development version, examples, documentation, and notebooks.
-
-```bash
-git clone https://github.com/fberkemeier/DNAscape.git
-cd DNAscape
-
-python -m venv .venv
-source .venv/bin/activate   # Windows PowerShell: .venv\Scripts\Activate.ps1
-
-python -m pip install --upgrade pip
-python -m pip install -r requirements.txt
-python -m pip install -e .
-```
 
 ## Documentation
 

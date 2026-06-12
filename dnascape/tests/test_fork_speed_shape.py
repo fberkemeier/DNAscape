@@ -64,6 +64,67 @@ class ForkSpeedShapeTests(unittest.TestCase):
         self.assertGreater(float(fit["fork_speed_v0"]), 0.0)
         self.assertTrue(np.all(fit["values"] > 0))
 
+    def test_time_fork_speed_weibull_shape_fits_directly(self):
+        n = 12
+        timing = np.linspace(20.0, 45.0, n)
+        firing_rate = np.linspace(2e-4, 5e-4, n)
+
+        with patch("dnascape.fitting.map_timing_firing_spatial_speed") as spatial_mock:
+            fit = rmap(
+                source={
+                    "replication_timing": timing,
+                    "firing_rate": firing_rate,
+                },
+                target="fork_speed",
+                assumptions={
+                    "target_form": "time",
+                    "target_shape": "weibull",
+                    "resolution_t": 5.0,
+                    "maxiter": 1,
+                    "verbose": False,
+                },
+                return_info=True,
+            )
+
+        self.assertFalse(spatial_mock.called)
+        self.assertEqual(fit["values"].shape[0], 1)
+        self.assertGreaterEqual(fit["values"].shape[1], 241)
+        self.assertEqual(fit["target_shape"], "weibull")
+        self.assertIn("fit_mse", fit)
+        self.assertIn("replication_timing_fit", fit)
+        self.assertEqual(fit["replication_timing_fit"].shape, timing.shape)
+        self.assertTrue(np.all(fit["values"] > 0))
+
+    def test_time_fork_speed_best_shape_uses_exponential_temporal_component(self):
+        n = 12
+        time_grid = np.arange(0.0, 80.0, 5.0)
+        timing = np.linspace(20.0, 45.0, n)
+        firing_rate = np.linspace(2e-4, 5e-4, n)
+
+        with patch("dnascape.fitting.map_timing_firing_spatial_speed") as spatial_mock:
+            fit = rmap(
+                source={
+                    "replication_timing": timing,
+                    "firing_rate": firing_rate,
+                },
+                target="fork_speed",
+                assumptions={
+                    "target_form": "time",
+                    "target_shape": "best",
+                    "time_grid": time_grid,
+                    "resolution_t": 5.0,
+                    "maxiter": 1,
+                    "verbose": False,
+                },
+                return_info=True,
+            )
+
+        self.assertFalse(spatial_mock.called)
+        self.assertEqual(fit["values"].shape, (1, time_grid.size))
+        self.assertEqual(fit["target_shape"], "best")
+        self.assertEqual(fit["fork_speed_component_t"], "v0 * exp(b_t * T)")
+        self.assertTrue(np.all(fit["values"] > 0))
+
     def test_spacetime_fork_speed_exponential_shape(self):
         n = 10
         time_grid = np.arange(0.0, 60.0, 5.0)
@@ -92,6 +153,83 @@ class ForkSpeedShapeTests(unittest.TestCase):
         self.assertEqual(fit["target_shape"], "exponential")
         self.assertTrue(np.isfinite(fit["fork_speed_amplitude_x"]))
         self.assertTrue(np.isfinite(fit["fork_speed_amplitude_t"]))
+        self.assertTrue(np.all(fit["values"] > 0))
+
+    def test_spatial_fork_speed_weibull_shape_preserves_site_specific_profile(self):
+        speed = np.array([1.3, 1.1, 1.55, 0.9, 1.45, 1.2], dtype=float)
+
+        fitted = fitting._project_weibull_speed_shape(
+            speed,
+            "space",
+            weibull_shape=2.0,
+        )
+
+        self.assertEqual(fitted.shape, speed.shape)
+        self.assertEqual(fitted._rmap_info["target_shape"], "weibull")
+        self.assertEqual(fitted._rmap_info["fork_speed_shape"], "site-specific v(x)")
+        self.assertTrue(np.allclose(fitted, speed))
+        self.assertTrue(np.all(fitted._rmap_info["fork_slowness_beta"] > 0))
+
+    def test_spacetime_fork_speed_weibull_shape(self):
+        n = 10
+        time_grid = np.arange(0.0, 60.0, 5.0)
+        timing = np.linspace(18.0, 40.0, n)
+        firing_rate = np.tile(np.linspace(1e-5, 2e-5, n)[:, None], (1, time_grid.size))
+
+        fit = rmap(
+            source={
+                "replication_timing": timing,
+                "firing_rate": firing_rate,
+            },
+            target="fork_speed",
+            assumptions={
+                "target_form": "spacetime",
+                "target_shape": "weibull",
+                "time_grid": time_grid,
+                "resolution_t": 5.0,
+                "maxiter": 0,
+                "verbose": False,
+            },
+            return_info=True,
+        )
+
+        self.assertEqual(fit["values"].shape, (n, time_grid.size))
+        self.assertEqual(fit["assumptions"]["target_shape"], "weibull")
+        self.assertEqual(fit["target_shape"], "weibull")
+        self.assertEqual(fit["fork_slowness_shape"], "beta(x) * h_k(t)")
+        self.assertEqual(fit["fork_slowness_beta"].shape, (n,))
+        self.assertTrue(np.all(fit["values"] > 0))
+
+    def test_spacetime_fork_speed_best_shape_is_hybrid(self):
+        n = 10
+        time_grid = np.arange(0.0, 60.0, 5.0)
+        timing = np.linspace(18.0, 40.0, n)
+        firing_rate = np.tile(np.linspace(2e-4, 5e-4, n)[:, None], (1, time_grid.size))
+
+        with patch("dnascape.fitting._refine_spacetime_speed") as refine_mock:
+            fit = rmap(
+                source={
+                    "replication_timing": timing,
+                    "firing_rate": firing_rate,
+                },
+                target="fork_speed",
+                assumptions={
+                    "target_form": "spacetime",
+                    "target_shape": "best",
+                    "time_grid": time_grid,
+                    "resolution_t": 5.0,
+                    "maxiter": 0,
+                    "verbose": False,
+                },
+                return_info=True,
+            )
+
+        self.assertFalse(refine_mock.called)
+        self.assertEqual(fit["values"].shape, (n, time_grid.size))
+        self.assertEqual(fit["target_shape"], "best")
+        self.assertEqual(fit["fork_speed_component_x"], "site-specific v(x)")
+        self.assertEqual(fit["fork_speed_component_t"], "v0 * exp(b_t * T)")
+        self.assertTrue(np.isfinite(fit["fit_mse"]))
         self.assertTrue(np.all(fit["values"] > 0))
 
     def test_fork_speed_shape_defaults_to_free(self):

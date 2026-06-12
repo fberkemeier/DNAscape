@@ -1,6 +1,7 @@
 """Stochastic replication simulation engines."""
 
 import heapq
+import inspect
 import os
 import tempfile
 import time
@@ -1239,3 +1240,288 @@ def rsim(
         stalled_forks=avg_stalled_forks,
         firing_factors=avg_firing_factors,
     )
+
+
+_RSIM_INPUT_DESCRIPTIONS = {
+    "firing_rate": (
+        "Origin firing or initiation propensity. Preferred direct kinetic "
+        "input; accepts scalar, spatial, time-only, or space-time forms."
+    ),
+    "fork_speed": (
+        "Replication fork speed in kb/min. Accepts scalar, spatial, "
+        "time-only, or space-time forms."
+    ),
+    "sim_number": "Number of independent stochastic S phases to simulate and summarize.",
+    "resolution_space": "Spatial bin size in kb.",
+    "resolution_time": "Time step in minutes for time-dependent inputs and default time grids.",
+    "resolution_x": "Alias for resolution_space, matching the rmap notation.",
+    "resolution_t": "Alias for resolution_time.",
+    "perQ": "Use periodic/circular geometry instead of linear geometry.",
+    "stall_rate": "Rate at which moving forks enter transient stalling.",
+    "tau": "Mean stall duration. np.inf represents non-recovering stalls.",
+    "ffiring_nr": "Finite firing-factor pool size. None disables finite-factor limitation.",
+    "ffiring_recycle": "Rate at which used firing factors recycle into the available pool.",
+    "ffiring_forkQ": "Whether active forks also affect the finite firing-factor pool.",
+    "time_statsQ": (
+        "Return one-dimensional time courses such as replicated fraction "
+        "and fork counts."
+    ),
+    "time_stats_xtQ": (
+        "Return space-time fields. This is more memory intensive than "
+        "time_statsQ."
+    ),
+    "time_stats_densQ": "Deprecated compatibility alias for time_stats_xtQ.",
+    "time_grid": "Time points at which time-course and space-time summaries are evaluated.",
+    "max_rep_time": (
+        "Maximum simulated replication time before unresolved loci are "
+        "treated as unfinished."
+    ),
+    "seed": "Random seed for reproducible stochastic ensembles.",
+    "verbose": "Print progress while simulations are running.",
+    "print_every": "Progress-reporting interval in number of simulated S phases.",
+    "dens_block_n": (
+        "Number of genomic bins processed per block for space-time density "
+        "accumulation."
+    ),
+    "dens_memmap_dir": "Directory for temporary memmap files used by space-time fields.",
+    "n_bins": "Number of genomic bins when no spatial kinetic input is supplied.",
+    "genome_length": "Genome length in kb, used with the spatial resolution to infer n_bins.",
+    "interval_kb": (
+        "Genomic interval (start_kb, end_kb), also used to infer the "
+        "simulated length."
+    ),
+    "ori_rate": "Compatibility alias for firing_rate.",
+    "initiation_rate": "Compatibility alias for firing_rate.",
+    "geometry": "String geometry selector, usually linear or periodic.",
+    "resolution": "Alias for resolution_space.",
+    "source": (
+        "Dictionary input style, usually containing firing_rate and fork_speed; "
+        "mirrors rmap."
+    ),
+    "assumptions": (
+        "Dictionary of simulation settings; mirrors rmap and keeps kinetic "
+        "inputs separate from options."
+    ),
+}
+
+
+_RSIM_OUTPUT_RECORDS = [
+    {
+        "output": "replication_timing",
+        "shape/type": "(n,) array",
+        "returned when": "always",
+        "description": "Mean replication time of each genomic bin across the ensemble.",
+    },
+    {
+        "output": "rep_times_per_sim",
+        "shape/type": "(sim_number, n) array",
+        "returned when": "always",
+        "description": "Full replication-time profile for every simulated S phase.",
+    },
+    {
+        "output": "s_phase_duration",
+        "shape/type": "(sim_number,) array",
+        "returned when": "always",
+        "description": "Per-simulation S-phase duration; alias of completion_time.",
+    },
+    {
+        "output": "completion_time",
+        "shape/type": "(sim_number,) array",
+        "returned when": "always",
+        "description": "Time at which each simulated S phase completed.",
+    },
+    {
+        "output": "num_oris",
+        "shape/type": "list",
+        "returned when": "always",
+        "description": "Number of fired origins in each simulation; alias of num_origins.",
+    },
+    {
+        "output": "num_origins",
+        "shape/type": "list",
+        "returned when": "always",
+        "description": "Number of fired origins in each simulation.",
+    },
+    {
+        "output": "inter_origin_distances",
+        "shape/type": "1D array",
+        "returned when": "always",
+        "description": (
+            "Pooled distances between neighboring fired origins; alias of "
+            "inter_origin_distance."
+        ),
+    },
+    {
+        "output": "inter_origin_distance",
+        "shape/type": "1D array",
+        "returned when": "always",
+        "description": "Pooled distances between neighboring fired origins.",
+    },
+    {
+        "output": "efficiency",
+        "shape/type": "(n,) array",
+        "returned when": "always",
+        "description": (
+            "Fraction of simulations in which each bin fired; alias of "
+            "origin_efficiency."
+        ),
+    },
+    {
+        "output": "origin_efficiency",
+        "shape/type": "(n,) array",
+        "returned when": "always",
+        "description": (
+            "Fraction of simulations in which each bin fired before passive "
+            "replication."
+        ),
+    },
+    {
+        "output": "fork_directionality",
+        "shape/type": "(n,) array",
+        "returned when": "always",
+        "description": "Average direction from which each bin was replicated.",
+    },
+    {
+        "output": "time_grid",
+        "shape/type": "(m,) array or None",
+        "returned when": "time statistics",
+        "description": "Time points used for time-course and space-time summaries.",
+    },
+    {
+        "output": "dt_grid",
+        "shape/type": "float or None",
+        "returned when": "time statistics",
+        "description": "Spacing of time_grid, when defined.",
+    },
+    {
+        "output": "replicated_fraction",
+        "shape/type": "(m,) array or None",
+        "returned when": "time statistics",
+        "description": "Fraction of the simulated region replicated at each time point.",
+    },
+    {
+        "output": "replicated_fraction_xt",
+        "shape/type": "(n, m) array or None",
+        "returned when": "time_stats_xtQ=True",
+        "description": (
+            "Local replicated fraction as a function of genomic position and time."
+        ),
+    },
+    {
+        "output": "initiation_events_xt",
+        "shape/type": "(n, m) array or None",
+        "returned when": "time_stats_xtQ=True",
+        "description": "Realized initiation-event counts binned by position and time.",
+    },
+    {
+        "output": "coalescence_events_xt",
+        "shape/type": "(n, m) array or None",
+        "returned when": "time_stats_xtQ=True",
+        "description": "Fork-coalescence events binned by position and time.",
+    },
+    {
+        "output": "right_moving_fork_density_xt",
+        "shape/type": "(n, m) array or None",
+        "returned when": "time_stats_xtQ=True",
+        "description": (
+            "Right-moving fork-density field; alias of right_fork_density_xt."
+        ),
+    },
+    {
+        "output": "right_fork_density_xt",
+        "shape/type": "(n, m) array or None",
+        "returned when": "time_stats_xtQ=True",
+        "description": "Right-moving fork-density field.",
+    },
+    {
+        "output": "left_moving_fork_density_xt",
+        "shape/type": "(n, m) array or None",
+        "returned when": "time_stats_xtQ=True",
+        "description": (
+            "Left-moving fork-density field; alias of left_fork_density_xt."
+        ),
+    },
+    {
+        "output": "left_fork_density_xt",
+        "shape/type": "(n, m) array or None",
+        "returned when": "time_stats_xtQ=True",
+        "description": "Left-moving fork-density field.",
+    },
+    {
+        "output": "total_forks",
+        "shape/type": "(m,) array or None",
+        "returned when": "time_statsQ=True",
+        "description": "Total number of forks present at each time point.",
+    },
+    {
+        "output": "active_forks",
+        "shape/type": "(m,) array or None",
+        "returned when": "time_statsQ=True",
+        "description": "Number of non-stalled forks present at each time point.",
+    },
+    {
+        "output": "stalled_forks",
+        "shape/type": "(m,) array or None",
+        "returned when": "time_statsQ=True",
+        "description": "Number of stalled forks present at each time point.",
+    },
+    {
+        "output": "firing_factors",
+        "shape/type": "(m,) array or None",
+        "returned when": "finite-factor model",
+        "description": (
+            "Available firing-factor pool through time, when finite factors "
+            "are enabled."
+        ),
+    },
+]
+
+
+def _rsim_table(records, columns):
+    try:
+        import pandas as pd
+
+        return pd.DataFrame(records, columns=columns)
+    except ImportError:
+        return records
+
+
+def _rsim_default_text(value):
+    if value is inspect._empty:
+        return "required"
+    if value is None:
+        return "None"
+    if isinstance(value, np.ndarray):
+        if value.ndim == 1 and value.size > 6:
+            step = value[1] - value[0]
+            return f"np.arange({value[0]:g}, {value[-1]:g} + {step:g}, {step:g})"
+        return repr(value)
+    if isinstance(value, float) and np.isposinf(value):
+        return "np.inf"
+    return repr(value)
+
+
+def _rsim_input():
+    """Return a table describing the inputs accepted by rsim."""
+    records = []
+    for name, parameter in inspect.signature(rsim).parameters.items():
+        records.append(
+            {
+                "argument": name,
+                "default": _rsim_default_text(parameter.default),
+                "description": _RSIM_INPUT_DESCRIPTIONS[name],
+            }
+        )
+    return _rsim_table(records, ("argument", "default", "description"))
+
+
+def _rsim_output():
+    """Return a table describing the dictionary outputs produced by rsim."""
+    return _rsim_table(
+        _RSIM_OUTPUT_RECORDS,
+        ("output", "shape/type", "returned when", "description"),
+    )
+
+
+rsim.input = _rsim_input
+rsim.output = _rsim_output

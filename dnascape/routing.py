@@ -1,10 +1,11 @@
 """High-level route registry for DNAscape feature mapping."""
 
 import inspect
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 
 import numpy as np
 
+from . import fitting as _fitting
 from .fitting import (
     map_timing_constant_firing,
     map_timing_firing,
@@ -167,9 +168,9 @@ _FEATURE_DESCRIPTIONS = {
 
 _ASSUMPTION_DESCRIPTIONS = {
     "target_form": "Requested output form: scalar (constant in space and time), array (space-dependent), transposed array (time-dependent), or matrix (space-time dependent, positions by time).",
-    "target_shape": "Optional parametric shape for the target field. For firing-rate targets I(t) and I(x,t), rmap defaults to 'weibull'; use 'free' for the unconstrained fit. For fork-speed targets v(t) and v(x,t), use 'exponential' for v0 exp(a_x x_norm + a_t t_norm), with centred normalised axes, or 'free' for the default unconstrained fit.",
+    "target_shape": "Optional parametric shape for the target field. For firing-rate targets I(t) and I(x,t), rmap defaults to 'weibull'; use 'free' for the unconstrained fit. For fork-speed targets, use 'free', 'exponential', 'weibull', or 'best'. The 'best' fork-speed shape keeps site-specific spatial structure and uses an exponential temporal modulation.",
     "weibull_shape": "Weibull shape parameter k used when target_shape='weibull'. k=2 gives a linearly increasing hazard; k=1 recovers the exponential case.",
-    "weibull_delay": "Optional activation delay d(x), in minutes, for Weibull firing-rate targets. Scalar delays shift all positions; arrays can specify x-dependent delays.",
+    "weibull_delay": "Optional activation delay, in minutes, for Weibull target shapes. For firing-rate targets this delays initiation; for fork-speed targets it delays the slowness time basis.",
     "fit_weibull_shape": "Whether to optimise the Weibull shape parameter k in addition to alpha(x). By default k is fixed.",
     "alpha_smooth": "Smoothness regularisation strength applied to log(alpha) for Weibull firing-rate fits.",
     "alpha_prior": "Prior regularisation strength keeping log(alpha) close to its local uniform initialisation.",
@@ -1122,6 +1123,8 @@ _TIMING_TO_CONSTANT_SPEED_OPTIONS = {
 
 _TIMING_TO_SPATIAL_SPEED_OPTIONS = {
     "target_shape",
+    "weibull_shape",
+    "weibull_delay",
     "resolution",
     "resolution_time",
     "neighbourhood_range",
@@ -1143,6 +1146,8 @@ _TIMING_TO_SPATIAL_SPEED_OPTIONS = {
 
 _TIMING_TO_GENERAL_SPEED_OPTIONS = _TIMING_TO_SPATIAL_SPEED_OPTIONS | {
     "target_shape",
+    "weibull_shape",
+    "weibull_delay",
     "resolution_time",
     "time_grid",
     "T0",
@@ -1312,7 +1317,7 @@ def map_directionality_and_speed_to_timing(source, **kwargs):
 
 
 def map_timing_and_firing_to_spatial_speed(source, **kwargs):
-    return map_timing_firing_spatial_speed(
+    return _fitting.map_timing_firing_spatial_speed(
         source,
         **_options(kwargs, _TIMING_TO_SPATIAL_SPEED_OPTIONS),
     )
@@ -1323,9 +1328,9 @@ def map_timing_and_firing_to_general_speed(source, **kwargs):
     options = _options(kwargs, _TIMING_TO_GENERAL_SPEED_OPTIONS)
     options = _apply_global_fit_controls(options, target_form=target_form)
     if target_form == "time":
-        return map_timing_firing_temporal_speed(source, **options)
+        return _fitting.map_timing_firing_temporal_speed(source, **options)
     if target_form == "spacetime":
-        return map_timing_firing_spacetime_speed(source, **options)
+        return _fitting.map_timing_firing_spacetime_speed(source, **options)
     raise ValueError("target_form must be 'time' or 'spacetime' for this route.")
 
 
@@ -1521,6 +1526,55 @@ class DataTypeMapper:
                 assumption_kinds=(("fork_speed", ("scalar", "x", "t", "xt")),),
                 description="Simulation-backed timing map for kinetic fields with time dependence.",
             )
+
+    def _ensure_fork_speed_shape_routes(self):
+        """Keep autoreloaded rmap instances aligned with fork-speed target shapes."""
+        updated = []
+        changed = False
+        for spec in self._specs:
+            if spec.target != "fork_speed":
+                updated.append(spec)
+                continue
+
+            has_target_shape = any(
+                _canonical_assumption(name) == "target_shape"
+                for name, _ in spec.assumption_values
+            )
+            if not has_target_shape:
+                updated.append(spec)
+                continue
+
+            assumption_values = []
+            spec_changed = False
+            for name, values in spec.assumption_values:
+                if _canonical_assumption(name) != "target_shape":
+                    assumption_values.append((name, values))
+                    continue
+                values = tuple(values)
+                if "exponential" in values and (
+                    "weibull" not in values or "best" not in values
+                ):
+                    values = tuple(dict.fromkeys((*values, "weibull", "best")))
+                    spec_changed = True
+                assumption_values.append((name, values))
+
+            optional = tuple(spec.optional_assumptions)
+            for name in ("weibull_shape", "weibull_delay"):
+                if name not in optional:
+                    optional = (*optional, name)
+                    spec_changed = True
+
+            if spec_changed:
+                spec = replace(
+                    spec,
+                    optional_assumptions=optional,
+                    assumption_values=tuple(assumption_values),
+                )
+                changed = True
+            updated.append(spec)
+
+        if changed:
+            self._specs = updated
 
     def _ensure_directionality_routes(self):
         """Keep autoreloaded rmap instances aligned with new directionality routes."""
@@ -2166,6 +2220,8 @@ class DataTypeMapper:
         source_set = {_canonical_feature(name) for name in source_names}
         if target == "replication_timing" and "firing_rate" in source_set:
             self._ensure_forward_timing_routes()
+        if target == "fork_speed":
+            self._ensure_fork_speed_shape_routes()
         if target == "fork_directionality":
             self._ensure_directionality_routes()
         if target in {"replicated_fraction", "replicated_fraction_xt"}:
@@ -3018,6 +3074,8 @@ rmap.register(
         "speed_bounds",
         "initial_fork_speed",
         "target_shape",
+        "weibull_shape",
+        "weibull_delay",
         "smoothw",
         "verbose",
         "print_every",
@@ -3030,7 +3088,7 @@ rmap.register(
         ("replication_timing", ("x",)),
         ("firing_rate", ("scalar", "x")),
     ),
-    assumption_values=(("target_form", ("space",)), ("target_shape", ("free", "exponential"))),
+    assumption_values=(("target_form", ("space",)), ("target_shape", ("free", "exponential", "weibull", "best"))),
     description="Spatial effective fit of v(x) from timing and firing rate.",
 )
 rmap.register(
@@ -3050,6 +3108,8 @@ rmap.register(
         "speed_bounds",
         "initial_fork_speed",
         "target_shape",
+        "weibull_shape",
+        "weibull_delay",
         "smoothw",
         "refine_seed",
         "verbose",
@@ -3063,7 +3123,7 @@ rmap.register(
         ("replication_timing", ("x",)),
         ("firing_rate", ("t", "xt")),
     ),
-    assumption_values=(("target_form", ("space",)), ("target_shape", ("free", "exponential"))),
+    assumption_values=(("target_form", ("space",)), ("target_shape", ("free", "exponential", "weibull", "best"))),
     description="Spatial effective fit of v(x) from timing and time-dependent firing rate.",
 )
 rmap.register(
@@ -3097,6 +3157,8 @@ rmap.register(
         "n_bins",
         "target_form",
         "target_shape",
+        "weibull_shape",
+        "weibull_delay",
         "time_grid",
         "T0",
     ),
@@ -3105,7 +3167,7 @@ rmap.register(
         ("replication_timing", ("x",)),
         ("firing_rate", ("scalar", "x")),
     ),
-    assumption_values=(("target_form", ("time",)), ("target_shape", ("free", "exponential"))),
+    assumption_values=(("target_form", ("time",)), ("target_shape", ("free", "exponential", "weibull", "best"))),
     description="Time-only effective fit of v(t) from timing and spatial firing rate.",
 )
 rmap.register(
@@ -3137,13 +3199,15 @@ rmap.register(
         "n_bins",
         "target_form",
         "target_shape",
+        "weibull_shape",
+        "weibull_delay",
     ),
     default_assumptions={"verbose": True, "target_form": "time", "target_shape": "free"},
     source_kinds=(
         ("replication_timing", ("x",)),
         ("firing_rate", ("t", "xt")),
     ),
-    assumption_values=(("target_form", ("time",)), ("target_shape", ("free", "exponential"))),
+    assumption_values=(("target_form", ("time",)), ("target_shape", ("free", "exponential", "weibull", "best"))),
     description="Time-only effective fit of v(t) from timing and time-dependent firing rate.",
 )
 rmap.register(
@@ -3182,6 +3246,8 @@ rmap.register(
         "n_bins",
         "target_form",
         "target_shape",
+        "weibull_shape",
+        "weibull_delay",
         "time_grid",
         "T0",
     ),
@@ -3190,7 +3256,7 @@ rmap.register(
         ("replication_timing", ("x",)),
         ("firing_rate", ("xt",)),
     ),
-    assumption_values=(("target_form", ("spacetime",)), ("target_shape", ("free", "exponential"))),
+    assumption_values=(("target_form", ("spacetime",)), ("target_shape", ("free", "exponential", "weibull", "best"))),
     description="Space-time effective fit of v(x,t) from timing and space-time firing rate.",
 )
 rmap.register(
@@ -3228,13 +3294,15 @@ rmap.register(
         "n_bins",
         "target_form",
         "target_shape",
+        "weibull_shape",
+        "weibull_delay",
     ),
     default_assumptions={"verbose": True, "target_form": "spacetime", "target_shape": "free"},
     source_kinds=(
         ("replication_timing", ("x",)),
         ("firing_rate", ("scalar", "x", "t")),
     ),
-    assumption_values=(("target_form", ("spacetime",)), ("target_shape", ("free", "exponential"))),
+    assumption_values=(("target_form", ("spacetime",)), ("target_shape", ("free", "exponential", "weibull", "best"))),
     description="Space-time effective fit of v(x,t) from timing and general firing rate.",
 )
 rmap.register(

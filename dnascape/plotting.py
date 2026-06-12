@@ -190,7 +190,53 @@ def plotf(*arrays, labels=None, x_array=None, dual_axis=False, resolution=1, reg
           fig=None, ax=None, showQ=True, return_handles=False, time_array=None, resolution_t=5,
           cmap='viridis', colorbarQ=True, logzQ=False, limsz=None, label_loc="lower right", **kwargs):
 
-    arrays = [np.asarray(a) for a in arrays]
+    def _as_plot_array(value):
+        try:
+            return np.asarray(value)
+        except ValueError:
+            return np.asarray(value, dtype=object)
+
+    def _is_nested_array_collection(arr):
+        return (
+            arr.dtype == object
+            and arr.ndim == 1
+            and arr.size > 0
+            and all(np.ndim(item) > 0 for item in arr)
+        )
+
+    def _matching_1d_axis(axis, size):
+        if axis is None:
+            return False
+        axis_arr = np.asarray(axis)
+        return axis_arr.ndim == 1 and axis_arr.size == size
+
+    def _should_use_heatmap(arr):
+        if dual_axis or arr.ndim != 2:
+            return False
+        if arr.shape[1] == 1 and arr.shape[0] > 1:
+            return False
+        if arr.shape[0] == 1 and arr.shape[1] > 1 and x_array is not None:
+            return time_array is None or _matching_1d_axis(time_array, arr.shape[1])
+        if _matching_1d_axis(x_array, arr.shape[0]):
+            return True
+        if x_array is None and _matching_1d_axis(time_array, arr.shape[1]):
+            return True
+        return False
+
+    arrays = [_as_plot_array(a) for a in arrays]
+    if len(arrays) == 1:
+        arr = arrays[0]
+        while arr.ndim > 2 and arr.shape[0] == 1:
+            arr = _as_plot_array(arr[0])
+        if arr.ndim == 2 and not _should_use_heatmap(arr):
+            if arr.shape[1] == 1 and arr.shape[0] > 1:
+                arrays = [arr.reshape(-1)]
+            else:
+                arrays = [np.asarray(row) for row in arr]
+        elif _is_nested_array_collection(arr):
+            arrays = [np.asarray(item) for item in arr]
+        else:
+            arrays = [arr]
 
     def _is_default_limit(value):
         return (
@@ -724,10 +770,32 @@ def mplotf(marrays, mlabels=None, mx_array=None, mdual_axis=None, mresolution=No
         unknown = ", ".join(sorted(kwargs))
         raise TypeError(f"mplotf() got unexpected keyword argument(s): {unknown}")
 
+    def regular_matrix(g):
+        try:
+            arr = np.asarray(g)
+        except ValueError:
+            return None
+        if arr.ndim == 2 and arr.dtype != object:
+            return arr
+        return None
+
+    def axis_matches(axis, size):
+        if axis is None:
+            return False
+        axis_arr = np.asarray(axis)
+        return axis_arr.ndim == 1 and axis_arr.size == size
+
     def first_array(g):
         return np.asarray(g[0] if isinstance(g, (list, tuple)) else g)
 
-    def spatial_len(g):
+    def spatial_len(g, x_axis=None, time_axis=None):
+        if isinstance(g, (list, tuple)):
+            mat = regular_matrix(g)
+            if mat is not None:
+                if axis_matches(x_axis, mat.shape[0]):
+                    return mat.shape[0]
+                if x_axis is None and axis_matches(time_axis, mat.shape[1]):
+                    return mat.shape[0]
         arr = first_array(g)
         if arr.ndim == 2:
             if arr.shape[0] == 1 and arr.shape[1] > 1:
@@ -738,13 +806,14 @@ def mplotf(marrays, mlabels=None, mx_array=None, mdual_axis=None, mresolution=No
         return len(arr)
 
     x0_in = at(mx_array, 0, None)
+    t0_in = at(mtime_array, 0, None)
     if x0_in is None:
-        n0 = spatial_len(marrays[0]) or 1
+        n0 = spatial_len(marrays[0], x0_in, t0_in) or 1
         res0 = at(mresolution, 0, 1)
         xk = np.arange(n0, dtype=float) * float(res0)  # kb
     else:
         xk = np.asarray(x0_in, float)
-        n0 = spatial_len(marrays[0])
+        n0 = spatial_len(marrays[0], x0_in, t0_in)
         if n0 is not None and xk.size != n0:
             raise ValueError("First mx_array length must match the length of the first plotted array.")
 
@@ -821,7 +890,10 @@ def mplotf(marrays, mlabels=None, mx_array=None, mdual_axis=None, mresolution=No
         n_in = len(g) if is_list else 1
 
         dualQ = bool(at(mdual_axis, i, False)) and is_list and n_in == 2
-        args = tuple(g) if is_list else (g,)
+        if is_list and not dualQ and regular_matrix(g) is not None:
+            args = (np.asarray(g),)
+        else:
+            args = tuple(g) if is_list else (g,)
 
         plotf(*args,
               labels=at(mlabels, i, None),
