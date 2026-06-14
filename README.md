@@ -162,4 +162,8 @@ If you use DNAscape in your research, please cite the corresponding publication 
 
 Please open issues at https://github.com/fberkemeier/DNAscape/issues.
 
+<<<<<<< HEAD
 For technical questions or collaboration requests, contact Francisco Berkemeier at [fp409@cam.ac.uk](mailto:fp409@cam.ac.uk).
+=======
+For technical questions or collaboration requests, contact Francisco Berkemeier at [fp409@cam.ac.uk](mailto:fp409@cam.ac.uk).
+>>>>>>> c42a12068948289e348db35b89c5316cb8342d71
