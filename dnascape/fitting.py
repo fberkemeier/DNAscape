@@ -544,6 +544,10 @@ def _canonical_spacetime_update(value):
 def _canonical_spacetime_order(value):
     text = str(value).strip().lower().replace("-", "_").replace(" ", "_")
     aliases = {
+        "mixed": "mixed",
+        "joint": "mixed",
+        "simultaneous": "mixed",
+        "coupled": "mixed",
         "space_then_time": "space_then_time",
         "space_time": "space_then_time",
         "space_first": "space_then_time",
@@ -560,7 +564,7 @@ def _canonical_spacetime_order(value):
     }
     if text not in aliases:
         raise ValueError(
-            "spacetime_order must be 'space_then_time' or 'time_then_space'."
+            "spacetime_order must be 'mixed', 'space_then_time', or 'time_then_space'."
         )
     return aliases[text]
 
@@ -3613,6 +3617,381 @@ def _fit_temporal_factor_for_separable_speed(
     return _RmapInfoArray(best_q, info=info)
 
 
+def _fit_linear_increasing_temporal_factor_for_separable_speed(
+    observed_timing,
+    firing_rate,
+    spatial_speed,
+    resolution=1.0,
+    resolution_time=5.0,
+    time_grid=None,
+    T0=None,
+    initial_temporal_factor=None,
+    fit_step=0.003,
+    maxiter=10,
+    speed_bounds=None,
+    refine_ratio_bounds=(0.25, 4.0),
+    refine_edge_kb=1000,
+    perQ=False,
+    error=None,
+    verbose=True,
+    print_every=1,
+):
+    if perQ:
+        raise NotImplementedError("factorized fork-speed fitting currently supports linear geometry only.")
+    T = np.asarray(observed_timing, dtype=float)
+    spatial = np.asarray(spatial_speed, dtype=float).reshape(-1)
+    if spatial.size != T.size:
+        raise ValueError("spatial fork-speed component must match replication_timing length.")
+    if np.any(~np.isfinite(spatial)) or np.any(spatial <= 0):
+        raise ValueError("spatial fork-speed component must contain finite positive values.")
+    offset = 0.0 if T0 is None else float(T0)
+    if not np.isfinite(offset):
+        raise ValueError("T0 must be finite when supplied.")
+
+    fit_idx, stride = _speed_fit_indices(
+        T - offset,
+        resolution,
+        perQ=perQ,
+        refine_edge_kb=refine_edge_kb,
+    )
+    T_fit = T[fit_idx]
+    spatial_fit = spatial[fit_idx]
+    firing_fit = _subset_firing_positions(firing_rate, fit_idx, T.size)
+    time_axis = _time_axis_for_speed_fit(
+        T,
+        firing_rate,
+        resolution_time=resolution_time,
+        time_grid=time_grid,
+        T0=T0,
+    )
+    if initial_temporal_factor is None:
+        baseline_q = np.ones(time_axis.size, dtype=float)
+    else:
+        baseline_q = np.asarray(initial_temporal_factor, dtype=float).reshape(-1)
+        if baseline_q.size != time_axis.size:
+            raise ValueError("initial temporal fork-speed factor must match time_grid.")
+        if np.any(~np.isfinite(baseline_q)) or np.any(baseline_q <= 0):
+            baseline_q = np.ones(time_axis.size, dtype=float)
+
+    low, high = _direct_speed_shape_bounds(spatial, speed_bounds=speed_bounds)
+    q_low = max(low / max(float(np.nanmax(spatial)), 1e-12), 1e-12)
+    q_high = high / max(float(np.nanmin(spatial)), 1e-12)
+    if not np.isfinite(q_high) or q_high <= q_low:
+        q_low, q_high = 1e-3, 1e3
+    if refine_ratio_bounds is not None:
+        low_ratio, high_ratio = map(float, refine_ratio_bounds)
+        if not (np.isfinite(low_ratio) and np.isfinite(high_ratio) and 0 < low_ratio < high_ratio):
+            raise ValueError("refine_ratio_bounds must be a positive (low, high) pair.")
+        q_low = max(q_low, low_ratio)
+        q_high = min(q_high, high_ratio)
+        if q_high <= q_low:
+            q_low, q_high = low_ratio, high_ratio
+
+    baseline_q = np.clip(baseline_q, q_low, q_high)
+    fit_step = float(fit_step)
+    if not np.isfinite(fit_step) or fit_step < 0:
+        raise ValueError("fit_step_t must be finite and >= 0.")
+    maxiter = int(maxiter)
+    error = _normalise_error_threshold(error)
+    print_every = max(1, int(print_every))
+    maxiter_display = max(1, maxiter)
+    resolution_fit = float(resolution) * float(stride)
+
+    if time_axis.size <= 1:
+        t01 = np.zeros(time_axis.size, dtype=float)
+    else:
+        span = float(time_axis[-1] - time_axis[0])
+        t01 = np.zeros(time_axis.size, dtype=float) if span <= 0 else (time_axis - time_axis[0]) / span
+
+    max_linear_increase = max(fit_step * maxiter_display, 0.0)
+    max_linear_increase = min(max_linear_increase, max(q_high - 1.0, 0.0))
+    if maxiter <= 0 or max_linear_increase <= 0:
+        slopes = np.array([0.0], dtype=float)
+    else:
+        slopes = np.linspace(0.0, max_linear_increase, maxiter_display)
+
+    def timing_mse(q):
+        predicted = _predict_timing_separable_speed(
+            firing_fit,
+            spatial_fit,
+            q,
+            T_fit,
+            time_axis,
+            resolution_fit,
+            offset=offset,
+        )
+        valid = np.isfinite(T_fit) & np.isfinite(predicted) & (T_fit > 0) & (predicted > 0)
+        if not np.any(valid):
+            return np.inf, predicted
+        return mean_squared_error(T_fit[valid], predicted[valid]), predicted
+
+    baseline_mse, baseline_predicted = timing_mse(baseline_q)
+    best_q = baseline_q.copy()
+    best_mse = baseline_mse
+    best_predicted = baseline_predicted
+    best_slope = 0.0
+    accepted = False
+    start_time = time.time()
+
+    for i, slope in enumerate(slopes, start=1):
+        candidate_q = np.clip(1.0 + float(slope) * t01, q_low, q_high)
+        mse, predicted = timing_mse(candidate_q)
+        if np.isfinite(mse) and (not np.isfinite(best_mse) or mse < best_mse):
+            best_q = candidate_q
+            best_mse = float(mse)
+            best_predicted = predicted
+            best_slope = float(slope)
+            accepted = best_slope > 0
+        done = i == slopes.size or _error_reached(best_mse, error)
+        if verbose and (i % print_every == 0 or done):
+            etaferr(it=i, maxiter=slopes.size, start_time=start_time, err=best_mse, done=done)
+        if done and i != slopes.size:
+            break
+
+    predicted_full = np.full(T.size, np.nan, dtype=float)
+    if best_predicted is not None:
+        predicted_full[fit_idx] = best_predicted
+    info = {
+        "target_shape": "best",
+        "fork_speed_component_t": "guarded linear increasing q(t) conditioned on current v_x(x)",
+        "fork_speed_v0": float(_initial_positive_speed_value(spatial)),
+        "fork_speed_q_slope_t": float(best_slope),
+        "fork_speed_temporal_accepted": bool(accepted),
+        "fork_speed_temporal_baseline_mse": None if not np.isfinite(baseline_mse) else float(baseline_mse),
+        "fork_speed_bounds": (float(low), float(high)),
+        "fit_mse": None if not np.isfinite(best_mse) else float(best_mse),
+    }
+    if best_predicted is not None:
+        info["replication_timing_fit"] = predicted_full
+        info["residual"] = predicted_full - T
+    return _RmapInfoArray(best_q, info=info)
+
+
+def _fit_mixed_intercept_slope_spacetime_speed(
+    observed_timing,
+    firing_rate,
+    spatial_firing_rate=None,
+    resolution=1.0,
+    resolution_time=5.0,
+    time_grid=None,
+    T0=None,
+    neighbourhood_range=2000,
+    space_fit_step=0.4,
+    space_maxiter=10,
+    temporal_fit_step=0.003,
+    temporal_maxiter=10,
+    speed_bounds=None,
+    initial_fork_speed=1.4,
+    smoothw=100,
+    refine_ratio_bounds=(0.25, 4.0),
+    refine_edge_kb=1000,
+    perQ=False,
+    error=None,
+    verbose=True,
+    print_every=1,
+):
+    if perQ:
+        raise NotImplementedError("mixed fork-speed fitting currently supports linear geometry only.")
+    T = np.asarray(observed_timing, dtype=float)
+    time_axis = np.asarray(time_grid, dtype=float)
+    if time_axis.ndim != 1 or time_axis.size == 0:
+        raise ValueError("time_grid must be a non-empty one-dimensional array.")
+    offset = 0.0 if T0 is None else float(T0)
+    if not np.isfinite(offset):
+        raise ValueError("T0 must be finite when supplied.")
+
+    if spatial_firing_rate is None:
+        firing_xt = _space_time_firing_for_separable_speed(firing_rate, T.size, time_axis.size)
+        spatial_firing = np.nanmean(firing_xt, axis=0)
+    else:
+        spatial_firing = _spatial_firing_for_speed_fit(spatial_firing_rate, T.size)
+
+    spatial_seed = map_timing_firing_spatial_speed(
+        {"replication_timing": T, "firing_rate": spatial_firing},
+        resolution=resolution,
+        neighbourhood_range=neighbourhood_range,
+        fit_step=space_fit_step,
+        maxiter=space_maxiter,
+        speed_bounds=speed_bounds,
+        initial_fork_speed=initial_fork_speed,
+        target_shape="best",
+        smoothw=smoothw,
+        error=error,
+        perQ=perQ,
+        n_bins=T.size,
+        verbose=verbose,
+        print_every=print_every,
+    )
+    spatial_info = dict(getattr(spatial_seed, "_rmap_info", {}) or {})
+    speed_space = np.asarray(spatial_seed, dtype=float).reshape(-1)
+    if speed_space.size != T.size:
+        raise ValueError("spatial fork-speed seed must match replication_timing length.")
+    if np.any(~np.isfinite(speed_space)) or np.any(speed_space <= 0):
+        raise ValueError("spatial fork-speed seed must contain finite positive values.")
+
+    low, high = _direct_speed_shape_bounds(speed_space, speed_bounds=speed_bounds)
+    speed_space = np.clip(speed_space, low, high)
+    fit_idx, stride = _speed_fit_indices(
+        T - offset,
+        resolution,
+        perQ=perQ,
+        refine_edge_kb=refine_edge_kb,
+    )
+    T_fit = T[fit_idx]
+    firing_fit = _subset_firing_positions(firing_rate, fit_idx, T.size)
+    resolution_fit = float(resolution) * float(stride)
+
+    q_low = max(low / max(float(np.nanmax(speed_space)), 1e-12), 1e-12)
+    q_high = high / max(float(np.nanmin(speed_space)), 1e-12)
+    if not np.isfinite(q_high) or q_high <= q_low:
+        q_low, q_high = 1e-3, 1e3
+    if refine_ratio_bounds is not None:
+        low_ratio, high_ratio = map(float, refine_ratio_bounds)
+        if not (np.isfinite(low_ratio) and np.isfinite(high_ratio) and 0 < low_ratio < high_ratio):
+            raise ValueError("refine_ratio_bounds must be a positive (low, high) pair.")
+    else:
+        low_ratio, high_ratio = 0.25, 4.0
+
+    if time_axis.size <= 1:
+        t01 = np.zeros(time_axis.size, dtype=float)
+    else:
+        span = float(time_axis[-1] - time_axis[0])
+        t01 = np.zeros(time_axis.size, dtype=float) if span <= 0 else (time_axis - time_axis[0]) / span
+
+    space_step = float(space_fit_step)
+    slope_step = float(temporal_fit_step)
+    if not np.isfinite(space_step) or space_step < 0:
+        raise ValueError("fit_step_x must be finite and >= 0.")
+    if not np.isfinite(slope_step) or slope_step < 0:
+        raise ValueError("fit_step_t must be finite and >= 0.")
+    maxiter = max(1, int(max(space_maxiter, temporal_maxiter)))
+    error = _normalise_error_threshold(error)
+    print_every = max(1, int(print_every))
+    smooth_window = smoothw
+    if smooth_window is not None:
+        smooth_window = max(3, min(int(smooth_window), speed_space.size))
+
+    max_slope = max(q_high - 1.0, 0.0)
+    slope = 0.0
+
+    def q_from_slope(value):
+        return np.clip(1.0 + float(value) * t01, q_low, q_high)
+
+    def timing_mse(space, slope_value):
+        q = q_from_slope(slope_value)
+        predicted = _predict_timing_separable_speed(
+            firing_fit,
+            np.asarray(space, dtype=float).reshape(-1)[fit_idx],
+            q,
+            T_fit,
+            time_axis,
+            resolution_fit,
+            offset=offset,
+        )
+        valid = np.isfinite(T_fit) & np.isfinite(predicted) & (T_fit > 0) & (predicted > 0)
+        if not np.any(valid):
+            return np.inf, predicted
+        return mean_squared_error(T_fit[valid], predicted[valid]), predicted
+
+    current_mse, current_predicted = timing_mse(speed_space, slope)
+    best_space = speed_space.copy()
+    best_slope = slope
+    best_mse = current_mse
+    best_predicted = current_predicted
+    accepted_temporal = False
+    no_improvement = 0
+    start_time = time.time()
+
+    x_full = np.arange(T.size, dtype=float) * float(resolution)
+    x_fit = fit_idx.astype(float) * float(resolution)
+
+    for it in range(1, maxiter + 1):
+        q = q_from_slope(slope)
+        predicted = _predict_timing_separable_speed(
+            firing_fit,
+            speed_space[fit_idx],
+            q,
+            T_fit,
+            time_axis,
+            resolution_fit,
+            offset=offset,
+        )
+        valid = np.isfinite(T_fit) & np.isfinite(predicted) & (T_fit > 0) & (predicted > 0)
+        ratio_fit = np.ones(fit_idx.size, dtype=float)
+        if np.any(valid):
+            ratio_fit[valid] = np.clip(predicted[valid] / T_fit[valid], low_ratio, high_ratio)
+        ratio_full = np.interp(x_full, x_fit, ratio_fit, left=ratio_fit[0], right=ratio_fit[-1])
+        space_candidate = np.clip(speed_space * ratio_full ** space_step, low, high)
+        if smooth_window is not None and smooth_window > 2 and space_candidate.size > 2:
+            space_candidate = np.clip(smoothf(space_candidate, window=smooth_window), low, high)
+        slope_candidate = min(max_slope, slope + slope_step)
+
+        candidates = [
+            ("current", speed_space, slope),
+            ("space", space_candidate, slope),
+            ("time", speed_space, slope_candidate),
+            ("mixed", space_candidate, slope_candidate),
+        ]
+        chosen_space = speed_space
+        chosen_slope = slope
+        chosen_mse = current_mse
+        chosen_predicted = current_predicted
+        for _name, candidate_space, candidate_slope in candidates[1:]:
+            mse, candidate_predicted = timing_mse(candidate_space, candidate_slope)
+            if np.isfinite(mse) and (not np.isfinite(chosen_mse) or mse < chosen_mse):
+                chosen_space = np.asarray(candidate_space, dtype=float).copy()
+                chosen_slope = float(candidate_slope)
+                chosen_mse = float(mse)
+                chosen_predicted = candidate_predicted
+
+        if np.isfinite(chosen_mse) and (not np.isfinite(current_mse) or chosen_mse < current_mse):
+            speed_space = chosen_space
+            slope = chosen_slope
+            current_mse = chosen_mse
+            current_predicted = chosen_predicted
+            no_improvement = 0
+            if current_mse < best_mse or not np.isfinite(best_mse):
+                best_space = speed_space.copy()
+                best_slope = float(slope)
+                best_mse = float(current_mse)
+                best_predicted = current_predicted
+                accepted_temporal = best_slope > 0
+        else:
+            no_improvement += 1
+            space_step *= 0.5
+            slope_step *= 0.5
+
+        done = it == maxiter or _error_reached(best_mse, error) or no_improvement >= 3
+        if verbose and (it % print_every == 0 or done):
+            etaferr(it=it, maxiter=maxiter, start_time=start_time, err=best_mse, done=done)
+        if done and it != maxiter:
+            break
+
+    q_best = q_from_slope(best_slope)
+    speed_spacetime = np.outer(q_best, best_space)
+    speed_spacetime = np.clip(speed_spacetime, low, high)
+    predicted_full = np.full(T.size, np.nan, dtype=float)
+    if best_predicted is not None:
+        predicted_full[fit_idx] = best_predicted
+    temporal_info = {
+        "target_shape": "best",
+        "spacetime_order": "mixed",
+        "fork_speed_shape": "mixed factorized v_x(x) * (1 + slope * t)",
+        "fork_speed_component_x": "iterative site-specific v_x(x)",
+        "fork_speed_component_t": "joint linear increasing q(t)",
+        "fork_speed_q_slope_t": float(best_slope),
+        "fork_speed_temporal_accepted": bool(accepted_temporal),
+        "fork_speed_bounds": (float(low), float(high)),
+        "fit_mse": None if not np.isfinite(best_mse) else float(best_mse),
+    }
+    if best_predicted is not None:
+        temporal_info["replication_timing_fit"] = predicted_full
+        temporal_info["residual"] = predicted_full - T
+    spatial_info = dict(spatial_info)
+    spatial_info["fork_speed_component_x"] = "initial spatial v_x(x) seed"
+    return speed_spacetime, (low, high), spatial_info, temporal_info
+
+
 def _fit_best_spacetime_speed_shape(
     observed_timing,
     firing_rate,
@@ -4358,12 +4737,15 @@ def _fit_spacetime_speed_components(
     verbose,
     print_every,
     order,
+    spatial_firing_rate=None,
 ):
     missing_helpers = [
         name for name in (
             "_initial_temporal_factor_profile",
             "_fit_spatial_component_for_separable_speed",
             "_fit_temporal_factor_for_separable_speed",
+            "_fit_linear_increasing_temporal_factor_for_separable_speed",
+            "_fit_mixed_intercept_slope_spacetime_speed",
         )
         if name not in globals()
     ]
@@ -4379,6 +4761,11 @@ def _fit_spacetime_speed_components(
     time_axis = np.asarray(time_axis, dtype=float)
     if time_axis.ndim != 1 or time_axis.size == 0:
         raise ValueError("time_grid must be a non-empty one-dimensional array.")
+    direct_spatial_firing = None
+    if spatial_firing_rate is not None:
+        direct_spatial_firing = _spatial_firing_for_speed_fit(spatial_firing_rate, T.size)
+    elif str(source_kind) in {"scalar", "x"}:
+        direct_spatial_firing = _spatial_firing_for_speed_fit(firing_rate, T.size)
 
     speed_space = _initial_spatial_speed_profile(initial_fork_speed, T.size)
     scale = _initial_positive_speed_value(speed_space)
@@ -4404,10 +4791,35 @@ def _fit_spacetime_speed_components(
             return False
         return float(np.nanmax(arr) - np.nanmin(arr)) <= max(float(np.nanmedian(arr)) * 1e-8, 1e-12)
 
+    if order == "mixed":
+        return _fit_mixed_intercept_slope_spacetime_speed(
+            T,
+            firing_rate,
+            spatial_firing_rate=direct_spatial_firing,
+            resolution=resolution,
+            resolution_time=resolution_time,
+            time_grid=time_axis,
+            T0=T0,
+            neighbourhood_range=neighbourhood_range,
+            space_fit_step=space_fit_step,
+            space_maxiter=space_maxiter,
+            temporal_fit_step=temporal_fit_step,
+            temporal_maxiter=temporal_maxiter,
+            speed_bounds=speed_bounds,
+            initial_fork_speed=initial_fork_speed,
+            smoothw=smoothw,
+            refine_ratio_bounds=refine_ratio_bounds,
+            refine_edge_kb=refine_edge_kb,
+            perQ=perQ,
+            error=error,
+            verbose=verbose,
+            print_every=print_every,
+        )
+
     def fit_space(current_space, current_time_factor):
-        if source_kind in {"scalar", "x"} and unit_temporal_factor(current_time_factor):
+        if direct_spatial_firing is not None and unit_temporal_factor(current_time_factor):
             return map_timing_firing_spatial_speed(
-                {"replication_timing": T, "firing_rate": firing_rate},
+                {"replication_timing": T, "firing_rate": direct_spatial_firing},
                 resolution=resolution,
                 neighbourhood_range=neighbourhood_range,
                 fit_step=space_fit_step,
@@ -4473,7 +4885,7 @@ def _fit_spacetime_speed_components(
             info["fork_speed_component_t"] = "v0 * exp(b_t * T) conditioned on constant v_x"
             info["fork_speed_v0"] = float(scale)
             return _RmapInfoArray(q, info=info)
-        return _fit_temporal_factor_for_separable_speed(
+        return _fit_linear_increasing_temporal_factor_for_separable_speed(
             T,
             firing_rate,
             current_space,
@@ -4482,7 +4894,6 @@ def _fit_spacetime_speed_components(
             time_grid=time_axis,
             T0=T0,
             initial_temporal_factor=current_time_factor,
-            temporal_smoothw=temporal_smoothw,
             fit_step=temporal_fit_step,
             maxiter=temporal_maxiter,
             speed_bounds=speed_bounds,
@@ -4536,7 +4947,7 @@ def map_timing_firing_spacetime_speed(
     spacetime_time_fit_step=None,
     spacetime_sim_number=None,
     spacetime_update="factorized",
-    spacetime_order="space_then_time",
+    spacetime_order="mixed",
     spacetime_kernel_t=1.0,
     speed_bounds=None,
     initial_fork_speed=1.4,
@@ -4625,6 +5036,7 @@ def map_timing_firing_spacetime_speed(
             verbose=verbose,
             print_every=print_every,
             order=order,
+            spatial_firing_rate=firing_rate_space,
         )
         speed_spacetime = _project_spacetime_speed_target_shape(
             speed_spacetime,
@@ -4641,6 +5053,17 @@ def map_timing_firing_spacetime_speed(
                 info["spatial_component_mse"] = spatial_info["fit_mse"]
             if "fit_mse" in temporal_info:
                 info["temporal_component_mse"] = temporal_info["fit_mse"]
+            for key in (
+                "spacetime_order",
+                "fork_speed_shape",
+                "fork_speed_component_x",
+                "fork_speed_component_t",
+                "fork_speed_q_slope_t",
+                "fork_speed_temporal_accepted",
+                "fork_speed_temporal_baseline_mse",
+            ):
+                if key in temporal_info:
+                    info[key] = temporal_info[key]
             info.update(
                 _spacetime_speed_timing_fit_info(
                     speed_spacetime,
@@ -5411,7 +5834,7 @@ def map_timing_firing_spacetime_speed_simulated(
     spacetime_time_fit_step=None,
     spacetime_sim_number=None,
     spacetime_update="factorized",
-    spacetime_order="space_then_time",
+    spacetime_order="mixed",
     spacetime_kernel_t=1.0,
     speed_bounds=None,
     initial_fork_speed=1.4,
@@ -5520,6 +5943,17 @@ def map_timing_firing_spacetime_speed_simulated(
                 info["spatial_component_mse"] = spatial_info["fit_mse"]
             if "fit_mse" in temporal_info:
                 info["temporal_component_mse"] = temporal_info["fit_mse"]
+            for key in (
+                "spacetime_order",
+                "fork_speed_shape",
+                "fork_speed_component_x",
+                "fork_speed_component_t",
+                "fork_speed_q_slope_t",
+                "fork_speed_temporal_accepted",
+                "fork_speed_temporal_baseline_mse",
+            ):
+                if key in temporal_info:
+                    info[key] = temporal_info[key]
             info.update(
                 _spacetime_speed_timing_fit_info(
                     speed_spacetime,

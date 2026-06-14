@@ -200,8 +200,8 @@ _ASSUMPTION_DESCRIPTIONS = {
     "spacetime_space_fit_step": "x-phase update size for factorized v(x,t) or I(x,t) refinement.",
     "spacetime_time_fit_step": "t-phase update size for factorized v(x,t) or I(x,t) refinement.",
     "spacetime_sim_number": "Number of simulations per mixed x,t refinement iteration.",
-    "spacetime_update": "Space-time update rule: 'factorized' separates x and t phases; 'mixed' fits local x,t corrections.",
-    "spacetime_order": "Order of factorized x,t phases: 'space_then_time' by default, or 'time_then_space'.",
+    "spacetime_update": "Space-time update rule: 'factorized' separates x and t components; 'mixed' fits local x,t corrections.",
+    "spacetime_order": "Order of factorized x,t phases. For fork-speed v(x,t), 'mixed' jointly updates the spatial profile and linear time slope; 'space_then_time' and 'time_then_space' are sequential alternatives.",
     "spacetime_kernel_t": "Temporal kernel width, in time bins, for mixed x,t corrections.",
     "refine_ratio_bounds": "Bounds applied to timing-ratio updates during simulation refinement.",
     "refine_edge_kb": "Non-periodic chromosome edge width, in kb, ignored during refinement.",
@@ -3273,7 +3273,12 @@ rmap.register(
         "time_grid",
         "T0",
     ),
-    default_assumptions={"verbose": True, "target_form": "spacetime", "target_shape": "best"},
+    default_assumptions={
+        "verbose": True,
+        "target_form": "spacetime",
+        "target_shape": "best",
+        "spacetime_order": "mixed",
+    },
     source_kinds=(
         ("replication_timing", ("x",)),
         ("firing_rate", ("xt",)),
@@ -3319,7 +3324,12 @@ rmap.register(
         "target_form",
         "target_shape",
     ),
-    default_assumptions={"verbose": True, "target_form": "spacetime", "target_shape": "best"},
+    default_assumptions={
+        "verbose": True,
+        "target_form": "spacetime",
+        "target_shape": "best",
+        "spacetime_order": "mixed",
+    },
     source_kinds=(
         ("replication_timing", ("x",)),
         ("firing_rate", ("scalar", "x", "t")),

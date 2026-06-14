@@ -1,4 +1,3 @@
-````markdown
 <p align="center">
   <img src="docs/source/_static/dnascape_logo.svg" alt="DNAscape logo" width="50%">
 </p>
@@ -164,6 +163,3 @@ If you use DNAscape in your research, please cite the corresponding publication 
 Please open issues at https://github.com/fberkemeier/DNAscape/issues.
 
 For technical questions or collaboration requests, contact Francisco Berkemeier at [fp409@cam.ac.uk](mailto:fp409@cam.ac.uk).
-
-```
-```
