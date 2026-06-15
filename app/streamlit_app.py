@@ -59,27 +59,47 @@ st.markdown(
     unsafe_allow_html=True,
 )
 
-cols = st.columns(3)
-with cols[0]:
-    render_workflow_card(
+workflow_cards = [
+    (
         "Data Management",
         "Convert sequencing data and genomic tracks into DNAscape-ready inputs.",
         "/Data_Management",
-    )
-
-with cols[1]:
-    render_workflow_card(
+    ),
+    (
         "Mapping",
         "Explore rmap workflows for kinetic inference and feature translation.",
         "/Mapping",
-    )
-
-with cols[2]:
-    render_workflow_card(
+    ),
+    (
         "Simulation",
         "Set up rsim workflows for stochastic replication programme simulation.",
         "/Simulation",
-    )
+    ),
+    (
+        "Plotting",
+        "Build compact visual summaries for inputs, mapped features, and simulations.",
+        "/Plotting",
+    ),
+    (
+        "Cached Files",
+        "Review reusable uploads, generated intermediates, figures, and exports.",
+        "/Cached_Files",
+    ),
+    (
+        "Resources",
+        "Open project documentation, source code, examples, and citation notes.",
+        "/Resources",
+    ),
+]
+
+for row_start in range(0, len(workflow_cards), 3):
+    if row_start:
+        st.markdown("<div class='workflow-grid-row-spacer'></div>", unsafe_allow_html=True)
+
+    cols = st.columns(3)
+    for col, (title, body, url) in zip(cols, workflow_cards[row_start : row_start + 3]):
+        with col:
+            render_workflow_card(title, body, url)
 
 st.markdown(
     """

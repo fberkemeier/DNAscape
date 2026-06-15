@@ -23,7 +23,7 @@ render_sidebar("Mapping")
 
 render_page_intro(
     "Mapping",
-    "Explore rmap workflows.",
+    "Explore rmap workflows",
     "Use DNAscape mapping to infer kinetic quantities, translate between "
     "replication features, and inspect the assumptions behind each route.",
 )

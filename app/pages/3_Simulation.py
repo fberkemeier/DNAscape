@@ -23,7 +23,7 @@ render_sidebar("Simulation")
 
 render_page_intro(
     "Simulation",
-    "Configure rsim experiments.",
+    "Configure rsim experiments",
     "Use stochastic replication simulations to test origin firing, fork-speed "
     "assumptions, perturbations, and expected genomic readouts.",
 )

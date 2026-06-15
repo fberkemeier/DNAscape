@@ -392,6 +392,10 @@ def apply_style() -> None:
           text-decoration: none !important;
         }
 
+        .workflow-grid-row-spacer {
+          height: 1rem;
+        }
+
         .sidebar-external-links {
           margin-left: auto;
           margin-right: auto;
@@ -400,16 +404,17 @@ def apply_style() -> None:
         }
 
         .sidebar-external-links a {
-          color: var(--dnascape-muted) !important;
+          color: var(--dnascape-accent) !important;
           display: block;
           font-size: 0.95rem;
           line-height: 1.45;
           padding: 0.24rem 0;
+          text-decoration: none;
         }
 
         .sidebar-external-links a:hover {
           color: var(--dnascape-accent) !important;
-          text-decoration: none;
+          text-decoration: underline;
         }
 
         .workflow-line {
@@ -440,6 +445,10 @@ def apply_style() -> None:
           line-height: 1.6;
           margin-top: 2.4rem;
           padding-top: 1rem;
+        }
+
+        .footer-note a {
+          color: var(--dnascape-accent) !important;
         }
 
         div[data-testid="stVerticalBlockBorderWrapper"] {
@@ -804,7 +813,7 @@ def _render_theme_toggle_menu_experiment() -> None:
           const root = document.documentElement;
           const storageKey = "dnascape-theme";
           const styleId = "dnascape-theme-menu-style";
-          const styleVersion = "theme-menu-critical-paint-3";
+          const styleVersion = "theme-menu-critical-paint-4";
           const wrapperId = "dnascape-theme-menu-item-wrapper";
           const itemId = "dnascape-theme-menu-item";
           const themes = {list(THEMES)!r};
@@ -1050,7 +1059,7 @@ def render_theme_toggle() -> None:
           const root = doc.documentElement;
           const storageKey = "dnascape-theme";
           const styleId = "dnascape-theme-menu-style";
-          const styleVersion = "theme-menu-critical-paint-3";
+          const styleVersion = "theme-menu-critical-paint-6";
           const wrapperId = "dnascape-theme-menu-item-wrapper";
           const itemId = "dnascape-theme-menu-item";
           const themes = {list(THEMES)!r};
@@ -1204,33 +1213,60 @@ def render_theme_toggle() -> None:
               }}
 
               #${{itemId}} {{
+                align-items: center;
                 box-sizing: border-box;
                 cursor: pointer;
+                display: flex;
+                gap: 0.65rem;
+                justify-content: flex-start;
                 width: 100%;
               }}
 
               #${{itemId}}:not(.dnascape-native-menu-item) {{
-                align-items: center;
                 appearance: none;
                 background: transparent;
                 border: 0;
                 color: inherit;
-                display: flex;
                 font: inherit;
-                justify-content: flex-start;
                 line-height: 1.35;
                 min-height: 2.25rem;
                 padding: 0.48rem 0.85rem;
                 text-align: left;
               }}
 
-              #${{itemId}}:not(.dnascape-native-menu-item):hover,
-              #${{itemId}}:not(.dnascape-native-menu-item):focus-visible {{
-                background: color-mix(in srgb, currentColor 10%, transparent);
-                outline: none;
+              #${{wrapperId}}:hover #${{itemId}},
+              #${{wrapperId}}:focus-within #${{itemId}},
+              #${{itemId}}:hover,
+              #${{itemId}}:focus-visible {{
+                background: rgba(250, 250, 250, 0.10) !important;
+                border-radius: 0.5rem !important;
+                outline: none !important;
+              }}
+
+              :root[data-dnascape-effective-theme="dark"] #${{wrapperId}}:hover #${{itemId}},
+              :root[data-dnascape-effective-theme="dark"] #${{wrapperId}}:focus-within #${{itemId}},
+              :root[data-dnascape-effective-theme="dark"] #${{itemId}}:hover,
+              :root[data-dnascape-effective-theme="dark"] #${{itemId}}:focus-visible {{
+                background: rgba(250, 250, 250, 0.10) !important;
+              }}
+
+              #${{itemId}} .dnascape-theme-menu-icon {{
+                align-items: center;
+                color: currentColor;
+                display: inline-flex;
+                flex: 0 0 1.1rem;
+                justify-content: center;
+                line-height: 0;
+              }}
+
+              #${{itemId}} .dnascape-theme-menu-icon svg {{
+                display: block;
+                height: 1.08rem;
+                width: 1.08rem;
               }}
 
               #${{itemId}} .dnascape-theme-menu-label {{
+                flex: 0 1 auto;
                 overflow: hidden;
                 text-overflow: ellipsis;
                 white-space: nowrap;
@@ -1327,9 +1363,17 @@ def render_theme_toggle() -> None:
             item.setAttribute("aria-label", label);
             item.removeAttribute("title");
 
+            const iconNode = item.querySelector(".dnascape-theme-menu-icon");
+            if (iconNode) {{
+              iconNode.innerHTML = icons[theme];
+            }}
+
             const labelNode = item.querySelector(".dnascape-theme-menu-label");
             if (labelNode) {{
               labelNode.textContent = label;
+              if (iconNode && labelNode.nextElementSibling !== iconNode) {{
+                item.insertBefore(labelNode, iconNode);
+              }}
             }} else {{
               item.textContent = label;
             }}
@@ -1346,6 +1390,7 @@ def render_theme_toggle() -> None:
             item.setAttribute("role", "menuitem");
             item.innerHTML = `
               <span class="dnascape-theme-menu-label"></span>
+              <span class="dnascape-theme-menu-icon" aria-hidden="true"></span>
             `;
 
             item.addEventListener("mousedown", (event) => {{
@@ -1515,7 +1560,9 @@ def render_sidebar(active_label: str) -> None:
         render_page_link("pages/1_Data_Management.py", "Data Management", "/Data_Management")
         render_page_link("pages/2_Mapping.py", "Mapping", "/Mapping")
         render_page_link("pages/3_Simulation.py", "Simulation", "/Simulation")
-        render_page_link("pages/4_Resources.py", "Resources", "/Resources")
+        render_page_link("pages/4_Plotting.py", "Plotting", "/Plotting")
+        render_page_link("pages/5_Cached_Files.py", "Cached Files", "/Cached_Files")
+        render_page_link("pages/6_Resources.py", "Resources", "/Resources")
 
         st.markdown(
             f"""
