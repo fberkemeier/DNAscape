@@ -81,6 +81,17 @@ def apply_style() -> None:
           --dnascape-sidebar-width: clamp(18rem, 20vw, 20rem);
           --dnascape-sidebar-inner-width: min(82%, 16rem);
           --dnascape-sidebar-logo-width: min(58%, 10.25rem);
+          /* Dark-logo mask tweak points. The small logo keeps the same
+             width-relative radius as the main logo; its y-position is scaled
+             for the shorter small-logo PNG height, 930 / 829. */
+          --dnascape-logo-mask-x: 48.5%;
+          --dnascape-main-logo-mask-y: 2%;
+          --dnascape-main-logo-mask-radius: 2.4%;
+          --dnascape-main-logo-mask-edge: 2.8%;
+          --dnascape-sidebar-logo-mask-x: var(--dnascape-logo-mask-x);
+          --dnascape-sidebar-logo-mask-y: 2.24%;
+          --dnascape-sidebar-logo-mask-radius: 2.4%;
+          --dnascape-sidebar-logo-mask-edge: 2.8%;
           --dnascape-sidebar-nav-font-size: 1.06rem;
           --dnascape-sidebar-nav-gap: 0.58rem;
           --dnascape-sidebar-nav-padding-y: 0.44rem;
@@ -110,25 +121,56 @@ def apply_style() -> None:
 
         :root[data-dnascape-effective-theme="dark"] .dnascape-main-logo img {
           -webkit-mask-image: radial-gradient(
-            circle at 48.5% 2%,
-            transparent 0 2.4%,
-            #000 2.8%
+            circle at var(--dnascape-logo-mask-x) var(--dnascape-main-logo-mask-y),
+            transparent 0 var(--dnascape-main-logo-mask-radius),
+            #000 var(--dnascape-main-logo-mask-edge)
           );
           -webkit-mask-repeat: no-repeat;
           -webkit-mask-size: 100% 100%;
           mask-image: radial-gradient(
-            circle at 48.5% 2%,
-            transparent 0 2.4%,
-            #000 2.8%
+            circle at var(--dnascape-logo-mask-x) var(--dnascape-main-logo-mask-y),
+            transparent 0 var(--dnascape-main-logo-mask-radius),
+            #000 var(--dnascape-main-logo-mask-edge)
+          );
+          mask-repeat: no-repeat;
+          mask-size: 100% 100%;
+        }
+
+        :root[data-dnascape-effective-theme="dark"] .dnascape-sidebar-logo img {
+          -webkit-mask-image: radial-gradient(
+            circle at var(--dnascape-sidebar-logo-mask-x) var(--dnascape-sidebar-logo-mask-y),
+            transparent 0 var(--dnascape-sidebar-logo-mask-radius),
+            #000 var(--dnascape-sidebar-logo-mask-edge)
+          );
+          -webkit-mask-repeat: no-repeat;
+          -webkit-mask-size: 100% 100%;
+          mask-image: radial-gradient(
+            circle at var(--dnascape-sidebar-logo-mask-x) var(--dnascape-sidebar-logo-mask-y),
+            transparent 0 var(--dnascape-sidebar-logo-mask-radius),
+            #000 var(--dnascape-sidebar-logo-mask-edge)
           );
           mask-repeat: no-repeat;
           mask-size: 100% 100%;
         }
 
         :root.dnascape-theme-transition,
-        :root.dnascape-theme-transition * {
-          transition: background-color 160ms ease, border-color 160ms ease,
-            box-shadow 160ms ease, color 160ms ease, filter 160ms ease !important;
+        :root.dnascape-theme-transition *,
+        :root.dnascape-theme-transition *::before,
+        :root.dnascape-theme-transition *::after {
+          transition-property: background-color, border-color, box-shadow, color,
+            fill, stroke, filter, opacity, caret-color, outline-color,
+            text-decoration-color !important;
+          transition-duration: 240ms !important;
+          transition-timing-function: cubic-bezier(0.22, 1, 0.36, 1) !important;
+        }
+
+        @media (prefers-reduced-motion: reduce) {
+          :root.dnascape-theme-transition,
+          :root.dnascape-theme-transition *,
+          :root.dnascape-theme-transition *::before,
+          :root.dnascape-theme-transition *::after {
+            transition-duration: 0ms !important;
+          }
         }
 
         [data-testid="stAppViewContainer"] {
@@ -1196,7 +1238,7 @@ def render_theme_toggle() -> None:
           const root = doc.documentElement;
           const storageKey = "dnascape-theme";
           const styleId = "dnascape-theme-menu-style";
-          const styleVersion = "theme-menu-critical-paint-9";
+          const styleVersion = "theme-menu-critical-paint-11";
           const wrapperId = "dnascape-theme-menu-item-wrapper";
           const itemId = "dnascape-theme-menu-item";
           const themes = {list(THEMES)!r};
@@ -1493,6 +1535,73 @@ def render_theme_toggle() -> None:
             );
           }}
 
+          function compactText(node) {{
+            return (node.textContent || "").replace(/\\s+/g, " ").trim();
+          }}
+
+          function hideNode(node) {{
+            if (!node || node.closest(`#${{wrapperId}}`)) {{
+              return;
+            }}
+            node.dataset.dnascapeHiddenThemeControl = "true";
+            node.style.display = "none";
+          }}
+
+          function directPopoverChild(node, popover) {{
+            let current = node;
+            while (current && current.parentElement !== popover) {{
+              current = current.parentElement;
+            }}
+            return current || node;
+          }}
+
+          function hideBuiltInThemeControls() {{
+            const popover = doc.querySelector(
+              '[data-testid="stMainMenuPopover"], .stMainMenuPopover'
+            );
+            if (!popover) {{
+              return;
+            }}
+
+            const themeChoiceLabels = new Set(["System", "Light", "Dark"]);
+            const themeChoices = Array
+              .from(popover.querySelectorAll('button, [role="button"], [role="option"], [role="menuitemradio"], label'))
+              .filter((node) => !node.closest(`#${{wrapperId}}`) && themeChoiceLabels.has(compactText(node)));
+
+            if (themeChoices.length >= 3) {{
+              let common = themeChoices[0].parentElement;
+              while (
+                common &&
+                common !== popover &&
+                !themeChoices.every((node) => common.contains(node))
+              ) {{
+                common = common.parentElement;
+              }}
+
+              if (common && common !== popover) {{
+                hideNode(common);
+              }} else {{
+                themeChoices.forEach((node) => hideNode(directPopoverChild(node, popover)));
+              }}
+            }}
+
+            Array
+              .from(popover.querySelectorAll("div, section, ul, li"))
+              .filter((node) => !node.closest(`#${{wrapperId}}`))
+              .filter((node) => compactText(node).replace(/\\s+/g, "") === "SystemLightDark")
+              .forEach((node) => hideNode(node));
+
+            Array
+              .from(popover.querySelectorAll('[role="menuitem"], [role="option"], [role="menuitemradio"], button, a'))
+              .filter((node) => !node.closest(`#${{wrapperId}}`))
+              .forEach((node) => {{
+                const text = compactText(node);
+                if (/^(settings|theme|appearance)$/i.test(text) || /choose app theme/i.test(text)) {{
+                  hideNode(directPopoverChild(node, popover));
+                }}
+              }});
+          }}
+
           function syncNativeMenuStyle(list, wrapper, item) {{
             const reference = nativeMenuItem(list);
             if (!reference) {{
@@ -1618,6 +1727,7 @@ def render_theme_toggle() -> None:
 
             syncNativeMenuStyle(list, wrapper, wrapper.querySelector(`#${{itemId}}`));
             updateMenuItem(normalize(root.getAttribute("data-dnascape-theme") || storedTheme()));
+            hideBuiltInThemeControls();
             return true;
           }}
 
@@ -1646,7 +1756,8 @@ def render_theme_toggle() -> None:
 
             if (animate) {{
               root.classList.add("dnascape-theme-transition");
-              win.setTimeout(() => root.classList.remove("dnascape-theme-transition"), 190);
+              root.getBoundingClientRect();
+              win.setTimeout(() => root.classList.remove("dnascape-theme-transition"), 280);
             }}
 
             root.setAttribute("data-dnascape-theme", selected);

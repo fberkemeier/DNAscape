@@ -32,20 +32,65 @@ render_page_intro(
 
 controls, preview = st.columns([0.9, 1.35], gap="large")
 
+PREVIEW_DPI = 300
+EXPORT_FORMATS = (
+    ("PNG", "png", "image/png", ":material/download:"),
+    ("PDF", "pdf", "application/pdf", ":material/picture_as_pdf:"),
+    ("SVG", "svg", "image/svg+xml", ":material/code:"),
+)
+PLOT_STATE_KEY = "plotting_last_plot"
 
-def show_transparent_figure(fig) -> None:
+
+def figure_bytes(fig, image_format: str) -> bytes:
     image = BytesIO()
     fig.savefig(
         image,
-        format="png",
+        format=image_format,
         bbox_inches="tight",
-        dpi=200,
+        dpi=PREVIEW_DPI,
         transparent=True,
         facecolor="none",
         edgecolor="none",
     )
-    image.seek(0)
-    st.image(image.getvalue(), width="stretch", output_format="PNG")
+    return image.getvalue()
+
+
+def safe_download_stem(*parts: object) -> str:
+    raw_name = "_".join(str(part) for part in parts if part is not None)
+    return "".join(char if char.isalnum() or char in "-_" else "_" for char in raw_name)
+
+
+def figure_export_bytes(fig) -> dict[str, bytes]:
+    return {
+        image_format: figure_bytes(fig, image_format)
+        for _, image_format, _, _ in EXPORT_FORMATS
+    }
+
+
+def render_figure_preview(png_bytes: bytes) -> None:
+    st.image(png_bytes, width="stretch", output_format="PNG")
+
+
+def render_download_buttons(export_bytes: dict[str, bytes], file_stem: str) -> None:
+    export_cols = st.columns(
+        [0.2, 0.30, 0.30, 0.30, 1.32],
+        gap="small",
+        vertical_alignment="center",
+    )
+    with export_cols[0]:
+        st.markdown("**Export**")
+
+    for column, (label, image_format, mime, icon) in zip(export_cols[1:4], EXPORT_FORMATS):
+        with column:
+            st.download_button(
+                label,
+                data=export_bytes[image_format],
+                file_name=f"{file_stem}.{image_format}",
+                mime=mime,
+                icon=icon,
+                on_click="ignore",
+                width="stretch",
+            )
 
 with controls:
     with st.container(border=True):
@@ -54,14 +99,6 @@ with controls:
             "Upload file",
             type=["tsv", "csv", "txt", "gz"],
             accept_multiple_files=False,
-        )
-
-        resolution = st.number_input(
-            "Spatial resolution (kb/bin)",
-            min_value=0.000001,
-            value=1.0,
-            step=1.0,
-            format="%.1f",
         )
 
         table = None
@@ -89,11 +126,20 @@ with controls:
                 if not numeric_columns:
                     st.warning("No numeric chromosome columns were found.")
 
+        st.markdown("### Region")
         chromosome = st.selectbox(
             "Chromosome",
             numeric_columns,
             disabled=not numeric_columns,
             placeholder="Select a column",
+        )
+
+        resolution = st.number_input(
+            "Spatial resolution (kb/bin)",
+            min_value=0.000001,
+            value=1.0,
+            step=1.0,
+            format="%.1f",
         )
 
         selected_values = None
@@ -108,13 +154,12 @@ with controls:
             positions = raw_positions[finite_mask]
 
         if positions is not None and positions.size:
-            max_position = float(positions[-1])
-            min_position = 0.0
+            max_position = max(0, int(np.ceil(float(np.nanmax(positions)))))
+            min_position = 0
         else:
-            max_position = float(resolution)
-            min_position = 0.0
+            max_position = max(1, int(np.ceil(float(resolution))))
+            min_position = 0
 
-        st.markdown("### Region")
         region_cols = st.columns(2)
         with region_cols[0]:
             region_start = st.number_input(
@@ -122,7 +167,8 @@ with controls:
                 min_value=min_position,
                 max_value=max_position,
                 value=min_position,
-                step=float(resolution),
+                step=1,
+                format="%d",
                 disabled=positions is None or not positions.size,
             )
         with region_cols[1]:
@@ -131,7 +177,8 @@ with controls:
                 min_value=min_position,
                 max_value=max_position,
                 value=max_position,
-                step=float(resolution),
+                step=1,
+                format="%d",
                 disabled=positions is None or not positions.size,
             )
 
@@ -146,18 +193,11 @@ with preview:
     with st.container(border=True):
         st.markdown("### Preview")
 
-        if table is None:
-            st.markdown(
-                """
-                <p class="small-muted">
-                Upload a timing table to preview a chromosome profile.
-                </p>
-                """,
-                unsafe_allow_html=True,
-            )
-        elif selected_values is None or selected_values.size == 0:
-            st.info("Choose a numeric chromosome column.")
-        elif plot_requested:
+        last_plot = st.session_state.get(PLOT_STATE_KEY)
+        plot_feedback_shown = False
+
+        if plot_requested:
+            plot_feedback_shown = True
             if region_end < region_start:
                 st.error("Region end must be greater than or equal to region start.")
             else:
@@ -191,13 +231,34 @@ with preview:
                             showQ=False,
                             return_handles=True,
                         )
-                        show_transparent_figure(fig)
+                        file_stem = safe_download_stem(
+                            "dnascape",
+                            chromosome,
+                            f"{region_start:g}-{region_end:g}kb",
+                        )
+                        last_plot = {
+                            "exports": figure_export_bytes(fig),
+                            "file_stem": file_stem,
+                        }
+                        st.session_state[PLOT_STATE_KEY] = last_plot
                         plt.close(fig)
 
-                        st.caption(
-                            f"{plot_values.size:,} bins plotted from "
-                            f"{selected_values.size:,} total bins."
-                        )
+        if last_plot is not None:
+            render_figure_preview(last_plot["exports"]["png"])
+            render_download_buttons(last_plot["exports"], last_plot["file_stem"])
+        elif plot_feedback_shown:
+            pass
+        elif table is None:
+            st.markdown(
+                """
+                <p class="small-muted">
+                Upload a timing table to preview a chromosome profile.
+                </p>
+                """,
+                unsafe_allow_html=True,
+            )
+        elif selected_values is None or selected_values.size == 0:
+            st.info("Choose a numeric chromosome column.")
         else:
             st.dataframe(
                 table.loc[:, numeric_columns].head(8),
