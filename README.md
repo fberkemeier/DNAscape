@@ -8,7 +8,7 @@
 
 DNAscape is software for building quantitative models of DNA replication from genomic sequencing data. It maps measured replication tracks to kinetic quantities, such as timing, origin activity, and fork dynamics, simulates replication programmes from mechanistic assumptions, and compares predicted features across genomic position and S-phase time.
 
-DNAscape is particularly designed for kinetic interpretations of replication data from Repli-seq, BrdU-seq, EdU-seq, SNS-seq, ini-seq, bubble-seq, OK-seq, FORK-seq, DNAscent-style nanopore profiles, single-cell variants of these approaches, and custom genomic tracks.
+DNAscape is particularly designed for multimodal replication data, including: Repli-seq, BrdU-seq, EdU-seq, SNS-seq, ini-seq, bubble-seq, OK-seq, FORK-seq, DNAscent-style nanopore profiles, single-cell variants of these approaches, and custom genomic tracks.
 
 By keeping data, kinetic inputs, and modelling assumptions explicit, DNAscape is a useful tool to test how perturbations in origin initiation, fork movement, genome geometry, or replication stress shape the replication programme across organisms and cell types.
 
