@@ -28,6 +28,16 @@ def _sampled_axis_end(x):
     return float(np.nanmax(x))
 
 
+def _apply_transparent_background(fig):
+    if fig is None:
+        return
+    fig.patch.set_facecolor("none")
+    fig.patch.set_alpha(0)
+    for axis in fig.axes:
+        axis.set_facecolor("none")
+        axis.patch.set_alpha(0)
+
+
 def plot_gene_track(
     genes,
     chrom: str,
@@ -189,7 +199,8 @@ def plotf(*arrays, labels=None, x_array=None, dual_axis=False, resolution=1, reg
           scale_matchQ=False, saveQ=False, sname='test', ext='pdf', layout_rect=(0.12, 0.15, 0.98, 0.95),
           fig=None, ax=None, showQ=True, return_handles=False, time_array=None, resolution_t=5,
           cmap='viridis', colorbarQ=True, logzQ=False, limsz=None, label_loc="lower right",
-          colors=None, statsQ=False, fillupQ=False, filldownQ=False, fillintQ=False, **kwargs):
+          colors=None, statsQ=False, fillupQ=False, filldownQ=False, fillintQ=False,
+          transparentQ=True, **kwargs):
 
     def _as_plot_array(value):
         try:
@@ -730,10 +741,16 @@ def plotf(*arrays, labels=None, x_array=None, dual_axis=False, resolution=1, reg
         _no_offset(ax)
         ax.set_title(title)
 
+        if transparentQ:
+            _apply_transparent_background(fig)
         if created_axes:
             _apply_layout(fig)
             if saveQ:
-                fig.savefig(f"figures/plot_{sname}.{ext}", bbox_inches="tight")
+                fig.savefig(
+                    f"figures/plot_{sname}.{ext}",
+                    bbox_inches="tight",
+                    transparent=transparentQ,
+                )
             if showQ:
                 plt.show()
 
@@ -834,10 +851,16 @@ def plotf(*arrays, labels=None, x_array=None, dual_axis=False, resolution=1, reg
         _no_offset(ax1)
         _no_offset(ax2)
 
+        if transparentQ:
+            _apply_transparent_background(fig)
         if created_axes:
             _apply_layout(fig)
             if saveQ:
-                fig.savefig(f"figures/plot_{sname}.{ext}", bbox_inches="tight")
+                fig.savefig(
+                    f"figures/plot_{sname}.{ext}",
+                    bbox_inches="tight",
+                    transparent=transparentQ,
+                )
             if showQ:
                 plt.show()
 
@@ -936,10 +959,16 @@ def plotf(*arrays, labels=None, x_array=None, dual_axis=False, resolution=1, reg
 
     ax.set_title(title)
 
+    if transparentQ:
+        _apply_transparent_background(fig)
     if created_axes:
         _apply_layout(fig)
         if saveQ:
-            fig.savefig(f"figures/plot_{sname}.{ext}", bbox_inches="tight")
+            fig.savefig(
+                f"figures/plot_{sname}.{ext}",
+                bbox_inches="tight",
+                transparent=transparentQ,
+            )
         if showQ:
             plt.show()
 
@@ -953,7 +982,7 @@ def mplotf(marrays, mlabels=None, mx_array=None, mdual_axis=None, mresolution=No
            mfillupQ=None, mfilldownQ=None, mfillintQ=None,
            msaveQ=None, msname=None, mext=None,
            mtime_array=None, mresolution_t=None, mcmap=None, mcolorbarQ=None, mlogzQ=None, mlimsz=None,
-           mcolors=None,
+           mcolors=None, mtransparentQ=None,
            showgeneQ=False, gtf_gz_path="data/other/gencode/gencode.v49.annotation.gtf.gz", gene_chrom=1,
            gene_denseQ=True, gene_show_names=True, gene_show_direction=False,
            figsize=(10, 4), layout_rect=(0.12, 0.15, 0.98, 0.95), hspace=0.15,
@@ -1248,7 +1277,8 @@ def mplotf(marrays, mlabels=None, mx_array=None, mdual_axis=None, mresolution=No
               colorbarQ=at(mcolorbarQ, i, True),
               logzQ=at(mlogzQ, i, False),
               limsz=at_limits(mlimsz, i, None),
-              label_loc=at(mlabel_loc, i, "lower right"))
+              label_loc=at(mlabel_loc, i, "lower right"),
+              transparentQ=at_bool(mtransparentQ, i, True))
 
     xlim_start = xk_start
     if any(bool(at(mlogxQ, i, False)) for i in range(k)) and xlim_start <= 0:
@@ -1278,8 +1308,16 @@ def mplotf(marrays, mlabels=None, mx_array=None, mdual_axis=None, mresolution=No
     fig.subplots_adjust(left=layout_rect[0], bottom=layout_rect[1],
                         right=layout_rect[2], top=layout_rect[3], hspace=hspace)
 
+    transparentQ = any(at_bool(mtransparentQ, i, True) for i in range(k))
+    if transparentQ:
+        _apply_transparent_background(fig)
+
     if at(msaveQ, 0, False):
-        fig.savefig(f"figures/plot_{at(msname, 0, 'test')}.{at(mext, 0, 'pdf')}", bbox_inches="tight")
+        fig.savefig(
+            f"figures/plot_{at(msname, 0, 'test')}.{at(mext, 0, 'pdf')}",
+            bbox_inches="tight",
+            transparent=transparentQ,
+        )
 
     plt.show()
 

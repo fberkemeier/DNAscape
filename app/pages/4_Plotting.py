@@ -2,8 +2,11 @@
 
 import importlib
 import sys
+from io import BytesIO
 from pathlib import Path
 
+import numpy as np
+import pandas as pd
 import streamlit as st
 
 
@@ -24,18 +27,180 @@ render_sidebar("Plotting")
 render_page_intro(
     "Plotting",
     "Visualize DNAscape outputs",
-    "Create compact views for prepared inputs, mapped kinetic features, "
-    "simulation results, and comparisons across genomic regions.",
+    "Upload kinetic profiles, choose a genomic window, and preview DNAscape outputs.",
 )
 
-with st.container(border=True):
-    st.markdown("### Prototype scope")
-    st.markdown(
-        """
-        <p class="small-muted">
-        This page will collect plotting controls, figure presets, genomic
-        region selectors, export options, and reusable visualization templates.
-        </p>
-        """,
-        unsafe_allow_html=True,
+controls, preview = st.columns([0.9, 1.35], gap="large")
+
+
+def show_transparent_figure(fig) -> None:
+    image = BytesIO()
+    fig.savefig(
+        image,
+        format="png",
+        bbox_inches="tight",
+        dpi=200,
+        transparent=True,
+        facecolor="none",
+        edgecolor="none",
     )
+    image.seek(0)
+    st.image(image.getvalue(), width="stretch", output_format="PNG")
+
+with controls:
+    with st.container(border=True):
+        st.markdown("### Timing data")
+        uploaded_file = st.file_uploader(
+            "Upload file",
+            type=["tsv", "csv", "txt", "gz"],
+            accept_multiple_files=False,
+        )
+
+        resolution = st.number_input(
+            "Spatial resolution (kb/bin)",
+            min_value=0.000001,
+            value=1.0,
+            step=1.0,
+            format="%.1f",
+        )
+
+        table = None
+        numeric_columns = []
+        if uploaded_file is not None:
+            try:
+                compression = (
+                    "gzip" if uploaded_file.name.lower().endswith(".gz") else None
+                )
+                table = pd.read_csv(
+                    uploaded_file,
+                    sep="\t",
+                    compression=compression,
+                )
+            except Exception as exc:
+                st.error(f"Could not read TSV file: {exc}")
+
+            if table is not None:
+                numeric_columns = [
+                    column
+                    for column in table.columns
+                    if pd.to_numeric(table[column], errors="coerce").notna().any()
+                ]
+
+                if not numeric_columns:
+                    st.warning("No numeric chromosome columns were found.")
+
+        chromosome = st.selectbox(
+            "Chromosome",
+            numeric_columns,
+            disabled=not numeric_columns,
+            placeholder="Select a column",
+        )
+
+        selected_values = None
+        positions = None
+        if table is not None and chromosome:
+            raw_values = pd.to_numeric(table[chromosome], errors="coerce").to_numpy(
+                dtype=float
+            )
+            raw_positions = np.arange(raw_values.size, dtype=float) * float(resolution)
+            finite_mask = np.isfinite(raw_values)
+            selected_values = raw_values[finite_mask]
+            positions = raw_positions[finite_mask]
+
+        if positions is not None and positions.size:
+            max_position = float(positions[-1])
+            min_position = 0.0
+        else:
+            max_position = float(resolution)
+            min_position = 0.0
+
+        st.markdown("### Region")
+        region_cols = st.columns(2)
+        with region_cols[0]:
+            region_start = st.number_input(
+                "Start (kb)",
+                min_value=min_position,
+                max_value=max_position,
+                value=min_position,
+                step=float(resolution),
+                disabled=positions is None or not positions.size,
+            )
+        with region_cols[1]:
+            region_end = st.number_input(
+                "End (kb)",
+                min_value=min_position,
+                max_value=max_position,
+                value=max_position,
+                step=float(resolution),
+                disabled=positions is None or not positions.size,
+            )
+
+        plot_requested = st.button(
+            "Plot",
+            type="primary",
+            width="stretch",
+            disabled=selected_values is None or selected_values.size == 0,
+        )
+
+with preview:
+    with st.container(border=True):
+        st.markdown("### Preview")
+
+        if table is None:
+            st.markdown(
+                """
+                <p class="small-muted">
+                Upload a timing table to preview a chromosome profile.
+                </p>
+                """,
+                unsafe_allow_html=True,
+            )
+        elif selected_values is None or selected_values.size == 0:
+            st.info("Choose a numeric chromosome column.")
+        elif plot_requested:
+            if region_end < region_start:
+                st.error("Region end must be greater than or equal to region start.")
+            else:
+                region_mask = (positions >= float(region_start)) & (
+                    positions <= float(region_end)
+                )
+                plot_values = selected_values[region_mask]
+                plot_positions = positions[region_mask]
+
+                if plot_values.size == 0:
+                    st.warning("The selected region does not contain any bins.")
+                else:
+                    try:
+                        import matplotlib.pyplot as plt
+                        from dnascape.plotting import plotf
+                    except ModuleNotFoundError as exc:
+                        missing = exc.name or "a plotting dependency"
+                        st.error(
+                            f"{missing} is required to render DNAscape plots. "
+                            "Install the project requirements, then restart Streamlit."
+                        )
+                    else:
+                        fig, _ = plotf(
+                            plot_values,
+                            x_array=plot_positions,
+                            labels=[chromosome],
+                            title=f"{chromosome}: {region_start:g}-{region_end:g} kb",
+                            xtitle="Genomic position (kb)",
+                            ytitle="Replication timing",
+                            figsize=(9.5, 3.8),
+                            showQ=False,
+                            return_handles=True,
+                        )
+                        show_transparent_figure(fig)
+                        plt.close(fig)
+
+                        st.caption(
+                            f"{plot_values.size:,} bins plotted from "
+                            f"{selected_values.size:,} total bins."
+                        )
+        else:
+            st.dataframe(
+                table.loc[:, numeric_columns].head(8),
+                width="stretch",
+                hide_index=True,
+            )

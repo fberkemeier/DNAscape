@@ -4,6 +4,7 @@ from pathlib import Path
 from collections import defaultdict
 import gzip
 import re
+import shutil
 
 import numpy as np
 import pandas as pd
@@ -94,6 +95,43 @@ def savecsv(arr, chr_number, stitle='save_example', outpath="output"):
     )
     df = df[cols_sorted]
     df.to_csv(fname, index=False)
+
+def csv_to_tsv(input_path, output_path=None, decimal_places=2, encoding="utf-8", input_sep=None):
+    """Convert a separated-value table to a tab-separated table."""
+    input_path = Path(input_path)
+    output_path = input_path.with_suffix(".tsv") if output_path is None else Path(output_path)
+
+    if decimal_places is None:
+        float_format = None
+    else:
+        decimal_places = int(decimal_places)
+        if decimal_places < 0:
+            raise ValueError("decimal_places must be non-negative or None.")
+        float_format = f"%.{decimal_places}f"
+
+    read_kwargs = {"encoding": encoding}
+    if input_sep is None:
+        read_kwargs.update({"sep": None, "engine": "python"})
+    else:
+        read_kwargs["sep"] = input_sep
+
+    df = pd.read_csv(input_path, **read_kwargs)
+    if decimal_places is not None:
+        numeric_cols = df.select_dtypes(include=["number"]).columns
+        df[numeric_cols] = df[numeric_cols].astype(float)
+    df.to_csv(output_path, sep="\t", index=False, float_format=float_format, lineterminator="\n")
+
+    return output_path
+
+def compress_to_gz(input_path, output_path=None, compresslevel=9):
+    """Compress a file with gzip and return the written .gz path."""
+    input_path = Path(input_path)
+    output_path = Path(f"{input_path}.gz") if output_path is None else Path(output_path)
+
+    with input_path.open("rb") as source, gzip.open(output_path, "wb", compresslevel=compresslevel) as target:
+        shutil.copyfileobj(source, target)
+
+    return output_path
 
 def _parse_gtf_attributes(attr_str: str) -> dict:
     out = {}

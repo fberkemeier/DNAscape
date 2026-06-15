@@ -108,6 +108,23 @@ def apply_style() -> None:
           filter: invert(1) hue-rotate(180deg) saturate(0.95) brightness(1.08);
         }
 
+        :root[data-dnascape-effective-theme="dark"] .dnascape-main-logo img {
+          -webkit-mask-image: radial-gradient(
+            circle at 48.5% 2%,
+            transparent 0 2.4%,
+            #000 2.8%
+          );
+          -webkit-mask-repeat: no-repeat;
+          -webkit-mask-size: 100% 100%;
+          mask-image: radial-gradient(
+            circle at 48.5% 2%,
+            transparent 0 2.4%,
+            #000 2.8%
+          );
+          mask-repeat: no-repeat;
+          mask-size: 100% 100%;
+        }
+
         :root.dnascape-theme-transition,
         :root.dnascape-theme-transition * {
           transition: background-color 160ms ease, border-color 160ms ease,
@@ -121,6 +138,126 @@ def apply_style() -> None:
 
         header[data-testid="stHeader"] {
           background: color-mix(in srgb, var(--dnascape-bg) 94%, transparent);
+        }
+
+        :root[data-dnascape-effective-theme="dark"] [data-testid="stWidgetLabel"],
+        :root[data-dnascape-effective-theme="dark"] [data-testid="stWidgetLabel"] *,
+        :root[data-dnascape-effective-theme="dark"] label,
+        :root[data-dnascape-effective-theme="dark"] legend {
+          color: var(--dnascape-muted) !important;
+        }
+
+        :root[data-dnascape-effective-theme="dark"] input,
+        :root[data-dnascape-effective-theme="dark"] textarea,
+        :root[data-dnascape-effective-theme="dark"] [contenteditable="true"] {
+          background: transparent !important;
+          color: var(--dnascape-text) !important;
+          caret-color: var(--dnascape-accent) !important;
+          -webkit-text-fill-color: var(--dnascape-text) !important;
+        }
+
+        :root[data-dnascape-effective-theme="dark"] input::placeholder,
+        :root[data-dnascape-effective-theme="dark"] textarea::placeholder {
+          color: var(--dnascape-muted) !important;
+          opacity: 1 !important;
+          -webkit-text-fill-color: var(--dnascape-muted) !important;
+        }
+
+        :root[data-dnascape-effective-theme="dark"] [data-testid="stFileUploaderDropzone"],
+        :root[data-dnascape-effective-theme="dark"] [data-baseweb="input"],
+        :root[data-dnascape-effective-theme="dark"] [data-baseweb="select"] > div,
+        :root[data-dnascape-effective-theme="dark"] [data-baseweb="textarea"],
+        :root[data-dnascape-effective-theme="dark"] [data-baseweb="popover"],
+        :root[data-dnascape-effective-theme="dark"] [data-testid="stMainMenuPopover"],
+        :root[data-dnascape-effective-theme="dark"] [data-testid="stMainMenuList"] {
+          background: var(--dnascape-panel) !important;
+          border-color: var(--dnascape-line) !important;
+          color: var(--dnascape-text) !important;
+        }
+
+        :root[data-dnascape-effective-theme="dark"] [data-testid="stFileUploaderDropzone"] > div,
+        :root[data-dnascape-effective-theme="dark"] [data-testid="stFileUploaderDropzone"] section,
+        :root[data-dnascape-effective-theme="dark"] [data-testid="stFileUploaderDropzoneInstructions"],
+        :root[data-dnascape-effective-theme="dark"] [data-baseweb="input"] > div,
+        :root[data-dnascape-effective-theme="dark"] [data-baseweb="select"] > div > div,
+        :root[data-dnascape-effective-theme="dark"] [data-baseweb="textarea"] > div,
+        :root[data-dnascape-effective-theme="dark"] [data-baseweb="popover"] > div {
+          background: transparent !important;
+          color: var(--dnascape-text) !important;
+        }
+
+        :root[data-dnascape-effective-theme="dark"] [data-testid="stFileUploaderDropzone"] *,
+        :root[data-dnascape-effective-theme="dark"] [data-baseweb="input"] *,
+        :root[data-dnascape-effective-theme="dark"] [data-baseweb="select"] *,
+        :root[data-dnascape-effective-theme="dark"] [data-baseweb="textarea"] *,
+        :root[data-dnascape-effective-theme="dark"] [data-baseweb="popover"] *,
+        :root[data-dnascape-effective-theme="dark"] [data-testid="stMainMenuPopover"] *,
+        :root[data-dnascape-effective-theme="dark"] [data-testid="stMainMenuList"] * {
+          color: var(--dnascape-text) !important;
+        }
+
+        :root[data-dnascape-effective-theme="dark"] [data-testid="stFileUploaderDropzone"] button,
+        :root[data-dnascape-effective-theme="dark"] [data-testid="stNumberInput"] button,
+        :root[data-dnascape-effective-theme="dark"] .stButton > button,
+        :root[data-dnascape-effective-theme="dark"] button[kind]:not([data-testid="stMainMenuButton"]):not([data-testid^="stBaseButton-header"]),
+        :root[data-dnascape-effective-theme="dark"] [role="button"] {
+          background: color-mix(in srgb, var(--dnascape-panel) 88%, var(--dnascape-bg)) !important;
+          border-color: var(--dnascape-line) !important;
+          color: var(--dnascape-text) !important;
+        }
+
+        :root[data-dnascape-effective-theme="dark"] button:hover,
+        :root[data-dnascape-effective-theme="dark"] [role="button"]:hover,
+        :root[data-dnascape-effective-theme="dark"] [role="menuitem"]:hover,
+        :root[data-dnascape-effective-theme="dark"] [role="option"]:hover {
+          background: var(--dnascape-hover-bg) !important;
+          color: var(--dnascape-text) !important;
+        }
+
+        :root[data-dnascape-effective-theme="dark"] button:disabled,
+        :root[data-dnascape-effective-theme="dark"] [aria-disabled="true"],
+        :root[data-dnascape-effective-theme="dark"] [disabled] {
+          color: var(--dnascape-muted) !important;
+          opacity: 1 !important;
+          -webkit-text-fill-color: var(--dnascape-muted) !important;
+        }
+
+        :root[data-dnascape-effective-theme="dark"] [data-baseweb="select"] svg,
+        :root[data-dnascape-effective-theme="dark"] [data-testid="stNumberInput"] svg,
+        :root[data-dnascape-effective-theme="dark"] [data-testid="stMainMenu"] svg,
+        :root[data-dnascape-effective-theme="dark"] [data-testid="stMainMenuPopover"] svg {
+          color: var(--dnascape-muted) !important;
+          fill: currentColor !important;
+        }
+
+        :root[data-dnascape-effective-theme="dark"] [data-testid="stMainMenuButton"],
+        :root[data-dnascape-effective-theme="dark"] [data-testid="stMainMenu"] button,
+        :root[data-dnascape-effective-theme="dark"] button[data-testid^="stBaseButton-header"] {
+          background: transparent !important;
+          border-color: transparent !important;
+          box-shadow: none !important;
+          color: var(--dnascape-muted) !important;
+        }
+
+        :root[data-dnascape-effective-theme="dark"] [data-testid="stMainMenuButton"]:hover,
+        :root[data-dnascape-effective-theme="dark"] [data-testid="stMainMenu"] button:hover,
+        :root[data-dnascape-effective-theme="dark"] button[data-testid^="stBaseButton-header"]:hover {
+          background: color-mix(in srgb, var(--dnascape-text) 10%, transparent) !important;
+          border-color: transparent !important;
+          color: var(--dnascape-text) !important;
+        }
+
+        :root[data-dnascape-effective-theme="dark"] [data-baseweb="menu"] {
+          background: var(--dnascape-panel) !important;
+          color: var(--dnascape-text) !important;
+        }
+
+        :root[data-dnascape-effective-theme="dark"] [role="menuitem"],
+        :root[data-dnascape-effective-theme="dark"] [role="menuitemradio"],
+        :root[data-dnascape-effective-theme="dark"] [role="option"],
+        :root[data-dnascape-effective-theme="dark"] [data-testid="stMainMenuPopover"] a,
+        :root[data-dnascape-effective-theme="dark"] [data-testid="stMainMenuPopover"] button {
+          color: var(--dnascape-text) !important;
         }
 
         section[data-testid="stSidebar"],
@@ -260,7 +397,7 @@ def apply_style() -> None:
           display: block;
           line-height: 0;
           margin: 0 auto;
-          width: 100%;
+          width: 90%;
         }
 
         .dnascape-main-logo img {
@@ -272,7 +409,7 @@ def apply_style() -> None:
         }
 
         .block-container {
-          max-width: 1100px;
+          max-width: 1500px;
           padding-top: 2.25rem;
           padding-bottom: 4rem;
         }
@@ -1059,7 +1196,7 @@ def render_theme_toggle() -> None:
           const root = doc.documentElement;
           const storageKey = "dnascape-theme";
           const styleId = "dnascape-theme-menu-style";
-          const styleVersion = "theme-menu-critical-paint-6";
+          const styleVersion = "theme-menu-critical-paint-9";
           const wrapperId = "dnascape-theme-menu-item-wrapper";
           const itemId = "dnascape-theme-menu-item";
           const themes = {list(THEMES)!r};
@@ -1185,6 +1322,31 @@ def render_theme_toggle() -> None:
                 background: transparent !important;
               }}
 
+              :root[data-dnascape-effective-theme="dark"] [data-testid="stMainMenuPopover"],
+              :root[data-dnascape-effective-theme="dark"] [data-testid="stMainMenuList"],
+              :root[data-dnascape-effective-theme="dark"] [data-baseweb="popover"],
+              :root[data-dnascape-effective-theme="dark"] [data-baseweb="menu"] {{
+                background: #211f1d !important;
+                border-color: rgba(243, 238, 232, 0.14) !important;
+                color: #f3eee8 !important;
+              }}
+
+              :root[data-dnascape-effective-theme="dark"] [data-testid="stMainMenuPopover"] *,
+              :root[data-dnascape-effective-theme="dark"] [data-testid="stMainMenuList"] *,
+              :root[data-dnascape-effective-theme="dark"] [data-baseweb="popover"] *,
+              :root[data-dnascape-effective-theme="dark"] [data-baseweb="menu"] * {{
+                color: #f3eee8 !important;
+                fill: currentColor !important;
+              }}
+
+              :root[data-dnascape-effective-theme="dark"] [data-testid="stMainMenuPopover"] [role="menuitem"]:hover,
+              :root[data-dnascape-effective-theme="dark"] [data-testid="stMainMenuPopover"] button:hover,
+              :root[data-dnascape-effective-theme="dark"] [data-testid="stMainMenuPopover"] a:hover,
+              :root[data-dnascape-effective-theme="dark"] [data-baseweb="menu"] [role="option"]:hover {{
+                background: rgba(250, 250, 250, 0.10) !important;
+                color: #f3eee8 !important;
+              }}
+
               iframe[srcdoc*="dnascape-theme"],
               iframe[data-dnascape-theme-bridge="true"] {{
                 border: 0 !important;
@@ -1217,7 +1379,7 @@ def render_theme_toggle() -> None:
                 box-sizing: border-box;
                 cursor: pointer;
                 display: flex;
-                gap: 0.65rem;
+                gap: 0.3rem;
                 justify-content: flex-start;
                 width: 100%;
               }}
@@ -1254,20 +1416,27 @@ def render_theme_toggle() -> None:
                 align-items: center;
                 color: currentColor;
                 display: inline-flex;
-                flex: 0 0 1.1rem;
+                flex: 0 0 auto;
                 justify-content: center;
                 line-height: 0;
+                pointer-events: none;
               }}
 
               #${{itemId}} .dnascape-theme-menu-icon svg {{
                 display: block;
                 height: 1.08rem;
+                pointer-events: none;
                 width: 1.08rem;
+              }}
+
+              #${{itemId}} .dnascape-theme-menu-icon * {{
+                pointer-events: none;
               }}
 
               #${{itemId}} .dnascape-theme-menu-label {{
                 flex: 0 1 auto;
                 overflow: hidden;
+                pointer-events: none;
                 text-overflow: ellipsis;
                 white-space: nowrap;
               }}
@@ -1351,6 +1520,11 @@ def render_theme_toggle() -> None:
             }} else {{
               item.removeAttribute("style");
             }}
+
+            item.style.alignItems = "center";
+            item.style.display = "flex";
+            item.style.gap = "0.3rem";
+            item.style.justifyContent = "flex-start";
           }}
 
           function updateMenuItem(theme) {{
@@ -1379,6 +1553,28 @@ def render_theme_toggle() -> None:
             }}
           }}
 
+          function stopMenuPointer(event) {{
+            event.stopPropagation();
+          }}
+
+          function activateMenuItem(event) {{
+            event.preventDefault();
+            event.stopImmediatePropagation();
+            const current = normalize(root.getAttribute("data-dnascape-theme") || storedTheme());
+            applyTheme(nextTheme(current), true);
+          }}
+
+          function bindMenuItem(item) {{
+            if (!item || item.dataset.dnascapeThemeItemVersion === styleVersion) {{
+              return;
+            }}
+
+            item.dataset.dnascapeThemeItemVersion = styleVersion;
+            item.addEventListener("pointerdown", stopMenuPointer, true);
+            item.addEventListener("mousedown", stopMenuPointer, true);
+            item.addEventListener("click", activateMenuItem, true);
+          }}
+
           function createMenuItem() {{
             const wrapper = doc.createElement("li");
             wrapper.id = wrapperId;
@@ -1392,17 +1588,7 @@ def render_theme_toggle() -> None:
               <span class="dnascape-theme-menu-label"></span>
               <span class="dnascape-theme-menu-icon" aria-hidden="true"></span>
             `;
-
-            item.addEventListener("mousedown", (event) => {{
-              event.stopPropagation();
-            }});
-
-            item.addEventListener("click", (event) => {{
-              event.preventDefault();
-              event.stopPropagation();
-              const current = normalize(root.getAttribute("data-dnascape-theme") || storedTheme());
-              applyTheme(nextTheme(current), true);
-            }});
+            bindMenuItem(item);
 
             wrapper.appendChild(item);
             return wrapper;
@@ -1421,6 +1607,8 @@ def render_theme_toggle() -> None:
             if (!wrapper) {{
               wrapper = createMenuItem();
             }}
+
+            bindMenuItem(wrapper.querySelector(`#${{itemId}}`));
 
             if (wrapper.parentElement !== list) {{
               list.insertBefore(wrapper, list.firstElementChild);
