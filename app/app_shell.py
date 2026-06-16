@@ -109,6 +109,8 @@ def apply_style() -> None:
           --secondary-background-color: #211f1d;
           --text-color: #f3eee8;
           --dnascape-accent: color-mix(in srgb, var(--primary-color, #b03412) 58%, #ffffff);
+          --dnascape-line: rgba(243, 238, 232, 0.22);
+          --dnascape-divider: rgba(243, 238, 232, 0.34);
           --dnascape-shadow: rgba(0, 0, 0, 0.22);
           --dnascape-shadow-hover: rgba(0, 0, 0, 0.32);
           color-scheme: dark;
@@ -238,6 +240,52 @@ def apply_style() -> None:
           color: var(--dnascape-text) !important;
         }
 
+        :root[data-dnascape-effective-theme="dark"] [data-testid="stFileUploaderDropzone"] > input + div:has(+ *) {
+          align-items: center !important;
+          background: color-mix(in srgb, var(--dnascape-panel) 94%, var(--dnascape-bg)) !important;
+          border-radius: 8px !important;
+          bottom: 0.25rem !important;
+          color: var(--dnascape-accent) !important;
+          display: flex !important;
+          justify-content: center !important;
+          left: 0.25rem !important;
+          position: absolute !important;
+          right: 0.25rem !important;
+          top: 0.25rem !important;
+          z-index: 20 !important;
+        }
+
+        :root[data-dnascape-effective-theme="dark"] [data-testid="stFileUploaderDropzone"] > input + div:has(+ *) * {
+          color: var(--dnascape-accent) !important;
+        }
+
+        :root[data-dnascape-effective-theme="dark"] [data-testid="stFileChips"] [data-testid="stFileChip"] {
+          background: color-mix(in srgb, var(--dnascape-panel) 88%, var(--dnascape-bg)) !important;
+          box-shadow: inset 0 0 0 1px var(--dnascape-line) !important;
+          color: var(--dnascape-text) !important;
+        }
+
+        :root[data-dnascape-effective-theme="dark"] [data-testid="stFileChips"] [data-testid="stFileChipName"],
+        :root[data-dnascape-effective-theme="dark"] [data-testid="stFileChips"] [data-testid="stFileChip"] div,
+        :root[data-dnascape-effective-theme="dark"] [data-testid="stFileChips"] [data-testid="stFileChip"] small,
+        :root[data-dnascape-effective-theme="dark"] [data-testid="stFileChips"] [data-testid="stFileChip"] span {
+          color: var(--dnascape-text) !important;
+        }
+
+        :root[data-dnascape-effective-theme="dark"] [data-testid="stFileChips"] [data-testid="stFileChipDeleteBtn"] button,
+        :root[data-dnascape-effective-theme="dark"] [data-testid="stFileChips"] [aria-label="Add files"] {
+          background: transparent !important;
+          border-color: transparent !important;
+          box-shadow: none !important;
+          color: var(--dnascape-muted) !important;
+        }
+
+        :root[data-dnascape-effective-theme="dark"] [data-testid="stFileChips"] [data-testid="stFileChipDeleteBtn"] button:hover,
+        :root[data-dnascape-effective-theme="dark"] [data-testid="stFileChips"] [aria-label="Add files"]:hover {
+          background: transparent !important;
+          color: var(--dnascape-text) !important;
+        }
+
         :root[data-dnascape-effective-theme="dark"] [data-testid="stFileUploaderDropzone"] button,
         :root[data-dnascape-effective-theme="dark"] [data-testid="stNumberInput"] button,
         :root[data-dnascape-effective-theme="dark"] .stButton > button,
@@ -286,6 +334,27 @@ def apply_style() -> None:
         :root[data-dnascape-effective-theme="dark"] button[data-testid^="stBaseButton-header"]:hover {
           background: color-mix(in srgb, var(--dnascape-text) 10%, transparent) !important;
           border-color: transparent !important;
+          color: var(--dnascape-text) !important;
+        }
+
+        :root[data-dnascape-effective-theme="dark"] .dnascape-sidebar-toggle-button {
+          background: transparent !important;
+          border-color: transparent !important;
+          box-shadow: none !important;
+          color: var(--dnascape-muted) !important;
+        }
+
+        :root[data-dnascape-effective-theme="dark"] .dnascape-sidebar-toggle-button *,
+        :root[data-dnascape-effective-theme="dark"] .dnascape-sidebar-toggle-button svg {
+          color: inherit !important;
+          fill: currentColor !important;
+          opacity: 1 !important;
+          stroke: currentColor !important;
+          -webkit-text-fill-color: currentColor !important;
+        }
+
+        :root[data-dnascape-effective-theme="dark"] .dnascape-sidebar-toggle-button:hover {
+          background: color-mix(in srgb, var(--dnascape-text) 10%, transparent) !important;
           color: var(--dnascape-text) !important;
         }
 
@@ -635,6 +704,167 @@ def apply_style() -> None:
           border-color: var(--dnascape-line) !important;
           border-radius: 8px !important;
           box-shadow: 0 1px 2px var(--dnascape-shadow);
+        }
+
+        .plot-preview-frame {
+          border-radius: 8px;
+          margin-bottom: 0.95rem;
+          position: relative;
+          width: 100%;
+        }
+
+        .plot-preview-expand-toggle {
+          opacity: 0;
+          pointer-events: none;
+          position: absolute;
+        }
+
+        .plot-preview-actions {
+          display: flex;
+          gap: 0.45rem;
+          opacity: 0;
+          pointer-events: none;
+          position: absolute;
+          right: 0.65rem;
+          top: 0.65rem;
+          transition: opacity 140ms ease;
+          z-index: 3;
+        }
+
+        .plot-preview-frame:hover .plot-preview-actions,
+        .plot-preview-actions:focus-within {
+          opacity: 1;
+          pointer-events: auto;
+        }
+
+        .plot-preview-action {
+          align-items: center;
+          backdrop-filter: blur(8px);
+          background: color-mix(in srgb, var(--dnascape-bg) 82%, transparent);
+          border: 1px solid var(--dnascape-line);
+          border-radius: 0.7rem;
+          box-shadow: 0 1px 2px var(--dnascape-shadow);
+          color: var(--dnascape-text);
+          cursor: default;
+          display: flex;
+          height: 2rem;
+          justify-content: center;
+          padding: 0;
+          width: 2rem;
+        }
+
+        .plot-preview-expand-button {
+          cursor: pointer;
+        }
+
+        .plot-download-menu {
+          position: relative;
+        }
+
+        .plot-download-menu button {
+          cursor: pointer;
+        }
+
+        .plot-download-menu-panel {
+          background: var(--dnascape-panel);
+          border: 1px solid var(--dnascape-line);
+          border-radius: 8px;
+          box-shadow: 0 8px 22px var(--dnascape-shadow-hover);
+          min-width: 4.5rem;
+          opacity: 0;
+          overflow: hidden;
+          padding: 0.2rem;
+          pointer-events: none;
+          position: absolute;
+          right: 0;
+          top: calc(100% + 0.35rem);
+          transform: translateY(-0.15rem);
+          transition: opacity 120ms ease, transform 120ms ease, visibility 120ms ease;
+          visibility: hidden;
+          z-index: 5;
+        }
+
+        .plot-download-menu:focus-within .plot-download-menu-panel {
+          opacity: 1;
+          pointer-events: auto;
+          transform: translateY(0);
+          visibility: visible;
+        }
+
+        .plot-download-menu-panel a {
+          border-radius: 6px;
+          color: var(--dnascape-text) !important;
+          display: block;
+          font-size: 0.86rem;
+          line-height: 1.2;
+          padding: 0.45rem 0.65rem;
+          text-decoration: none !important;
+        }
+
+        .plot-download-menu-panel a:hover {
+          background: var(--dnascape-hover-bg);
+          color: var(--dnascape-text) !important;
+        }
+
+        .plot-preview-action:hover {
+          background: var(--dnascape-hover-bg);
+          border-color: color-mix(in srgb, var(--dnascape-accent) 24%, var(--dnascape-line));
+        }
+
+        .plot-preview-action svg {
+          display: block;
+          height: 1rem;
+          width: 1rem;
+        }
+
+        .plot-preview-image {
+          display: block;
+          height: auto;
+          margin: 0 auto;
+          max-width: 100%;
+          width: 100%;
+        }
+
+        .plot-preview-frame:has(.plot-preview-expand-toggle:checked) {
+          align-items: center;
+          background: var(--dnascape-bg);
+          box-shadow: 0 18px 60px var(--dnascape-shadow-hover);
+          display: flex;
+          inset: clamp(1rem, 3vw, 3rem);
+          justify-content: center;
+          margin: 0 !important;
+          overflow: auto;
+          padding: 1.25rem;
+          position: fixed;
+          width: auto;
+          z-index: 999999;
+        }
+
+        .plot-preview-frame:has(.plot-preview-expand-toggle:checked) .plot-preview-actions {
+          opacity: 1;
+          pointer-events: auto;
+          right: 1rem;
+          top: 1rem;
+        }
+
+        .plot-preview-frame:has(.plot-preview-expand-toggle:checked) .plot-preview-image {
+          max-height: calc(100vh - 5.5rem);
+          max-width: calc(100vw - 5.5rem);
+          object-fit: contain;
+          width: auto;
+        }
+
+        :root[data-dnascape-effective-theme="dark"] .plot-preview-frame {
+          background: #ffffff;
+          box-shadow: inset 0 0 0 1px rgba(0, 0, 0, 0.08);
+          overflow: hidden;
+          padding: 0.9rem;
+        }
+
+        :root[data-dnascape-effective-theme="dark"] .plot-preview-frame:has(.plot-preview-expand-toggle:checked) {
+          box-shadow: 0 18px 60px var(--dnascape-shadow-hover);
+          overflow: auto;
+          padding: 1.25rem;
         }
 
         .stButton > button,
@@ -1238,7 +1468,7 @@ def render_theme_toggle() -> None:
           const root = doc.documentElement;
           const storageKey = "dnascape-theme";
           const styleId = "dnascape-theme-menu-style";
-          const styleVersion = "theme-menu-critical-paint-11";
+          const styleVersion = "theme-menu-critical-paint-16";
           const wrapperId = "dnascape-theme-menu-item-wrapper";
           const itemId = "dnascape-theme-menu-item";
           const themes = {list(THEMES)!r};
@@ -1334,6 +1564,8 @@ def render_theme_toggle() -> None:
                 --dnascape-panel: #211f1d;
                 --dnascape-text: #f3eee8;
                 --dnascape-sidebar-bg: #1b1918;
+                --dnascape-line: rgba(243, 238, 232, 0.22);
+                --dnascape-divider: rgba(243, 238, 232, 0.34);
                 color-scheme: dark;
               }}
 
@@ -1350,6 +1582,27 @@ def render_theme_toggle() -> None:
 
               :root[data-dnascape-effective-theme="dark"] header[data-testid="stHeader"] {{
                 background: rgba(21, 20, 19, 0.94) !important;
+              }}
+
+              :root[data-dnascape-effective-theme="dark"] .dnascape-sidebar-toggle-button {{
+                background: transparent !important;
+                border-color: transparent !important;
+                box-shadow: none !important;
+                color: rgba(243, 238, 232, 0.72) !important;
+              }}
+
+              :root[data-dnascape-effective-theme="dark"] .dnascape-sidebar-toggle-button *,
+              :root[data-dnascape-effective-theme="dark"] .dnascape-sidebar-toggle-button svg {{
+                color: inherit !important;
+                fill: currentColor !important;
+                opacity: 1 !important;
+                stroke: currentColor !important;
+                -webkit-text-fill-color: currentColor !important;
+              }}
+
+              :root[data-dnascape-effective-theme="dark"] .dnascape-sidebar-toggle-button:hover {{
+                background: rgba(250, 250, 250, 0.10) !important;
+                color: #f3eee8 !important;
               }}
 
               :root[data-dnascape-effective-theme="dark"] section[data-testid="stSidebar"],
@@ -1750,6 +2003,43 @@ def render_theme_toggle() -> None:
               }});
           }}
 
+          function controlText(node) {{
+            return [
+              node.getAttribute("aria-label") || "",
+              node.getAttribute("title") || "",
+              node.getAttribute("data-testid") || "",
+              compactText(node),
+            ].join(" ").toLowerCase();
+          }}
+
+          function isSidebarToggle(button) {{
+            const text = controlText(button);
+            const compact = text.replace(/\\s+/g, "");
+            const namesSidebar = /sidebar/.test(text);
+            const namesToggle = /collapse|expand|show|hide|open|close/.test(text);
+            const looksLikeChevron =
+              /keyboard_double_arrow_(left|right)|chevron_(left|right)|double_arrow|first_page|last_page/.test(compact);
+            const livesNearSidebar = Boolean(
+              button.closest('section[data-testid="stSidebar"], [data-testid="collapsedControl"], header[data-testid="stHeader"]')
+            );
+
+            return (namesSidebar && namesToggle) || (looksLikeChevron && livesNearSidebar);
+          }}
+
+          function markSidebarToggleButton() {{
+            doc
+              .querySelectorAll(".dnascape-sidebar-toggle-button")
+              .forEach((button) => button.classList.remove("dnascape-sidebar-toggle-button"));
+
+            doc
+              .querySelectorAll('button, [role="button"]')
+              .forEach((button) => {{
+                if (isSidebarToggle(button)) {{
+                  button.classList.add("dnascape-sidebar-toggle-button");
+                }}
+              }});
+          }}
+
           function applyTheme(theme, animate = false) {{
             const selected = normalize(theme);
             const effective = effectiveTheme(selected);
@@ -1771,6 +2061,7 @@ def render_theme_toggle() -> None:
           removeHeaderExperiment();
           applyTheme(root.getAttribute("data-dnascape-theme") || storedTheme(), false);
           bindMenuButton();
+          markSidebarToggleButton();
           ensureMenuItem();
 
           let queued = false;
@@ -1782,6 +2073,7 @@ def render_theme_toggle() -> None:
             win.requestAnimationFrame(() => {{
               queued = false;
               bindMenuButton();
+              markSidebarToggleButton();
               ensureMenuItem();
             }});
           }};
@@ -1791,6 +2083,7 @@ def render_theme_toggle() -> None:
 
           win.setInterval(() => {{
             bindMenuButton();
+            markSidebarToggleButton();
             if (menuList()) {{
               ensureMenuItem();
             }}
