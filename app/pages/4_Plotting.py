@@ -1,5 +1,6 @@
 """Plotting page for the DNAscape Streamlit prototype."""
 
+import base64
 import importlib
 import sys
 from io import BytesIO
@@ -30,7 +31,7 @@ render_page_intro(
     "Upload kinetic profiles, choose a genomic window, and preview DNAscape outputs.",
 )
 
-controls, preview = st.columns([0.9, 1.35], gap="large")
+controls, preview = st.columns([0.9, 1.35], gap="small")
 
 PREVIEW_DPI = 300
 EXPORT_FORMATS = (
@@ -67,36 +68,50 @@ def figure_export_bytes(fig) -> dict[str, bytes]:
     }
 
 
-def render_figure_preview(png_bytes: bytes) -> None:
-    st.image(png_bytes, width="stretch", output_format="PNG")
+def render_figure_preview(export_bytes: dict[str, bytes], file_stem: str) -> None:
+    preview_src = base64.b64encode(export_bytes["png"]).decode("ascii")
+    expand_toggle_id = f"plot-preview-expand-{safe_download_stem(file_stem) or 'figure'}"
+    download_formats = (EXPORT_FORMATS[0], EXPORT_FORMATS[2], EXPORT_FORMATS[1])
+    download_links = []
+    for label, image_format, mime, _ in download_formats:
+        payload = base64.b64encode(export_bytes[image_format]).decode("ascii")
+        download_links.append(
+            f'<a href="data:{mime};base64,{payload}" download="{file_stem}.{image_format}">{label.lower()}</a>'
+        )
 
-
-def render_download_buttons(export_bytes: dict[str, bytes], file_stem: str) -> None:
-    export_cols = st.columns(
-        [0.2, 0.30, 0.30, 0.30, 1.32],
-        gap="small",
-        vertical_alignment="center",
+    st.markdown(
+        f"""
+        <div class="plot-preview-frame">
+          <input class="plot-preview-expand-toggle" id="{expand_toggle_id}" type="checkbox" aria-hidden="true" />
+          <div class="plot-preview-actions" aria-label="Plot preview actions">
+            <div class="plot-download-menu">
+              <button class="plot-preview-action" type="button" aria-label="Download plot" aria-haspopup="menu" title="Download plot">
+                <svg viewBox="0 0 24 24" aria-hidden="true" focusable="false">
+                  <path d="M12 3v10.2l3.6-3.6 1.4 1.4-6 6-6-6 1.4-1.4 3.6 3.6V3h2zm-7 14h14v2H5v-2z" fill="currentColor" />
+                </svg>
+              </button>
+              <div class="plot-download-menu-panel" role="menu">
+                {''.join(download_links)}
+              </div>
+            </div>
+            <label class="plot-preview-action plot-preview-expand-button" for="{expand_toggle_id}" aria-label="Expand plot" title="Expand plot">
+              <svg viewBox="0 0 24 24" aria-hidden="true" focusable="false">
+                <path d="M5 5h6v2H8.4l3.3 3.3-1.4 1.4L7 8.4V11H5V5zm8 0h6v6h-2V8.4l-3.3 3.3-1.4-1.4L15.6 7H13V5zM7 15.6l3.3-3.3 1.4 1.4L8.4 17H11v2H5v-6h2v2.6zm9.6 1.4-3.3-3.3 1.4-1.4 3.3 3.3V13h2v6h-6v-2h2.6z" fill="currentColor" />
+              </svg>
+            </label>
+          </div>
+          <img class="plot-preview-image" src="data:image/png;base64,{preview_src}" alt="Plot preview" />
+        </div>
+        """,
+        unsafe_allow_html=True,
     )
-    with export_cols[0]:
-        st.markdown("**Export**")
 
-    for column, (label, image_format, mime, icon) in zip(export_cols[1:4], EXPORT_FORMATS):
-        with column:
-            st.download_button(
-                label,
-                data=export_bytes[image_format],
-                file_name=f"{file_stem}.{image_format}",
-                mime=mime,
-                icon=icon,
-                on_click="ignore",
-                width="stretch",
-            )
 
 with controls:
     with st.container(border=True):
         st.markdown("### Timing data")
         uploaded_file = st.file_uploader(
-            "Upload file",
+            "Upload a file",
             type=["tsv", "csv", "txt", "gz"],
             accept_multiple_files=False,
         )
@@ -244,8 +259,7 @@ with preview:
                         plt.close(fig)
 
         if last_plot is not None:
-            render_figure_preview(last_plot["exports"]["png"])
-            render_download_buttons(last_plot["exports"], last_plot["file_stem"])
+            render_figure_preview(last_plot["exports"], last_plot["file_stem"])
         elif plot_feedback_shown:
             pass
         elif table is None:
