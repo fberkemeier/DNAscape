@@ -31,7 +31,12 @@ render_page_intro(
     "Upload kinetic profiles, choose a genomic window, and preview DNAscape outputs.",
 )
 
-controls, preview = st.columns([0.9, 1.35], gap="small")
+st.markdown(
+    '<span class="plotting-page-marker" aria-hidden="true"></span>',
+    unsafe_allow_html=True,
+)
+
+controls, preview = st.columns([0.35, 0.65], gap="medium")
 
 PREVIEW_DPI = 300
 EXPORT_FORMATS = (
@@ -109,7 +114,10 @@ def render_figure_preview(export_bytes: dict[str, bytes], file_stem: str) -> Non
 
 with controls:
     with st.container(border=True):
-        st.markdown("### Timing data")
+        st.markdown(
+            '<div class="plotting-panel-title">Timing data</div>',
+            unsafe_allow_html=True,
+        )
         uploaded_file = st.file_uploader(
             "Upload a file",
             type=["tsv", "csv", "txt", "gz"],
@@ -141,7 +149,10 @@ with controls:
                 if not numeric_columns:
                     st.warning("No numeric chromosome columns were found.")
 
-        st.markdown("### Region")
+        st.markdown(
+            '<div class="plotting-panel-title plotting-panel-title--spaced">Region</div>',
+            unsafe_allow_html=True,
+        )
         chromosome = st.selectbox(
             "Chromosome",
             numeric_columns,
@@ -206,7 +217,10 @@ with controls:
 
 with preview:
     with st.container(border=True):
-        st.markdown("### Preview")
+        st.markdown(
+            '<div class="plotting-panel-title">Preview</div>',
+            unsafe_allow_html=True,
+        )
 
         last_plot = st.session_state.get(PLOT_STATE_KEY)
         plot_feedback_shown = False

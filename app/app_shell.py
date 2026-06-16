@@ -78,9 +78,11 @@ def apply_style() -> None:
           --dnascape-card-hover-bg: color-mix(in srgb, var(--dnascape-accent) 4%, var(--dnascape-panel));
           --dnascape-shadow: rgba(16, 24, 40, 0.04);
           --dnascape-shadow-hover: rgba(16, 24, 40, 0.07);
+          --dnascape-header-height: 2.5rem;
           --dnascape-sidebar-width: clamp(18rem, 20vw, 20rem);
           --dnascape-sidebar-inner-width: min(82%, 16rem);
           --dnascape-sidebar-logo-width: min(58%, 10.25rem);
+          --dnascape-plotting-panel-padding: 1.2rem 1.15rem;
           /* Dark-logo mask tweak points. The small logo keeps the same
              width-relative radius as the main logo; its y-position is scaled
              for the shorter small-logo PNG height, 930 / 829. */
@@ -109,8 +111,8 @@ def apply_style() -> None:
           --secondary-background-color: #211f1d;
           --text-color: #f3eee8;
           --dnascape-accent: color-mix(in srgb, var(--primary-color, #b03412) 58%, #ffffff);
-          --dnascape-line: rgba(243, 238, 232, 0.22);
-          --dnascape-divider: rgba(243, 238, 232, 0.34);
+          --dnascape-line: rgba(243, 238, 232, 0.36);
+          --dnascape-divider: rgba(243, 238, 232, 0.48);
           --dnascape-shadow: rgba(0, 0, 0, 0.22);
           --dnascape-shadow-hover: rgba(0, 0, 0, 0.32);
           color-scheme: dark;
@@ -182,6 +184,13 @@ def apply_style() -> None:
 
         header[data-testid="stHeader"] {
           background: color-mix(in srgb, var(--dnascape-bg) 94%, transparent);
+          height: var(--dnascape-header-height) !important;
+          min-height: var(--dnascape-header-height) !important;
+        }
+
+        header[data-testid="stHeader"] > div,
+        header[data-testid="stHeader"] [data-testid="stToolbar"] {
+          min-height: var(--dnascape-header-height) !important;
         }
 
         :root[data-dnascape-effective-theme="dark"] [data-testid="stWidgetLabel"],
@@ -521,13 +530,20 @@ def apply_style() -> None:
 
         .block-container {
           max-width: 1500px;
-          padding-top: 2.25rem;
+          padding-top: 0.5rem;
           padding-bottom: 4rem;
         }
 
         h1, h2, h3 {
           letter-spacing: 0;
           color: var(--dnascape-text);
+        }
+
+        [data-testid="stMarkdownContainer"] :is(h1, h2, h3, h4, h5, h6) a[href^="#"],
+        [data-testid="stMarkdownContainer"] :is(h1, h2, h3, h4, h5, h6) a.anchor-link,
+        :is(h1, h2, h3, h4, h5, h6) .anchor-link {
+          display: none !important;
+          visibility: hidden !important;
         }
 
         h1 {
@@ -704,6 +720,52 @@ def apply_style() -> None:
           border-color: var(--dnascape-line) !important;
           border-radius: 8px !important;
           box-shadow: 0 1px 2px var(--dnascape-shadow);
+        }
+
+        :root[data-dnascape-effective-theme="dark"] div[data-testid="stVerticalBlockBorderWrapper"] {
+          border: 1px solid var(--dnascape-line) !important;
+          box-shadow:
+            0 1px 2px var(--dnascape-shadow),
+            inset 0 0 0 1px rgba(243, 238, 232, 0.08);
+        }
+
+        .plotting-page-marker {
+          display: none !important;
+        }
+
+        body:has(.plotting-page-marker) div[data-testid="stVerticalBlockBorderWrapper"] {
+          background: var(--dnascape-panel) !important;
+          border: 1px solid var(--dnascape-line) !important;
+          border-radius: 8px !important;
+          box-shadow: 0 1px 2px var(--dnascape-shadow) !important;
+          padding: var(--dnascape-plotting-panel-padding) !important;
+        }
+
+        body:has(.plotting-page-marker) div[data-testid="stVerticalBlockBorderWrapper"] > div:first-child {
+          padding: 0 !important;
+        }
+
+        body:has(.plotting-page-marker) div[data-testid="stVerticalBlockBorderWrapper"] div[data-testid="stVerticalBlock"] {
+          gap: 0.85rem !important;
+        }
+
+        .plotting-panel-title {
+          color: var(--dnascape-text);
+          font-size: 1.05rem;
+          font-weight: 650;
+          line-height: 1.35;
+          margin: 0 0 0.55rem;
+        }
+
+        .plotting-panel-title--spaced {
+          margin-top: 1.45rem;
+        }
+
+        :root[data-dnascape-effective-theme="dark"] body:has(.plotting-page-marker) div[data-testid="stVerticalBlockBorderWrapper"] {
+          border-color: rgba(243, 238, 232, 0.52) !important;
+          box-shadow:
+            0 1px 2px var(--dnascape-shadow),
+            inset 0 0 0 1px rgba(243, 238, 232, 0.16) !important;
         }
 
         .plot-preview-frame {
@@ -1468,7 +1530,7 @@ def render_theme_toggle() -> None:
           const root = doc.documentElement;
           const storageKey = "dnascape-theme";
           const styleId = "dnascape-theme-menu-style";
-          const styleVersion = "theme-menu-critical-paint-16";
+          const styleVersion = "theme-menu-critical-paint-17";
           const wrapperId = "dnascape-theme-menu-item-wrapper";
           const itemId = "dnascape-theme-menu-item";
           const themes = {list(THEMES)!r};
@@ -1564,8 +1626,8 @@ def render_theme_toggle() -> None:
                 --dnascape-panel: #211f1d;
                 --dnascape-text: #f3eee8;
                 --dnascape-sidebar-bg: #1b1918;
-                --dnascape-line: rgba(243, 238, 232, 0.22);
-                --dnascape-divider: rgba(243, 238, 232, 0.34);
+                --dnascape-line: rgba(243, 238, 232, 0.36);
+                --dnascape-divider: rgba(243, 238, 232, 0.48);
                 color-scheme: dark;
               }}
 
