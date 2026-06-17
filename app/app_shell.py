@@ -2,6 +2,7 @@
 
 import base64
 import html
+import importlib.metadata
 import json
 from pathlib import Path
 
@@ -15,6 +16,7 @@ SIDEBAR_LOGO_PATH = ROOT_DIR / "docs" / "source" / "_static" / "dnascape_logo_sm
 TAB_LOGO_PATH = ROOT_DIR / "docs" / "source" / "_static" / "dnascape_logo_tab.png"
 GITHUB_URL = "https://github.com/fberkemeier/DNAscape"
 DOCS_URL = "https://dnascape.readthedocs.io/en/latest/"
+PACKAGE_NAME = "dnascape"
 THEMES = ("light", "dark", "system")
 THEME_ICONS = {
     "light": """
@@ -41,6 +43,23 @@ THEME_LABELS = {
     "dark": "Dark",
     "system": "System",
 }
+
+
+def package_version() -> str:
+    """Read the installed package version, falling back to pyproject.toml."""
+    try:
+        return importlib.metadata.version(PACKAGE_NAME)
+    except importlib.metadata.PackageNotFoundError:
+        pyproject_path = ROOT_DIR / "pyproject.toml"
+        if pyproject_path.exists():
+            for line in pyproject_path.read_text(encoding="utf-8").splitlines():
+                key, _, value = line.partition("=")
+                if key.strip() == "version":
+                    return value.strip().strip('"').strip("'")
+        return "0.0.0"
+
+
+APP_VERSION = package_version()
 
 
 def configure_page(title: str) -> None:
@@ -79,9 +98,9 @@ def apply_style() -> None:
           --dnascape-shadow: rgba(16, 24, 40, 0.04);
           --dnascape-shadow-hover: rgba(16, 24, 40, 0.07);
           --dnascape-header-height: 2.5rem;
-          --dnascape-sidebar-width: clamp(18rem, 20vw, 20rem);
+          --dnascape-sidebar-width: 15rem;
           --dnascape-sidebar-inner-width: min(82%, 16rem);
-          --dnascape-sidebar-logo-width: min(58%, 10.25rem);
+          --dnascape-sidebar-logo-width: min(70%, 10.25rem);
           --dnascape-plotting-panel-padding: 1.2rem 1.15rem;
           /* Dark-logo mask tweak points. The small logo keeps the same
              width-relative radius as the main logo; its y-position is scaled
@@ -99,7 +118,16 @@ def apply_style() -> None:
           --dnascape-sidebar-nav-padding-y: 0.44rem;
           --dnascape-sidebar-nav-padding-x: 0.85rem;
           --dnascape-sidebar-external-gap: 1.8rem;
+          --dnascape-sidebar-external-bottom: 1.8rem;
+          --dnascape-sidebar-external-min-gap: 0.85rem;
+          --dnascape-sidebar-top-padding: 0rem;
           --dnascape-sidebar-toggle-inset: 0.9rem;
+          --dnascape-sidebar-toggle-top: 0.55rem;
+          --dnascape-sidebar-toggle-position-width: 2.25rem;
+          --dnascape-main-top-padding: 0rem;
+          --dnascape-mobile-main-top-padding: 1.3rem;
+          --dnascape-overview-top-padding: 0rem;
+          --dnascape-mobile-overview-top-padding: 1.3rem;
         }
 
         :root[data-dnascape-effective-theme="light"] {
@@ -214,6 +242,12 @@ def apply_style() -> None:
           color: var(--dnascape-muted) !important;
           opacity: 1 !important;
           -webkit-text-fill-color: var(--dnascape-muted) !important;
+        }
+
+        [data-baseweb="select"] svg,
+        [data-baseweb="select"] [aria-hidden="true"],
+        [data-baseweb="select"] > div > div:last-child {
+          cursor: pointer !important;
         }
 
         :root[data-dnascape-effective-theme="dark"] [data-testid="stFileUploaderDropzone"],
@@ -390,13 +424,42 @@ def apply_style() -> None:
           box-sizing: border-box;
           border-right: 0 !important;
           color: var(--dnascape-text);
+          max-width: var(--dnascape-sidebar-width) !important;
+          min-width: var(--dnascape-sidebar-width) !important;
           position: relative;
+          width: var(--dnascape-sidebar-width) !important;
+        }
+
+        section[data-testid="stSidebar"][aria-expanded="false"] {
+          max-width: 0 !important;
+          min-width: 0 !important;
+          width: 0 !important;
         }
 
         section[data-testid="stSidebar"] button[aria-label*="sidebar" i],
         section[data-testid="stSidebar"] button[title*="sidebar" i],
         section[data-testid="stSidebar"] button[data-testid^="stBaseButton-header"] {
           margin-right: var(--dnascape-sidebar-toggle-inset) !important;
+        }
+
+        .dnascape-sidebar-toggle-button--collapse,
+        .dnascape-sidebar-toggle-button--expand {
+          position: fixed !important;
+          right: auto !important;
+          top: var(--dnascape-sidebar-toggle-top) !important;
+          transform: none !important;
+        }
+
+        .dnascape-sidebar-toggle-button--collapse {
+          left: calc(
+            var(--dnascape-sidebar-width) -
+            var(--dnascape-sidebar-toggle-inset) -
+            var(--dnascape-sidebar-toggle-position-width)
+          ) !important;
+        }
+
+        .dnascape-sidebar-toggle-button--expand {
+          left: var(--dnascape-sidebar-toggle-inset) !important;
         }
 
         section[data-testid="stSidebar"]::after {
@@ -413,9 +476,12 @@ def apply_style() -> None:
 
         div[data-testid="stSidebarContent"] {
           box-sizing: border-box !important;
+          height: 100dvh !important;
+          overflow-x: hidden !important;
+          overflow-y: auto !important;
           padding-left: 0 !important;
           padding-right: 0 !important;
-          scrollbar-gutter: auto !important;
+          scrollbar-gutter: stable !important;
         }
 
         div[data-testid="stSidebarContent"],
@@ -423,6 +489,7 @@ def apply_style() -> None:
           box-sizing: border-box !important;
           max-width: 100% !important;
           min-width: 0 !important;
+          padding-top: var(--dnascape-sidebar-top-padding) !important;
           width: 100% !important;
         }
 
@@ -501,7 +568,7 @@ def apply_style() -> None:
         .dnascape-sidebar-logo {
           display: block;
           line-height: 0;
-          margin: 0 auto 1.42rem;
+          margin: -2rem auto 2.2rem;
           width: var(--dnascape-sidebar-logo-width) !important;
         }
 
@@ -529,9 +596,17 @@ def apply_style() -> None:
         }
 
         .block-container {
-          max-width: 1500px;
-          padding-top: 0.5rem;
+          max-width: 1650px;
+          padding-top: var(--dnascape-main-top-padding);
           padding-bottom: 4rem;
+        }
+
+        .overview-page-marker {
+          display: none !important;
+        }
+
+        body:has(.overview-page-marker) .block-container {
+          padding-top: var(--dnascape-overview-top-padding);
         }
 
         h1, h2, h3 {
@@ -567,8 +642,14 @@ def apply_style() -> None:
         }
 
         .hero {
-          margin: 1.5rem 0 1.8rem;
-          max-width: 780px;
+          margin: 1.5rem 0 0.8rem;
+          max-width: 1920px;
+        }
+
+        .hero h1 {
+          margin: -1.5rem 0 0rem;
+          max-width: 1920px;
+          font-size: 2.1rem;
         }
 
         .eyebrow {
@@ -661,24 +742,69 @@ def apply_style() -> None:
         }
 
         .sidebar-external-links {
-          margin-left: auto;
-          margin-right: auto;
-          margin-top: var(--dnascape-sidebar-external-gap);
-          width: var(--dnascape-sidebar-inner-width);
+          align-items: center;
+          bottom: var(--dnascape-sidebar-external-bottom);
+          display: flex;
+          flex-direction: column;
+          gap: 0.25rem;
+          justify-content: center;
+          left: calc(var(--dnascape-sidebar-width) / 2);
+          position: fixed;
+          transform: translateX(-50%);
+          width: min(
+            calc(var(--dnascape-sidebar-width) * 0.82),
+            16rem
+          );
+          z-index: 3;
+        }
+
+        .sidebar-external-icons {
+          align-items: center;
+          display: flex;
+          gap: 1rem;
+          justify-content: center;
+        }
+
+        section[data-testid="stSidebar"][aria-expanded="false"] .sidebar-external-links {
+          display: none !important;
+        }
+
+        :root.dnascape-sidebar-footer-hidden .sidebar-external-links {
+          display: none !important;
         }
 
         .sidebar-external-links a {
-          color: var(--dnascape-accent) !important;
-          display: block;
-          font-size: 0.95rem;
-          line-height: 1.45;
-          padding: 0.24rem 0;
+          align-items: center;
+          box-sizing: border-box;
+          color: var(--dnascape-muted) !important;
+          display: flex;
+          height: 2rem;
+          justify-content: center;
+          padding: 0;
           text-decoration: none;
+          transition: color 120ms ease, transform 120ms ease;
+          width: 2rem;
+        }
+
+        .sidebar-external-links svg {
+          flex: 0 0 auto;
+          height: 1.12rem;
+          width: 1.12rem;
         }
 
         .sidebar-external-links a:hover {
           color: var(--dnascape-accent) !important;
-          text-decoration: underline;
+          text-decoration: none;
+          transform: translateY(-0.05rem);
+        }
+
+        .sidebar-app-version {
+          color: var(--dnascape-muted);
+          font-size: 0.68rem;
+          font-weight: 500;
+          line-height: 1;
+          opacity: 0.72;
+          text-align: center;
         }
 
         .workflow-line {
@@ -943,7 +1069,11 @@ def apply_style() -> None:
 
         @media (max-width: 700px) {
           .block-container {
-            padding-top: 1.3rem;
+            padding-top: var(--dnascape-mobile-main-top-padding);
+          }
+
+          body:has(.overview-page-marker) .block-container {
+            padding-top: var(--dnascape-mobile-overview-top-padding);
           }
 
           h1 {
@@ -2088,18 +2218,95 @@ def render_theme_toggle() -> None:
             return (namesSidebar && namesToggle) || (looksLikeChevron && livesNearSidebar);
           }}
 
+          function sidebarToggleMode(button) {{
+            const text = controlText(button);
+            const compact = text.replace(/\\s+/g, "");
+
+            if (button.closest('section[data-testid="stSidebar"]')) {{
+              return "collapse";
+            }}
+
+            if (button.closest('[data-testid="collapsedControl"]')) {{
+              return "expand";
+            }}
+
+            if (/collapse|hide|close/.test(text) || /keyboard_double_arrow_left|chevron_left|first_page/.test(compact)) {{
+              return "collapse";
+            }}
+
+            if (/expand|show|open/.test(text) || /keyboard_double_arrow_right|chevron_right|last_page/.test(compact)) {{
+              return "expand";
+            }}
+
+            return "";
+          }}
+
           function markSidebarToggleButton() {{
             doc
-              .querySelectorAll(".dnascape-sidebar-toggle-button")
-              .forEach((button) => button.classList.remove("dnascape-sidebar-toggle-button"));
+              .querySelectorAll(".dnascape-sidebar-toggle-button, .dnascape-sidebar-toggle-button--collapse, .dnascape-sidebar-toggle-button--expand")
+              .forEach((button) => {{
+                button.classList.remove(
+                  "dnascape-sidebar-toggle-button",
+                  "dnascape-sidebar-toggle-button--collapse",
+                  "dnascape-sidebar-toggle-button--expand",
+                );
+              }});
 
             doc
               .querySelectorAll('button, [role="button"]')
               .forEach((button) => {{
                 if (isSidebarToggle(button)) {{
                   button.classList.add("dnascape-sidebar-toggle-button");
+                  const mode = sidebarToggleMode(button);
+                  if (mode) {{
+                    button.classList.add(`dnascape-sidebar-toggle-button--${{mode}}`);
+                  }}
                 }}
               }});
+          }}
+
+          function cssLengthToPx(value, fallback = 12) {{
+            const raw = String(value || "").trim();
+            const number = parseFloat(raw);
+            if (!Number.isFinite(number)) {{
+              return fallback;
+            }}
+
+            if (raw.endsWith("rem")) {{
+              const rootSize = parseFloat(win.getComputedStyle(root).fontSize) || 16;
+              return number * rootSize;
+            }}
+
+            if (raw.endsWith("em")) {{
+              const bodySize = parseFloat(win.getComputedStyle(doc.body).fontSize) || 16;
+              return number * bodySize;
+            }}
+
+            return number;
+          }}
+
+          function syncSidebarFooter() {{
+            const footer = doc.querySelector(".sidebar-external-links");
+            const sidebar = doc.querySelector('section[data-testid="stSidebar"]');
+            const pageLinks = Array.from(
+              doc.querySelectorAll('section[data-testid="stSidebar"] div[data-testid="stPageLink"]')
+            );
+
+            if (!footer || !sidebar || !pageLinks.length || sidebar.getAttribute("aria-expanded") === "false") {{
+              root.classList.remove("dnascape-sidebar-footer-hidden");
+              return;
+            }}
+
+            root.classList.remove("dnascape-sidebar-footer-hidden");
+            const lastLink = pageLinks[pageLinks.length - 1];
+            const lastLinkBox = lastLink.getBoundingClientRect();
+            const footerBox = footer.getBoundingClientRect();
+            const minGap = cssLengthToPx(
+              win.getComputedStyle(root).getPropertyValue("--dnascape-sidebar-external-min-gap"),
+              14,
+            );
+            const shouldHide = footerBox.top - lastLinkBox.bottom < minGap;
+            root.classList.toggle("dnascape-sidebar-footer-hidden", shouldHide);
           }}
 
           function applyTheme(theme, animate = false) {{
@@ -2124,6 +2331,7 @@ def render_theme_toggle() -> None:
           applyTheme(root.getAttribute("data-dnascape-theme") || storedTheme(), false);
           bindMenuButton();
           markSidebarToggleButton();
+          syncSidebarFooter();
           ensureMenuItem();
 
           let queued = false;
@@ -2136,16 +2344,19 @@ def render_theme_toggle() -> None:
               queued = false;
               bindMenuButton();
               markSidebarToggleButton();
+              syncSidebarFooter();
               ensureMenuItem();
             }});
           }};
 
           const observer = new MutationObserver(sync);
           observer.observe(doc.body, {{ childList: true, subtree: true }});
+          win.addEventListener("resize", sync, {{ passive: true }});
 
           win.setInterval(() => {{
             bindMenuButton();
             markSidebarToggleButton();
+            syncSidebarFooter();
             if (menuList()) {{
               ensureMenuItem();
             }}
@@ -2221,8 +2432,29 @@ def render_sidebar(active_label: str) -> None:
         st.markdown(
             f"""
             <div class="sidebar-external-links">
-              <a href="{GITHUB_URL}">GitHub</a>
-              <a href="{DOCS_URL}">Documentation</a>
+              <div class="sidebar-external-icons">
+                <a href="{GITHUB_URL}" aria-label="GitHub" title="GitHub">
+                  <svg viewBox="0 0 16 16" aria-hidden="true" focusable="false">
+                    <path fill="currentColor" d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82A7.61 7.61 0 0 1 8 3.86c.68 0 1.36.09 2 .27 1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.01 8.01 0 0 0 16 8c0-4.42-3.58-8-8-8Z"/>
+                  </svg>
+                </a>
+                <a href="{DOCS_URL}" aria-label="Documentation" title="Documentation">
+                  <svg viewBox="0 0 24 24" aria-hidden="true" focusable="false">
+                    <path d="M12 6.15c-1.5-1.03-3.25-1.55-5.25-1.55H4.8c-.44 0-.8.36-.8.8v12.65c0 .44.36.8.8.8h1.95c2 0 3.75.52 5.25 1.55V6.15Z" fill="none" stroke="currentColor" stroke-linejoin="round" stroke-width="1.8"/>
+                    <path d="M12 6.15c1.5-1.03 3.25-1.55 5.25-1.55h1.95c.44 0 .8.36.8.8v12.65c0 .44-.36.8-.8.8h-1.95c-2 0-3.75.52-5.25 1.55V6.15Z" fill="none" stroke="currentColor" stroke-linejoin="round" stroke-width="1.8"/>
+                    <path d="M12 6.15v14.25" fill="none" stroke="currentColor" stroke-linecap="round" stroke-width="1.8"/>
+                  </svg>
+                </a>
+                <a href="{GITHUB_URL}/issues" aria-label="Report an issue or suggest a feature" title="Report an issue or suggest a feature">
+                  <svg viewBox="0 0 24 24" aria-hidden="true" focusable="false">
+                    <path d="M9 18h6" fill="none" stroke="currentColor" stroke-linecap="round" stroke-width="1.8"/>
+                    <path d="M10 22h4" fill="none" stroke="currentColor" stroke-linecap="round" stroke-width="1.8"/>
+                    <path d="M8.75 14.75c-1.55-1.05-2.5-2.8-2.5-4.72A5.75 5.75 0 0 1 12 4.28a5.75 5.75 0 0 1 5.75 5.75c0 1.92-.95 3.67-2.5 4.72-.68.46-1.08 1.22-1.08 2.04v.21H9.83v-.21c0-.82-.4-1.58-1.08-2.04Z" fill="none" stroke="currentColor" stroke-linejoin="round" stroke-width="1.8"/>
+                    <path d="M12 1.75v1M4.8 3.65l.7.7M19.2 3.65l-.7.7M2.25 10.25h1M20.75 10.25h1" fill="none" stroke="currentColor" stroke-linecap="round" stroke-width="1.6"/>
+                  </svg>
+                </a>
+              </div>
+              <div class="sidebar-app-version">v{html.escape(APP_VERSION)}</div>
             </div>
             """,
             unsafe_allow_html=True,

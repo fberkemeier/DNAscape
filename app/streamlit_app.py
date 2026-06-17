@@ -27,6 +27,11 @@ import streamlit as st
 configure_page("DNAscape")
 render_sidebar("Overview")
 
+st.markdown(
+    '<span class="overview-page-marker" aria-hidden="true"></span>',
+    unsafe_allow_html=True,
+)
+
 
 def render_workflow_card(title: str, body: str, url: str) -> None:
     """Render a compact workflow card as a single click target."""
