@@ -134,14 +134,14 @@ def apply_style() -> None:
           color-scheme: light;
         }
 
-        :root:not([data-dnascape-show-help="true"]) [data-testid="stTooltipHoverTarget"],
-        :root:not([data-dnascape-show-help="true"]) [data-testid="stTooltipIcon"],
-        :root:not([data-dnascape-show-help="true"]) [aria-label="Help"],
-        :root:not([data-dnascape-show-help="true"]) [aria-label="help"],
-        :root[data-dnascape-show-help="false"] [data-testid="stTooltipHoverTarget"],
-        :root[data-dnascape-show-help="false"] [data-testid="stTooltipIcon"],
-        :root[data-dnascape-show-help="false"] [aria-label="Help"],
-        :root[data-dnascape-show-help="false"] [aria-label="help"] {
+        :root:not([data-dnascape-show-help="true"]) [data-testid="stWidgetLabel"] [data-testid="stTooltipHoverTarget"],
+        :root:not([data-dnascape-show-help="true"]) [data-testid="stWidgetLabel"] [data-testid="stTooltipIcon"],
+        :root:not([data-dnascape-show-help="true"]) [data-testid="stWidgetLabel"] [aria-label="Help"],
+        :root:not([data-dnascape-show-help="true"]) [data-testid="stWidgetLabel"] [aria-label="help"],
+        :root[data-dnascape-show-help="false"] [data-testid="stWidgetLabel"] [data-testid="stTooltipHoverTarget"],
+        :root[data-dnascape-show-help="false"] [data-testid="stWidgetLabel"] [data-testid="stTooltipIcon"],
+        :root[data-dnascape-show-help="false"] [data-testid="stWidgetLabel"] [aria-label="Help"],
+        :root[data-dnascape-show-help="false"] [data-testid="stWidgetLabel"] [aria-label="help"] {
           display: none !important;
         }
 
@@ -898,6 +898,54 @@ def apply_style() -> None:
           margin-top: 1.45rem;
         }
 
+        body:has(.plotting-page-marker) [data-testid="stExpander"] {
+          border: 0 !important;
+          margin: 0 !important;
+        }
+
+        body:has(.plotting-page-marker) [data-testid="stExpander"] details {
+          background: transparent !important;
+          border: 0 !important;
+          box-shadow: none !important;
+        }
+
+        body:has(.plotting-page-marker) [data-testid="stExpander"] summary {
+          align-items: center;
+          border-radius: 0.6rem;
+          color: var(--dnascape-text) !important;
+          cursor: pointer;
+          display: flex;
+          font-size: 0.96rem;
+          font-weight: 680;
+          line-height: 1.35;
+          padding: 0.24rem 0.1rem !important;
+        }
+
+        body:has(.plotting-page-marker) [data-testid="stExpander"] summary p,
+        body:has(.plotting-page-marker) [data-testid="stExpander"] summary span {
+          font-weight: 680 !important;
+          margin: 0 !important;
+        }
+
+        body:has(.plotting-page-marker) [data-testid="stExpander"] summary:hover {
+          color: var(--dnascape-accent) !important;
+          background: color-mix(in srgb, var(--dnascape-accent) 4%, transparent);
+        }
+
+        body:has(.plotting-page-marker) [data-testid="stExpander"] summary svg {
+          color: var(--dnascape-muted) !important;
+          fill: currentColor !important;
+        }
+
+        body:has(.plotting-page-marker) [data-testid="stExpander"] details[open] > summary svg,
+        body:has(.plotting-page-marker) [data-testid="stExpander"] summary:hover svg {
+          color: var(--dnascape-accent) !important;
+        }
+
+        body:has(.plotting-page-marker) [data-testid="stExpanderDetails"] {
+          padding-top: 0.5rem !important;
+        }
+
         :root[data-dnascape-effective-theme="dark"] body:has(.plotting-page-marker) div[data-testid="stVerticalBlockBorderWrapper"] {
           border-color: rgba(243, 238, 232, 0.52) !important;
           box-shadow:
@@ -954,6 +1002,12 @@ def apply_style() -> None:
 
         .plot-preview-expand-button {
           cursor: pointer;
+        }
+
+        .plot-preview-clear-button {
+          color: var(--dnascape-text) !important;
+          cursor: pointer;
+          text-decoration: none !important;
         }
 
         .plot-download-menu {
