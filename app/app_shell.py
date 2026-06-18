@@ -979,6 +979,9 @@ def apply_style() -> None:
         }
 
         .plot-preview-frame:hover .plot-preview-actions,
+        .st-key-plot-preview-shell:hover .plot-preview-actions,
+        .st-key-map-preview-shell:hover .plot-preview-actions,
+        .st-key-simulation-preview-shell:hover .plot-preview-actions,
         .plot-preview-actions:focus-within {
           opacity: 1;
           pointer-events: auto;
@@ -1004,10 +1007,126 @@ def apply_style() -> None:
           cursor: pointer;
         }
 
-        .plot-preview-clear-button {
+        .plot-preview-clear-placeholder {
           color: var(--dnascape-text) !important;
-          cursor: pointer;
-          text-decoration: none !important;
+          pointer-events: none;
+        }
+
+        .plot-preview-clear-placeholder svg {
+          display: block;
+          height: 1rem;
+          width: 1rem;
+        }
+
+        .st-key-plot-preview-shell,
+        .st-key-map-preview-shell,
+        .st-key-simulation-preview-shell {
+          position: relative;
+        }
+
+        .st-key-plot-preview-clear,
+        .st-key-map-preview-clear,
+        .st-key-simulation-preview-clear {
+          opacity: 0;
+          pointer-events: none;
+          position: absolute;
+          right: 3.1rem;
+          top: 0.65rem;
+          transition: opacity 140ms ease;
+          z-index: 4;
+        }
+
+        .st-key-plot-preview-shell:hover .st-key-plot-preview-clear,
+        .st-key-map-preview-shell:hover .st-key-map-preview-clear,
+        .st-key-simulation-preview-shell:hover .st-key-simulation-preview-clear,
+        .st-key-plot-preview-clear:focus-within,
+        .st-key-map-preview-clear:focus-within,
+        .st-key-simulation-preview-clear:focus-within {
+          opacity: 1;
+          pointer-events: auto;
+        }
+
+        .st-key-plot-preview-clear .stButton,
+        .st-key-map-preview-clear .stButton,
+        .st-key-simulation-preview-clear .stButton {
+          margin: 0 !important;
+        }
+
+        .st-key-plot-preview-clear button,
+        .st-key-map-preview-clear button,
+        .st-key-simulation-preview-clear button {
+          align-items: center !important;
+          background: transparent !important;
+          border: 0 !important;
+          border-radius: 0.7rem !important;
+          cursor: pointer !important;
+          display: flex !important;
+          height: 2rem !important;
+          justify-content: center !important;
+          gap: 0 !important;
+          line-height: 1 !important;
+          min-height: 2rem !important;
+          opacity: 0 !important;
+          padding: 0 !important;
+          width: 2rem !important;
+        }
+
+        .st-key-plot-preview-clear button > div,
+        .st-key-map-preview-clear button > div,
+        .st-key-simulation-preview-clear button > div {
+          align-items: center !important;
+          display: flex !important;
+          gap: 0 !important;
+          height: 100% !important;
+          justify-content: center !important;
+          margin: 0 !important;
+          padding: 0 !important;
+          width: 100% !important;
+        }
+
+        .st-key-plot-preview-clear button:hover,
+        .st-key-map-preview-clear button:hover,
+        .st-key-simulation-preview-clear button:hover {
+          background: transparent !important;
+          border-color: transparent !important;
+        }
+
+        .st-key-plot-preview-shell:has(.st-key-plot-preview-clear:hover) .plot-preview-clear-placeholder,
+        .st-key-map-preview-shell:has(.st-key-map-preview-clear:hover) .plot-preview-clear-placeholder,
+        .st-key-simulation-preview-shell:has(.st-key-simulation-preview-clear:hover) .plot-preview-clear-placeholder {
+          background: var(--dnascape-hover-bg) !important;
+          border-color: color-mix(in srgb, var(--dnascape-accent) 24%, var(--dnascape-line)) !important;
+        }
+
+        .st-key-plot-preview-clear button p,
+        .st-key-map-preview-clear button p,
+        .st-key-simulation-preview-clear button p {
+          display: none !important;
+        }
+
+        .st-key-plot-preview-clear button [data-testid="stIconMaterial"],
+        .st-key-map-preview-clear button [data-testid="stIconMaterial"],
+        .st-key-simulation-preview-clear button [data-testid="stIconMaterial"] {
+          align-items: center !important;
+          display: flex !important;
+          font-size: 1rem !important;
+          height: 1rem !important;
+          justify-content: center !important;
+          line-height: 1 !important;
+          margin: 0 !important;
+          padding: 0 !important;
+          width: 1rem !important;
+        }
+
+        .st-key-plot-preview-shell:has(.plot-preview-expand-toggle:checked) .st-key-plot-preview-clear,
+        .st-key-map-preview-shell:has(.plot-preview-expand-toggle:checked) .st-key-map-preview-clear,
+        .st-key-simulation-preview-shell:has(.plot-preview-expand-toggle:checked) .st-key-simulation-preview-clear {
+          opacity: 1;
+          pointer-events: auto;
+          position: fixed;
+          right: calc(clamp(1rem, 3vw, 3rem) + 3.45rem);
+          top: calc(clamp(1rem, 3vw, 3rem) + 1rem);
+          z-index: 1000000;
         }
 
         .plot-download-menu {
@@ -2519,6 +2638,20 @@ def render_theme_toggle() -> None:
             root.classList.toggle("dnascape-sidebar-footer-hidden", shouldHide);
           }}
 
+          function syncPreviewClearButtons() {{
+            doc
+              .querySelectorAll(".st-key-plot-preview-clear, .st-key-map-preview-clear, .st-key-simulation-preview-clear")
+              .forEach((wrapper) => {{
+                wrapper.setAttribute("title", "Clear preview");
+                const button = wrapper.querySelector("button");
+                if (!button) {{
+                  return;
+                }}
+                button.setAttribute("title", "Clear preview");
+                button.setAttribute("aria-label", "Clear preview");
+              }});
+          }}
+
           function applyTheme(theme, animate = false) {{
             const selected = normalize(theme);
             const effective = effectiveTheme(selected);
@@ -2542,6 +2675,7 @@ def render_theme_toggle() -> None:
           applyHelp(storedHelp());
           bindMenuButton();
           markSidebarToggleButton();
+          syncPreviewClearButtons();
           syncSidebarFooter();
           ensureMenuItem();
 
@@ -2555,6 +2689,7 @@ def render_theme_toggle() -> None:
               queued = false;
               bindMenuButton();
               markSidebarToggleButton();
+              syncPreviewClearButtons();
               syncSidebarFooter();
               ensureMenuItem();
             }});
@@ -2567,6 +2702,7 @@ def render_theme_toggle() -> None:
           win.setInterval(() => {{
             bindMenuButton();
             markSidebarToggleButton();
+            syncPreviewClearButtons();
             syncSidebarFooter();
             if (menuList()) {{
               ensureMenuItem();

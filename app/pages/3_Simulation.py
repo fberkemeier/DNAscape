@@ -98,8 +98,6 @@ EXPORT_FORMATS = (
 )
 SIM_STATE_KEY = "simulation_last_preview"
 SIM_JOB_KEY = "simulation_active_job"
-CLEAR_PREVIEW_PARAM = "dnascape_clear_preview"
-CLEAR_PREVIEW_TOKEN = "simulation"
 RSIM_PROGRESS_PATTERN = re.compile(
     r"\[(?P<label>[^\]]+)\]\s*\[(?P<iteration>\d+)/(?P<total>\d+)\]\s*"
     r"Elapsed:\s*(?P<elapsed>\d{2}:\d{2}:\d{2})\s*ETA:\s*(?P<eta>\d{2}:\d{2}:\d{2})"
@@ -280,34 +278,8 @@ def figure_export_bytes(fig) -> dict[str, bytes]:
     }
 
 
-def consume_preview_clear_request(state_key: str, token: str) -> None:
-    query_params = getattr(st, "query_params", None)
-    if query_params is not None:
-        current_value = query_params.get(CLEAR_PREVIEW_PARAM)
-        if isinstance(current_value, list):
-            current_value = current_value[-1] if current_value else None
-        if current_value == token:
-            st.session_state.pop(state_key, None)
-            try:
-                del query_params[CLEAR_PREVIEW_PARAM]
-            except Exception:
-                try:
-                    query_params.clear()
-                except Exception:
-                    pass
-            st.rerun()
-        return
-
-    current_value = st.experimental_get_query_params().get(
-        CLEAR_PREVIEW_PARAM,
-        [None],
-    )[-1]
-    if current_value == token:
-        st.session_state.pop(state_key, None)
-        params = st.experimental_get_query_params()
-        params.pop(CLEAR_PREVIEW_PARAM, None)
-        st.experimental_set_query_params(**params)
-        st.rerun()
+def clear_preview_state(state_key: str) -> None:
+    st.session_state.pop(state_key, None)
 
 
 def read_numeric_table(uploaded_file) -> tuple[pd.DataFrame | None, list[str], str | None]:
@@ -336,7 +308,6 @@ def read_numeric_table(uploaded_file) -> tuple[pd.DataFrame | None, list[str], s
 def render_figure_preview(export_bytes: dict[str, bytes], file_stem: str) -> None:
     preview_src = base64.b64encode(export_bytes["png"]).decode("ascii")
     expand_toggle_id = f"simulation-preview-expand-{safe_download_stem(file_stem) or 'figure'}"
-    clear_href = f"?{CLEAR_PREVIEW_PARAM}={CLEAR_PREVIEW_TOKEN}"
     download_formats = (EXPORT_FORMATS[0], EXPORT_FORMATS[2], EXPORT_FORMATS[1])
     download_links = []
     for label, image_format, mime, _ in download_formats:
@@ -345,40 +316,45 @@ def render_figure_preview(export_bytes: dict[str, bytes], file_stem: str) -> Non
             f'<a href="data:{mime};base64,{payload}" download="{file_stem}.{image_format}">{label.lower()}</a>'
         )
 
-    st.markdown(
-        f"""
-        <div class="plot-preview-frame">
-          <input class="plot-preview-expand-toggle" id="{expand_toggle_id}" type="checkbox" aria-hidden="true" />
-          <div class="plot-preview-actions" aria-label="Simulation preview actions">
-            <div class="plot-download-menu">
-              <button class="plot-preview-action" type="button" aria-label="Download simulation preview" aria-haspopup="menu" title="Download">
-                <svg viewBox="0 0 24 24" aria-hidden="true" focusable="false">
-                  <path d="M12 3v10.2l3.6-3.6 1.4 1.4-6 6-6-6 1.4-1.4 3.6 3.6V3h2zm-7 14h14v2H5v-2z" fill="currentColor" />
-                </svg>
-              </button>
-              <div class="plot-download-menu-panel" role="menu">
-                {''.join(download_links)}
+    with st.container(key="simulation-preview-shell"):
+        st.button(
+            "Clear preview",
+            key="simulation-preview-clear",
+            icon=":material/delete:",
+            on_click=clear_preview_state,
+            args=(SIM_STATE_KEY,),
+        )
+        st.markdown(
+            f"""
+            <div class="plot-preview-frame">
+              <input class="plot-preview-expand-toggle" id="{expand_toggle_id}" type="checkbox" aria-hidden="true" />
+              <div class="plot-preview-actions" aria-label="Simulation preview actions">
+                <div class="plot-download-menu">
+                  <button class="plot-preview-action" type="button" aria-label="Download simulation preview" aria-haspopup="menu" title="Download">
+                    <svg viewBox="0 0 24 24" aria-hidden="true" focusable="false">
+                      <path d="M12 3v10.2l3.6-3.6 1.4 1.4-6 6-6-6 1.4-1.4 3.6 3.6V3h2zm-7 14h14v2H5v-2z" fill="currentColor" />
+                    </svg>
+                  </button>
+                  <div class="plot-download-menu-panel" role="menu">
+                    {''.join(download_links)}
+                  </div>
+                </div>
+                <span class="plot-preview-action plot-preview-clear-placeholder" aria-hidden="true">
+                  <svg viewBox="0 0 24 24" focusable="false">
+                    <path d="M9 3h6l1 1h4v2H4V4h4l1-1Zm-3 4h12v12a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2V7Zm3 3v8h2v-8H9Zm4 0v8h2v-8h-2Z" fill="currentColor" />
+                  </svg>
+                </span>
+                <label class="plot-preview-action plot-preview-expand-button" for="{expand_toggle_id}" aria-label="Expand simulation preview" title="Expand">
+                  <svg viewBox="0 0 24 24" aria-hidden="true" focusable="false">
+                    <path d="M5 5h6v2H8.4l3.3 3.3-1.4 1.4L7 8.4V11H5V5zm8 0h6v6h-2V8.4l-3.3 3.3-1.4-1.4L15.6 7H13V5zM7 15.6l3.3-3.3 1.4 1.4L8.4 17H11v2H5v-6h2v2.6zm9.6 1.4-3.3-3.3 1.4-1.4 3.3 3.3V13h2v6h-6v-2h2.6z" fill="currentColor" />
+                  </svg>
+                </label>
               </div>
+              <img class="plot-preview-image" src="data:image/png;base64,{preview_src}" alt="Simulation preview" />
             </div>
-            <a class="plot-preview-action plot-preview-clear-button" href="{clear_href}" aria-label="Clear simulation preview" title="Clear preview">
-              <svg viewBox="0 0 24 24" aria-hidden="true" focusable="false">
-                <path d="M9 3h6l1 1h4v2H4V4h4l1-1Zm-3 4h12v12a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2V7Zm3 3v8h2v-8H9Zm4 0v8h2v-8h-2Z" fill="currentColor" />
-              </svg>
-            </a>
-            <label class="plot-preview-action plot-preview-expand-button" for="{expand_toggle_id}" aria-label="Expand simulation preview" title="Expand">
-              <svg viewBox="0 0 24 24" aria-hidden="true" focusable="false">
-                <path d="M5 5h6v2H8.4l3.3 3.3-1.4 1.4L7 8.4V11H5V5zm8 0h6v6h-2V8.4l-3.3 3.3-1.4-1.4L15.6 7H13V5zM7 15.6l3.3-3.3 1.4 1.4L8.4 17H11v2H5v-6h2v2.6zm9.6 1.4-3.3-3.3 1.4-1.4 3.3 3.3V13h2v6h-6v-2h2.6z" fill="currentColor" />
-              </svg>
-            </label>
-          </div>
-          <img class="plot-preview-image" src="data:image/png;base64,{preview_src}" alt="Simulation preview" />
-        </div>
-        """,
-        unsafe_allow_html=True,
-    )
-
-
-consume_preview_clear_request(SIM_STATE_KEY, CLEAR_PREVIEW_TOKEN)
+            """,
+            unsafe_allow_html=True,
+        )
 
 
 def simulation_time_grid(resolution_time: float, time_max: float) -> np.ndarray:
