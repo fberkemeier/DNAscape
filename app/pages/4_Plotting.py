@@ -1,7 +1,6 @@
 """Plotting page for the DNAscape Streamlit prototype."""
 
 import base64
-import html
 import importlib
 import sys
 from io import BytesIO
@@ -36,12 +35,17 @@ st.markdown(
     """
     <span class="plotting-page-marker" aria-hidden="true"></span>
     <style>
-      body:has(.plotting-page-marker) .plotting-control-label {
-        color: var(--dnascape-muted);
-        font-size: 0.88rem;
-        font-weight: 520;
+      body:has(.plotting-page-marker) [data-testid="stWidgetLabel"] {
+        margin-bottom: 0.16rem;
+      }
+
+      body:has(.plotting-page-marker) [data-testid="stWidgetLabel"] p {
+        font-size: 0.86rem;
         line-height: 1.25;
-        padding-top: 0.1rem;
+      }
+
+      body:has(.plotting-page-marker) div[data-testid="stVerticalBlockBorderWrapper"] div[data-testid="stVerticalBlock"] {
+        gap: 0.62rem !important;
       }
     </style>
     """,
@@ -90,20 +94,7 @@ LEGEND_LOCATIONS = {
     "Upper left": "upper left",
     "Best": "best",
 }
-
-
-def control_row(label: str, weights: tuple[float, float] = (0.38, 0.62)):
-    label_column, field_column = st.columns(
-        weights,
-        gap="small",
-        vertical_alignment="center",
-    )
-    with label_column:
-        st.markdown(
-            f'<div class="plotting-control-label">{html.escape(label)}</div>',
-            unsafe_allow_html=True,
-        )
-    return field_column
+DISPLAY_UNITS = ("kb", "Mb")
 
 
 def figure_bytes(fig, image_format: str) -> bytes:
@@ -173,25 +164,33 @@ def render_figure_preview(export_bytes: dict[str, bytes], file_stem: str) -> Non
 
 with controls:
     with st.container(border=True):
-        st.markdown(
-            '<div class="plotting-panel-title">Data</div>',
-            unsafe_allow_html=True,
-        )
-        with control_row("Type"):
+        header_cols = st.columns([1, 0.72], gap="small", vertical_alignment="center")
+        with header_cols[0]:
+            st.markdown(
+                '<div class="plotting-panel-title">Data</div>',
+                unsafe_allow_html=True,
+            )
+        with header_cols[1]:
+            plot_requested = st.button(
+                "Plot",
+                type="primary",
+                width="stretch",
+            )
+
+        data_cols = st.columns(2, gap="small")
+        with data_cols[0]:
             data_type = st.selectbox(
                 "Type",
                 list(DATA_TYPE_DEFAULTS),
                 index=0,
-                label_visibility="collapsed",
             )
         data_defaults = DATA_TYPE_DEFAULTS[data_type]
 
-        with control_row("Upload"):
+        with data_cols[1]:
             uploaded_file = st.file_uploader(
-                "Upload a file",
+                "Upload",
                 type=["tsv", "csv", "txt", "gz"],
                 accept_multiple_files=False,
-                label_visibility="collapsed",
             )
 
         table = None
@@ -225,15 +224,17 @@ with controls:
             '<div class="plotting-panel-title plotting-panel-title--spaced">Region</div>',
             unsafe_allow_html=True,
         )
-        with control_row("Chromosome"):
+        region_cols = st.columns(3, gap="small")
+        with region_cols[0]:
             chromosome = st.selectbox(
                 "Chromosome",
                 numeric_columns,
                 disabled=not numeric_columns,
                 placeholder="Select column",
-                label_visibility="collapsed",
             )
-        with control_row("Resolution"):
+
+        region_detail_cols = st.columns(3, gap="small")
+        with region_detail_cols[0]:
             resolution = st.number_input(
                 "Resolution",
                 min_value=0.000001,
@@ -241,7 +242,22 @@ with controls:
                 step=1.0,
                 format="%.1f",
                 help="Spatial resolution in kb/bin.",
-                label_visibility="collapsed",
+            )
+        with region_detail_cols[1]:
+            display_unit = st.selectbox(
+                "Display",
+                DISPLAY_UNITS,
+                index=0,
+                help="Unit used for the plot axis and default title.",
+            )
+        with region_detail_cols[2]:
+            smooth_bins = st.number_input(
+                "Smooth",
+                min_value=1,
+                max_value=501,
+                value=1,
+                step=1,
+                help="Rolling mean window in bins. Use 1 to keep raw values.",
             )
 
         selected_values = None
@@ -262,7 +278,7 @@ with controls:
             max_position = max(1, int(np.ceil(float(resolution))))
             min_position = 0
 
-        with control_row("Start (kb)"):
+        with region_cols[1]:
             region_start = st.number_input(
                 "Start (kb)",
                 min_value=min_position,
@@ -271,9 +287,8 @@ with controls:
                 step=1,
                 format="%d",
                 disabled=positions is None or not positions.size,
-                label_visibility="collapsed",
             )
-        with control_row("End (kb)"):
+        with region_cols[2]:
             region_end = st.number_input(
                 "End (kb)",
                 min_value=min_position,
@@ -282,73 +297,68 @@ with controls:
                 step=1,
                 format="%d",
                 disabled=positions is None or not positions.size,
-                label_visibility="collapsed",
             )
 
         with st.expander("Plot styling", expanded=False):
-            with control_row("Title"):
-                title_override = st.text_input(
-                    "Title",
-                    value="",
-                    placeholder="Auto",
-                    label_visibility="collapsed",
-                )
-            with control_row("x-axis"):
+            title_override = st.text_input(
+                "Title",
+                value="",
+                placeholder="Auto",
+            )
+
+            axis_cols = st.columns(2, gap="small")
+            with axis_cols[0]:
                 x_axis_title = st.text_input(
                     "x-axis",
-                    value="Genomic position (kb)",
-                    label_visibility="collapsed",
+                    value=f"Genomic position ({display_unit})",
                 )
-            with control_row("y-axis"):
+            with axis_cols[1]:
                 y_axis_title = st.text_input(
                     "y-axis",
                     value=data_defaults["ytitle"],
-                    label_visibility="collapsed",
                 )
 
-            with control_row("Color"):
+            style_cols = st.columns(2, gap="small")
+            with style_cols[0]:
                 line_color = st.color_picker(
                     "Color",
                     value=data_defaults["color"],
-                    label_visibility="collapsed",
                 )
-            with control_row("Label"):
+            with style_cols[1]:
                 legend_label = st.text_input(
                     "Label",
                     value="",
                     placeholder=chromosome or "Profile",
-                    label_visibility="collapsed",
                 )
 
-            with control_row("Legend"):
+            legend_cols = st.columns([0.82, 1.18], gap="small")
+            with legend_cols[0]:
                 show_legend = st.checkbox(
                     "Legend",
                     value=True,
-                    label_visibility="collapsed",
                 )
-            with control_row("Position"):
+            with legend_cols[1]:
                 legend_location_label = st.selectbox(
                     "Position",
                     list(LEGEND_LOCATIONS),
                     index=0,
                     disabled=not show_legend,
-                    label_visibility="collapsed",
                 )
 
-            with control_row("Invert y-axis"):
+            scale_cols = st.columns(2, gap="small")
+            with scale_cols[0]:
                 invert_y_axis = st.checkbox(
                     "Invert y-axis",
                     value=False,
-                    label_visibility="collapsed",
                 )
-            with control_row("Log y-axis"):
+            with scale_cols[1]:
                 log_y_axis = st.checkbox(
                     "Log y-axis",
                     value=False,
-                    label_visibility="collapsed",
                 )
 
-            with control_row("Width"):
+            size_cols = st.columns(2, gap="small")
+            with size_cols[0]:
                 figure_width = st.number_input(
                     "Width",
                     min_value=3.0,
@@ -356,9 +366,8 @@ with controls:
                     value=9.5,
                     step=0.5,
                     format="%.1f",
-                    label_visibility="collapsed",
                 )
-            with control_row("Height"):
+            with size_cols[1]:
                 figure_height = st.number_input(
                     "Height",
                     min_value=2.0,
@@ -366,7 +375,6 @@ with controls:
                     value=3.8,
                     step=0.2,
                     format="%.1f",
-                    label_visibility="collapsed",
                 )
 
             finite_values = (
@@ -380,36 +388,26 @@ with controls:
             y_limit_default_max = (
                 float(np.nanmax(finite_values)) if finite_values.size else 1.0
             )
-            with control_row("Y limits"):
-                use_y_limits = st.checkbox(
-                    "Set y-axis limits",
-                    value=False,
-                    disabled=not finite_values.size,
-                    label_visibility="collapsed",
-                )
-            with control_row("Min"):
+            use_y_limits = st.checkbox(
+                "Y limits",
+                value=False,
+                disabled=not finite_values.size,
+            )
+            y_limit_cols = st.columns(2, gap="small")
+            with y_limit_cols[0]:
                 y_limit_min = st.number_input(
                     "Min",
                     value=y_limit_default_min,
                     step=1.0,
                     disabled=not use_y_limits,
-                    label_visibility="collapsed",
                 )
-            with control_row("Max"):
+            with y_limit_cols[1]:
                 y_limit_max = st.number_input(
                     "Max",
                     value=y_limit_default_max,
                     step=1.0,
                     disabled=not use_y_limits,
-                    label_visibility="collapsed",
                 )
-
-        plot_requested = st.button(
-            "Plot",
-            type="primary",
-            width="stretch",
-            disabled=selected_values is None or selected_values.size == 0,
-        )
 
 with preview:
     with st.container(border=True):
@@ -423,7 +421,11 @@ with preview:
 
         if plot_requested:
             plot_feedback_shown = True
-            if region_end < region_start:
+            if selected_values is None or selected_values.size == 0:
+                st.info("Upload a data file and choose a numeric chromosome column.")
+            elif positions is None or not positions.size:
+                st.info("Choose a valid region before plotting.")
+            elif region_end < region_start:
                 st.error("Region end must be greater than or equal to region start.")
             elif use_y_limits and y_limit_max <= y_limit_min:
                 st.error("The y-axis maximum must be greater than the minimum.")
@@ -447,13 +449,29 @@ with preview:
                             "Install the project requirements, then restart Streamlit."
                         )
                     else:
+                        if smooth_bins > 1:
+                            plot_values = (
+                                pd.Series(plot_values)
+                                .rolling(
+                                    window=int(smooth_bins),
+                                    center=True,
+                                    min_periods=1,
+                                )
+                                .mean()
+                                .to_numpy(dtype=float)
+                            )
+
+                        position_scale = 1000.0 if display_unit == "Mb" else 1.0
+                        plot_positions_display = plot_positions / position_scale
+                        title_start = float(region_start) / position_scale
+                        title_end = float(region_end) / position_scale
                         plot_title = title_override.strip() or (
-                            f"{chromosome}: {region_start:g}-{region_end:g} kb"
+                            f"{chromosome}: {title_start:g}-{title_end:g} {display_unit}"
                         )
                         plot_label = legend_label.strip() or chromosome
                         fig, _ = plotf(
                             plot_values,
-                            x_array=plot_positions,
+                            x_array=plot_positions_display,
                             labels=[plot_label] if show_legend else None,
                             title=plot_title,
                             xtitle=x_axis_title,
@@ -475,7 +493,7 @@ with preview:
                             "dnascape",
                             data_type,
                             chromosome,
-                            f"{region_start:g}-{region_end:g}kb",
+                            f"{title_start:g}-{title_end:g}{display_unit}",
                         )
                         last_plot = {
                             "exports": figure_export_bytes(fig),

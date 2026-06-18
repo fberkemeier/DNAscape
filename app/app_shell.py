@@ -134,6 +134,17 @@ def apply_style() -> None:
           color-scheme: light;
         }
 
+        :root:not([data-dnascape-show-help="true"]) [data-testid="stTooltipHoverTarget"],
+        :root:not([data-dnascape-show-help="true"]) [data-testid="stTooltipIcon"],
+        :root:not([data-dnascape-show-help="true"]) [aria-label="Help"],
+        :root:not([data-dnascape-show-help="true"]) [aria-label="help"],
+        :root[data-dnascape-show-help="false"] [data-testid="stTooltipHoverTarget"],
+        :root[data-dnascape-show-help="false"] [data-testid="stTooltipIcon"],
+        :root[data-dnascape-show-help="false"] [aria-label="Help"],
+        :root[data-dnascape-show-help="false"] [aria-label="help"] {
+          display: none !important;
+        }
+
         :root[data-dnascape-effective-theme="dark"] {
           --background-color: #151413;
           --secondary-background-color: #211f1d;
@@ -1659,12 +1670,32 @@ def render_theme_toggle() -> None:
           const doc = win.document;
           const root = doc.documentElement;
           const storageKey = "dnascape-theme";
+          const helpStorageKey = "dnascape-show-help";
           const styleId = "dnascape-theme-menu-style";
-          const styleVersion = "theme-menu-critical-paint-17";
+          const styleVersion = "theme-menu-critical-paint-18";
           const wrapperId = "dnascape-theme-menu-item-wrapper";
           const itemId = "dnascape-theme-menu-item";
+          const helpWrapperId = "dnascape-help-menu-item-wrapper";
+          const helpItemId = "dnascape-help-menu-item";
           const themes = {list(THEMES)!r};
           const icons = {json.dumps(THEME_ICONS)};
+          const helpIcons = {{
+            true: `
+              <svg class="dnascape-theme-icon" viewBox="0 0 24 24" aria-hidden="true" focusable="false">
+                <circle cx="12" cy="12" r="8.25" fill="none" stroke="currentColor" stroke-width="1.8"/>
+                <path d="M9.7 9.15a2.45 2.45 0 0 1 4.75.85c0 1.85-2.45 2.05-2.45 3.55" fill="none" stroke="currentColor" stroke-linecap="round" stroke-width="1.8"/>
+                <circle cx="12" cy="17" r="1" fill="currentColor"/>
+              </svg>
+            `,
+            false: `
+              <svg class="dnascape-theme-icon" viewBox="0 0 24 24" aria-hidden="true" focusable="false">
+                <circle cx="12" cy="12" r="8.25" fill="none" stroke="currentColor" stroke-width="1.8"/>
+                <path d="M9.7 9.15a2.45 2.45 0 0 1 4.75.85c0 1.85-2.45 2.05-2.45 3.55" fill="none" stroke="currentColor" stroke-linecap="round" stroke-width="1.8"/>
+                <circle cx="12" cy="17" r="1" fill="currentColor"/>
+                <path d="M4.75 19.25 19.25 4.75" fill="none" stroke="currentColor" stroke-linecap="round" stroke-width="1.8"/>
+              </svg>
+            `,
+          }};
           const labels = {THEME_LABELS!r};
           const prefersDark = win.matchMedia("(prefers-color-scheme: dark)");
 
@@ -1733,6 +1764,22 @@ def render_theme_toggle() -> None:
           function setStoredTheme(theme) {{
             try {{
               win.localStorage.setItem(storageKey, theme);
+            }} catch (error) {{
+              /* Storage can be unavailable in hardened browser contexts. */
+            }}
+          }}
+
+          function storedHelp() {{
+            try {{
+              return win.localStorage.getItem(helpStorageKey) === "true";
+            }} catch (error) {{
+              return false;
+            }}
+          }}
+
+          function setStoredHelp(showHelp) {{
+            try {{
+              win.localStorage.setItem(helpStorageKey, showHelp ? "true" : "false");
             }} catch (error) {{
               /* Storage can be unavailable in hardened browser contexts. */
             }}
@@ -1854,14 +1901,16 @@ def render_theme_toggle() -> None:
                 padding: 0 !important;
               }}
 
-              #${{wrapperId}} {{
+              #${{wrapperId}},
+              #${{helpWrapperId}} {{
                 display: block;
                 list-style: none;
                 margin: 0;
                 padding: 0;
               }}
 
-              #${{itemId}} {{
+              #${{itemId}},
+              #${{helpItemId}} {{
                 align-items: center;
                 box-sizing: border-box;
                 cursor: pointer;
@@ -1871,7 +1920,8 @@ def render_theme_toggle() -> None:
                 width: 100%;
               }}
 
-              #${{itemId}}:not(.dnascape-native-menu-item) {{
+              #${{itemId}}:not(.dnascape-native-menu-item),
+              #${{helpItemId}}:not(.dnascape-native-menu-item) {{
                 appearance: none;
                 background: transparent;
                 border: 0;
@@ -1885,8 +1935,12 @@ def render_theme_toggle() -> None:
 
               #${{wrapperId}}:hover #${{itemId}},
               #${{wrapperId}}:focus-within #${{itemId}},
+              #${{helpWrapperId}}:hover #${{helpItemId}},
+              #${{helpWrapperId}}:focus-within #${{helpItemId}},
               #${{itemId}}:hover,
-              #${{itemId}}:focus-visible {{
+              #${{itemId}}:focus-visible,
+              #${{helpItemId}}:hover,
+              #${{helpItemId}}:focus-visible {{
                 background: rgba(250, 250, 250, 0.10) !important;
                 border-radius: 0.5rem !important;
                 outline: none !important;
@@ -1894,12 +1948,17 @@ def render_theme_toggle() -> None:
 
               :root[data-dnascape-effective-theme="dark"] #${{wrapperId}}:hover #${{itemId}},
               :root[data-dnascape-effective-theme="dark"] #${{wrapperId}}:focus-within #${{itemId}},
+              :root[data-dnascape-effective-theme="dark"] #${{helpWrapperId}}:hover #${{helpItemId}},
+              :root[data-dnascape-effective-theme="dark"] #${{helpWrapperId}}:focus-within #${{helpItemId}},
               :root[data-dnascape-effective-theme="dark"] #${{itemId}}:hover,
-              :root[data-dnascape-effective-theme="dark"] #${{itemId}}:focus-visible {{
+              :root[data-dnascape-effective-theme="dark"] #${{itemId}}:focus-visible,
+              :root[data-dnascape-effective-theme="dark"] #${{helpItemId}}:hover,
+              :root[data-dnascape-effective-theme="dark"] #${{helpItemId}}:focus-visible {{
                 background: rgba(250, 250, 250, 0.10) !important;
               }}
 
-              #${{itemId}} .dnascape-theme-menu-icon {{
+              #${{itemId}} .dnascape-theme-menu-icon,
+              #${{helpItemId}} .dnascape-theme-menu-icon {{
                 align-items: center;
                 color: currentColor;
                 display: inline-flex;
@@ -1909,18 +1968,21 @@ def render_theme_toggle() -> None:
                 pointer-events: none;
               }}
 
-              #${{itemId}} .dnascape-theme-menu-icon svg {{
+              #${{itemId}} .dnascape-theme-menu-icon svg,
+              #${{helpItemId}} .dnascape-theme-menu-icon svg {{
                 display: block;
                 height: 1.08rem;
                 pointer-events: none;
                 width: 1.08rem;
               }}
 
-              #${{itemId}} .dnascape-theme-menu-icon * {{
+              #${{itemId}} .dnascape-theme-menu-icon *,
+              #${{helpItemId}} .dnascape-theme-menu-icon * {{
                 pointer-events: none;
               }}
 
-              #${{itemId}} .dnascape-theme-menu-label {{
+              #${{itemId}} .dnascape-theme-menu-label,
+              #${{helpItemId}} .dnascape-theme-menu-label {{
                 flex: 0 1 auto;
                 overflow: hidden;
                 pointer-events: none;
@@ -1971,7 +2033,12 @@ def render_theme_toggle() -> None:
           function nativeMenuItem(list) {{
             const candidates = Array
               .from(list.querySelectorAll('a, button, [role="menuitem"], [role="menuitemradio"]'))
-              .filter((node) => node.id !== itemId && !node.closest(`#${{wrapperId}}`));
+              .filter((node) => (
+                node.id !== itemId &&
+                node.id !== helpItemId &&
+                !node.closest(`#${{wrapperId}}`) &&
+                !node.closest(`#${{helpWrapperId}}`)
+              ));
 
             return (
               candidates.find((node) => /about|report a bug|get help/i.test(node.textContent || "")) ||
@@ -1985,7 +2052,7 @@ def render_theme_toggle() -> None:
           }}
 
           function hideNode(node) {{
-            if (!node || node.closest(`#${{wrapperId}}`)) {{
+            if (!node || node.closest(`#${{wrapperId}}`) || node.closest(`#${{helpWrapperId}}`)) {{
               return;
             }}
             node.dataset.dnascapeHiddenThemeControl = "true";
@@ -2011,7 +2078,11 @@ def render_theme_toggle() -> None:
             const themeChoiceLabels = new Set(["System", "Light", "Dark"]);
             const themeChoices = Array
               .from(popover.querySelectorAll('button, [role="button"], [role="option"], [role="menuitemradio"], label'))
-              .filter((node) => !node.closest(`#${{wrapperId}}`) && themeChoiceLabels.has(compactText(node)));
+              .filter((node) => (
+                !node.closest(`#${{wrapperId}}`) &&
+                !node.closest(`#${{helpWrapperId}}`) &&
+                themeChoiceLabels.has(compactText(node))
+              ));
 
             if (themeChoices.length >= 3) {{
               let common = themeChoices[0].parentElement;
@@ -2032,13 +2103,13 @@ def render_theme_toggle() -> None:
 
             Array
               .from(popover.querySelectorAll("div, section, ul, li"))
-              .filter((node) => !node.closest(`#${{wrapperId}}`))
+              .filter((node) => !node.closest(`#${{wrapperId}}`) && !node.closest(`#${{helpWrapperId}}`))
               .filter((node) => compactText(node).replace(/\\s+/g, "") === "SystemLightDark")
               .forEach((node) => hideNode(node));
 
             Array
               .from(popover.querySelectorAll('[role="menuitem"], [role="option"], [role="menuitemradio"], button, a'))
-              .filter((node) => !node.closest(`#${{wrapperId}}`))
+              .filter((node) => !node.closest(`#${{wrapperId}}`) && !node.closest(`#${{helpWrapperId}}`))
               .forEach((node) => {{
                 const text = compactText(node);
                 if (/^(settings|theme|appearance)$/i.test(text) || /choose app theme/i.test(text)) {{
@@ -2107,6 +2178,41 @@ def render_theme_toggle() -> None:
             }}
           }}
 
+          function updateHelpMenuItem(showHelp) {{
+            const item = doc.getElementById(helpItemId);
+            if (!item) {{
+              return;
+            }}
+
+            const label = showHelp ? "Hide help" : "Show help";
+            const stateLabel = showHelp ? "On" : "Off";
+            item.setAttribute("aria-label", `${{label}}: ${{stateLabel}}`);
+            item.setAttribute("aria-pressed", showHelp ? "true" : "false");
+            item.removeAttribute("title");
+
+            const iconNode = item.querySelector(".dnascape-theme-menu-icon");
+            if (iconNode) {{
+              iconNode.innerHTML = helpIcons[showHelp ? "true" : "false"];
+            }}
+
+            const labelNode = item.querySelector(".dnascape-theme-menu-label");
+            if (labelNode) {{
+              labelNode.textContent = label;
+              if (iconNode && labelNode.nextElementSibling !== iconNode) {{
+                item.insertBefore(labelNode, iconNode);
+              }}
+            }} else {{
+              item.textContent = label;
+            }}
+          }}
+
+          function applyHelp(showHelp) {{
+            const selected = Boolean(showHelp);
+            root.setAttribute("data-dnascape-show-help", selected ? "true" : "false");
+            setStoredHelp(selected);
+            updateHelpMenuItem(selected);
+          }}
+
           function stopMenuPointer(event) {{
             event.stopPropagation();
           }}
@@ -2118,6 +2224,12 @@ def render_theme_toggle() -> None:
             applyTheme(nextTheme(current), true);
           }}
 
+          function activateHelpMenuItem(event) {{
+            event.preventDefault();
+            event.stopImmediatePropagation();
+            applyHelp(root.getAttribute("data-dnascape-show-help") !== "true");
+          }}
+
           function bindMenuItem(item) {{
             if (!item || item.dataset.dnascapeThemeItemVersion === styleVersion) {{
               return;
@@ -2127,6 +2239,17 @@ def render_theme_toggle() -> None:
             item.addEventListener("pointerdown", stopMenuPointer, true);
             item.addEventListener("mousedown", stopMenuPointer, true);
             item.addEventListener("click", activateMenuItem, true);
+          }}
+
+          function bindHelpMenuItem(item) {{
+            if (!item || item.dataset.dnascapeHelpItemVersion === styleVersion) {{
+              return;
+            }}
+
+            item.dataset.dnascapeHelpItemVersion = styleVersion;
+            item.addEventListener("pointerdown", stopMenuPointer, true);
+            item.addEventListener("mousedown", stopMenuPointer, true);
+            item.addEventListener("click", activateHelpMenuItem, true);
           }}
 
           function createMenuItem() {{
@@ -2148,6 +2271,25 @@ def render_theme_toggle() -> None:
             return wrapper;
           }}
 
+          function createHelpMenuItem() {{
+            const wrapper = doc.createElement("li");
+            wrapper.id = helpWrapperId;
+            wrapper.setAttribute("role", "none");
+
+            const item = doc.createElement("button");
+            item.id = helpItemId;
+            item.type = "button";
+            item.setAttribute("role", "menuitem");
+            item.innerHTML = `
+              <span class="dnascape-theme-menu-label"></span>
+              <span class="dnascape-theme-menu-icon" aria-hidden="true"></span>
+            `;
+            bindHelpMenuItem(item);
+
+            wrapper.appendChild(item);
+            return wrapper;
+          }}
+
           function ensureMenuItem() {{
             injectStyle();
             removeHeaderExperiment();
@@ -2162,7 +2304,13 @@ def render_theme_toggle() -> None:
               wrapper = createMenuItem();
             }}
 
+            let helpWrapper = doc.getElementById(helpWrapperId);
+            if (!helpWrapper) {{
+              helpWrapper = createHelpMenuItem();
+            }}
+
             bindMenuItem(wrapper.querySelector(`#${{itemId}}`));
+            bindHelpMenuItem(helpWrapper.querySelector(`#${{helpItemId}}`));
 
             if (wrapper.parentElement !== list) {{
               list.insertBefore(wrapper, list.firstElementChild);
@@ -2170,8 +2318,16 @@ def render_theme_toggle() -> None:
               list.insertBefore(wrapper, list.firstElementChild);
             }}
 
+            if (helpWrapper.parentElement !== list) {{
+              list.insertBefore(helpWrapper, wrapper.nextSibling);
+            }} else if (helpWrapper.previousSibling !== wrapper) {{
+              list.insertBefore(helpWrapper, wrapper.nextSibling);
+            }}
+
             syncNativeMenuStyle(list, wrapper, wrapper.querySelector(`#${{itemId}}`));
+            syncNativeMenuStyle(list, helpWrapper, helpWrapper.querySelector(`#${{helpItemId}}`));
             updateMenuItem(normalize(root.getAttribute("data-dnascape-theme") || storedTheme()));
+            updateHelpMenuItem(storedHelp());
             hideBuiltInThemeControls();
             return true;
           }}
@@ -2329,6 +2485,7 @@ def render_theme_toggle() -> None:
           injectStyle();
           removeHeaderExperiment();
           applyTheme(root.getAttribute("data-dnascape-theme") || storedTheme(), false);
+          applyHelp(storedHelp());
           bindMenuButton();
           markSidebarToggleButton();
           syncSidebarFooter();
