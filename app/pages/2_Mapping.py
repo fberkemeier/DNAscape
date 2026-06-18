@@ -430,69 +430,104 @@ def input_preview_series(settings: dict[str, object]) -> tuple[np.ndarray, np.nd
     )
 
 
-def mapping_preview_series(
+def normalize_mapping_heatmap(
+    mapped_values: np.ndarray,
+    map_positions: np.ndarray,
+    time_grid: np.ndarray,
+) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    matrix = np.asarray(mapped_values, dtype=float)
+    if matrix.ndim != 2:
+        matrix = np.atleast_2d(matrix)
+
+    positions = np.asarray(map_positions, dtype=float)
+    times = np.asarray(time_grid, dtype=float)
+
+    if positions.size and matrix.shape[0] != positions.size and matrix.shape[1] == positions.size:
+        matrix = matrix.T
+    elif times.size and matrix.shape[1] != times.size and matrix.shape[0] == times.size:
+        matrix = matrix.T
+
+    if positions.size != matrix.shape[0]:
+        positions = np.arange(matrix.shape[0], dtype=float)
+    else:
+        positions = positions[: matrix.shape[0]]
+
+    if times.size != matrix.shape[1]:
+        times = np.arange(matrix.shape[1], dtype=float)
+    else:
+        times = times[: matrix.shape[1]]
+
+    return matrix, positions, times
+
+
+def mapping_preview_data(
     mapped_values: np.ndarray,
     map_positions: np.ndarray,
     settings: dict[str, object],
-) -> tuple[np.ndarray, np.ndarray, str, str, str]:
+) -> dict[str, object]:
     values = np.asarray(mapped_values, dtype=float)
     target_form = settings["target_form"]
     chromosome = settings["chromosome"]
     target_label = feature_label(settings["target_feature"])
 
     if values.size == 1:
-        return (
-            np.array([0.0], dtype=float),
-            values.reshape(-1),
-            "",
-            f"{chromosome}: {target_label.lower()}",
-            target_label,
-        )
+        return {
+            "kind": "line",
+            "x": np.array([0.0], dtype=float),
+            "y": values.reshape(-1),
+            "x_title": "",
+            "y_title": target_label,
+            "default_title": f"{chromosome}: {target_label.lower()}",
+            "default_label": target_label,
+        }
 
     if target_form == "time":
         y_values = values.reshape(-1)
         x_values = np.asarray(settings.get("time_grid", []), dtype=float)
         if x_values.size != y_values.size:
             x_values = np.arange(y_values.size, dtype=float)
-        return (
-            x_values,
-            y_values,
-            "S-phase time (min)",
-            f"{chromosome}: temporal {target_label.lower()}",
-            target_label,
-        )
+        return {
+            "kind": "line",
+            "x": x_values,
+            "y": y_values,
+            "x_title": "S-phase time (min)",
+            "y_title": target_label,
+            "default_title": f"{chromosome}: temporal {target_label.lower()}",
+            "default_label": target_label,
+        }
 
     if target_form == "spacetime":
-        matrix = values
-        positions = np.asarray(map_positions, dtype=float)
-        if matrix.ndim != 2:
-            matrix = np.atleast_2d(matrix)
-        if matrix.shape[0] != positions.size and matrix.shape[1] == positions.size:
-            matrix = matrix.T
-        y_values = np.nanmean(matrix, axis=1)
-        x_values = positions[: y_values.size]
-        if x_values.size != y_values.size:
-            x_values = np.arange(y_values.size, dtype=float)
-        return (
-            x_values,
-            y_values,
-            "Genomic position (kb)",
-            f"{chromosome}: mean {target_label.lower()}",
-            f"Mean {target_label.lower()}",
+        # Keep spacetime mapping previews 2D so I(x,t) stays a heatmap instead of a collapsed mean profile.
+        matrix, positions, times = normalize_mapping_heatmap(
+            values,
+            map_positions,
+            np.asarray(settings.get("time_grid", []), dtype=float),
         )
+        return {
+            "kind": "heatmap",
+            "matrix": matrix,
+            "x": positions,
+            "time": times,
+            "x_title": "Genomic position (kb)",
+            "y_title": "S-phase time (min)",
+            "default_title": f"{chromosome}: spacetime {target_label.lower()}",
+            "default_label": target_label,
+        }
 
     y_values = values.reshape(-1)
     positions = np.asarray(map_positions, dtype=float)
     x_values = positions[: y_values.size]
     if x_values.size != y_values.size:
         x_values = np.arange(y_values.size, dtype=float)
-    return (
-        x_values,
-        y_values,
-        "Genomic position (kb)",
-        f"{chromosome}: inferred {target_label.lower()}",
-        target_label,
-    )
+    return {
+        "kind": "line",
+        "x": x_values,
+        "y": y_values,
+        "x_title": "Genomic position (kb)",
+        "y_title": target_label,
+        "default_title": f"{chromosome}: inferred {target_label.lower()}",
+        "default_label": target_label,
+    }
 
 
 def build_mapping_preview(
@@ -504,11 +539,12 @@ def build_mapping_preview(
     from dnascape.plotting import plotf
 
     preview_mode = str(settings.get("preview_mode", "Target"))
-    target_x, target_y, target_x_title, target_default_title, target_default_label = (
-        mapping_preview_series(mapped_values, map_positions, settings)
-    )
+    target_preview = mapping_preview_data(mapped_values, map_positions, settings)
     input_preview = input_preview_series(settings)
+    target_default_label = str(target_preview["default_label"])
+    target_default_title = str(target_preview["default_title"])
     target_label = settings["label"] or target_default_label
+    target_is_heatmap = str(target_preview["kind"]) == "heatmap"
 
     if preview_mode == "Input" and input_preview is not None:
         input_x, input_y, input_x_title, input_default_title, input_default_label = (
@@ -542,7 +578,10 @@ def build_mapping_preview(
         fig, axes = plt.subplots(
             2,
             1,
-            figsize=(settings["figure_width"], settings["figure_height"] * 1.7),
+            figsize=(
+                settings["figure_width"],
+                settings["figure_height"] * (1.95 if target_is_heatmap else 1.7),
+            ),
             sharex=False,
         )
         plotf(
@@ -566,51 +605,98 @@ def build_mapping_preview(
             fig=fig,
             ax=axes[0],
         )
-        plotf(
-            target_y,
-            x_array=target_x,
-            labels=[target_label] if settings["show_legend"] else None,
-            title="Target",
-            xtitle=settings["x_axis_title"] or target_x_title,
-            ytitle=settings["y_axis_title"],
-            invyQ=settings["invert_y_axis"],
-            limsy=(
-                (settings["y_limit_min"], settings["y_limit_max"])
-                if settings["use_y_limits"]
-                else (None, None)
-            ),
-            logyQ=settings["log_y_axis"],
-            label_loc=LEGEND_LOCATIONS[settings["legend_location_label"]],
-            colors=[settings["line_color"]],
-            showQ=False,
-            return_handles=True,
-            fig=fig,
-            ax=axes[1],
-        )
+        if target_is_heatmap:
+            plotf(
+                np.asarray(target_preview["matrix"], dtype=float),
+                x_array=np.asarray(target_preview["x"], dtype=float),
+                time_array=np.asarray(target_preview["time"], dtype=float),
+                labels=[target_label],
+                title="Target",
+                xtitle=settings["x_axis_title"] or str(target_preview["x_title"]),
+                ytitle=settings["y_axis_title"] or str(target_preview["y_title"]),
+                invyQ=settings["invert_y_axis"],
+                limsy=(
+                    (settings["y_limit_min"], settings["y_limit_max"])
+                    if settings["use_y_limits"]
+                    else (None, None)
+                ),
+                logyQ=settings["log_y_axis"],
+                cmap="viridis",
+                colorbarQ=True,
+                showQ=False,
+                return_handles=True,
+                fig=fig,
+                ax=axes[1],
+            )
+        else:
+            plotf(
+                np.asarray(target_preview["y"], dtype=float),
+                x_array=np.asarray(target_preview["x"], dtype=float),
+                labels=[target_label] if settings["show_legend"] else None,
+                title="Target",
+                xtitle=settings["x_axis_title"] or str(target_preview["x_title"]),
+                ytitle=settings["y_axis_title"],
+                invyQ=settings["invert_y_axis"],
+                limsy=(
+                    (settings["y_limit_min"], settings["y_limit_max"])
+                    if settings["use_y_limits"]
+                    else (None, None)
+                ),
+                logyQ=settings["log_y_axis"],
+                label_loc=LEGEND_LOCATIONS[settings["legend_location_label"]],
+                colors=[settings["line_color"]],
+                showQ=False,
+                return_handles=True,
+                fig=fig,
+                ax=axes[1],
+            )
         fig.suptitle(plot_title)
         fig.subplots_adjust(hspace=0.34, top=0.9)
     else:
         plot_title = settings["title"] or target_default_title
-        fig, _ = plotf(
-            target_y,
-            x_array=target_x,
-            labels=[target_label] if settings["show_legend"] else None,
-            title=plot_title,
-            xtitle=settings["x_axis_title"] or target_x_title,
-            ytitle=settings["y_axis_title"],
-            figsize=(settings["figure_width"], settings["figure_height"]),
-            invyQ=settings["invert_y_axis"],
-            limsy=(
-                (settings["y_limit_min"], settings["y_limit_max"])
-                if settings["use_y_limits"]
-                else (None, None)
-            ),
-            logyQ=settings["log_y_axis"],
-            label_loc=LEGEND_LOCATIONS[settings["legend_location_label"]],
-            colors=[settings["line_color"]],
-            showQ=False,
-            return_handles=True,
-        )
+        if target_is_heatmap:
+            fig, _ = plotf(
+                np.asarray(target_preview["matrix"], dtype=float),
+                x_array=np.asarray(target_preview["x"], dtype=float),
+                time_array=np.asarray(target_preview["time"], dtype=float),
+                labels=[target_label],
+                title=plot_title,
+                xtitle=settings["x_axis_title"] or str(target_preview["x_title"]),
+                ytitle=settings["y_axis_title"] or str(target_preview["y_title"]),
+                figsize=(settings["figure_width"], settings["figure_height"]),
+                invyQ=settings["invert_y_axis"],
+                limsy=(
+                    (settings["y_limit_min"], settings["y_limit_max"])
+                    if settings["use_y_limits"]
+                    else (None, None)
+                ),
+                logyQ=settings["log_y_axis"],
+                cmap="viridis",
+                colorbarQ=True,
+                showQ=False,
+                return_handles=True,
+            )
+        else:
+            fig, _ = plotf(
+                np.asarray(target_preview["y"], dtype=float),
+                x_array=np.asarray(target_preview["x"], dtype=float),
+                labels=[target_label] if settings["show_legend"] else None,
+                title=plot_title,
+                xtitle=settings["x_axis_title"] or str(target_preview["x_title"]),
+                ytitle=settings["y_axis_title"],
+                figsize=(settings["figure_width"], settings["figure_height"]),
+                invyQ=settings["invert_y_axis"],
+                limsy=(
+                    (settings["y_limit_min"], settings["y_limit_max"])
+                    if settings["use_y_limits"]
+                    else (None, None)
+                ),
+                logyQ=settings["log_y_axis"],
+                label_loc=LEGEND_LOCATIONS[settings["legend_location_label"]],
+                colors=[settings["line_color"]],
+                showQ=False,
+                return_handles=True,
+            )
     file_stem = safe_download_stem(
         "dnascape",
         "mapping",
@@ -1075,7 +1161,12 @@ with controls:
                 if target_form == "time"
                 else "Genomic position (kb)"
             )
-            default_y_axis_title = feature_label(target_feature)
+            default_y_axis_title = (
+                "S-phase time (min)"
+                if target_form == "spacetime"
+                else feature_label(target_feature)
+            )
+            default_legend_label = feature_label(target_feature)
             preview_mode = st.selectbox(
                 "Show",
                 PREVIEW_CONTENT_OPTIONS,
@@ -1093,7 +1184,7 @@ with controls:
                 legend_label = st.text_input(
                     "Label",
                     value="",
-                    placeholder=default_y_axis_title,
+                    placeholder=default_legend_label,
                 )
 
             axis_cols = st.columns(2, gap="small")
