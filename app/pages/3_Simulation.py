@@ -483,20 +483,50 @@ def simulation_raw_frame(raw_result: dict[str, object]) -> pd.DataFrame:
     return pd.concat(rows, ignore_index=True) if rows else pd.DataFrame()
 
 
+def simulation_raw_chromosome_name(raw_result: dict[str, object]) -> str:
+    chromosome = str(raw_result.get("chromosome") or "chr1").strip()
+    return chromosome or "chr1"
+
+
+def simulation_raw_values_only(raw_result: dict[str, object]) -> np.ndarray:
+    return np.asarray(raw_result["values"], dtype=float).reshape(-1)
+
+
+def simulation_raw_value_lines(raw_result: dict[str, object]) -> bytes:
+    values = simulation_raw_values_only(raw_result)
+    text = "\n".join(f"{value:.12g}" for value in values)
+    return f"{text}\n".encode("utf-8") if text else b""
+
+
+def simulation_is_space_dependent_raw(raw_result: dict[str, object]) -> bool:
+    values = np.asarray(raw_result["values"], dtype=float)
+    return str(raw_result.get("kind")) == "space" and values.ndim <= 1
+
+
+def simulation_dnascape_spatial_frame(raw_result: dict[str, object]) -> pd.DataFrame:
+    return pd.DataFrame(
+        {simulation_raw_chromosome_name(raw_result): simulation_raw_values_only(raw_result)}
+    )
+
+
 def simulation_raw_payload(
     raw_result: dict[str, object],
     format_label: str,
 ) -> tuple[bytes, str, str]:
-    frame = simulation_raw_frame(raw_result)
-    if format_label == "CSV":
-        return frame.to_csv(index=False).encode("utf-8"), "csv", "text/csv"
-    if format_label == "TXT":
-        return (
-            frame.to_csv(index=False, sep="\t").encode("utf-8"),
-            "txt",
-            "text/plain",
+    if format_label in {"CSV", "TSV"}:
+        frame = (
+            simulation_dnascape_spatial_frame(raw_result)
+            if simulation_is_space_dependent_raw(raw_result)
+            else simulation_raw_frame(raw_result)
         )
+        separator = "," if format_label == "CSV" else "\t"
+        extension = "csv" if format_label == "CSV" else "tsv"
+        mime = "text/csv" if format_label == "CSV" else "text/tab-separated-values"
+        return frame.to_csv(index=False, sep=separator).encode("utf-8"), extension, mime
+    if format_label == "TXT":
+        return simulation_raw_value_lines(raw_result), "txt", "text/plain"
 
+    frame = simulation_raw_frame(raw_result)
     array_buffer = BytesIO()
     np.save(array_buffer, frame.to_numpy())
     return array_buffer.getvalue(), "npy", "application/octet-stream"
@@ -847,6 +877,7 @@ def build_simulation_preview(
             "values": np.asarray(values, dtype=float),
             "position_kb": positions,
             "time_min": time_grid,
+            "chromosome": settings["chromosome"],
         },
     }
     plt.close(fig)
@@ -937,6 +968,12 @@ with controls:
     with st.container(border=True):
         with st.expander("Data", expanded=True):
             source_cols = st.columns(2, gap="small")
+            firing_table = None
+            firing_columns = []
+            firing_values = None
+            fork_table = None
+            fork_columns = []
+            fork_values = None
 
             with source_cols[0]:
                 firing_mode = st.selectbox(
@@ -958,35 +995,6 @@ with controls:
                         st.error(f"Could not read firing rate profile: {firing_error}")
                     elif firing_table is not None and not firing_columns:
                         st.warning("No numeric chromosomes were found in the firing rate profile.")
-
-                    firing_chromosome = st.selectbox(
-                        "Chromosome",
-                        firing_columns,
-                        index=0 if firing_columns else None,
-                        disabled=not firing_columns,
-                        placeholder="Select chromosome",
-                        key="simulation_firing_chromosome",
-                    )
-                    firing_values = None
-                    if firing_table is not None and firing_chromosome:
-                        firing_values = pd.to_numeric(
-                            firing_table[firing_chromosome],
-                            errors="coerce",
-                        ).to_numpy(dtype=float)
-
-                    source_inputs["firing_rate"] = {
-                        "mode": "profile",
-                        "table": firing_table,
-                        "columns": firing_columns,
-                        "chromosome": firing_chromosome,
-                        "values": firing_values,
-                    }
-                    if primary_values is None and firing_values is not None:
-                        primary_table = firing_table
-                        primary_columns = firing_columns
-                        primary_values = firing_values
-                        primary_feature = "firing_rate"
-                        chromosome = firing_chromosome or "firing_rate"
                 else:
                     firing_value = st.number_input(
                         "Constant rate",
@@ -1020,35 +1028,6 @@ with controls:
                         st.error(f"Could not read fork-speed profile: {fork_error}")
                     elif fork_table is not None and not fork_columns:
                         st.warning("No numeric chromosomes were found in the fork-speed profile.")
-
-                    fork_chromosome = st.selectbox(
-                        "Chromosome",
-                        fork_columns,
-                        index=0 if fork_columns else None,
-                        disabled=not fork_columns,
-                        placeholder="Select chromosome",
-                        key="simulation_fork_chromosome",
-                    )
-                    fork_values = None
-                    if fork_table is not None and fork_chromosome:
-                        fork_values = pd.to_numeric(
-                            fork_table[fork_chromosome],
-                            errors="coerce",
-                        ).to_numpy(dtype=float)
-
-                    source_inputs["fork_speed"] = {
-                        "mode": "profile",
-                        "table": fork_table,
-                        "columns": fork_columns,
-                        "chromosome": fork_chromosome,
-                        "values": fork_values,
-                    }
-                    if primary_values is None and fork_values is not None:
-                        primary_table = fork_table
-                        primary_columns = fork_columns
-                        primary_values = fork_values
-                        primary_feature = "fork_speed"
-                        chromosome = fork_chromosome or "fork_speed"
                 else:
                     fork_value = st.number_input(
                         "Constant speed",
@@ -1062,6 +1041,96 @@ with controls:
                         "mode": "constant",
                         "value": float(fork_value),
                     }
+
+            profile_column_sources = []
+            if firing_mode == "Profile" and firing_columns:
+                profile_column_sources.append(("firing rate", firing_columns))
+            if fork_mode == "Profile" and fork_columns:
+                profile_column_sources.append(("fork speed", fork_columns))
+
+            shared_chromosome_columns = []
+            if profile_column_sources:
+                base_columns = profile_column_sources[0][1]
+                other_column_sets = [
+                    set(columns) for _, columns in profile_column_sources[1:]
+                ]
+                shared_chromosome_columns = [
+                    column
+                    for column in base_columns
+                    if all(column in column_set for column_set in other_column_sets)
+                ]
+
+            selected_chromosome = None
+            if profile_column_sources:
+                if (
+                    st.session_state.get("simulation_chromosome")
+                    not in shared_chromosome_columns
+                ):
+                    st.session_state["simulation_chromosome"] = (
+                        shared_chromosome_columns[0]
+                        if shared_chromosome_columns
+                        else None
+                    )
+                selected_chromosome = st.selectbox(
+                    "Chromosome",
+                    shared_chromosome_columns,
+                    index=0 if shared_chromosome_columns else None,
+                    disabled=not shared_chromosome_columns,
+                    placeholder="Select chromosome",
+                    key="simulation_chromosome",
+                )
+                if len(profile_column_sources) > 1 and not shared_chromosome_columns:
+                    st.warning("Uploaded profiles do not share a numeric chromosome.")
+
+            if firing_mode == "Profile":
+                if (
+                    firing_table is not None
+                    and selected_chromosome
+                    and selected_chromosome in firing_table
+                ):
+                    firing_values = pd.to_numeric(
+                        firing_table[selected_chromosome],
+                        errors="coerce",
+                    ).to_numpy(dtype=float)
+
+                source_inputs["firing_rate"] = {
+                    "mode": "profile",
+                    "table": firing_table,
+                    "columns": firing_columns,
+                    "chromosome": selected_chromosome,
+                    "values": firing_values,
+                }
+                if primary_values is None and firing_values is not None:
+                    primary_table = firing_table
+                    primary_columns = firing_columns
+                    primary_values = firing_values
+                    primary_feature = "firing_rate"
+                    chromosome = selected_chromosome or "firing_rate"
+
+            if fork_mode == "Profile":
+                if (
+                    fork_table is not None
+                    and selected_chromosome
+                    and selected_chromosome in fork_table
+                ):
+                    fork_values = pd.to_numeric(
+                        fork_table[selected_chromosome],
+                        errors="coerce",
+                    ).to_numpy(dtype=float)
+
+                source_inputs["fork_speed"] = {
+                    "mode": "profile",
+                    "table": fork_table,
+                    "columns": fork_columns,
+                    "chromosome": selected_chromosome,
+                    "values": fork_values,
+                }
+                if primary_values is None and fork_values is not None:
+                    primary_table = fork_table
+                    primary_columns = fork_columns
+                    primary_values = fork_values
+                    primary_feature = "fork_speed"
+                    chromosome = selected_chromosome or "fork_speed"
 
         with st.expander("Region", expanded=False):
             region_top_cols = st.columns(2, gap="small")
@@ -1419,6 +1488,7 @@ with controls:
         ):
             missing_simulation_inputs.append("Fork speed")
 
+    with st.container():
         simulate_requested = st.button(
             "Simulate",
             type="primary",
@@ -1649,17 +1719,36 @@ with preview:
                 st.markdown(
                     """
                     <p class="small-muted">
-                    Download the currently previewed rsim output together with its coordinate axes.
+                    Download the currently previewed rsim output in a DNAscape-ready format.
                     </p>
                     """,
                     unsafe_allow_html=True,
                 )
                 st.caption("Export")
-                export_cols = st.columns([0.34, 0.26, 0.40], gap="small")
+                default_raw_file_name = (
+                    f"{last_simulation_for_download['file_stem']}_raw"
+                )
+                if (
+                    st.session_state.get("simulation_raw_file_name_source")
+                    != default_raw_file_name
+                ):
+                    st.session_state["simulation_raw_file_name"] = ""
+                    st.session_state["simulation_raw_file_name_source"] = (
+                        default_raw_file_name
+                    )
+
+                export_cols = st.columns([0.48, 0.20, 0.32], gap="small")
                 with export_cols[0]:
+                    raw_file_name = st.text_input(
+                        "File name",
+                        key="simulation_raw_file_name",
+                        placeholder="Name (auto)",
+                        label_visibility="collapsed",
+                    )
+                with export_cols[1]:
                     raw_format = st.selectbox(
-                        "Format",
-                        ["CSV", "TXT", "Array"],
+                        "File type",
+                        ["CSV", "TSV", "TXT", "Array"],
                         index=0,
                         key="simulation_raw_format",
                         label_visibility="collapsed",
@@ -1668,11 +1757,14 @@ with preview:
                     last_simulation_for_download["raw"],
                     raw_format,
                 )
-                with export_cols[1]:
+                raw_file_stem = (
+                    safe_download_stem(raw_file_name) or default_raw_file_name
+                )
+                with export_cols[2]:
                     st.download_button(
                         "Download",
                         data=payload,
-                        file_name=f"{last_simulation_for_download['file_stem']}_raw.{extension}",
+                        file_name=f"{raw_file_stem}.{extension}",
                         mime=mime,
                         on_click="ignore",
                         width="stretch",

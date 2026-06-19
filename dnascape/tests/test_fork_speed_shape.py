@@ -225,6 +225,10 @@ class ForkSpeedShapeTests(unittest.TestCase):
                         self.assertTrue(np.all(np.isfinite(values)))
                         self.assertTrue(np.all(values > 0))
                         self.assertEqual(fit["assumptions"]["target_shape"], "best")
+                        if target_form == "spacetime":
+                            self.assertEqual(fit["spacetime_order"], "crossed")
+                            self.assertIn("fork_speed_crossed_space_steps", fit)
+                            self.assertIn("fork_speed_crossed_time_steps", fit)
 
     def test_spacetime_fork_speed_default_crossed_updates_space_and_time(self):
         n = 8

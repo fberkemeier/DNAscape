@@ -375,20 +375,48 @@ def raw_result_frame(raw_result: dict[str, np.ndarray]) -> pd.DataFrame:
     )
 
 
+def raw_chromosome_name(raw_result: dict[str, np.ndarray]) -> str:
+    chromosome = str(raw_result.get("chromosome") or "chr1").strip()
+    return chromosome or "chr1"
+
+
+def raw_values_only(raw_result: dict[str, np.ndarray]) -> np.ndarray:
+    return np.asarray(raw_result["values"], dtype=float).reshape(-1)
+
+
+def raw_value_lines(raw_result: dict[str, np.ndarray]) -> bytes:
+    values = raw_values_only(raw_result)
+    text = "\n".join(f"{value:.12g}" for value in values)
+    return f"{text}\n".encode("utf-8") if text else b""
+
+
+def is_space_dependent_raw(raw_result: dict[str, np.ndarray]) -> bool:
+    values = np.asarray(raw_result["values"], dtype=float)
+    return str(raw_result.get("target_form", "space")) == "space" and values.ndim <= 1
+
+
+def dnascape_spatial_frame(raw_result: dict[str, np.ndarray]) -> pd.DataFrame:
+    return pd.DataFrame({raw_chromosome_name(raw_result): raw_values_only(raw_result)})
+
+
 def raw_download_payload(
     raw_result: dict[str, np.ndarray],
     format_label: str,
 ) -> tuple[bytes, str, str]:
-    frame = raw_result_frame(raw_result)
-    if format_label == "CSV":
-        return frame.to_csv(index=False).encode("utf-8"), "csv", "text/csv"
-    if format_label == "TXT":
-        return (
-            frame.to_csv(index=False, sep="\t").encode("utf-8"),
-            "txt",
-            "text/plain",
+    if format_label in {"CSV", "TSV"}:
+        frame = (
+            dnascape_spatial_frame(raw_result)
+            if is_space_dependent_raw(raw_result)
+            else raw_result_frame(raw_result)
         )
+        separator = "," if format_label == "CSV" else "\t"
+        extension = "csv" if format_label == "CSV" else "tsv"
+        mime = "text/csv" if format_label == "CSV" else "text/tab-separated-values"
+        return frame.to_csv(index=False, sep=separator).encode("utf-8"), extension, mime
+    if format_label == "TXT":
+        return raw_value_lines(raw_result), "txt", "text/plain"
 
+    frame = raw_result_frame(raw_result)
     array_buffer = BytesIO()
     np.save(array_buffer, frame.to_numpy())
     return array_buffer.getvalue(), "npy", "application/octet-stream"
@@ -707,6 +735,7 @@ def build_mapping_preview(
             "position_kb": np.asarray(map_positions, dtype=float),
             "time_min": np.asarray(settings.get("time_grid", []), dtype=float),
             "values": np.asarray(mapped_values, dtype=float),
+            "chromosome": settings["chromosome"],
             "target_feature": settings["target_feature"],
             "target_form": settings["target_form"],
             "value_column": feature_column_name(settings["target_feature"]),
@@ -1273,6 +1302,7 @@ with controls:
                 ):
                     missing_mapping_inputs.append(feature_label(input_feature))
 
+    with st.container():
         map_requested = st.button(
             "Map",
             type="primary",
@@ -1535,17 +1565,34 @@ with preview:
                 st.markdown(
                     """
                     <p class="small-muted">
-                    Download the mapped output with genomic positions.
+                    Download the mapped output in a DNAscape-ready format.
                     </p>
                     """,
                     unsafe_allow_html=True,
                 )
                 st.caption("Export")
-                export_cols = st.columns([0.34, 0.26, 0.40], gap="small")
+                default_raw_file_name = f"{last_map_for_download['file_stem']}_raw"
+                if (
+                    st.session_state.get("mapping_raw_file_name_source")
+                    != default_raw_file_name
+                ):
+                    st.session_state["mapping_raw_file_name"] = ""
+                    st.session_state["mapping_raw_file_name_source"] = (
+                        default_raw_file_name
+                    )
+
+                export_cols = st.columns([0.48, 0.20, 0.32], gap="small")
                 with export_cols[0]:
+                    raw_file_name = st.text_input(
+                        "File name",
+                        key="mapping_raw_file_name",
+                        placeholder="Name (auto)",
+                        label_visibility="collapsed",
+                    )
+                with export_cols[1]:
                     raw_format = st.selectbox(
-                        "Format",
-                        ["CSV", "TXT", "Array"],
+                        "File type",
+                        ["CSV", "TSV", "TXT", "Array"],
                         index=0,
                         key="mapping_raw_format",
                         label_visibility="collapsed",
@@ -1554,11 +1601,14 @@ with preview:
                     last_map_for_download["raw"],
                     raw_format,
                 )
-                with export_cols[1]:
+                raw_file_stem = (
+                    safe_download_stem(raw_file_name) or default_raw_file_name
+                )
+                with export_cols[2]:
                     st.download_button(
                         "Download",
                         data=payload,
-                        file_name=f"{last_map_for_download['file_stem']}_raw.{extension}",
+                        file_name=f"{raw_file_stem}.{extension}",
                         mime=mime,
                         on_click="ignore",
                         width="stretch",

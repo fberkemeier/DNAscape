@@ -157,6 +157,7 @@ def apply_style() -> None:
           --dnascape-sidebar-inner-width: min(82%, 16rem);
           --dnascape-sidebar-logo-width: min(70%, 10.25rem);
           --dnascape-plotting-panel-padding: 1.2rem 1.15rem;
+          --dnascape-plotting-expander-gap: 0.5rem;
           /* Dark-logo mask tweak points. The small logo keeps the same
              width-relative radius as the main logo; its y-position is scaled
              for the shorter small-logo PNG height, 930 / 829. */
@@ -169,7 +170,7 @@ def apply_style() -> None:
           --dnascape-sidebar-logo-mask-radius: 2.4%;
           --dnascape-sidebar-logo-mask-edge: 2.8%;
           --dnascape-sidebar-nav-font-size: 1.06rem;
-          --dnascape-sidebar-nav-gap: 0.58rem;
+          --dnascape-sidebar-nav-gap: 0.25rem;
           --dnascape-sidebar-nav-padding-y: 0.44rem;
           --dnascape-sidebar-nav-padding-x: 0.85rem;
           --dnascape-sidebar-external-gap: 1.8rem;
@@ -183,6 +184,13 @@ def apply_style() -> None:
           --dnascape-mobile-main-top-padding: 1.3rem;
           --dnascape-overview-top-padding: 0rem;
           --dnascape-mobile-overview-top-padding: 1.3rem;
+        }
+
+        html,
+        body,
+        [data-testid="stAppViewContainer"],
+        [data-testid="stMain"] {
+          scrollbar-gutter: stable;
         }
 
         :root[data-dnascape-effective-theme="light"] {
@@ -207,7 +215,7 @@ def apply_style() -> None:
           --dnascape-accent: color-mix(in srgb, var(--primary-color, #b03412) 58%, #ffffff);
           --dnascape-line: rgba(243, 238, 232, 0.36);
           --dnascape-divider: rgba(243, 238, 232, 0.48);
-          --dnascape-sidebar-active-bg: color-mix(in srgb, var(--dnascape-text) 16%, var(--dnascape-panel));
+          --dnascape-sidebar-active-bg: color-mix(in srgb, var(--dnascape-text) 7%, var(--dnascape-panel));
           --dnascape-shadow: rgba(0, 0, 0, 0.22);
           --dnascape-shadow-hover: rgba(0, 0, 0, 0.32);
           color-scheme: dark;
@@ -665,11 +673,42 @@ def apply_style() -> None:
           color: var(--dnascape-text) !important;
         }
 
+        :root[data-dnascape-effective-theme="dark"] section[data-testid="stSidebar"] div[data-testid="stPageLink"] a,
+        :root[data-dnascape-effective-theme="dark"] section[data-testid="stSidebar"] [class*="st-key-sidebar-nav-"] button {
+          background: transparent !important;
+          border-color: transparent !important;
+          box-shadow: none !important;
+          color: var(--dnascape-text) !important;
+        }
+
+        :root[data-dnascape-effective-theme="dark"] section[data-testid="stSidebar"] div[data-testid="stPageLink"] a[aria-current="page"],
+        :root[data-dnascape-effective-theme="dark"] section[data-testid="stSidebar"] div[data-testid="stPageLink"]:has(a[aria-current="page"]) a,
+        :root[data-dnascape-effective-theme="dark"] section[data-testid="stSidebar"] [class*="st-key-sidebar-nav-"] button[kind="primary"] {
+          background: var(--dnascape-sidebar-active-bg) !important;
+          color: var(--dnascape-text) !important;
+        }
+
+        :root[data-dnascape-effective-theme="dark"] section[data-testid="stSidebar"] div[data-testid="stPageLink"] a:hover,
+        :root[data-dnascape-effective-theme="dark"] section[data-testid="stSidebar"] div[data-testid="stPageLink"] a:focus-visible,
+        :root[data-dnascape-effective-theme="dark"] section[data-testid="stSidebar"] [class*="st-key-sidebar-nav-"] button:hover,
+        :root[data-dnascape-effective-theme="dark"] section[data-testid="stSidebar"] [class*="st-key-sidebar-nav-"] button:focus-visible {
+          background: var(--dnascape-hover-bg) !important;
+          color: var(--dnascape-text) !important;
+          outline: none !important;
+          text-decoration: none !important;
+        }
+
         .dnascape-sidebar-logo {
           display: block;
           line-height: 0;
           margin: -2rem auto 2.2rem;
           width: var(--dnascape-sidebar-logo-width) !important;
+        }
+
+        .dnascape-sidebar-logo a {
+          display: block;
+          line-height: 0;
+          text-decoration: none !important;
         }
 
         .dnascape-sidebar-logo img {
@@ -972,7 +1011,7 @@ def apply_style() -> None:
         }
 
         body:has(.plotting-page-marker) div[data-testid="stVerticalBlockBorderWrapper"] div[data-testid="stVerticalBlock"] {
-          gap: 0.85rem !important;
+          gap: 0.5rem !important;
         }
 
         .plotting-panel-title {
@@ -990,6 +1029,10 @@ def apply_style() -> None:
         body:has(.plotting-page-marker) [data-testid="stExpander"] {
           border: 0 !important;
           margin: 0 !important;
+        }
+
+        body:has(.plotting-page-marker) [data-testid="stElementContainer"]:has([data-testid="stExpander"]) {
+          margin-bottom: var(--dnascape-plotting-expander-gap) !important;
         }
 
         body:has(.plotting-page-marker) [data-testid="stExpander"] details {
@@ -1050,7 +1093,7 @@ def apply_style() -> None:
         }
 
         body:has(.plotting-page-marker) [data-testid="stExpanderDetails"] {
-          padding-top: 0.5rem !important;
+          padding: 0.5rem 0 0.1rem !important;
         }
 
         :root[data-dnascape-effective-theme="dark"] body:has(.plotting-page-marker) div[data-testid="stVerticalBlockBorderWrapper"] {
@@ -1398,6 +1441,7 @@ def render_theme_toggle() -> None:
           const itemId = "dnascape-theme-menu-item";
           const helpWrapperId = "dnascape-help-menu-item-wrapper";
           const helpItemId = "dnascape-help-menu-item";
+          const selectboxToggleVersion = "selectbox-toggle-collapse-1";
           const themes = {list(THEMES)!r};
           const icons = {json.dumps(THEME_ICONS)};
           const helpIcons = {{
@@ -2107,6 +2151,114 @@ def render_theme_toggle() -> None:
               }});
           }}
 
+          function installSelectboxToggleCollapse() {{
+            if (win.__dnascapeSelectboxToggleVersion === selectboxToggleVersion) {{
+              return;
+            }}
+
+            if (typeof win.__dnascapeSelectboxToggleCleanup === "function") {{
+              win.__dnascapeSelectboxToggleCleanup();
+            }}
+
+            const suppressClickUntil = new WeakMap();
+
+            function eventElement(event) {{
+              return event.target instanceof win.Element ? event.target : null;
+            }}
+
+            function selectboxHit(event) {{
+              const target = eventElement(event);
+              if (!target) {{
+                return null;
+              }}
+
+              const wrapper = target.closest('[data-testid="stSelectbox"]');
+              if (!wrapper) {{
+                return null;
+              }}
+
+              const control = target.closest('[data-baseweb="select"]');
+              if (!control || !wrapper.contains(control)) {{
+                return null;
+              }}
+
+              return {{ wrapper, control }};
+            }}
+
+            function selectboxIsExpanded(hit) {{
+              return Boolean(
+                hit.control.matches('[aria-expanded="true"]') ||
+                hit.control.querySelector('[aria-expanded="true"]') ||
+                hit.wrapper.querySelector('[aria-expanded="true"]')
+              );
+            }}
+
+            function sendEscapeToClose(hit) {{
+              const keyboardTarget =
+                hit.control.querySelector("input") ||
+                (doc.activeElement instanceof win.HTMLElement ? doc.activeElement : null) ||
+                hit.control;
+              const escapeEvent = new win.KeyboardEvent("keydown", {{
+                bubbles: true,
+                cancelable: true,
+                key: "Escape",
+                code: "Escape",
+                keyCode: 27,
+                which: 27,
+              }});
+
+              keyboardTarget.dispatchEvent(escapeEvent);
+              hit.control.dispatchEvent(
+                new win.KeyboardEvent("keydown", {{
+                  bubbles: true,
+                  cancelable: true,
+                  key: "Escape",
+                  code: "Escape",
+                  keyCode: 27,
+                  which: 27,
+                }})
+              );
+            }}
+
+            function stopSelectboxReopen(event, hit) {{
+              event.preventDefault();
+              event.stopPropagation();
+              event.stopImmediatePropagation();
+              suppressClickUntil.set(hit.wrapper, Date.now() + 350);
+            }}
+
+            function handleSelectboxToggle(event) {{
+              const hit = selectboxHit(event);
+              if (!hit) {{
+                return;
+              }}
+
+              if ((suppressClickUntil.get(hit.wrapper) || 0) > Date.now()) {{
+                stopSelectboxReopen(event, hit);
+                return;
+              }}
+
+              if (!selectboxIsExpanded(hit)) {{
+                return;
+              }}
+
+              stopSelectboxReopen(event, hit);
+              sendEscapeToClose(hit);
+            }}
+
+            const eventTypes = ["pointerdown", "mousedown", "click"];
+            eventTypes.forEach((eventType) => {{
+              doc.addEventListener(eventType, handleSelectboxToggle, true);
+            }});
+
+            win.__dnascapeSelectboxToggleVersion = selectboxToggleVersion;
+            win.__dnascapeSelectboxToggleCleanup = () => {{
+              eventTypes.forEach((eventType) => {{
+                doc.removeEventListener(eventType, handleSelectboxToggle, true);
+              }});
+            }};
+          }}
+
           function controlText(node) {{
             return [
               node.getAttribute("aria-label") || "",
@@ -2257,6 +2409,7 @@ def render_theme_toggle() -> None:
           applyTheme(root.getAttribute("data-dnascape-theme") || storedTheme(), false);
           applyHelp(storedHelp());
           bindMenuButton();
+          installSelectboxToggleCollapse();
           markSidebarToggleButton();
           syncPreviewClearButtons();
           syncSidebarFooter();
@@ -2312,17 +2465,20 @@ def render_theme_toggle() -> None:
     )
 
 
-def render_sidebar_logo(path: Path, alt: str) -> None:
+def render_sidebar_logo(path: Path, alt: str, href: str = "/") -> None:
     """Render the sidebar PNG without Streamlit's image toolbar."""
     if not path.exists():
         return
 
     encoded_png = base64.b64encode(path.read_bytes()).decode("ascii")
     escaped_alt = html.escape(alt, quote=True)
+    escaped_href = html.escape(href, quote=True)
     st.markdown(
         f"""
         <div class="dnascape-sidebar-logo">
-          <img src="data:image/png;base64,{encoded_png}" alt="{escaped_alt}" draggable="false">
+          <a href="{escaped_href}" target="_self" aria-label="Go to Overview" title="Overview">
+            <img src="data:image/png;base64,{encoded_png}" alt="{escaped_alt}" draggable="false">
+          </a>
         </div>
         """,
         unsafe_allow_html=True,
@@ -2373,6 +2529,7 @@ def render_sidebar(active_label: str, *, use_router: bool = False) -> None:
             <span class="dnascape-sidebar-active-style" aria-hidden="true"></span>
             <style>
             {page_link_active_selector}
+            section[data-testid="stSidebar"] [class*="st-key-sidebar-nav-"] button[kind="primary"],
             section[data-testid="stSidebar"] [class*="st-key-sidebar-nav-{active_slug}"] button {{
               background: var(--dnascape-sidebar-active-bg) !important;
               color: var(--dnascape-text) !important;
@@ -2382,6 +2539,8 @@ def render_sidebar(active_label: str, *, use_router: bool = False) -> None:
             }}
 
             {page_link_active_hover_selector}
+            section[data-testid="stSidebar"] [class*="st-key-sidebar-nav-"] button[kind="primary"]:hover,
+            section[data-testid="stSidebar"] [class*="st-key-sidebar-nav-"] button[kind="primary"]:focus-visible,
             section[data-testid="stSidebar"] [class*="st-key-sidebar-nav-{active_slug}"] button:hover,
             section[data-testid="stSidebar"] [class*="st-key-sidebar-nav-{active_slug}"] button:focus-visible {{
               background: var(--dnascape-hover-bg) !important;
@@ -2390,6 +2549,7 @@ def render_sidebar(active_label: str, *, use_router: bool = False) -> None:
               text-decoration: none !important;
             }}
 
+            section[data-testid="stSidebar"] [class*="st-key-sidebar-nav-"] button[kind="primary"] *,
             section[data-testid="stSidebar"] [class*="st-key-sidebar-nav-{active_slug}"] button *,
             {page_link_active_child_selector} {{
               color: var(--dnascape-text) !important;
@@ -2400,7 +2560,11 @@ def render_sidebar(active_label: str, *, use_router: bool = False) -> None:
             unsafe_allow_html=True,
         )
 
-        render_sidebar_logo(SIDEBAR_LOGO_PATH, "DNAscape")
+        render_sidebar_logo(
+            SIDEBAR_LOGO_PATH,
+            "DNAscape",
+            "?page=overview" if use_router else "/",
+        )
 
         if use_router:
             for slug, label, _ in NAV_ITEMS:
@@ -2409,6 +2573,7 @@ def render_sidebar(active_label: str, *, use_router: bool = False) -> None:
                     key=f"sidebar-nav-{slug}",
                     on_click=set_active_page,
                     args=(slug,),
+                    type="primary" if slug == active_slug else "secondary",
                     width="stretch",
                 )
         else:

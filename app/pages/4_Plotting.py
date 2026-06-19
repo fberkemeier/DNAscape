@@ -40,19 +40,14 @@ st.markdown(
       }
 
       body:has(.plotting-page-marker) div[data-testid="stVerticalBlockBorderWrapper"] div[data-testid="stVerticalBlock"] {
-        gap: 0.62rem !important;
+        gap: 0.5rem !important;
       }
 
-      body:has(.plotting-page-marker) .st-key-plotting-controls-footer {
-        background: var(--dnascape-panel) !important;
-        border-top: 1px solid var(--dnascape-line) !important;
-        box-shadow: 0 -8px 18px color-mix(in srgb, var(--dnascape-panel) 82%, transparent) !important;
-        margin-top: 0.35rem !important;
-        padding-top: 0.85rem !important;
-        position: sticky !important;
-        bottom: 0.75rem !important;
-        z-index: 2 !important;
+      body:has(.plotting-page-marker) [data-testid="stHorizontalBlock"],
+      body:has(.plotting-page-marker) [data-testid="column"] {
+        min-width: 0 !important;
       }
+
     </style>
     """,
     unsafe_allow_html=True,
@@ -383,62 +378,33 @@ with controls:
                 x_limit_max = x_limit_default_max
                 y_limit_min = y_limit_default_min
                 y_limit_max = y_limit_default_max
-                if use_x_limits and use_y_limits:
-                    limit_value_cols = st.columns(4, gap="small")
-                    with limit_value_cols[0]:
+                if use_x_limits:
+                    x_limit_cols = st.columns(2, gap="small")
+                    with x_limit_cols[0]:
                         x_limit_min = st.number_input(
                             "x min",
                             value=x_limit_default_min,
                             step=x_limit_step,
                             format="%.3f" if display_unit == "Mb" else "%.1f",
                         )
-                    with limit_value_cols[1]:
+                    with x_limit_cols[1]:
                         x_limit_max = st.number_input(
                             "x max",
                             value=x_limit_default_max,
                             step=x_limit_step,
                             format="%.3f" if display_unit == "Mb" else "%.1f",
                         )
-                    with limit_value_cols[2]:
+
+                if use_y_limits:
+                    y_limit_cols = st.columns(2, gap="small")
+                    with y_limit_cols[0]:
                         y_limit_min = st.number_input(
                             "y min",
                             value=y_limit_default_min,
                             step=y_limit_step,
                             format="%.6g",
                         )
-                    with limit_value_cols[3]:
-                        y_limit_max = st.number_input(
-                            "y max",
-                            value=y_limit_default_max,
-                            step=y_limit_step,
-                            format="%.6g",
-                        )
-                elif use_x_limits:
-                    limit_value_cols = st.columns(2, gap="small")
-                    with limit_value_cols[0]:
-                        x_limit_min = st.number_input(
-                            "x min",
-                            value=x_limit_default_min,
-                            step=x_limit_step,
-                            format="%.3f" if display_unit == "Mb" else "%.1f",
-                        )
-                    with limit_value_cols[1]:
-                        x_limit_max = st.number_input(
-                            "x max",
-                            value=x_limit_default_max,
-                            step=x_limit_step,
-                            format="%.3f" if display_unit == "Mb" else "%.1f",
-                        )
-                elif use_y_limits:
-                    limit_value_cols = st.columns(2, gap="small")
-                    with limit_value_cols[0]:
-                        y_limit_min = st.number_input(
-                            "y min",
-                            value=y_limit_default_min,
-                            step=y_limit_step,
-                            format="%.6g",
-                        )
-                    with limit_value_cols[1]:
+                    with y_limit_cols[1]:
                         y_limit_max = st.number_input(
                             "y max",
                             value=y_limit_default_max,
@@ -446,11 +412,15 @@ with controls:
                             format="%.6g",
                         )
 
-                style_cols = st.columns([0.78, 1.02, 0.86], gap="small")
+                style_cols = st.columns(2, gap="small")
                 with style_cols[0]:
                     show_legend = st.checkbox(
                         "Legend",
                         value=True,
+                    )
+                    line_color = st.color_picker(
+                        "Color",
+                        value=data_defaults["color"],
                     )
                 with style_cols[1]:
                     legend_location_label = st.selectbox(
@@ -458,13 +428,8 @@ with controls:
                         list(LEGEND_LOCATIONS),
                         index=0,
                     )
-                with style_cols[2]:
-                    line_color = st.color_picker(
-                        "Color",
-                        value=data_defaults["color"],
-                    )
 
-                transform_cols = st.columns([0.92, 0.92, 0.8, 0.8], gap="small")
+                transform_cols = st.columns(2, gap="small")
                 with transform_cols[0]:
                     log_y_axis = st.checkbox(
                         "Log y-axis",
@@ -475,7 +440,9 @@ with controls:
                         "Invert y-axis",
                         value=False,
                     )
-                with transform_cols[2]:
+
+                size_cols = st.columns(2, gap="small")
+                with size_cols[0]:
                     figure_width = st.number_input(
                         "Width",
                         min_value=3.0,
@@ -484,7 +451,7 @@ with controls:
                         step=0.5,
                         format="%.1f",
                     )
-                with transform_cols[3]:
+                with size_cols[1]:
                     figure_height = st.number_input(
                         "Height",
                         min_value=2.0,
@@ -494,12 +461,12 @@ with controls:
                         format="%.1f",
                     )
 
-        with st.container(key="plotting-controls-footer"):
-            plot_requested = st.button(
-                "Plot",
-                type="primary",
-                width="stretch",
-            )
+    with st.container():
+        plot_requested = st.button(
+            "Plot",
+            type="primary",
+            width="stretch",
+        )
 
 with preview:
     with st.container(border=True):
