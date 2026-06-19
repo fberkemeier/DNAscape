@@ -6,7 +6,6 @@ import queue
 import re
 import sys
 import threading
-import time
 from io import BytesIO
 from pathlib import Path
 
@@ -57,6 +56,18 @@ st.markdown(
         opacity: 1 !important;
         -webkit-text-fill-color: var(--dnascape-text) !important;
       }
+
+      body:has(.mapping-controls-locked-marker) .st-key-mapping-control-card {
+        filter: grayscale(0.18);
+        opacity: 0.52;
+        pointer-events: none;
+        user-select: none;
+      }
+
+      body:has(.mapping-controls-locked-marker) .st-key-mapping-action-button button {
+        cursor: not-allowed !important;
+        opacity: 0.62 !important;
+      }
     </style>
     """,
     unsafe_allow_html=True,
@@ -72,6 +83,7 @@ EXPORT_FORMATS = (
 )
 MAP_STATE_KEY = "mapping_last_map"
 MAP_JOB_KEY = "mapping_active_job"
+MAP_NOTICE_KEY = "mapping_status_notice"
 RMAP_PROGRESS_PATTERN = re.compile(
     r"\[(?P<iteration>\d+)/(?P<total>\d+)\].*?"
     r"Elapsed:\s*(?P<elapsed>\d{2}:\d{2}:\d{2}).*?"
@@ -830,6 +842,26 @@ def drain_mapping_job(job: dict[str, object]) -> dict[str, object] | None:
     return terminal_update
 
 
+def discard_mapping_job(job: dict[str, object] | None) -> None:
+    """Cancel the active job and discard queued updates from that click only."""
+    if job is None:
+        return
+
+    cancel_event = job.get("cancel_event")
+    if cancel_event is not None:
+        cancel_event.set()
+
+    updates = job.get("updates")
+    if updates is None:
+        return
+
+    while True:
+        try:
+            updates.get_nowait()
+        except queue.Empty:
+            break
+
+
 def render_figure_preview(export_bytes: dict[str, bytes], file_stem: str) -> None:
     preview_src = base64.b64encode(export_bytes["png"]).decode("ascii")
     expand_toggle_id = f"map-preview-expand-{safe_download_stem(file_stem) or 'figure'}"
@@ -883,6 +915,12 @@ def render_figure_preview(export_bytes: dict[str, bytes], file_stem: str) -> Non
 
 
 active_mapping_job = st.session_state.get(MAP_JOB_KEY)
+mapping_controls_locked = active_mapping_job is not None
+if mapping_controls_locked:
+    st.markdown(
+        '<span class="mapping-controls-locked-marker" aria-hidden="true"></span>',
+        unsafe_allow_html=True,
+    )
 source_inputs = {}
 primary_table = None
 primary_columns = []
@@ -892,7 +930,7 @@ primary_feature = None
 chromosome = "profile"
 
 with controls:
-    with st.container(border=True):
+    with st.container(border=True, key="mapping-control-card"):
         with st.expander("Data", expanded=True):
             target_cols = st.columns(2, gap="small")
             with target_cols[0]:
@@ -915,9 +953,8 @@ with controls:
             route_labels = [str(route["label"]) for route in route_options]
             route_label = st.selectbox(
                 "Route",
-                route_labels,
-                index=0 if route_labels else None,
-                disabled=not route_labels,
+                route_labels or ["No route available"],
+                index=0,
             )
             selected_route = (
                 route_options[route_labels.index(route_label)] if route_labels else None
@@ -962,14 +999,19 @@ with controls:
                                 )
 
                             with upload_cols[1]:
+                                chromosome_options = numeric_columns or [""]
                                 selected_chromosome = st.selectbox(
-                                    "Chromosome",
-                                    numeric_columns,
-                                    index=0 if numeric_columns else None,
-                                    disabled=not numeric_columns,
+                                    "Chromosome / header",
+                                    chromosome_options,
+                                    index=0,
+                                    format_func=lambda value: (
+                                        value if value else "Select chromosome"
+                                    ),
                                     placeholder="Select chromosome",
                                     key=f"mapping_chromosome_{selected_route['id']}_{input_feature}",
                                 )
+                                if selected_chromosome == "":
+                                    selected_chromosome = None
 
                             values = None
                             if table is not None and selected_chromosome:
@@ -1025,14 +1067,19 @@ with controls:
                         st.warning(f"No numeric chromosomes were found in {input_label.lower()}.")
 
                     with upload_cols[1]:
+                        chromosome_options = numeric_columns or [""]
                         selected_chromosome = st.selectbox(
-                            "Chromosome",
-                            numeric_columns,
-                            index=0 if numeric_columns else None,
-                            disabled=not numeric_columns,
+                            "Chromosome / header",
+                            chromosome_options,
+                            index=0,
+                            format_func=lambda value: (
+                                value if value else "Select chromosome"
+                            ),
                             placeholder="Select chromosome",
                             key=f"mapping_chromosome_{selected_route['id']}_{input_feature}",
                         )
+                        if selected_chromosome == "":
+                            selected_chromosome = None
 
                     values = None
                     if table is not None and selected_chromosome:
@@ -1074,7 +1121,6 @@ with controls:
                     value=5.0,
                     step=1.0,
                     format="%.1f",
-                    disabled=target_form not in {"time", "spacetime"},
                     help="Temporal resolution in min/bin for time-dependent targets.",
                 )
 
@@ -1099,7 +1145,6 @@ with controls:
                     value=min_position,
                     step=1,
                     format="%d",
-                    disabled=primary_positions is None or not primary_positions.size,
                 )
             with region_cols[1]:
                 region_end = st.number_input(
@@ -1109,7 +1154,6 @@ with controls:
                     value=max_position,
                     step=1,
                     format="%d",
-                    disabled=primary_positions is None or not primary_positions.size,
                 )
 
         with st.expander("Mapping settings", expanded=False):
@@ -1126,10 +1170,6 @@ with controls:
                 "Time model",
                 list(TARGET_SHAPES),
                 index=0,
-                disabled=not (
-                    target_feature == "firing_rate"
-                    and target_form in {"time", "spacetime"}
-                ),
             )
 
             fit_cols = st.columns(2, gap="small")
@@ -1175,7 +1215,6 @@ with controls:
                 min_value=0.0,
                 value=0.0,
                 step=0.1,
-                disabled=not use_deviation_threshold,
                 help="Bins with timing deviation below this value are left unchanged.",
             )
 
@@ -1231,7 +1270,6 @@ with controls:
                     "Position",
                     list(LEGEND_LOCATIONS),
                     index=0,
-                    disabled=not show_legend,
                 )
 
             appearance_cols = st.columns(2, gap="small")
@@ -1302,14 +1340,16 @@ with controls:
                 ):
                     missing_mapping_inputs.append(feature_label(input_feature))
 
-    with st.container():
+    with st.container(key="mapping-action-button"):
         map_requested = st.button(
             "Map",
             type="primary",
+            disabled=mapping_controls_locked,
             width="stretch",
         )
 
-with preview:
+@st.fragment(run_every=0.5 if st.session_state.get(MAP_JOB_KEY) is not None else None)
+def render_mapping_preview_panel() -> None:
     with st.container(border=True):
         st.markdown(
             '<div class="plotting-panel-title">Preview</div>',
@@ -1319,6 +1359,16 @@ with preview:
         last_map = st.session_state.get(MAP_STATE_KEY)
         map_feedback_shown = False
         active_mapping_job = st.session_state.get(MAP_JOB_KEY)
+        notice = st.session_state.pop(MAP_NOTICE_KEY, None)
+        if notice is not None:
+            notice_kind = str(notice.get("kind", "info"))
+            notice_message = str(notice.get("message", ""))
+            if notice_kind == "error":
+                st.error(notice_message)
+            elif notice_kind == "warning":
+                st.warning(notice_message)
+            else:
+                st.info(notice_message)
 
         if map_requested:
             map_feedback_shown = True
@@ -1482,6 +1532,7 @@ with preview:
                         },
                     )
                     st.session_state[MAP_JOB_KEY] = active_mapping_job
+                    st.rerun()
 
         if active_mapping_job is not None:
             terminal_update = drain_mapping_job(active_mapping_job)
@@ -1495,18 +1546,20 @@ with preview:
                     width="stretch",
                     key="mapping_stop_button",
                 ):
-                    active_mapping_job["cancel_event"].set()
-                    active_mapping_job["progress"] = {
-                        "value": progress["value"],
-                        "text": "Stopping mapping...",
+                    discard_mapping_job(active_mapping_job)
+                    st.session_state.pop(MAP_JOB_KEY, None)
+                    st.session_state[MAP_NOTICE_KEY] = {
+                        "kind": "info",
+                        "message": "Mapping stopped.",
                     }
                     st.rerun()
 
-                if active_mapping_job["thread"].is_alive():
-                    time.sleep(0.25)
-                    st.rerun()
-                else:
-                    time.sleep(0.05)
+                if not active_mapping_job["thread"].is_alive():
+                    st.session_state.pop(MAP_JOB_KEY, None)
+                    st.session_state[MAP_NOTICE_KEY] = {
+                        "kind": "warning",
+                        "message": "Mapping ended before returning a result.",
+                    }
                     st.rerun()
             else:
                 completed_job = active_mapping_job
@@ -1524,16 +1577,30 @@ with preview:
                         )
                     except Exception as exc:
                         render_slot.empty()
-                        st.error(f"Could not render the mapping preview: {exc}")
+                        st.session_state[MAP_NOTICE_KEY] = {
+                            "kind": "error",
+                            "message": f"Could not render the mapping preview: {exc}",
+                        }
+                        st.rerun()
                     else:
                         st.session_state[MAP_STATE_KEY] = last_map
                         render_slot.empty()
+                        st.rerun()
                 elif terminal_update["status"] == "cancelled":
-                    st.info("Mapping stopped.")
+                    st.session_state[MAP_NOTICE_KEY] = {
+                        "kind": "info",
+                        "message": "Mapping stopped.",
+                    }
+                    st.rerun()
                 elif terminal_update["status"] == "error":
-                    st.error(
-                        f"rmap could not complete this mapping: {terminal_update['message']}"
-                    )
+                    st.session_state[MAP_NOTICE_KEY] = {
+                        "kind": "error",
+                        "message": (
+                            "rmap could not complete this mapping: "
+                            f"{terminal_update['message']}"
+                        ),
+                    }
+                    st.rerun()
 
         if active_mapping_job is not None:
             pass
@@ -1553,10 +1620,13 @@ with preview:
         elif primary_values is None or primary_values.size == 0:
             st.info("Choose a numeric input chromosome.")
         else:
-            st.dataframe(
-                primary_table.loc[:, primary_columns].head(8),
-                width="stretch",
-                hide_index=True,
+            st.markdown(
+                """
+                <p class="small-muted">
+                Click Map to generate a mapping preview.
+                </p>
+                """,
+                unsafe_allow_html=True,
             )
 
         with st.expander("Raw output", expanded=False):
@@ -1622,3 +1692,7 @@ with preview:
                     """,
                     unsafe_allow_html=True,
                 )
+
+
+with preview:
+    render_mapping_preview_panel()

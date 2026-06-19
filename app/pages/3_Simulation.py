@@ -1704,10 +1704,13 @@ with preview:
         elif primary_values is None or primary_values.size == 0:
             st.info("Choose a numeric input chromosome.")
         else:
-            st.dataframe(
-                primary_table.loc[:, primary_columns].head(8),
-                width="stretch",
-                hide_index=True,
+            st.markdown(
+                """
+                <p class="small-muted">
+                Click Simulate to generate a simulation preview.
+                </p>
+                """,
+                unsafe_allow_html=True,
             )
 
         with st.expander("Raw output", expanded=False):

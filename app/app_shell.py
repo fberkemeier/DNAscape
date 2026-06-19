@@ -156,6 +156,7 @@ def apply_style() -> None:
           --dnascape-sidebar-width: 15rem;
           --dnascape-sidebar-inner-width: min(82%, 16rem);
           --dnascape-sidebar-logo-width: min(70%, 10.25rem);
+          --dnascape-sidebar-logo-aspect-ratio: 1538 / 829;
           --dnascape-plotting-panel-padding: 1.2rem 1.15rem;
           --dnascape-plotting-expander-gap: 0.5rem;
           /* Dark-logo mask tweak points. The small logo keeps the same
@@ -244,20 +245,11 @@ def apply_style() -> None:
         }
 
         :root[data-dnascape-effective-theme="dark"] .dnascape-sidebar-logo img {
-          -webkit-mask-image: radial-gradient(
-            circle at var(--dnascape-sidebar-logo-mask-x) var(--dnascape-sidebar-logo-mask-y),
-            transparent 0 var(--dnascape-sidebar-logo-mask-radius),
-            #000 var(--dnascape-sidebar-logo-mask-edge)
-          );
-          -webkit-mask-repeat: no-repeat;
-          -webkit-mask-size: 100% 100%;
-          mask-image: radial-gradient(
-            circle at var(--dnascape-sidebar-logo-mask-x) var(--dnascape-sidebar-logo-mask-y),
-            transparent 0 var(--dnascape-sidebar-logo-mask-radius),
-            #000 var(--dnascape-sidebar-logo-mask-edge)
-          );
-          mask-repeat: no-repeat;
-          mask-size: 100% 100%;
+          -webkit-mask-image: none !important;
+          display: block !important;
+          mask-image: none !important;
+          opacity: 1 !important;
+          visibility: visible !important;
         }
 
         :root.dnascape-theme-transition,
@@ -719,6 +711,76 @@ def apply_style() -> None:
           width: 100%;
         }
 
+        section[data-testid="stSidebar"] .st-key-sidebar-logo-home {
+          aspect-ratio: var(--dnascape-sidebar-logo-aspect-ratio);
+          display: block !important;
+          line-height: 0;
+          margin: -2rem auto 2.2rem !important;
+          overflow: hidden;
+          position: relative;
+          width: var(--dnascape-sidebar-logo-width) !important;
+        }
+
+        section[data-testid="stSidebar"] .st-key-sidebar-logo-home [data-testid="stElementContainer"]:has(.dnascape-sidebar-logo),
+        section[data-testid="stSidebar"] .st-key-sidebar-logo-home .dnascape-sidebar-logo,
+        section[data-testid="stSidebar"] .st-key-sidebar-logo-home .st-key-sidebar-logo-home-button {
+          height: 100% !important;
+          inset: 0;
+          margin: 0 !important;
+          padding: 0 !important;
+          position: absolute;
+          width: 100% !important;
+        }
+
+        section[data-testid="stSidebar"] .st-key-sidebar-logo-home .dnascape-sidebar-logo img {
+          height: 100%;
+          object-fit: contain;
+          width: 100%;
+        }
+
+        section[data-testid="stSidebar"] .st-key-sidebar-logo-home .st-key-sidebar-logo-home-button {
+          z-index: 2;
+        }
+
+        section[data-testid="stSidebar"] .st-key-sidebar-logo-home .st-key-sidebar-logo-home-button .stButton,
+        section[data-testid="stSidebar"] .st-key-sidebar-logo-home .st-key-sidebar-logo-home-button [data-testid="stButton"] {
+          background: transparent !important;
+          background-color: transparent !important;
+          height: 100% !important;
+          margin: 0 !important;
+          padding: 0 !important;
+          width: 100% !important;
+        }
+
+        section[data-testid="stSidebar"] .st-key-sidebar-logo-home .st-key-sidebar-logo-home-button button,
+        section[data-testid="stSidebar"] .st-key-sidebar-logo-home .st-key-sidebar-logo-home-button button:hover,
+        section[data-testid="stSidebar"] .st-key-sidebar-logo-home .st-key-sidebar-logo-home-button button:focus,
+        section[data-testid="stSidebar"] .st-key-sidebar-logo-home .st-key-sidebar-logo-home-button button:focus-visible,
+        section[data-testid="stSidebar"] .st-key-sidebar-logo-home .st-key-sidebar-logo-home-button button:active,
+        section[data-testid="stSidebar"] .st-key-sidebar-logo-home .st-key-sidebar-logo-home-button button[disabled],
+        :root[data-dnascape-effective-theme="dark"] section[data-testid="stSidebar"] .st-key-sidebar-logo-home .st-key-sidebar-logo-home-button button,
+        :root[data-dnascape-effective-theme="dark"] section[data-testid="stSidebar"] .st-key-sidebar-logo-home .st-key-sidebar-logo-home-button button:hover,
+        :root[data-dnascape-effective-theme="dark"] section[data-testid="stSidebar"] .st-key-sidebar-logo-home .st-key-sidebar-logo-home-button button:focus,
+        :root[data-dnascape-effective-theme="dark"] section[data-testid="stSidebar"] .st-key-sidebar-logo-home .st-key-sidebar-logo-home-button button:focus-visible,
+        :root[data-dnascape-effective-theme="dark"] section[data-testid="stSidebar"] .st-key-sidebar-logo-home .st-key-sidebar-logo-home-button button:active,
+        :root[data-dnascape-effective-theme="dark"] section[data-testid="stSidebar"] .st-key-sidebar-logo-home .st-key-sidebar-logo-home-button button[disabled] {
+          background: transparent !important;
+          background-color: transparent !important;
+          background-image: none !important;
+          border: 0 !important;
+          border-color: transparent !important;
+          box-shadow: none !important;
+          color: transparent !important;
+          cursor: pointer;
+          font-size: 0 !important;
+          height: 100% !important;
+          min-height: 0 !important;
+          outline: none !important;
+          padding: 0 !important;
+          -webkit-text-fill-color: transparent !important;
+          width: 100% !important;
+        }
+
         .dnascape-main-logo {
           display: block;
           line-height: 0;
@@ -844,6 +906,72 @@ def apply_style() -> None:
         }
 
         .workflow-card:hover {
+          background-color: var(--dnascape-card-hover-bg);
+          border-color: color-mix(in srgb, var(--dnascape-accent) 28%, var(--dnascape-line));
+          box-shadow: 0 5px 14px var(--dnascape-shadow-hover);
+        }
+
+        body:has(.overview-page-marker) [class*="st-key-workflow-card-"]:not([class*="st-key-workflow-card-button-"]) {
+          min-height: 172px;
+          position: relative;
+        }
+
+        body:has(.overview-page-marker) [class*="st-key-workflow-card-"]:not([class*="st-key-workflow-card-button-"]) [data-testid="stElementContainer"]:has(.workflow-card) {
+          margin: 0 !important;
+          padding: 0 !important;
+        }
+
+        body:has(.overview-page-marker) [class*="st-key-workflow-card-"]:not([class*="st-key-workflow-card-button-"]) [class*="st-key-workflow-card-button-"] {
+          height: 100% !important;
+          inset: 0;
+          margin: 0 !important;
+          padding: 0 !important;
+          position: absolute;
+          width: 100% !important;
+          z-index: 2;
+        }
+
+        body:has(.overview-page-marker) [class*="st-key-workflow-card-button-"] .stButton,
+        body:has(.overview-page-marker) [class*="st-key-workflow-card-button-"] [data-testid="stButton"] {
+          background: transparent !important;
+          background-color: transparent !important;
+          height: 100% !important;
+          margin: 0 !important;
+          padding: 0 !important;
+          width: 100% !important;
+        }
+
+        body:has(.overview-page-marker) [class*="st-key-workflow-card-button-"] button,
+        body:has(.overview-page-marker) [class*="st-key-workflow-card-button-"] button:hover,
+        body:has(.overview-page-marker) [class*="st-key-workflow-card-button-"] button:focus,
+        body:has(.overview-page-marker) [class*="st-key-workflow-card-button-"] button:focus-visible,
+        body:has(.overview-page-marker) [class*="st-key-workflow-card-button-"] button:active,
+        body:has(.overview-page-marker) [class*="st-key-workflow-card-button-"] button[disabled],
+        :root[data-dnascape-effective-theme="dark"] body:has(.overview-page-marker) [class*="st-key-workflow-card-button-"] button,
+        :root[data-dnascape-effective-theme="dark"] body:has(.overview-page-marker) [class*="st-key-workflow-card-button-"] button:hover,
+        :root[data-dnascape-effective-theme="dark"] body:has(.overview-page-marker) [class*="st-key-workflow-card-button-"] button:focus,
+        :root[data-dnascape-effective-theme="dark"] body:has(.overview-page-marker) [class*="st-key-workflow-card-button-"] button:focus-visible,
+        :root[data-dnascape-effective-theme="dark"] body:has(.overview-page-marker) [class*="st-key-workflow-card-button-"] button:active,
+        :root[data-dnascape-effective-theme="dark"] body:has(.overview-page-marker) [class*="st-key-workflow-card-button-"] button[disabled] {
+          background: transparent !important;
+          background-color: transparent !important;
+          background-image: none !important;
+          border: 0 !important;
+          border-color: transparent !important;
+          box-shadow: none !important;
+          color: transparent !important;
+          cursor: pointer;
+          font-size: 0 !important;
+          height: 100% !important;
+          min-height: 0 !important;
+          outline: none !important;
+          padding: 0 !important;
+          -webkit-text-fill-color: transparent !important;
+          width: 100% !important;
+        }
+
+        body:has(.overview-page-marker) [class*="st-key-workflow-card-"]:not([class*="st-key-workflow-card-button-"]):has(button:hover) .workflow-card,
+        body:has(.overview-page-marker) [class*="st-key-workflow-card-"]:not([class*="st-key-workflow-card-button-"]):has(button:focus-visible) .workflow-card {
           background-color: var(--dnascape-card-hover-bg);
           border-color: color-mix(in srgb, var(--dnascape-accent) 28%, var(--dnascape-line));
           box-shadow: 0 5px 14px var(--dnascape-shadow-hover);
@@ -1441,7 +1569,7 @@ def render_theme_toggle() -> None:
           const itemId = "dnascape-theme-menu-item";
           const helpWrapperId = "dnascape-help-menu-item-wrapper";
           const helpItemId = "dnascape-help-menu-item";
-          const selectboxToggleVersion = "selectbox-toggle-collapse-1";
+          const selectboxToggleVersion = "selectbox-toggle-collapse-3";
           const themes = {list(THEMES)!r};
           const icons = {json.dumps(THEME_ICONS)};
           const helpIcons = {{
@@ -2185,7 +2313,7 @@ def render_theme_toggle() -> None:
               return {{ wrapper, control }};
             }}
 
-            function selectboxIsExpanded(hit) {{
+            function selectboxReportsExpanded(hit) {{
               return Boolean(
                 hit.control.matches('[aria-expanded="true"]') ||
                 hit.control.querySelector('[aria-expanded="true"]') ||
@@ -2193,31 +2321,58 @@ def render_theme_toggle() -> None:
               );
             }}
 
+            function selectboxIsExpanded(hit) {{
+              return Boolean(
+                selectboxReportsExpanded(hit) ||
+                doc.querySelector('[data-baseweb="popover"] [role="option"], [data-baseweb="menu"] [role="option"]')
+              );
+            }}
+
             function sendEscapeToClose(hit) {{
-              const keyboardTarget =
+              const keyboardTargets = [
                 hit.control.querySelector("input") ||
                 (doc.activeElement instanceof win.HTMLElement ? doc.activeElement : null) ||
-                hit.control;
-              const escapeEvent = new win.KeyboardEvent("keydown", {{
-                bubbles: true,
-                cancelable: true,
-                key: "Escape",
-                code: "Escape",
-                keyCode: 27,
-                which: 27,
-              }});
+                hit.control,
+                hit.control,
+                hit.wrapper,
+                doc.body,
+                doc.documentElement,
+              ].filter(Boolean);
 
-              keyboardTarget.dispatchEvent(escapeEvent);
-              hit.control.dispatchEvent(
-                new win.KeyboardEvent("keydown", {{
+              const dispatchEscape = (target, type = "keydown") => {{
+                target.dispatchEvent(new win.KeyboardEvent(type, {{
                   bubbles: true,
                   cancelable: true,
                   key: "Escape",
                   code: "Escape",
                   keyCode: 27,
                   which: 27,
-                }})
-              );
+                }}));
+              }};
+
+              keyboardTargets.forEach((target) => {{
+                dispatchEscape(target, "keydown");
+                dispatchEscape(target, "keyup");
+              }});
+
+              win.setTimeout(() => {{
+                if (!doc.querySelector('[data-baseweb="popover"] [role="option"], [data-baseweb="menu"] [role="option"]')) {{
+                  return;
+                }}
+
+                doc.body.dispatchEvent(new win.MouseEvent("mousedown", {{
+                  bubbles: true,
+                  cancelable: true,
+                  clientX: 1,
+                  clientY: 1,
+                }}));
+                doc.body.dispatchEvent(new win.MouseEvent("click", {{
+                  bubbles: true,
+                  cancelable: true,
+                  clientX: 1,
+                  clientY: 1,
+                }}));
+              }}, 0);
             }}
 
             function stopSelectboxReopen(event, hit) {{
@@ -2465,7 +2620,13 @@ def render_theme_toggle() -> None:
     )
 
 
-def render_sidebar_logo(path: Path, alt: str, href: str = "/") -> None:
+def render_sidebar_logo(
+    path: Path,
+    alt: str,
+    href: str = "/",
+    *,
+    use_router: bool = False,
+) -> None:
     """Render the sidebar PNG without Streamlit's image toolbar."""
     if not path.exists():
         return
@@ -2473,14 +2634,32 @@ def render_sidebar_logo(path: Path, alt: str, href: str = "/") -> None:
     encoded_png = base64.b64encode(path.read_bytes()).decode("ascii")
     escaped_alt = html.escape(alt, quote=True)
     escaped_href = html.escape(href, quote=True)
-    st.markdown(
-        f"""
+    logo_markup = f"""
         <div class="dnascape-sidebar-logo">
           <a href="{escaped_href}" target="_self" aria-label="Go to Overview" title="Overview">
             <img src="data:image/png;base64,{encoded_png}" alt="{escaped_alt}" draggable="false">
           </a>
         </div>
-        """,
+    """
+    if use_router:
+        logo_markup = f"""
+            <div class="dnascape-sidebar-logo">
+              <img src="data:image/png;base64,{encoded_png}" alt="{escaped_alt}" draggable="false">
+            </div>
+        """
+        with st.container(key="sidebar-logo-home"):
+            st.markdown(logo_markup, unsafe_allow_html=True)
+            st.button(
+                "Overview",
+                key="sidebar-logo-home-button",
+                on_click=set_active_page,
+                args=("overview",),
+                width="stretch",
+            )
+        return
+
+    st.markdown(
+        logo_markup,
         unsafe_allow_html=True,
     )
 
@@ -2528,6 +2707,13 @@ def render_sidebar(active_label: str, *, use_router: bool = False) -> None:
             f"""
             <span class="dnascape-sidebar-active-style" aria-hidden="true"></span>
             <style>
+            section[data-testid="stSidebar"] [class*="st-key-sidebar-nav-"] button[kind="secondary"]:not(:hover):not(:focus-visible),
+            section[data-testid="stSidebar"] [class*="st-key-sidebar-nav-"]:not([class*="st-key-sidebar-nav-{active_slug}"]) button:not([kind="primary"]):not(:hover):not(:focus-visible) {{
+              background: transparent !important;
+              border-color: transparent !important;
+              box-shadow: none !important;
+            }}
+
             {page_link_active_selector}
             section[data-testid="stSidebar"] [class*="st-key-sidebar-nav-"] button[kind="primary"],
             section[data-testid="stSidebar"] [class*="st-key-sidebar-nav-{active_slug}"] button {{
@@ -2564,6 +2750,7 @@ def render_sidebar(active_label: str, *, use_router: bool = False) -> None:
             SIDEBAR_LOGO_PATH,
             "DNAscape",
             "?page=overview" if use_router else "/",
+            use_router=use_router,
         )
 
         if use_router:

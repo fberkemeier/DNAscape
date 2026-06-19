@@ -592,8 +592,11 @@ with preview:
         elif selected_values is None or selected_values.size == 0:
             st.info("Choose a numeric chromosome column.")
         else:
-            st.dataframe(
-                table.loc[:, numeric_columns].head(8),
-                width="stretch",
-                hide_index=True,
+            st.markdown(
+                """
+                <p class="small-muted">
+                Click Plot to generate a figure preview.
+                </p>
+                """,
+                unsafe_allow_html=True,
             )

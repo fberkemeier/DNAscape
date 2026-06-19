@@ -21,6 +21,7 @@ from app_shell import (
     configure_page,
     render_main_logo,
     render_sidebar,
+    set_active_page,
 )
 
 
@@ -36,15 +37,23 @@ PAGE_MODULES = {
 
 def render_workflow_card(title: str, body: str, page: str) -> None:
     """Render a compact workflow card as a single click target."""
-    st.markdown(
-        f"""
-        <a class="workflow-card" href="?page={page}" target="_self">
+    with st.container(key=f"workflow-card-{page}"):
+        st.markdown(
+            f"""
+        <div class="workflow-card">
           <div class="workflow-card-title">{title}</div>
           <div class="workflow-card-copy">{body}</div>
-        </a>
+        </div>
         """,
-        unsafe_allow_html=True,
-    )
+            unsafe_allow_html=True,
+        )
+        st.button(
+            title,
+            key=f"workflow-card-button-{page}",
+            on_click=set_active_page,
+            args=(page,),
+            width="stretch",
+        )
 
 
 def render_overview() -> None:
