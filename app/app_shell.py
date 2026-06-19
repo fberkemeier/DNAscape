@@ -932,6 +932,24 @@ def apply_style() -> None:
           background: color-mix(in srgb, var(--dnascape-accent) 4%, transparent);
         }
 
+        :root[data-dnascape-effective-theme="dark"] body:has(.plotting-page-marker) [data-testid="stExpander"] summary,
+        :root[data-dnascape-effective-theme="dark"] body:has(.plotting-page-marker) [data-testid="stExpander"] summary > div,
+        :root[data-dnascape-effective-theme="dark"] body:has(.plotting-page-marker) [data-testid="stExpander"] summary > div > div,
+        :root[data-dnascape-effective-theme="dark"] body:has(.plotting-page-marker) [data-testid="stExpander"] summary [data-testid="stMarkdownContainer"],
+        :root[data-dnascape-effective-theme="dark"] body:has(.plotting-page-marker) [data-testid="stExpander"] summary [data-baseweb],
+        :root[data-dnascape-effective-theme="dark"] body:has(.plotting-page-marker) [data-testid="stExpander"] summary [role="button"] {
+          background: transparent !important;
+          border-color: transparent !important;
+          box-shadow: none !important;
+          color: var(--dnascape-text) !important;
+        }
+
+        :root[data-dnascape-effective-theme="dark"] body:has(.plotting-page-marker) [data-testid="stExpander"] details[open] > summary,
+        :root[data-dnascape-effective-theme="dark"] body:has(.plotting-page-marker) [data-testid="stExpander"] summary:hover {
+          background: var(--dnascape-hover-bg) !important;
+          color: var(--dnascape-accent) !important;
+        }
+
         body:has(.plotting-page-marker) [data-testid="stExpander"] summary svg {
           color: var(--dnascape-muted) !important;
           fill: currentColor !important;
