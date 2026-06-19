@@ -544,6 +544,10 @@ def _canonical_spacetime_update(value):
 def _canonical_spacetime_order(value):
     text = str(value).strip().lower().replace("-", "_").replace(" ", "_")
     aliases = {
+        "crossed": "crossed",
+        "cross": "crossed",
+        "alternating": "crossed",
+        "alternate": "crossed",
         "mixed": "mixed",
         "joint": "mixed",
         "simultaneous": "mixed",
@@ -564,7 +568,7 @@ def _canonical_spacetime_order(value):
     }
     if text not in aliases:
         raise ValueError(
-            "spacetime_order must be 'mixed', 'space_then_time', or 'time_then_space'."
+            "spacetime_order must be 'crossed', 'mixed', 'space_then_time', or 'time_then_space'."
         )
     return aliases[text]
 
@@ -3992,6 +3996,242 @@ def _fit_mixed_intercept_slope_spacetime_speed(
     return speed_spacetime, (low, high), spatial_info, temporal_info
 
 
+def _fit_crossed_spacetime_speed(
+    observed_timing,
+    firing_rate,
+    resolution=1.0,
+    resolution_time=5.0,
+    time_grid=None,
+    T0=None,
+    space_fit_step=0.4,
+    space_maxiter=10,
+    temporal_fit_step=0.003,
+    temporal_maxiter=10,
+    speed_bounds=None,
+    initial_fork_speed=1.4,
+    smoothw=100,
+    refine_ratio_bounds=(0.25, 4.0),
+    refine_edge_kb=1000,
+    perQ=False,
+    error=None,
+    verbose=True,
+    print_every=1,
+    start_phase="space",
+):
+    if perQ:
+        raise NotImplementedError("crossed fork-speed fitting currently supports linear geometry only.")
+    T = np.asarray(observed_timing, dtype=float)
+    if T.ndim != 1 or T.size == 0:
+        raise ValueError("replication_timing must be a non-empty one-dimensional array.")
+    time_axis = np.asarray(time_grid, dtype=float)
+    if time_axis.ndim != 1 or time_axis.size == 0:
+        raise ValueError("time_grid must be a non-empty one-dimensional array.")
+    offset = 0.0 if T0 is None else float(T0)
+    if not np.isfinite(offset):
+        raise ValueError("T0 must be finite when supplied.")
+
+    base_speed = _initial_positive_speed_value(initial_fork_speed)
+    low, high = _direct_speed_shape_bounds([base_speed], speed_bounds=speed_bounds)
+    speed_space = np.full(T.size, np.clip(base_speed, low, high), dtype=float)
+    temporal_factor = np.ones(time_axis.size, dtype=float)
+
+    fit_idx, stride = _speed_fit_indices(
+        T - offset,
+        resolution,
+        perQ=perQ,
+        refine_edge_kb=refine_edge_kb,
+    )
+    T_fit = T[fit_idx]
+    firing_fit = _subset_firing_positions(firing_rate, fit_idx, T.size)
+    resolution_fit = float(resolution) * float(stride)
+    x_full = np.arange(T.size, dtype=float) * float(resolution)
+    x_fit = fit_idx.astype(float) * float(resolution)
+
+    if refine_ratio_bounds is None:
+        low_ratio, high_ratio = 0.25, 4.0
+    else:
+        low_ratio, high_ratio = map(float, refine_ratio_bounds)
+        if not (np.isfinite(low_ratio) and np.isfinite(high_ratio) and 0 < low_ratio < high_ratio):
+            raise ValueError("refine_ratio_bounds must be a positive (low, high) pair.")
+
+    space_step = float(space_fit_step)
+    time_step = float(temporal_fit_step)
+    if not np.isfinite(space_step) or space_step < 0:
+        raise ValueError("fit_step_x must be finite and >= 0.")
+    if not np.isfinite(time_step) or time_step < 0:
+        raise ValueError("fit_step_t must be finite and >= 0.")
+    maxiter = max(0, int(max(space_maxiter, temporal_maxiter)))
+    error = _normalise_error_threshold(error)
+    print_every = max(1, int(print_every))
+    smooth_window = smoothw
+    if smooth_window is not None:
+        smooth_window = max(3, min(int(smooth_window), speed_space.size))
+
+    if time_axis.size <= 1:
+        t01 = np.zeros(time_axis.size, dtype=float)
+    else:
+        span = float(time_axis[-1] - time_axis[0])
+        t01 = np.zeros(time_axis.size, dtype=float) if span <= 0 else (time_axis - time_axis[0]) / span
+
+    def q_bounds(space):
+        space = np.asarray(space, dtype=float).reshape(-1)
+        q_low = max(low / max(float(np.nanmax(space)), 1e-12), 1e-12)
+        q_high = high / max(float(np.nanmin(space)), 1e-12)
+        if not np.isfinite(q_high) or q_high <= q_low:
+            return 1e-6, 1e6
+        return q_low, q_high
+
+    def space_bounds(q):
+        q = np.asarray(q, dtype=float).reshape(-1)
+        s_low = max(low / max(float(np.nanmax(q)), 1e-12), 1e-12)
+        s_high = high / max(float(np.nanmin(q)), 1e-12)
+        if not np.isfinite(s_high) or s_high <= s_low:
+            return low, high
+        return s_low, s_high
+
+    def score(space, q):
+        predicted = _predict_timing_separable_speed(
+            firing_fit,
+            np.asarray(space, dtype=float).reshape(-1)[fit_idx],
+            np.asarray(q, dtype=float).reshape(-1),
+            T_fit,
+            time_axis,
+            resolution_fit,
+            offset=offset,
+        )
+        valid = np.isfinite(T_fit) & np.isfinite(predicted) & (T_fit > 0) & (predicted > 0)
+        if not np.any(valid):
+            return np.inf, predicted
+        return mean_squared_error(T_fit[valid], predicted[valid]), predicted
+
+    def spatial_candidate(space, q, predicted):
+        valid = np.isfinite(T_fit) & np.isfinite(predicted) & (T_fit > 0) & (predicted > 0)
+        ratio_fit = np.ones(fit_idx.size, dtype=float)
+        if np.any(valid):
+            ratio_fit[valid] = np.clip(predicted[valid] / T_fit[valid], low_ratio, high_ratio)
+        ratio_full = np.interp(x_full, x_fit, ratio_fit, left=ratio_fit[0], right=ratio_fit[-1])
+        s_low, s_high = space_bounds(q)
+        candidate = np.clip(np.asarray(space, dtype=float) * ratio_full ** space_step, s_low, s_high)
+        if smooth_window is not None and smooth_window > 2 and candidate.size > 2:
+            candidate = np.clip(smoothf(candidate, window=smooth_window), s_low, s_high)
+        return candidate
+
+    def temporal_candidates(space, q):
+        q_low, q_high = q_bounds(space)
+        baseline = np.asarray(q, dtype=float).reshape(-1)
+        candidates = []
+        if time_step > 0:
+            candidates.append(np.clip(baseline * (1.0 + time_step * t01), q_low, q_high))
+            candidates.append(np.clip(baseline * np.maximum(1.0 - time_step * t01, 1e-6), q_low, q_high))
+        else:
+            candidates.append(np.clip(baseline, q_low, q_high))
+        return candidates
+
+    current_mse, current_predicted = score(speed_space, temporal_factor)
+    best_space = speed_space.copy()
+    best_q = temporal_factor.copy()
+    best_mse = current_mse
+    best_predicted = current_predicted
+    phase = "time" if str(start_phase) == "time" else "space"
+    history = []
+    accepted_space = 0
+    accepted_time = 0
+    rejected_space = 0
+    rejected_time = 0
+    start_time = time.time()
+
+    for it in range(1, maxiter + 1):
+        accepted = False
+        candidate_mse = np.inf
+        candidate_predicted = None
+        candidate_space = speed_space
+        candidate_q = temporal_factor
+
+        if phase == "space":
+            candidate_space = spatial_candidate(speed_space, temporal_factor, current_predicted)
+            candidate_mse, candidate_predicted = score(candidate_space, temporal_factor)
+        else:
+            for q_candidate in temporal_candidates(speed_space, temporal_factor):
+                mse, predicted = score(speed_space, q_candidate)
+                if np.isfinite(mse) and mse < candidate_mse:
+                    candidate_mse = float(mse)
+                    candidate_predicted = predicted
+                    candidate_q = q_candidate
+
+        if np.isfinite(candidate_mse) and (
+            not np.isfinite(current_mse) or candidate_mse < current_mse
+        ):
+            speed_space = np.asarray(candidate_space, dtype=float).copy()
+            temporal_factor = np.asarray(candidate_q, dtype=float).copy()
+            current_mse = float(candidate_mse)
+            current_predicted = candidate_predicted
+            accepted = True
+            if phase == "space":
+                accepted_space += 1
+            else:
+                accepted_time += 1
+            if not np.isfinite(best_mse) or current_mse < best_mse:
+                best_space = speed_space.copy()
+                best_q = temporal_factor.copy()
+                best_mse = float(current_mse)
+                best_predicted = current_predicted
+        else:
+            if phase == "space":
+                rejected_space += 1
+            else:
+                rejected_time += 1
+
+        history.append(
+            {
+                "iteration": int(it),
+                "phase": phase,
+                "accepted": bool(accepted),
+                "mse": None if not np.isfinite(current_mse) else float(current_mse),
+                "candidate_mse": None if not np.isfinite(candidate_mse) else float(candidate_mse),
+            }
+        )
+
+        done = it == maxiter or _error_reached(best_mse, error)
+        if verbose and (it % print_every == 0 or done):
+            etaferr(it=it, maxiter=maxiter, start_time=start_time, err=best_mse, done=done)
+        if done and it != maxiter:
+            break
+        phase = "time" if phase == "space" else "space"
+
+    speed_spacetime = np.outer(best_q, best_space)
+    speed_spacetime = np.clip(speed_spacetime, low, high)
+    predicted_full = np.full(T.size, np.nan, dtype=float)
+    if best_predicted is not None:
+        predicted_full[fit_idx] = best_predicted
+    temporal_info = {
+        "target_shape": "best",
+        "spacetime_order": "crossed",
+        "fork_speed_shape": "crossed factorized v_x(x) * q(t)",
+        "fork_speed_component_x": "crossed one-step site-specific v_x(x) updates",
+        "fork_speed_component_t": "crossed one-step temporal q(t) slope updates",
+        "fork_speed_v0": float(base_speed),
+        "fork_speed_temporal_factor": best_q.copy(),
+        "fork_speed_crossed_space_steps": int(accepted_space),
+        "fork_speed_crossed_time_steps": int(accepted_time),
+        "fork_speed_crossed_rejected_space_steps": int(rejected_space),
+        "fork_speed_crossed_rejected_time_steps": int(rejected_time),
+        "fork_speed_bounds": (float(low), float(high)),
+        "fit_mse": None if not np.isfinite(best_mse) else float(best_mse),
+        "fit_history": history,
+    }
+    if best_predicted is not None:
+        temporal_info["replication_timing_fit"] = predicted_full
+        temporal_info["residual"] = predicted_full - T
+    spatial_info = {
+        "target_shape": "best",
+        "fork_speed_component_x": "crossed one-step v_x(x) updates from constant speed",
+        "fork_speed_v0": float(base_speed),
+        "fork_speed_bounds": (float(low), float(high)),
+        "fit_mse": None if not np.isfinite(best_mse) else float(best_mse),
+    }
+    return speed_spacetime, (low, high), spatial_info, temporal_info
+
+
 def _fit_best_spacetime_speed_shape(
     observed_timing,
     firing_rate,
@@ -4745,6 +4985,7 @@ def _fit_spacetime_speed_components(
             "_fit_spatial_component_for_separable_speed",
             "_fit_temporal_factor_for_separable_speed",
             "_fit_linear_increasing_temporal_factor_for_separable_speed",
+            "_fit_crossed_spacetime_speed",
             "_fit_mixed_intercept_slope_spacetime_speed",
         )
         if name not in globals()
@@ -4791,16 +5032,14 @@ def _fit_spacetime_speed_components(
             return False
         return float(np.nanmax(arr) - np.nanmin(arr)) <= max(float(np.nanmedian(arr)) * 1e-8, 1e-12)
 
-    if order == "mixed":
-        return _fit_mixed_intercept_slope_spacetime_speed(
+    if order in {"crossed", "mixed"}:
+        return _fit_crossed_spacetime_speed(
             T,
             firing_rate,
-            spatial_firing_rate=direct_spatial_firing,
             resolution=resolution,
             resolution_time=resolution_time,
             time_grid=time_axis,
             T0=T0,
-            neighbourhood_range=neighbourhood_range,
             space_fit_step=space_fit_step,
             space_maxiter=space_maxiter,
             temporal_fit_step=temporal_fit_step,
@@ -4814,6 +5053,7 @@ def _fit_spacetime_speed_components(
             error=error,
             verbose=verbose,
             print_every=print_every,
+            start_phase="time" if order == "time_then_space" else "space",
         )
 
     def fit_space(current_space, current_time_factor):
@@ -4947,7 +5187,7 @@ def map_timing_firing_spacetime_speed(
     spacetime_time_fit_step=None,
     spacetime_sim_number=None,
     spacetime_update="factorized",
-    spacetime_order="mixed",
+    spacetime_order="crossed",
     spacetime_kernel_t=1.0,
     speed_bounds=None,
     initial_fork_speed=1.4,
@@ -5061,6 +5301,12 @@ def map_timing_firing_spacetime_speed(
                 "fork_speed_q_slope_t",
                 "fork_speed_temporal_accepted",
                 "fork_speed_temporal_baseline_mse",
+                "fork_speed_temporal_factor",
+                "fork_speed_crossed_space_steps",
+                "fork_speed_crossed_time_steps",
+                "fork_speed_crossed_rejected_space_steps",
+                "fork_speed_crossed_rejected_time_steps",
+                "fit_history",
             ):
                 if key in temporal_info:
                     info[key] = temporal_info[key]
@@ -5834,7 +6080,7 @@ def map_timing_firing_spacetime_speed_simulated(
     spacetime_time_fit_step=None,
     spacetime_sim_number=None,
     spacetime_update="factorized",
-    spacetime_order="mixed",
+    spacetime_order="crossed",
     spacetime_kernel_t=1.0,
     speed_bounds=None,
     initial_fork_speed=1.4,
@@ -5951,6 +6197,12 @@ def map_timing_firing_spacetime_speed_simulated(
                 "fork_speed_q_slope_t",
                 "fork_speed_temporal_accepted",
                 "fork_speed_temporal_baseline_mse",
+                "fork_speed_temporal_factor",
+                "fork_speed_crossed_space_steps",
+                "fork_speed_crossed_time_steps",
+                "fork_speed_crossed_rejected_space_steps",
+                "fork_speed_crossed_rejected_time_steps",
+                "fit_history",
             ):
                 if key in temporal_info:
                     info[key] = temporal_info[key]

@@ -1,7 +1,6 @@
 """Plotting page for the DNAscape Streamlit prototype."""
 
 import base64
-import importlib
 import sys
 from io import BytesIO
 from pathlib import Path
@@ -14,10 +13,6 @@ import streamlit as st
 APP_DIR = Path(__file__).resolve().parents[1]
 if str(APP_DIR) not in sys.path:
     sys.path.insert(0, str(APP_DIR))
-
-import app_shell
-
-importlib.reload(app_shell)
 
 from app_shell import configure_page, render_page_intro, render_sidebar
 

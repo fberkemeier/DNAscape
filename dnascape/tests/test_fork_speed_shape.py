@@ -118,8 +118,8 @@ class ForkSpeedShapeTests(unittest.TestCase):
         self.assertEqual(fit["values"].shape, (n, time_grid.size))
         self.assertEqual(fit["assumptions"]["target_shape"], "best")
         self.assertEqual(fit["target_shape"], "best")
-        self.assertEqual(fit["fork_speed_component_x"], "site-specific v_x(x)")
-        self.assertEqual(fit["fork_speed_component_t"], "smooth multiplicative q(t)")
+        self.assertEqual(fit["fork_speed_component_x"], "crossed one-step site-specific v_x(x) updates")
+        self.assertEqual(fit["fork_speed_component_t"], "crossed one-step temporal q(t) slope updates")
         self.assertTrue(np.isfinite(fit["fit_mse"]))
         self.assertTrue(np.all(fit["values"] > 0))
 
@@ -226,31 +226,20 @@ class ForkSpeedShapeTests(unittest.TestCase):
                         self.assertTrue(np.all(values > 0))
                         self.assertEqual(fit["assumptions"]["target_shape"], "best")
 
-    def test_spacetime_fork_speed_default_mixed_updates_space_and_time(self):
+    def test_spacetime_fork_speed_default_crossed_updates_space_and_time(self):
         n = 8
         time_grid = np.arange(0.0, 40.0, 5.0)
         timing = np.linspace(15.0, 30.0, n)
         firing_space = np.linspace(1e-5, 2e-5, n)
         firing_time = np.linspace(0.8, 1.2, time_grid.size)
         firing_rate = np.outer(firing_space, firing_time)
-        calls = []
-        spatial_component = np.linspace(1.0, 1.4, n)
-
-        def fake_space(source, **kwargs):
-            calls.append((
-                "space",
-                np.asarray(source["firing_rate"], dtype=float).copy(),
-                kwargs.get("maxiter"),
-                kwargs.get("fit_step"),
-            ))
-            return spatial_component
 
         def fake_predict(_firing_rate, _spatial_speed, temporal_factor, observed_timing, *_args, **_kwargs):
             slope = float(temporal_factor[-1] - temporal_factor[0])
-            return np.asarray(observed_timing, dtype=float) + 0.4 - 4.0 * slope
+            space_gain = float(np.nanmean(_spatial_speed) - 1.4)
+            return np.asarray(observed_timing, dtype=float) + 0.4 - 2.0 * space_gain - 4.0 * slope
 
-        with patch("dnascape.fitting.map_timing_firing_spatial_speed", side_effect=fake_space), \
-                patch("dnascape.fitting._predict_timing_separable_speed", side_effect=fake_predict), \
+        with patch("dnascape.fitting._predict_timing_separable_speed", side_effect=fake_predict), \
                 patch("dnascape.fitting._spacetime_speed_timing_fit_info", return_value={}):
             fit = fitting.map_timing_firing_spacetime_speed(
                 {
@@ -266,15 +255,11 @@ class ForkSpeedShapeTests(unittest.TestCase):
         values = np.asarray(fit, dtype=float)
         info = getattr(fit, "_rmap_info", {})
         self.assertEqual(values.shape, (n, time_grid.size))
-        self.assertEqual(len(calls), 1)
-        self.assertEqual(calls[0][0], "space")
-        self.assertTrue(np.allclose(calls[0][1], np.nanmean(firing_rate, axis=1)))
-        self.assertEqual(calls[0][2], 2)
-        self.assertGreater(calls[0][3], 0.0)
         self.assertGreater(np.ptp(np.nanmean(values, axis=1)), 0.0)
         self.assertGreater(np.ptp(np.nanmean(values, axis=0)), 0.0)
-        self.assertEqual(info["spacetime_order"], "mixed")
-        self.assertGreater(info["fork_speed_q_slope_t"], 0.0)
+        self.assertEqual(info["spacetime_order"], "crossed")
+        self.assertGreater(info["fork_speed_crossed_space_steps"], 0)
+        self.assertGreater(info["fork_speed_crossed_time_steps"], 0)
 
 
 if __name__ == "__main__":

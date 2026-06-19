@@ -17,6 +17,23 @@ TAB_LOGO_PATH = ROOT_DIR / "docs" / "source" / "_static" / "dnascape_logo_tab.pn
 GITHUB_URL = "https://github.com/fberkemeier/DNAscape"
 DOCS_URL = "https://dnascape.readthedocs.io/en/latest/"
 PACKAGE_NAME = "dnascape"
+ACTIVE_PAGE_KEY = "dnascape_active_page"
+LAST_QUERY_PAGE_KEY = "dnascape_last_query_page"
+NAV_ITEMS = (
+    ("overview", "Overview", "/"),
+    ("data-management", "Data Management", "/Data_Management"),
+    ("mapping", "Mapping", "/Mapping"),
+    ("simulation", "Simulation", "/Simulation"),
+    ("plotting", "Plotting", "/Plotting"),
+    ("cached-files", "Cached Files", "/Cached_Files"),
+    ("resources", "Resources", "/Resources"),
+)
+PAGE_LABELS = {slug: label for slug, label, _ in NAV_ITEMS}
+PAGE_SLUGS = {
+    label.casefold(): slug
+    for slug, label, _ in NAV_ITEMS
+}
+PAGE_SLUGS.update({slug: slug for slug, _, _ in NAV_ITEMS})
 THEMES = ("light", "dark", "system")
 THEME_ICONS = {
     "light": """
@@ -62,6 +79,43 @@ def package_version() -> str:
 APP_VERSION = package_version()
 
 
+def normalize_page(value: object, default: str = "overview") -> str:
+    """Return a known router slug from a label, slug, or URL-ish value."""
+    if isinstance(value, list):
+        value = value[0] if value else ""
+
+    raw = str(value or "").strip()
+    if not raw:
+        return default
+
+    compact = raw.split("?", 1)[0].strip("/").replace("_", "-").replace(" ", "-")
+    key = compact.casefold()
+    return PAGE_SLUGS.get(key, default)
+
+
+def active_page_slug(default: str = "overview") -> str:
+    """Resolve the active page from session state, with query params as bootstrap."""
+    query_page = normalize_page(st.query_params.get("page"), default="")
+    if query_page and st.session_state.get(LAST_QUERY_PAGE_KEY) != query_page:
+        st.session_state[ACTIVE_PAGE_KEY] = query_page
+        st.session_state[LAST_QUERY_PAGE_KEY] = query_page
+
+    if ACTIVE_PAGE_KEY not in st.session_state:
+        st.session_state[ACTIVE_PAGE_KEY] = default
+
+    return normalize_page(st.session_state[ACTIVE_PAGE_KEY], default=default)
+
+
+def active_page_label(default: str = "overview") -> str:
+    """Return the display label for the active router page."""
+    return PAGE_LABELS[active_page_slug(default)]
+
+
+def set_active_page(slug: str) -> None:
+    """Select a page in the single-script Streamlit router."""
+    st.session_state[ACTIVE_PAGE_KEY] = normalize_page(slug)
+
+
 def configure_page(title: str) -> None:
     """Apply Streamlit page settings and shared visual styling."""
     st.set_page_config(
@@ -94,6 +148,7 @@ def apply_style() -> None:
           --dnascape-divider: color-mix(in srgb, var(--dnascape-text) 24%, var(--dnascape-bg));
           --dnascape-sidebar-bg: color-mix(in srgb, var(--dnascape-bg) 92%, var(--dnascape-panel));
           --dnascape-hover-bg: color-mix(in srgb, var(--dnascape-accent) 8%, var(--dnascape-panel));
+          --dnascape-sidebar-active-bg: color-mix(in srgb, var(--dnascape-text) 7%, var(--dnascape-panel));
           --dnascape-card-hover-bg: color-mix(in srgb, var(--dnascape-accent) 4%, var(--dnascape-panel));
           --dnascape-shadow: rgba(16, 24, 40, 0.04);
           --dnascape-shadow-hover: rgba(16, 24, 40, 0.07);
@@ -152,6 +207,7 @@ def apply_style() -> None:
           --dnascape-accent: color-mix(in srgb, var(--primary-color, #b03412) 58%, #ffffff);
           --dnascape-line: rgba(243, 238, 232, 0.36);
           --dnascape-divider: rgba(243, 238, 232, 0.48);
+          --dnascape-sidebar-active-bg: color-mix(in srgb, var(--dnascape-text) 16%, var(--dnascape-panel));
           --dnascape-shadow: rgba(0, 0, 0, 0.22);
           --dnascape-shadow-hover: rgba(0, 0, 0, 0.32);
           color-scheme: dark;
@@ -534,45 +590,78 @@ def apply_style() -> None:
           padding: 0 !important;
         }
 
+        section[data-testid="stSidebar"] [data-testid="stElementContainer"]:has(.dnascape-sidebar-active-style) {
+          height: 0 !important;
+          margin: 0 !important;
+          min-height: 0 !important;
+          overflow: hidden !important;
+          padding: 0 !important;
+        }
+
         section[data-testid="stSidebar"] [data-testid="stVerticalBlock"] {
           align-items: center;
           gap: 0.18rem;
         }
 
-        section[data-testid="stSidebar"] div[data-testid="stPageLink"] {
+        section[data-testid="stSidebar"] div[data-testid="stPageLink"],
+        section[data-testid="stSidebar"] [class*="st-key-sidebar-nav-"] {
           margin-left: auto !important;
           margin-right: auto !important;
           margin-bottom: var(--dnascape-sidebar-nav-gap);
           width: var(--dnascape-sidebar-inner-width) !important;
         }
 
-        section[data-testid="stSidebar"] div[data-testid="stPageLink"] a {
+        section[data-testid="stSidebar"] div[data-testid="stPageLink"] a,
+        section[data-testid="stSidebar"] [class*="st-key-sidebar-nav-"] button {
+          background: transparent !important;
+          border: 0 !important;
+          border-radius: 8px !important;
           box-sizing: border-box;
+          box-shadow: none !important;
           color: var(--dnascape-text) !important;
           display: flex;
           font-size: var(--dnascape-sidebar-nav-font-size);
           font-weight: 500;
-          justify-content: flex-start;
+          justify-content: flex-start !important;
           line-height: 1.35;
+          min-height: 0 !important;
           padding: var(--dnascape-sidebar-nav-padding-y)
-            var(--dnascape-sidebar-nav-padding-x);
+            var(--dnascape-sidebar-nav-padding-x) !important;
+          text-align: left !important;
           text-decoration: none !important;
           width: 100%;
         }
 
         section[data-testid="stSidebar"] div[data-testid="stPageLink"] a *,
+        section[data-testid="stSidebar"] [class*="st-key-sidebar-nav-"] button *,
         section[data-testid="stSidebar"] div[data-testid="stPageLink"] a[aria-current="page"],
-        section[data-testid="stSidebar"] div[data-testid="stPageLink"] a[aria-current="page"] * {
+        section[data-testid="stSidebar"] div[data-testid="stPageLink"] a[aria-current="page"] *,
+        section[data-testid="stSidebar"] [class*="st-key-sidebar-nav-"] button[aria-current="page"],
+        section[data-testid="stSidebar"] [class*="st-key-sidebar-nav-"] button[aria-current="page"] * {
           color: var(--dnascape-text) !important;
         }
 
-        section[data-testid="stSidebar"] div[data-testid="stPageLink"] a:hover {
-          background: var(--dnascape-hover-bg);
+        section[data-testid="stSidebar"] [class*="st-key-sidebar-nav-"] button div,
+        section[data-testid="stSidebar"] [class*="st-key-sidebar-nav-"] button p {
+          display: block !important;
+          flex: 1 1 auto !important;
+          justify-content: flex-start !important;
+          margin: 0 !important;
+          text-align: left !important;
+          width: 100% !important;
+        }
+
+        section[data-testid="stSidebar"] div[data-testid="stPageLink"] a:hover,
+        section[data-testid="stSidebar"] [class*="st-key-sidebar-nav-"] button:hover,
+        section[data-testid="stSidebar"] [class*="st-key-sidebar-nav-"] button:focus-visible {
+          background: var(--dnascape-hover-bg) !important;
           color: var(--dnascape-text) !important;
+          outline: none !important;
           text-decoration: none !important;
         }
 
-        section[data-testid="stSidebar"] div[data-testid="stPageLink"] a:hover * {
+        section[data-testid="stSidebar"] div[data-testid="stPageLink"] a:hover *,
+        section[data-testid="stSidebar"] [class*="st-key-sidebar-nav-"] button:hover * {
           color: var(--dnascape-text) !important;
         }
 
@@ -1292,565 +1381,6 @@ def apply_style() -> None:
     )
 
 
-def _render_header_theme_toggle_experiment() -> None:
-    """Previous header-button experiment, kept out of the active app shell."""
-    st.iframe(
-        f"""
-        <script>
-        (() => {{
-          const parentWindow = window.parent;
-          const doc = parentWindow.document;
-          const root = doc.documentElement;
-          const storageKey = "dnascape-theme";
-          const toggleId = "dnascape-theme-toggle";
-          const styleId = "dnascape-theme-toggle-style";
-          const toggleVersion = "parent-header-button-1";
-          const themes = {list(THEMES)!r};
-          const icons = {json.dumps(THEME_ICONS)};
-          const labels = {THEME_LABELS!r};
-          const prefersDark = parentWindow.matchMedia("(prefers-color-scheme: dark)");
-
-          function normalize(theme) {{
-            return themes.includes(theme) ? theme : "light";
-          }}
-
-          function effectiveTheme(theme) {{
-            return theme === "system" ? (prefersDark.matches ? "dark" : "light") : theme;
-          }}
-
-          function nextTheme(theme) {{
-            const index = themes.indexOf(normalize(theme));
-            return themes[(index + 1) % themes.length];
-          }}
-
-          function storedTheme() {{
-            try {{
-              return normalize(parentWindow.localStorage.getItem(storageKey));
-            }} catch (error) {{
-              return "light";
-            }}
-          }}
-
-          function setStoredTheme(theme) {{
-            try {{
-              parentWindow.localStorage.setItem(storageKey, theme);
-            }} catch (error) {{
-              /* Storage can be unavailable in hardened browser contexts. */
-            }}
-          }}
-
-          function injectStyle() {{
-            if (doc.getElementById(styleId)) {{
-              return;
-            }}
-
-            const style = doc.createElement("style");
-            style.id = styleId;
-            style.textContent = `
-              #${{toggleId}} {{
-                align-items: center;
-                background: transparent;
-                border: 0;
-                border-radius: 8px;
-                color: inherit;
-                cursor: pointer;
-                display: inline-flex;
-                flex: 0 0 auto;
-                font: inherit;
-                height: 2.25rem;
-                justify-content: center;
-                line-height: 1;
-                margin-left: 0.125rem;
-                margin-right: 0.125rem;
-                min-height: 2.25rem;
-                min-width: 2.25rem;
-                padding: 0;
-                user-select: none;
-                width: 2.25rem;
-              }}
-
-              #${{toggleId}}:hover,
-              #${{toggleId}}:focus-visible {{
-                background: color-mix(in srgb, currentColor 10%, transparent);
-                outline: none;
-              }}
-
-              #${{toggleId}}:active {{
-                background: color-mix(in srgb, currentColor 16%, transparent);
-              }}
-
-              #${{toggleId}}.dnascape-theme-toggle--fallback {{
-                position: fixed;
-                right: 2.75rem;
-                top: calc((3rem - 2.25rem) / 2);
-                z-index: 2147483647;
-              }}
-
-              #${{toggleId}} .dnascape-theme-icon-slot {{
-                align-items: center;
-                display: inline-flex;
-                justify-content: center;
-                line-height: 0;
-              }}
-
-              #${{toggleId}} .dnascape-theme-icon {{
-                display: block;
-                height: 1.15rem;
-                line-height: 1;
-                width: 1.15rem;
-              }}
-            `;
-            doc.head.appendChild(style);
-          }}
-
-          function mainMenuNode() {{
-            const selectors = [
-              '[data-testid="stMainMenu"]',
-              '.stMainMenu',
-              '#MainMenu',
-            ];
-
-            for (const selector of selectors) {{
-              const menu = doc.querySelector(selector);
-              if (menu && menu.parentElement) {{
-                return menu;
-              }}
-            }}
-
-            return null;
-          }}
-
-          function headerTarget() {{
-            const menu = mainMenuNode();
-            if (!menu || !menu.parentElement) {{
-              return null;
-            }}
-            return {{ parent: menu.parentElement, before: menu }};
-          }}
-
-          function resetButtonAttributes(toggle) {{
-            [
-              "aria-controls",
-              "aria-expanded",
-              "aria-haspopup",
-              "aria-pressed",
-              "data-clicked",
-            ].forEach((attribute) => toggle.removeAttribute(attribute));
-
-            toggle.id = toggleId;
-            toggle.type = "button";
-            toggle.setAttribute("kind", "headerNoPadding");
-            toggle.setAttribute("data-testid", "dnascapeThemeToggle");
-            toggle.dataset.dnascapeVersion = toggleVersion;
-          }}
-
-          function createIconSlot() {{
-            const icon = document.createElement("span");
-            icon.className = "dnascape-theme-icon-slot";
-            icon.setAttribute("aria-hidden", "true");
-            return icon;
-          }}
-
-          function createToggle() {{
-            const toggle = doc.createElement("button");
-            toggle.className = "dnascape-theme-toggle";
-            toggle.replaceChildren(createIconSlot());
-            resetButtonAttributes(toggle);
-            return toggle;
-          }}
-
-          function removeStaleToggles() {{
-            doc
-              .querySelectorAll(`#${{toggleId}}, .dnascape-theme-toggle, [data-testid="dnascapeThemeToggle"]`)
-              .forEach((node) => {{
-                if (node.dataset.dnascapeVersion !== toggleVersion) {{
-                  node.remove();
-                }}
-              }});
-          }}
-
-          function ensureToggle() {{
-            injectStyle();
-            removeStaleToggles();
-
-            const menuTarget = headerTarget();
-            let toggle = doc.getElementById(toggleId);
-
-            if (!toggle) {{
-              toggle = createToggle();
-            }}
-
-            if (!toggle) {{
-              return null;
-            }}
-
-            doc.querySelectorAll(`#${{toggleId}}`).forEach((node) => {{
-              if (node !== toggle) {{
-                node.remove();
-              }}
-            }});
-
-            if (menuTarget && menuTarget.parent) {{
-              toggle.className = "dnascape-theme-toggle";
-              toggle.classList.remove("dnascape-theme-toggle--fallback");
-              resetButtonAttributes(toggle);
-
-              if (toggle.parentElement !== menuTarget.parent || toggle.nextSibling !== menuTarget.before) {{
-                menuTarget.parent.insertBefore(toggle, menuTarget.before);
-              }}
-            }} else {{
-              toggle.className = "dnascape-theme-toggle dnascape-theme-toggle--fallback";
-              resetButtonAttributes(toggle);
-              doc.body.appendChild(toggle);
-            }}
-
-            return toggle;
-          }}
-
-          function updateToggle(theme) {{
-            ensureToggle();
-            doc.querySelectorAll(".dnascape-theme-toggle").forEach((toggle) => {{
-              const icon = toggle.querySelector(".dnascape-theme-icon-slot");
-              if (icon && icon.dataset.theme !== theme) {{
-                icon.innerHTML = icons[theme];
-                icon.dataset.theme = theme;
-              }}
-              const label = `Theme: ${{labels[theme]}}.`;
-              toggle.setAttribute("aria-label", label);
-              toggle.setAttribute("title", label);
-            }});
-          }}
-
-          function applyTheme(theme, animate = false) {{
-            const selected = normalize(theme);
-            const effective = effectiveTheme(selected);
-
-            if (animate) {{
-              root.classList.add("dnascape-theme-transition");
-              window.setTimeout(() => root.classList.remove("dnascape-theme-transition"), 190);
-            }}
-
-            root.setAttribute("data-dnascape-theme", selected);
-            root.setAttribute("data-dnascape-effective-theme", effective);
-            setStoredTheme(selected);
-            updateToggle(selected);
-          }}
-
-          function hideBuiltInThemeMenuItems() {{
-            const patterns = [/^settings$/i, /^theme$/i, /choose app theme/i, /appearance/i];
-            doc.querySelectorAll('[role="menuitem"], [role="option"], [role="menuitemradio"], button, a').forEach((node) => {{
-              const text = (node.textContent || "").replace(/\\s+/g, " ").trim();
-              if (!patterns.some((pattern) => pattern.test(text))) {{
-                return;
-              }}
-              const menuItem = node.closest('[role="menuitem"], [role="option"], [role="menuitemradio"], li, div') || node;
-              if (menuItem.classList && menuItem.classList.contains("dnascape-theme-toggle")) {{
-                return;
-              }}
-              menuItem.style.display = "none";
-            }});
-          }}
-
-          function bindToggle() {{
-            const toggle = ensureToggle();
-            if (!toggle || toggle.dataset.dnascapeBound === "true") {{
-              return;
-            }}
-            toggle.dataset.dnascapeBound = "true";
-            toggle.addEventListener("click", (event) => {{
-              event.preventDefault();
-              const current = normalize(root.getAttribute("data-dnascape-theme") || storedTheme());
-              applyTheme(nextTheme(current), true);
-            }});
-          }}
-
-          bindToggle();
-          applyTheme(root.getAttribute("data-dnascape-theme") || storedTheme(), false);
-          hideBuiltInThemeMenuItems();
-
-          let syncQueued = false;
-          function syncHeaderButton() {{
-            if (syncQueued) {{
-              return;
-            }}
-            syncQueued = true;
-            parentWindow.requestAnimationFrame(() => {{
-              syncQueued = false;
-              bindToggle();
-              updateToggle(normalize(root.getAttribute("data-dnascape-theme") || storedTheme()));
-              hideBuiltInThemeMenuItems();
-            }});
-          }}
-
-          const observer = new MutationObserver(() => {{
-            syncHeaderButton();
-          }});
-          observer.observe(doc.body, {{ childList: true, subtree: true }});
-
-          const systemListener = () => {{
-            if (normalize(root.getAttribute("data-dnascape-theme")) === "system") {{
-              applyTheme("system", true);
-            }}
-          }};
-
-          if (prefersDark.addEventListener) {{
-            prefersDark.addEventListener("change", systemListener);
-          }} else if (prefersDark.addListener) {{
-            prefersDark.addListener(systemListener);
-          }}
-        }})();
-        </script>
-        """,
-        width=1,
-        height=1,
-        tab_index=-1,
-    )
-
-
-def _render_theme_toggle_menu_experiment() -> None:
-    """Previous direct st.html menu experiment, kept out of the active shell."""
-    st.html(
-        f"""
-        <script>
-        (() => {{
-          const root = document.documentElement;
-          const storageKey = "dnascape-theme";
-          const styleId = "dnascape-theme-menu-style";
-          const styleVersion = "theme-menu-critical-paint-4";
-          const wrapperId = "dnascape-theme-menu-item-wrapper";
-          const itemId = "dnascape-theme-menu-item";
-          const themes = {list(THEMES)!r};
-          const icons = {json.dumps(THEME_ICONS)};
-          const labels = {THEME_LABELS!r};
-          const prefersDark = window.matchMedia("(prefers-color-scheme: dark)");
-
-          function normalize(theme) {{
-            return themes.includes(theme) ? theme : "light";
-          }}
-
-          function effectiveTheme(theme) {{
-            return theme === "system" ? (prefersDark.matches ? "dark" : "light") : theme;
-          }}
-
-          function nextTheme(theme) {{
-            const index = themes.indexOf(normalize(theme));
-            return themes[(index + 1) % themes.length];
-          }}
-
-          function storedTheme() {{
-            try {{
-              return normalize(window.localStorage.getItem(storageKey));
-            }} catch (error) {{
-              return "light";
-            }}
-          }}
-
-          function setStoredTheme(theme) {{
-            try {{
-              window.localStorage.setItem(storageKey, theme);
-            }} catch (error) {{
-              /* Storage can be unavailable in hardened browser contexts. */
-            }}
-          }}
-
-          function injectStyle() {{
-            if (document.getElementById(styleId)) {{
-              return;
-            }}
-
-            const style = document.createElement("style");
-            style.id = styleId;
-            style.textContent = `
-              #${{wrapperId}} {{
-                list-style: none;
-                margin: 0;
-                padding: 0;
-              }}
-
-              #${{itemId}} {{
-                align-items: center;
-                background: transparent;
-                border: 0;
-                color: inherit;
-                cursor: pointer;
-                display: flex;
-                font: inherit;
-                gap: 0.65rem;
-                justify-content: flex-start;
-                line-height: 1.35;
-                min-height: 2.25rem;
-                padding: 0.48rem 0.75rem;
-                text-align: left;
-                width: 100%;
-              }}
-
-              #${{itemId}}:hover,
-              #${{itemId}}:focus-visible {{
-                background: color-mix(in srgb, currentColor 10%, transparent);
-                outline: none;
-              }}
-
-              #${{itemId}} .dnascape-theme-menu-icon {{
-                align-items: center;
-                display: inline-flex;
-                flex: 0 0 1.1rem;
-                justify-content: center;
-                line-height: 0;
-              }}
-
-              #${{itemId}} .dnascape-theme-menu-icon svg {{
-                display: block;
-                height: 1.08rem;
-                width: 1.08rem;
-              }}
-
-              #${{itemId}} .dnascape-theme-menu-label {{
-                white-space: nowrap;
-              }}
-            `;
-            document.head.appendChild(style);
-          }}
-
-          function removeHeaderExperiment() {{
-            document
-              .querySelectorAll("#dnascape-theme-toggle, .dnascape-theme-toggle, [data-testid='dnascapeThemeToggle']")
-              .forEach((node) => node.remove());
-
-            const oldStyle = document.getElementById("dnascape-theme-toggle-style");
-            if (oldStyle) {{
-              oldStyle.remove();
-            }}
-          }}
-
-          function menuList() {{
-            const popover = document.querySelector(
-              '[data-testid="stMainMenuPopover"], .stMainMenuPopover'
-            );
-            if (!popover) {{
-              return null;
-            }}
-            return (
-              popover.querySelector('[data-testid="stMainMenuList"], [role="menu"]') ||
-              popover
-            );
-          }}
-
-          function updateMenuItem(theme) {{
-            const item = document.getElementById(itemId);
-            if (!item) {{
-              return;
-            }}
-
-            const label = `Theme: ${{labels[theme]}}`;
-            item.setAttribute("aria-label", `${{label}}.`);
-            item.setAttribute("title", `${{label}}.`);
-            item.querySelector(".dnascape-theme-menu-icon").innerHTML = icons[theme];
-            item.querySelector(".dnascape-theme-menu-label").textContent = label;
-          }}
-
-          function createMenuItem() {{
-            const wrapper = document.createElement("div");
-            wrapper.id = wrapperId;
-            wrapper.setAttribute("role", "none");
-
-            const item = document.createElement("button");
-            item.id = itemId;
-            item.type = "button";
-            item.setAttribute("role", "menuitem");
-            item.innerHTML = `
-              <span class="dnascape-theme-menu-icon" aria-hidden="true"></span>
-              <span class="dnascape-theme-menu-label"></span>
-            `;
-
-            item.addEventListener("mousedown", (event) => {{
-              event.stopPropagation();
-            }});
-
-            item.addEventListener("click", (event) => {{
-              event.preventDefault();
-              event.stopPropagation();
-              const current = normalize(root.getAttribute("data-dnascape-theme") || storedTheme());
-              applyTheme(nextTheme(current), true);
-            }});
-
-            wrapper.appendChild(item);
-            return wrapper;
-          }}
-
-          function ensureMenuItem() {{
-            injectStyle();
-            const list = menuList();
-            if (!list) {{
-              return;
-            }}
-
-            let wrapper = document.getElementById(wrapperId);
-            if (!wrapper) {{
-              wrapper = createMenuItem();
-            }}
-
-            if (wrapper.parentElement !== list) {{
-              list.insertBefore(wrapper, list.firstElementChild);
-            }} else if (list.firstElementChild !== wrapper) {{
-              list.insertBefore(wrapper, list.firstElementChild);
-            }}
-
-            updateMenuItem(normalize(root.getAttribute("data-dnascape-theme") || storedTheme()));
-          }}
-
-          function applyTheme(theme, animate = false) {{
-            const selected = normalize(theme);
-            const effective = effectiveTheme(selected);
-
-            if (animate) {{
-              root.classList.add("dnascape-theme-transition");
-              window.setTimeout(() => root.classList.remove("dnascape-theme-transition"), 190);
-            }}
-
-            root.setAttribute("data-dnascape-theme", selected);
-            root.setAttribute("data-dnascape-effective-theme", effective);
-            setStoredTheme(selected);
-            updateMenuItem(selected);
-          }}
-
-          removeHeaderExperiment();
-          applyTheme(root.getAttribute("data-dnascape-theme") || storedTheme(), false);
-          ensureMenuItem();
-
-          let syncQueued = false;
-          const syncMenu = () => {{
-            if (syncQueued) {{
-              return;
-            }}
-            syncQueued = true;
-            window.requestAnimationFrame(() => {{
-              syncQueued = false;
-              removeHeaderExperiment();
-              ensureMenuItem();
-            }});
-          }};
-
-          const observer = new MutationObserver(syncMenu);
-          observer.observe(document.body, {{ childList: true, subtree: true }});
-
-          const systemListener = () => {{
-            if (normalize(root.getAttribute("data-dnascape-theme")) === "system") {{
-              applyTheme("system", true);
-            }}
-          }};
-
-          if (prefersDark.addEventListener) {{
-            prefersDark.addEventListener("change", systemListener);
-          }} else if (prefersDark.addListener) {{
-            prefersDark.addListener(systemListener);
-          }}
-        }})();
-        </script>
-        """,
-        unsafe_allow_javascript=True,
-    )
-
-
 def render_theme_toggle() -> None:
     """Add the theme control to Streamlit's three-dot menu."""
     st.iframe(
@@ -1863,7 +1393,7 @@ def render_theme_toggle() -> None:
           const storageKey = "dnascape-theme";
           const helpStorageKey = "dnascape-show-help";
           const styleId = "dnascape-theme-menu-style";
-          const styleVersion = "theme-menu-critical-paint-18";
+          const styleVersion = "theme-menu-critical-paint-19";
           const wrapperId = "dnascape-theme-menu-item-wrapper";
           const itemId = "dnascape-theme-menu-item";
           const helpWrapperId = "dnascape-help-menu-item-wrapper";
@@ -1986,6 +1516,41 @@ def render_theme_toggle() -> None:
             style.id = styleId;
             style.dataset.dnascapeVersion = styleVersion;
             style.textContent = `
+              :root {{
+                --dnascape-sidebar-width: 15rem;
+              }}
+
+              section[data-testid="stSidebar"] {{
+                box-sizing: border-box !important;
+                max-width: var(--dnascape-sidebar-width) !important;
+                min-width: var(--dnascape-sidebar-width) !important;
+                width: var(--dnascape-sidebar-width) !important;
+              }}
+
+              section[data-testid="stSidebar"][aria-expanded="false"] {{
+                max-width: 0 !important;
+                min-width: 0 !important;
+                width: 0 !important;
+              }}
+
+              div[data-testid="stSidebarContent"],
+              div[data-testid="stSidebarUserContent"] {{
+                box-sizing: border-box !important;
+                max-width: 100% !important;
+                min-width: 0 !important;
+                width: 100% !important;
+              }}
+
+              [data-testid="stSidebarResizeHandle"],
+              [role="separator"],
+              div[style*="col-resize"],
+              div[style*="ew-resize"],
+              div[style*="cursor: col-resize"],
+              div[style*="cursor: ew-resize"] {{
+                display: none !important;
+                pointer-events: none !important;
+              }}
+
               :root[data-dnascape-effective-theme="dark"] {{
                 --background-color: #151413;
                 --secondary-background-color: #211f1d;
@@ -2781,18 +2346,79 @@ def render_main_logo(path: Path, alt: str) -> None:
     )
 
 
-def render_sidebar(active_label: str) -> None:
+def render_sidebar(active_label: str, *, use_router: bool = False) -> None:
     """Render the shared left navigation."""
+    active_slug = normalize_page(active_label)
+    active_url = next((url for slug, _, url in NAV_ITEMS if slug == active_slug), "")
+    active_route = active_url.strip("/")
     with st.sidebar:
+        page_link_active_selector = """
+                section[data-testid="stSidebar"] div[data-testid="stPageLink"]:has(a[aria-current="page"]) a,"""
+        page_link_active_hover_selector = """
+                section[data-testid="stSidebar"] div[data-testid="stPageLink"]:has(a[aria-current="page"]) a:hover,
+                section[data-testid="stSidebar"] div[data-testid="stPageLink"]:has(a[aria-current="page"]) a:focus-visible,"""
+        page_link_active_child_selector = """
+            section[data-testid="stSidebar"] div[data-testid="stPageLink"]:has(a[aria-current="page"]) a *"""
+        if active_route:
+            page_link_active_selector += f"""
+                section[data-testid="stSidebar"] div[data-testid="stPageLink"]:has(a[href*="{active_route}"]) a,"""
+            page_link_active_hover_selector += f"""
+                section[data-testid="stSidebar"] div[data-testid="stPageLink"]:has(a[href*="{active_route}"]) a:hover,
+                section[data-testid="stSidebar"] div[data-testid="stPageLink"]:has(a[href*="{active_route}"]) a:focus-visible,"""
+            page_link_active_child_selector += f""",
+            section[data-testid="stSidebar"] div[data-testid="stPageLink"]:has(a[href*="{active_route}"]) a *"""
+
+        st.markdown(
+            f"""
+            <span class="dnascape-sidebar-active-style" aria-hidden="true"></span>
+            <style>
+            {page_link_active_selector}
+            section[data-testid="stSidebar"] [class*="st-key-sidebar-nav-{active_slug}"] button {{
+              background: var(--dnascape-sidebar-active-bg) !important;
+              color: var(--dnascape-text) !important;
+              font-weight: 500 !important;
+              justify-content: flex-start !important;
+              text-align: left !important;
+            }}
+
+            {page_link_active_hover_selector}
+            section[data-testid="stSidebar"] [class*="st-key-sidebar-nav-{active_slug}"] button:hover,
+            section[data-testid="stSidebar"] [class*="st-key-sidebar-nav-{active_slug}"] button:focus-visible {{
+              background: var(--dnascape-hover-bg) !important;
+              color: var(--dnascape-text) !important;
+              outline: none !important;
+              text-decoration: none !important;
+            }}
+
+            section[data-testid="stSidebar"] [class*="st-key-sidebar-nav-{active_slug}"] button *,
+            {page_link_active_child_selector} {{
+              color: var(--dnascape-text) !important;
+              text-align: left !important;
+            }}
+            </style>
+            """,
+            unsafe_allow_html=True,
+        )
+
         render_sidebar_logo(SIDEBAR_LOGO_PATH, "DNAscape")
 
-        render_page_link("streamlit_app.py", "Overview", "/")
-        render_page_link("pages/1_Data_Management.py", "Data Management", "/Data_Management")
-        render_page_link("pages/2_Mapping.py", "Mapping", "/Mapping")
-        render_page_link("pages/3_Simulation.py", "Simulation", "/Simulation")
-        render_page_link("pages/4_Plotting.py", "Plotting", "/Plotting")
-        render_page_link("pages/5_Cached_Files.py", "Cached Files", "/Cached_Files")
-        render_page_link("pages/6_Resources.py", "Resources", "/Resources")
+        if use_router:
+            for slug, label, _ in NAV_ITEMS:
+                st.button(
+                    label,
+                    key=f"sidebar-nav-{slug}",
+                    on_click=set_active_page,
+                    args=(slug,),
+                    width="stretch",
+                )
+        else:
+            render_page_link("streamlit_app.py", "Overview", "/")
+            render_page_link("pages/1_Data_Management.py", "Data Management", "/Data_Management")
+            render_page_link("pages/2_Mapping.py", "Mapping", "/Mapping")
+            render_page_link("pages/3_Simulation.py", "Simulation", "/Simulation")
+            render_page_link("pages/4_Plotting.py", "Plotting", "/Plotting")
+            render_page_link("pages/5_Cached_Files.py", "Cached Files", "/Cached_Files")
+            render_page_link("pages/6_Resources.py", "Resources", "/Resources")
 
         st.markdown(
             f"""
