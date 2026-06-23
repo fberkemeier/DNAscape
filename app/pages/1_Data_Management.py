@@ -438,11 +438,19 @@ with right:
                 extension = f"{extension}.gz"
                 mime = "application/gzip"
             file_stem = safe_stem(output_file_name) or str(conversion["file_stem"])
+            file_name = f"{file_stem}.{extension}"
+            key_extension = extension.replace(".", "_")
+            download_key = (
+                f"data_management_download_{file_stem}_{key_extension}_"
+                f"{'gz' if compress_output else 'plain'}"
+            )
             with export_cols[2]:
                 st.download_button(
                     "Download",
                     data=payload,
-                    file_name=f"{file_stem}.{extension}",
+                    file_name=file_name,
                     mime=mime,
+                    key=download_key,
+                    on_click="ignore",
                     width="stretch",
                 )

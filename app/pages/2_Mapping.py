@@ -26,8 +26,8 @@ render_sidebar("Mapping")
 
 render_page_intro(
     "Mapping",
-    "Infer kinetic landscapes",
-    "Choose a target, set a precise rmap route, and preview mapped DNAscape outputs.",
+    "Map replication kinetic landscapes",
+    "Choose a target, set a precise mapping route, and preview mapped DNAscape outputs.",
 )
 
 st.markdown(
@@ -57,17 +57,6 @@ st.markdown(
         -webkit-text-fill-color: var(--dnascape-text) !important;
       }
 
-      body:has(.mapping-controls-locked-marker) .st-key-mapping-control-card {
-        filter: grayscale(0.18);
-        opacity: 0.52;
-        pointer-events: none;
-        user-select: none;
-      }
-
-      body:has(.mapping-controls-locked-marker) .st-key-mapping-action-button button {
-        cursor: not-allowed !important;
-        opacity: 0.62 !important;
-      }
     </style>
     """,
     unsafe_allow_html=True,
@@ -309,6 +298,7 @@ def read_numeric_table(uploaded_file) -> tuple[pd.DataFrame | None, list[str], s
     if uploaded_file is None:
         return None, [], None
     try:
+        uploaded_file.seek(0)
         suffixes = [suffix.lower() for suffix in Path(uploaded_file.name).suffixes]
         compression = "gzip" if uploaded_file.name.lower().endswith(".gz") else None
         separator = "," if ".csv" in suffixes and ".tsv" not in suffixes else "\t"
@@ -914,13 +904,6 @@ def render_figure_preview(export_bytes: dict[str, bytes], file_stem: str) -> Non
         )
 
 
-active_mapping_job = st.session_state.get(MAP_JOB_KEY)
-mapping_controls_locked = active_mapping_job is not None
-if mapping_controls_locked:
-    st.markdown(
-        '<span class="mapping-controls-locked-marker" aria-hidden="true"></span>',
-        unsafe_allow_html=True,
-    )
 source_inputs = {}
 primary_table = None
 primary_columns = []
@@ -1344,7 +1327,6 @@ with controls:
         map_requested = st.button(
             "Map",
             type="primary",
-            disabled=mapping_controls_locked,
             width="stretch",
         )
 

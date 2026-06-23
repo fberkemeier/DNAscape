@@ -27,7 +27,7 @@ render_sidebar("Simulation")
 
 render_page_intro(
     "Simulation",
-    "Configure rsim experiments",
+    "Simulate DNA replication",
     "Simulate stochastic replication dynamics, vary kinetic assumptions, and preview DNAscape-ready outputs.",
 )
 
