@@ -1,5 +1,7 @@
 import tempfile
 import unittest
+import gzip
+from io import BytesIO
 from pathlib import Path
 
 import numpy as np
@@ -112,6 +114,33 @@ class IOTests(unittest.TestCase):
             self.assertEqual(events[-1]["status"], "done")
             self.assertEqual(events[-1]["progress"], 1.0)
             self.assertEqual(events[-1]["output_path"], str(output_path))
+
+    def test_rdata_can_write_gzip_text_output(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            input_path = Path(tmpdir) / "timing.csv"
+            output_path = Path(tmpdir) / "timing.tsv.gz"
+            input_path.write_text("chr1,chr2\n1,3\n2,4\n", encoding="utf-8")
+
+            result_path = rdata(input_path, target=output_path)
+
+            self.assertEqual(result_path, output_path)
+            with gzip.open(output_path, "rt", encoding="utf-8") as handle:
+                self.assertEqual(handle.read(), "chr1\tchr2\n1\t3\n2\t4\n")
+
+    def test_rdata_can_write_gzip_binary_output(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            output_path = Path(tmpdir) / "values.npy.gz"
+
+            result_path = rdata(
+                np.array([1.0, 2.0, 3.0]),
+                target=output_path,
+                data_form="space",
+            )
+
+            self.assertEqual(result_path, output_path)
+            with gzip.open(output_path, "rb") as handle:
+                loaded = np.load(BytesIO(handle.read()), allow_pickle=False)
+            np.testing.assert_allclose(loaded, np.array([1.0, 2.0, 3.0]))
 
     def test_rload_extracts_chromosome_as_dnascape_vector(self):
         with tempfile.TemporaryDirectory() as tmpdir:

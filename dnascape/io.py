@@ -7,6 +7,7 @@ from typing import Optional
 import gzip
 import re
 import shutil
+import tempfile
 import time
 
 import numpy as np
@@ -572,6 +573,30 @@ def _write_rdata_payload(
 ):
     output_path = Path(output_path).expanduser()
     output_path.parent.mkdir(parents=True, exist_ok=True)
+
+    if output_path.suffix.lower() == ".gz":
+        suffix = _RDATA_SUFFIXES[target_format]
+        temp_path = None
+        try:
+            with tempfile.NamedTemporaryFile(
+                delete=False,
+                dir=output_path.parent,
+                suffix=suffix,
+            ) as temp_file:
+                temp_path = Path(temp_file.name)
+            _write_rdata_payload(
+                payload,
+                temp_path,
+                target_format,
+                decimal_places=decimal_places,
+                encoding=encoding,
+                value_name=value_name,
+            )
+            compress_to_gz(temp_path, output_path)
+        finally:
+            if temp_path is not None:
+                temp_path.unlink(missing_ok=True)
+        return output_path
 
     if decimal_places is None:
         float_format = None

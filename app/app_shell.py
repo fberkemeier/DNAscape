@@ -481,6 +481,42 @@ def apply_style() -> None:
           color: var(--dnascape-text) !important;
         }
 
+        :root[data-dnascape-effective-theme="dark"] [data-baseweb="popover"],
+        :root[data-dnascape-effective-theme="dark"] [data-baseweb="popover"] > div,
+        :root[data-dnascape-effective-theme="dark"] [data-baseweb="popover"] [data-baseweb="menu"],
+        :root[data-dnascape-effective-theme="dark"] [data-baseweb="popover"] [role="listbox"],
+        :root[data-dnascape-effective-theme="dark"] [data-baseweb="popover"] ul,
+        :root[data-dnascape-effective-theme="dark"] [data-baseweb="menu"] {
+          background: var(--dnascape-panel) !important;
+          background-color: var(--dnascape-panel) !important;
+          background-image: none !important;
+          border-color: var(--dnascape-line) !important;
+          color: var(--dnascape-text) !important;
+          -webkit-text-fill-color: var(--dnascape-text) !important;
+        }
+
+        :root[data-dnascape-effective-theme="dark"] [data-baseweb="popover"] [role="option"],
+        :root[data-dnascape-effective-theme="dark"] [data-baseweb="popover"] [role="option"] *,
+        :root[data-dnascape-effective-theme="dark"] [data-baseweb="menu"] [role="option"],
+        :root[data-dnascape-effective-theme="dark"] [data-baseweb="menu"] [role="option"] * {
+          background-color: transparent !important;
+          color: var(--dnascape-text) !important;
+          opacity: 1 !important;
+          -webkit-text-fill-color: var(--dnascape-text) !important;
+        }
+
+        :root[data-dnascape-effective-theme="dark"] [data-baseweb="popover"] [role="option"]:hover,
+        :root[data-dnascape-effective-theme="dark"] [data-baseweb="popover"] [role="option"][aria-selected="true"],
+        :root[data-dnascape-effective-theme="dark"] [data-baseweb="popover"] [role="option"][data-highlighted="true"],
+        :root[data-dnascape-effective-theme="dark"] [data-baseweb="menu"] [role="option"]:hover,
+        :root[data-dnascape-effective-theme="dark"] [data-baseweb="menu"] [role="option"][aria-selected="true"],
+        :root[data-dnascape-effective-theme="dark"] [data-baseweb="menu"] [role="option"][data-highlighted="true"] {
+          background: var(--dnascape-hover-bg) !important;
+          background-color: var(--dnascape-hover-bg) !important;
+          color: var(--dnascape-text) !important;
+          -webkit-text-fill-color: var(--dnascape-text) !important;
+        }
+
         section[data-testid="stSidebar"],
         div[data-testid="stSidebarContent"],
         div[data-testid="stSidebarUserContent"] {
@@ -892,9 +928,12 @@ def apply_style() -> None:
           display: block;
           min-height: 172px;
           padding: 1.2rem 1.15rem;
+          pointer-events: none;
+          position: relative;
           text-decoration: none !important;
           transition: background-color 140ms ease, border-color 140ms ease,
             box-shadow 140ms ease;
+          z-index: 3;
         }
 
         .workflow-card:visited,
@@ -919,9 +958,15 @@ def apply_style() -> None:
         body:has(.overview-page-marker) [class*="st-key-workflow-card-"]:not([class*="st-key-workflow-card-button-"]) [data-testid="stElementContainer"]:has(.workflow-card) {
           margin: 0 !important;
           padding: 0 !important;
+          pointer-events: none;
+          position: relative;
+          z-index: 3;
         }
 
         body:has(.overview-page-marker) [class*="st-key-workflow-card-"]:not([class*="st-key-workflow-card-button-"]) [class*="st-key-workflow-card-button-"] {
+          background: transparent !important;
+          background-color: transparent !important;
+          background-image: none !important;
           height: 100% !important;
           inset: 0;
           margin: 0 !important;
@@ -932,9 +977,11 @@ def apply_style() -> None:
         }
 
         body:has(.overview-page-marker) [class*="st-key-workflow-card-button-"] .stButton,
-        body:has(.overview-page-marker) [class*="st-key-workflow-card-button-"] [data-testid="stButton"] {
+        body:has(.overview-page-marker) [class*="st-key-workflow-card-button-"] [data-testid="stButton"],
+        body:has(.overview-page-marker) [class*="st-key-workflow-card-button-"] [data-testid="stElementContainer"] {
           background: transparent !important;
           background-color: transparent !important;
+          background-image: none !important;
           height: 100% !important;
           margin: 0 !important;
           padding: 0 !important;
@@ -968,6 +1015,21 @@ def apply_style() -> None:
           padding: 0 !important;
           -webkit-text-fill-color: transparent !important;
           width: 100% !important;
+        }
+
+        body:has(.overview-page-marker) [class*="st-key-workflow-card-button-"] button *,
+        body:has(.overview-page-marker) [class*="st-key-workflow-card-button-"] button *::before,
+        body:has(.overview-page-marker) [class*="st-key-workflow-card-button-"] button *::after,
+        :root[data-dnascape-effective-theme="dark"] body:has(.overview-page-marker) [class*="st-key-workflow-card-button-"] button *,
+        :root[data-dnascape-effective-theme="dark"] body:has(.overview-page-marker) [class*="st-key-workflow-card-button-"] button *::before,
+        :root[data-dnascape-effective-theme="dark"] body:has(.overview-page-marker) [class*="st-key-workflow-card-button-"] button *::after {
+          background: transparent !important;
+          background-color: transparent !important;
+          background-image: none !important;
+          border-color: transparent !important;
+          box-shadow: none !important;
+          color: transparent !important;
+          -webkit-text-fill-color: transparent !important;
         }
 
         body:has(.overview-page-marker) [class*="st-key-workflow-card-"]:not([class*="st-key-workflow-card-button-"]):has(button:hover) .workflow-card,
@@ -2507,18 +2569,36 @@ def render_theme_toggle() -> None:
           function syncSidebarFooter() {{
             const footer = doc.querySelector(".sidebar-external-links");
             const sidebar = doc.querySelector('section[data-testid="stSidebar"]');
-            const pageLinks = Array.from(
-              doc.querySelectorAll('section[data-testid="stSidebar"] div[data-testid="stPageLink"]')
-            );
+            const navItems = Array.from(
+              doc.querySelectorAll(
+                [
+                  'section[data-testid="stSidebar"] div[data-testid="stPageLink"]',
+                  'section[data-testid="stSidebar"] [class*="st-key-sidebar-nav-"]',
+                ].join(",")
+              )
+            ).filter((item) => {{
+              const itemBox = item.getBoundingClientRect();
+              const itemStyle = win.getComputedStyle(item);
+              return (
+                itemStyle.display !== "none" &&
+                itemStyle.visibility !== "hidden" &&
+                itemBox.width > 0 &&
+                itemBox.height > 0
+              );
+            }});
 
-            if (!footer || !sidebar || !pageLinks.length || sidebar.getAttribute("aria-expanded") === "false") {{
+            if (!footer || !sidebar || !navItems.length || sidebar.getAttribute("aria-expanded") === "false") {{
               root.classList.remove("dnascape-sidebar-footer-hidden");
               return;
             }}
 
             root.classList.remove("dnascape-sidebar-footer-hidden");
-            const lastLink = pageLinks[pageLinks.length - 1];
-            const lastLinkBox = lastLink.getBoundingClientRect();
+            const lastNavItem = navItems.reduce((lowest, item) =>
+              item.getBoundingClientRect().bottom > lowest.getBoundingClientRect().bottom
+                ? item
+                : lowest
+            );
+            const lastLinkBox = lastNavItem.getBoundingClientRect();
             const footerBox = footer.getBoundingClientRect();
             const minGap = cssLengthToPx(
               win.getComputedStyle(root).getPropertyValue("--dnascape-sidebar-external-min-gap"),

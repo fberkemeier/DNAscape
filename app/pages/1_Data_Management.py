@@ -1,6 +1,5 @@
 """Data Management page for the DNAscape Streamlit prototype."""
 
-import gzip
 import sys
 import tempfile
 from pathlib import Path
@@ -152,15 +151,12 @@ def safe_stem(*parts: object) -> str:
     return "".join(char if char.isalnum() or char in "-_" else "_" for char in raw_name)
 
 
-def compressed_payload(payload: bytes) -> bytes:
-    return gzip.compress(payload, compresslevel=9)
-
-
 def convert_with_rdata(
     uploaded_file,
     *,
     source_format: str,
     target_format: str,
+    compress_output: bool,
     data_form: str,
     column_name: str | None,
     array_key: str | None,
@@ -172,7 +168,9 @@ def convert_with_rdata(
     with tempfile.TemporaryDirectory() as tmpdir:
         tmp_path = Path(tmpdir)
         source_path = tmp_path / f"input{upload_suffix(uploaded_file.name)}"
-        output_path = tmp_path / f"{safe_stem(upload_stem(uploaded_file.name))}.{target_format}"
+        file_stem = safe_stem(upload_stem(uploaded_file.name))
+        output_extension = f"{target_format}.gz" if compress_output else target_format
+        output_path = tmp_path / f"{file_stem}.{output_extension}"
         source_path.write_bytes(uploaded_file.getvalue())
 
         column_kwargs = {"chromosome": column_name} if column_name else {}
@@ -191,8 +189,10 @@ def convert_with_rdata(
 
     return {
         "payload": payload,
-        "file_stem": output_path.stem,
-        "mime": TARGET_MIME[target_format],
+        "file_stem": file_stem,
+        "extension": output_extension,
+        "mime": "application/gzip" if compress_output else TARGET_MIME[target_format],
+        "compressed": compress_output,
         "data_form": result["data_form"],
         "source_format": result["source_format"],
         "target_format": result["target_format"],
@@ -295,7 +295,7 @@ with right:
                 unsafe_allow_html=True,
             )
         else:
-            route_cols = st.columns(2, gap="small")
+            route_cols = st.columns([0.42, 0.42, 0.16], gap="small")
             with route_cols[0]:
                 st.selectbox(
                     "From",
@@ -308,6 +308,12 @@ with right:
                     "To",
                     list(TARGET_FORMATS),
                     index=list(TARGET_FORMATS).index("TSV"),
+                )
+            with route_cols[2]:
+                compress_output = st.checkbox(
+                    "GZ",
+                    value=False,
+                    key="data_management_convert_gz",
                 )
 
             options_cols = st.columns(2, gap="small")
@@ -359,6 +365,7 @@ with right:
             conversion_spec = {
                 "source_format": source_format,
                 "target_format": TARGET_FORMATS[target_label],
+                "compress_output": compress_output,
                 "data_form": DATA_FORM_LABELS[data_form_label],
                 "column_name": column_name.strip() or None,
                 "array_key": array_key.strip() or None,
@@ -401,8 +408,11 @@ with right:
                 """,
                 unsafe_allow_html=True,
             )
+            target_display = str(conversion["target_format"])
+            if conversion.get("compressed"):
+                target_display = f"{target_display}.gz"
             st.caption(
-                f"{conversion['source_format']} -> {conversion['target_format']} | "
+                f"{conversion['source_format']} -> {target_display} | "
                 f"{conversion['data_form']} | values shape {conversion['values_shape']}"
             )
 
@@ -415,7 +425,7 @@ with right:
                 unsafe_allow_html=True,
             )
             st.caption("Export")
-            export_cols = st.columns([0.52, 0.16, 0.32], gap="small")
+            export_cols = st.columns([0.68, 0.32], gap="small")
             with export_cols[0]:
                 output_file_name = st.text_input(
                     "File name",
@@ -423,28 +433,19 @@ with right:
                     placeholder="Name (auto)",
                     label_visibility="collapsed",
                 )
-            with export_cols[1]:
-                compress_output = st.checkbox(
-                    "GZ",
-                    value=False,
-                    key="data_management_download_gz",
-                )
 
             payload = conversion["payload"]
-            extension = conversion["target_format"]
+            extension = str(conversion.get("extension") or conversion["target_format"])
             mime = conversion["mime"]
-            if compress_output:
-                payload = compressed_payload(payload)
-                extension = f"{extension}.gz"
-                mime = "application/gzip"
             file_stem = safe_stem(output_file_name) or str(conversion["file_stem"])
             file_name = f"{file_stem}.{extension}"
             key_extension = extension.replace(".", "_")
+            compressed_suffix = "gz" if conversion.get("compressed") else "plain"
             download_key = (
                 f"data_management_download_{file_stem}_{key_extension}_"
-                f"{'gz' if compress_output else 'plain'}"
+                f"{compressed_suffix}"
             )
-            with export_cols[2]:
+            with export_cols[1]:
                 st.download_button(
                     "Download",
                     data=payload,
