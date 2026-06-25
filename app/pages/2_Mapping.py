@@ -2,6 +2,7 @@
 
 import base64
 import contextlib
+import gzip
 import importlib
 import queue
 import re
@@ -95,7 +96,6 @@ MAP_STATE_KEY = "mapping_last_map"
 MAP_JOB_KEY = "mapping_active_job"
 MAP_JOB_STARTED_KEY = "mapping_job_started_this_run"
 MAP_NOTICE_KEY = "mapping_status_notice"
-MAP_RAW_DOWNLOAD_KEY = "mapping_raw_download_payload"
 RMAP_PROGRESS_PATTERN = re.compile(
     r"\[(?P<iteration>\d+)/(?P<total>\d+)\].*?"
     r"Elapsed:\s*(?P<elapsed>\d{2}:\d{2}:\d{2}).*?"
@@ -453,6 +453,17 @@ def raw_download_payload(
     array_buffer = BytesIO()
     np.save(array_buffer, frame.to_numpy())
     return array_buffer.getvalue(), "npy", "application/octet-stream"
+
+
+def maybe_gzip_payload(
+    payload: bytes,
+    extension: str,
+    mime: str,
+    compress: bool,
+) -> tuple[bytes, str, str]:
+    if not compress:
+        return payload, extension, mime
+    return gzip.compress(payload), f"{extension}.gz", "application/gzip"
 
 
 def build_time_grid(timing_values: np.ndarray, resolution_time: float) -> np.ndarray:
@@ -1543,7 +1554,6 @@ def render_mapping_workspace() -> None:
                 discard_mapping_job(active_mapping_job)
                 st.session_state.pop(MAP_JOB_KEY, None)
                 st.session_state.pop(MAP_JOB_STARTED_KEY, None)
-                st.session_state.pop(MAP_RAW_DOWNLOAD_KEY, None)
 
                 mapping_assumptions = {
                     "resolution": resolution,
@@ -1770,9 +1780,8 @@ def render_mapping_workspace() -> None:
                         st.session_state["mapping_raw_file_name_source"] = (
                             default_raw_file_name
                         )
-                        st.session_state.pop(MAP_RAW_DOWNLOAD_KEY, None)
 
-                    export_cols = st.columns([0.48, 0.20, 0.32], gap="small")
+                    export_cols = st.columns([0.46, 0.18, 0.12, 0.24], gap="small")
                     with export_cols[0]:
                         raw_file_name = st.text_input(
                             "File name",
@@ -1788,45 +1797,34 @@ def render_mapping_workspace() -> None:
                             key="mapping_raw_format",
                             label_visibility="collapsed",
                         )
+                    with export_cols[2]:
+                        raw_gzip = st.checkbox(
+                            "GZ",
+                            key="mapping_raw_gzip",
+                            help="Compress the raw output as gzip.",
+                        )
                     raw_file_stem = (
                         safe_download_stem(raw_file_name) or default_raw_file_name
                     )
-                    download_key = (
-                        last_map_for_download["file_stem"],
+                    payload, extension, mime = raw_download_payload(
+                        last_map_for_download["raw"],
                         raw_format,
-                        raw_file_stem,
                     )
-                    with export_cols[2]:
-                        prepared_download = st.session_state.get(MAP_RAW_DOWNLOAD_KEY)
-                        if (
-                            prepared_download is not None
-                            and prepared_download.get("key") == download_key
-                        ):
-                            st.download_button(
-                                "Download",
-                                data=prepared_download["payload"],
-                                file_name=prepared_download["file_name"],
-                                mime=prepared_download["mime"],
-                                on_click="ignore",
-                                width="stretch",
-                            )
-                        elif st.button(
-                            "Prepare",
-                            key="mapping_raw_prepare_download",
+                    payload, extension, mime = maybe_gzip_payload(
+                        payload,
+                        extension,
+                        mime,
+                        raw_gzip,
+                    )
+                    with export_cols[3]:
+                        st.download_button(
+                            "Download",
+                            data=payload,
+                            file_name=f"{raw_file_stem}.{extension}",
+                            mime=mime,
+                            on_click="ignore",
                             width="stretch",
-                        ):
-                            payload, extension, mime = raw_download_payload(
-                                last_map_for_download["raw"],
-                                raw_format,
-                            )
-                            st.session_state[MAP_RAW_DOWNLOAD_KEY] = {
-                                "key": download_key,
-                                "payload": payload,
-                                "file_name": f"{raw_file_stem}.{extension}",
-                                "mime": mime,
-                            }
-                            if not rerun_preview_fragment():
-                                st.rerun()
+                        )
                 else:
                     st.markdown(
                         """

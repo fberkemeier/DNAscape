@@ -190,6 +190,10 @@ def apply_style() -> None:
           --dnascape-mobile-main-top-padding: 1.3rem;
           --dnascape-overview-top-padding: 0rem;
           --dnascape-mobile-overview-top-padding: 1.3rem;
+          --dnascape-overview-card-gap: 1rem;
+          --dnascape-overview-card-min-height: 80px;
+          --dnascape-overview-card-icon-box-size: 3rem;
+          --dnascape-overview-card-icon-size: 3.7rem;
         }
 
         html,
@@ -952,13 +956,15 @@ def apply_style() -> None:
           background: var(--dnascape-panel);
           border: 1px solid var(--dnascape-line);
           border-radius: 8px;
+          box-sizing: border-box;
           box-shadow: 0 1px 2px var(--dnascape-shadow);
           color: var(--dnascape-text);
           cursor: pointer;
           display: flex;
+          align-items: center;
           gap: 1rem;
           justify-content: space-between;
-          min-height: 172px;
+          min-height: var(--dnascape-overview-card-min-height);
           padding: 1.2rem 1.15rem;
           pointer-events: none;
           position: relative;
@@ -966,6 +972,19 @@ def apply_style() -> None:
           transition: background-color 140ms ease, border-color 140ms ease,
             box-shadow 140ms ease;
           z-index: 3;
+        }
+
+        body:has(.overview-page-marker) [class*="st-key-workflow-row-"] {
+          margin: 0 !important;
+          padding: 0 !important;
+        }
+
+        body:has(.overview-page-marker) [class*="st-key-workflow-row-"]:not([class*="st-key-workflow-row-0"]) {
+          margin-top: var(--dnascape-overview-card-gap) !important;
+        }
+
+        body:has(.overview-page-marker) [class*="st-key-workflow-row-"] [data-testid="stHorizontalBlock"] {
+          gap: var(--dnascape-overview-card-gap) !important;
         }
 
         .workflow-card:visited,
@@ -983,7 +1002,7 @@ def apply_style() -> None:
         }
 
         body:has(.overview-page-marker) [class*="st-key-workflow-card-"]:not([class*="st-key-workflow-card-button-"]) {
-          min-height: 172px;
+          min-height: var(--dnascape-overview-card-min-height);
           position: relative;
         }
 
@@ -1085,22 +1104,22 @@ def apply_style() -> None:
           color: var(--dnascape-accent);
           display: flex;
           flex: 0 0 auto;
-          height: 3rem;
+          height: var(--dnascape-overview-card-icon-box-size);
           justify-content: center;
           margin-left: auto;
           opacity: 0.88;
-          width: 3rem;
+          width: var(--dnascape-overview-card-icon-box-size);
           transition: color 140ms ease, opacity 140ms ease;
         }
 
         .workflow-card-icon svg {
           fill: none;
-          height: 1.9rem;
+          height: var(--dnascape-overview-card-icon-size);
           stroke: currentColor;
           stroke-linecap: round;
           stroke-linejoin: round;
           stroke-width: 1.85;
-          width: 1.9rem;
+          width: var(--dnascape-overview-card-icon-size);
         }
 
         body:has(.overview-page-marker) [class*="st-key-workflow-card-"]:not([class*="st-key-workflow-card-button-"]):has(button:hover) .workflow-card-icon,
@@ -1129,10 +1148,6 @@ def apply_style() -> None:
         .workflow-card:hover *,
         .workflow-card:focus * {
           text-decoration: none !important;
-        }
-
-        .workflow-grid-row-spacer {
-          height: 1rem;
         }
 
         .sidebar-external-links {
@@ -1672,6 +1687,7 @@ def apply_style() -> None:
           .lead {
             font-size: 1rem;
           }
+
         }
         </style>
         """,

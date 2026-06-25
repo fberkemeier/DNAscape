@@ -166,23 +166,18 @@ def render_overview() -> None:
         ),
     ]
 
-    for row_start in range(0, len(workflow_cards), 3):
-        if row_start:
-            st.markdown("<div class='workflow-grid-row-spacer'></div>", unsafe_allow_html=True)
-
-        cols = st.columns(3)
-        for col, (title, body, page) in zip(cols, workflow_cards[row_start : row_start + 3]):
-            with col:
-                render_workflow_card(title, body, page)
+    with st.container(key="workflow-grid"):
+        for row_index, row_start in enumerate(range(0, len(workflow_cards), 3)):
+            with st.container(key=f"workflow-row-{row_index}"):
+                cols = st.columns(3, gap="small")
+                for col, (title, body, page) in zip(cols, workflow_cards[row_start : row_start + 3]):
+                    with col:
+                        render_workflow_card(title, body, page)
 
     st.markdown(
         """
         <div class="workflow-line">
-          <span>Sequencing tracks</span>
-          <span>DNAscape inputs</span>
-          <span>rmap</span>
-          <span>rsim</span>
-          <span>comparison</span>
+          <span>v1.0.0</span>
         </div>
         """,
         unsafe_allow_html=True,

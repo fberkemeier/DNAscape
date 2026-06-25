@@ -2,6 +2,7 @@
 
 import base64
 import contextlib
+import gzip
 import queue
 import re
 import sys
@@ -554,6 +555,17 @@ def simulation_raw_payload(
     array_buffer = BytesIO()
     np.save(array_buffer, frame.to_numpy())
     return array_buffer.getvalue(), "npy", "application/octet-stream"
+
+
+def maybe_gzip_payload(
+    payload: bytes,
+    extension: str,
+    mime: str,
+    compress: bool,
+) -> tuple[bytes, str, str]:
+    if not compress:
+        return payload, extension, mime
+    return gzip.compress(payload), f"{extension}.gz", "application/gzip"
 
 
 def build_simulation_preview(
@@ -1766,7 +1778,7 @@ with preview:
                         default_raw_file_name
                     )
 
-                export_cols = st.columns([0.48, 0.20, 0.32], gap="small")
+                export_cols = st.columns([0.46, 0.18, 0.12, 0.24], gap="small")
                 with export_cols[0]:
                     raw_file_name = st.text_input(
                         "File name",
@@ -1782,14 +1794,26 @@ with preview:
                         key="simulation_raw_format",
                         label_visibility="collapsed",
                     )
+                with export_cols[2]:
+                    raw_gzip = st.checkbox(
+                        "GZ",
+                        key="simulation_raw_gzip",
+                        help="Compress the raw output as gzip.",
+                    )
                 payload, extension, mime = simulation_raw_payload(
                     last_simulation_for_download["raw"],
                     raw_format,
                 )
+                payload, extension, mime = maybe_gzip_payload(
+                    payload,
+                    extension,
+                    mime,
+                    raw_gzip,
+                )
                 raw_file_stem = (
                     safe_download_stem(raw_file_name) or default_raw_file_name
                 )
-                with export_cols[2]:
+                with export_cols[3]:
                     st.download_button(
                         "Download",
                         data=payload,
