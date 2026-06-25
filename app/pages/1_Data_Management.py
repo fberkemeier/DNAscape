@@ -21,7 +21,7 @@ render_sidebar("Data Management")
 render_page_intro(
     "Data Management",
     "Convert genomic data files",
-    "Upload a supported file and convert it between rdata-compatible formats.",
+    "Upload a supported file and convert it between DNAscape-compatible formats.",
 )
 
 st.markdown(
@@ -71,15 +71,6 @@ st.markdown(
 )
 
 
-SOURCE_FORMATS = {
-    "Auto detect": "auto",
-    "CSV": "csv",
-    "TSV": "tsv",
-    "TXT": "txt",
-    "NPV": "npv",
-    "NPY": "npy",
-    "NPZ": "npz",
-}
 TARGET_FORMATS = {
     "CSV": "csv",
     "TSV": "tsv",
@@ -111,7 +102,23 @@ FORMAT_LABELS = {
     "npy": "NPY",
     "npz": "NPZ",
 }
-FORMAT_EXAMPLES = "CSV, TSV, TXT, NPV, NPY, NPZ, and GZ-compressed CSV/TSV/TXT files."
+UPLOAD_TYPES = [
+    "csv",
+    "tsv",
+    "txt",
+    "npv",
+    "npy",
+    "npz",
+    "gz",
+    "bw",
+    "bigwig",
+    "bedgraph",
+    "bdg",
+]
+FORMAT_EXAMPLES = (
+    "CSV, TSV, TXT, NPV, NPY, NPZ, GZ-compressed CSV/TSV/TXT, "
+    "bigWig, and bedGraph files."
+)
 LAST_CONVERSION_KEY = "data_management_last_conversion"
 
 
@@ -203,7 +210,6 @@ def convert_with_rdata(
 left, right = st.columns([0.35, 0.65], gap="medium")
 
 uploaded_file = None
-selected_source_label = "Auto detect"
 source_format = None
 source_error = None
 convert_clicked = False
@@ -211,43 +217,20 @@ convert_clicked = False
 with left:
     with st.container(border=True):
         st.markdown('<div class="data-management-panel-title">Input</div>', unsafe_allow_html=True)
-        input_cols = st.columns([0.42, 0.58], gap="small")
-        with input_cols[0]:
-            selected_source_label = st.selectbox(
-                "Type",
-                list(SOURCE_FORMATS),
-                index=0,
-                help="Input file format. Auto detect uses the file suffix.",
-            )
-        with input_cols[1]:
-            uploaded_file = st.file_uploader(
-                "Upload",
-                type=["csv", "tsv", "txt", "npv", "npy", "npz", "gz"],
-                help=f"Examples: {FORMAT_EXAMPLES}",
-                accept_multiple_files=False,
-            )
+        uploaded_file = st.file_uploader(
+            "Upload",
+            type=UPLOAD_TYPES,
+            help=f"Examples: {FORMAT_EXAMPLES}",
+            accept_multiple_files=False,
+        )
 
-        if uploaded_file is None:
-            st.markdown(
-                """
-                <p class="small-muted">
-                Upload a supported file to convert between rdata-compatible formats.
-                </p>
-                """,
-                unsafe_allow_html=True,
-            )
-        else:
-            selected_source_format = SOURCE_FORMATS[selected_source_label]
-            detected_format = detect_source_format(uploaded_file.name)
-            source_format = (
-                detected_format
-                if selected_source_format == "auto"
-                else selected_source_format
-            )
+        if uploaded_file is not None:
+            source_format = detect_source_format(uploaded_file.name)
             if source_format is None:
                 source_error = (
-                    "Could not detect a supported format from the file name. "
-                    "Choose the input type manually or use CSV, TSV, TXT, NPV, NPY, or NPZ."
+                    "Could not detect a currently supported rdata format from the file name. "
+                    "Supported conversion formats are CSV, TSV, TXT, NPV, NPY, and NPZ. "
+                    "bigWig and bedGraph uploads are accepted for upcoming workflows."
                 )
 
             if source_error:
@@ -257,8 +240,6 @@ with left:
                     f"Input: {FORMAT_LABELS[source_format]}",
                     f"{uploaded_file.size / 1024:,.1f} KB",
                 ]
-                if detected_format and selected_source_format != "auto":
-                    chips.append(f"Detected: {FORMAT_LABELS[detected_format]}")
                 if uploaded_file.name.lower().endswith(".gz"):
                     chips.append("GZ compressed")
 

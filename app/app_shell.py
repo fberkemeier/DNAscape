@@ -4,6 +4,7 @@ import base64
 import html
 import importlib.metadata
 import json
+import sys
 from pathlib import Path
 
 import streamlit as st
@@ -11,6 +12,10 @@ import streamlit as st
 
 APP_DIR = Path(__file__).resolve().parent
 ROOT_DIR = APP_DIR.parent
+for import_path in (ROOT_DIR, APP_DIR):
+    import_path_text = str(import_path)
+    if import_path_text not in sys.path:
+        sys.path.insert(0, import_path_text)
 LOGO_PATH = ROOT_DIR / "docs" / "source" / "_static" / "dnascape_logo.png"
 SIDEBAR_LOGO_PATH = ROOT_DIR / "docs" / "source" / "_static" / "dnascape_logo_small.png"
 TAB_LOGO_PATH = ROOT_DIR / "docs" / "source" / "_static" / "dnascape_logo_tab.png"
@@ -309,6 +314,31 @@ def apply_style() -> None:
           color: var(--dnascape-muted) !important;
           opacity: 1 !important;
           -webkit-text-fill-color: var(--dnascape-muted) !important;
+        }
+
+        :root [data-testid="stFileUploaderDropzone"]
+          [data-testid="stFileUploaderDropzoneInstructions"] span {
+          color: transparent !important;
+          font-size: 0 !important;
+          overflow: visible !important;
+          text-overflow: clip !important;
+          white-space: normal !important;
+          -webkit-text-fill-color: transparent !important;
+        }
+
+        :root [data-testid="stFileUploaderDropzone"]
+          [data-testid="stFileUploaderDropzoneInstructions"] span::after {
+          color: var(--dnascape-muted) !important;
+          content: "Supported formats: TSV, CSV, TXT, GZ";
+          display: inline !important;
+          font-size: 0.875rem !important;
+          line-height: 1.35 !important;
+          -webkit-text-fill-color: var(--dnascape-muted) !important;
+        }
+
+        [data-testid="stFileUploaderDropzone"]:has(input[accept*=".npv"])
+          [data-testid="stFileUploaderDropzoneInstructions"] span::after {
+          content: "Supported formats: CSV, TSV, TXT, NPV, NPY, NPZ, GZ, BW, bigWig, bedGraph, BDG";
         }
 
         [data-baseweb="select"] svg,
@@ -925,7 +955,9 @@ def apply_style() -> None:
           box-shadow: 0 1px 2px var(--dnascape-shadow);
           color: var(--dnascape-text);
           cursor: pointer;
-          display: block;
+          display: flex;
+          gap: 1rem;
+          justify-content: space-between;
           min-height: 172px;
           padding: 1.2rem 1.15rem;
           pointer-events: none;
@@ -1041,6 +1073,39 @@ def apply_style() -> None:
 
         .workflow-card::after {
           content: none !important;
+        }
+
+        .workflow-card-content {
+          flex: 1 1 auto;
+          min-width: 0;
+        }
+
+        .workflow-card-icon {
+          align-items: center;
+          color: var(--dnascape-accent);
+          display: flex;
+          flex: 0 0 auto;
+          height: 3rem;
+          justify-content: center;
+          margin-left: auto;
+          opacity: 0.88;
+          width: 3rem;
+          transition: color 140ms ease, opacity 140ms ease;
+        }
+
+        .workflow-card-icon svg {
+          fill: none;
+          height: 1.9rem;
+          stroke: currentColor;
+          stroke-linecap: round;
+          stroke-linejoin: round;
+          stroke-width: 1.85;
+          width: 1.9rem;
+        }
+
+        body:has(.overview-page-marker) [class*="st-key-workflow-card-"]:not([class*="st-key-workflow-card-button-"]):has(button:hover) .workflow-card-icon,
+        body:has(.overview-page-marker) [class*="st-key-workflow-card-"]:not([class*="st-key-workflow-card-button-"]):has(button:focus-visible) .workflow-card-icon {
+          opacity: 1;
         }
 
         .workflow-card-title {

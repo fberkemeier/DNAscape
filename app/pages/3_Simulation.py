@@ -16,8 +16,18 @@ import streamlit as st
 
 
 APP_DIR = Path(__file__).resolve().parents[1]
-if str(APP_DIR) not in sys.path:
-    sys.path.insert(0, str(APP_DIR))
+ROOT_DIR = APP_DIR.parent
+
+
+def ensure_project_import_path() -> None:
+    """Make local DNAscape imports robust across Streamlit rerun contexts."""
+    for import_path in (ROOT_DIR, APP_DIR):
+        import_path_text = str(import_path)
+        if import_path_text not in sys.path:
+            sys.path.insert(0, import_path_text)
+
+
+ensure_project_import_path()
 
 from app_shell import configure_page, render_page_intro, render_sidebar
 
@@ -213,6 +223,7 @@ class RSimProgressWriter:
         self.updates = updates
         self.cancel_event = cancel_event
         self.buffer = ""
+        self.last_value = 0.05
 
     def write(self, text: str) -> int:
         if self.cancel_event.is_set():
@@ -230,12 +241,25 @@ class RSimProgressWriter:
             total = max(1, int(match.group("total")))
             eta = match.group("eta")
             label = match.group("label").strip().lower()
-            prefix = "Simulating" if label == "rsim" else label.replace("_", " ").title()
+            fraction = min(1.0, max(0.0, iteration / total))
+            if label == "rsim":
+                value = min(0.95, max(0.08, fraction))
+                progress_text = (
+                    f"Simulating... {iteration}/{total} simulations - ETA {eta}"
+                )
+            elif label in {"rsim_finalize", "rsim_finalise", "rsim_post"}:
+                value = max(self.last_value, min(0.99, 0.95 + 0.04 * fraction))
+                progress_text = f"Finalizing... {iteration}/{total} blocks - ETA {eta}"
+            else:
+                prefix = label.replace("_", " ").title()
+                value = min(0.95, max(0.08, fraction))
+                progress_text = f"{prefix}... {iteration}/{total} - ETA {eta}"
+            self.last_value = value
             self.updates.put(
                 {
                     "status": "progress",
-                    "value": min(0.95, max(0.08, iteration / total)),
-                    "text": f"{prefix}... {iteration}/{total} - ETA {eta}",
+                    "value": value,
+                    "text": progress_text,
                 }
             )
 
@@ -536,6 +560,7 @@ def build_simulation_preview(
     simulation_result: dict[str, object],
     settings: dict[str, object],
 ) -> dict[str, object]:
+    ensure_project_import_path()
     import matplotlib.pyplot as plt
     from dnascape.plotting import mplotf, ploth, plotf
 
@@ -891,6 +916,7 @@ def run_simulation_job(
     cancel_event,
 ) -> None:
     try:
+        ensure_project_import_path()
         from dnascape import rsim
 
         with contextlib.redirect_stdout(RSimProgressWriter(updates, cancel_event)):

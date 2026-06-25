@@ -1190,6 +1190,7 @@ def rsim(
 
     if time_stats_xtQ:
         post_start = time.time()
+        post_blocks = (n + dens_block_n - 1) // dens_block_n
         for j, x0 in enumerate(range(0, n, dens_block_n), start=1):
             x1 = min(n, x0 + dens_block_n)
             sum_replicated_fraction_xt[:, x0:x1] /= float(sim_number)
@@ -1198,7 +1199,12 @@ def rsim(
             sum_right_moving_fork_density_xt[:, x0:x1] /= float(sim_number)
             sum_left_moving_fork_density_xt[:, x0:x1] /= float(sim_number)
             if verbose:
-                etaf(it=j, maxiter=(n + dens_block_n - 1) // dens_block_n, start_time=post_start, label="rsim")
+                etaf(
+                    it=j,
+                    maxiter=post_blocks,
+                    start_time=post_start,
+                    label="rsim_finalize",
+                )
 
         avg_replicated_fraction_xt = sum_replicated_fraction_xt.T
         avg_initiation_events_xt = sum_initiation_events_xt.T

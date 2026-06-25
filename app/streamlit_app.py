@@ -8,8 +8,11 @@ import streamlit as st
 
 
 APP_DIR = Path(__file__).resolve().parent
-if str(APP_DIR) not in sys.path:
-    sys.path.insert(0, str(APP_DIR))
+ROOT_DIR = APP_DIR.parent
+for import_path in (ROOT_DIR, APP_DIR):
+    import_path_text = str(import_path)
+    if import_path_text not in sys.path:
+        sys.path.insert(0, import_path_text)
 
 import app_shell as app_shell_module
 
@@ -34,15 +37,64 @@ PAGE_MODULES = {
     "resources": APP_DIR / "pages" / "6_Resources.py",
 }
 
+WORKFLOW_CARD_ICONS = {
+    "data-management": """
+      <svg viewBox="0 0 24 24" aria-hidden="true" focusable="false">
+        <path d="M4 6c0-1.7 3.6-3 8-3s8 1.3 8 3-3.6 3-8 3-8-1.3-8-3Z" />
+        <path d="M4 6v6c0 1.7 3.6 3 8 3s8-1.3 8-3V6" />
+        <path d="M4 12v6c0 1.7 3.6 3 8 3s8-1.3 8-3v-6" />
+      </svg>
+    """,
+    "mapping": """
+      <svg viewBox="0 0 24 24" aria-hidden="true" focusable="false">
+        <path d="M9 18 3 21V6l6-3 6 3 6-3v15l-6 3-6-3Z" />
+        <path d="M9 3v15" />
+        <path d="M15 6v15" />
+      </svg>
+    """,
+    "simulation": """
+      <svg viewBox="0 0 24 24" aria-hidden="true" focusable="false">
+        <rect x="3" y="4" width="18" height="12" rx="2" />
+        <path d="M8 20h8" />
+        <path d="M12 16v4" />
+      </svg>
+    """,
+    "plotting": """
+      <svg viewBox="0 0 24 24" aria-hidden="true" focusable="false">
+        <path d="M4 19V5" />
+        <path d="M4 19h16" />
+        <path d="m7 15 3.3-4 3.2 2.6L18 8" />
+      </svg>
+    """,
+    "cached-files": """
+      <svg viewBox="0 0 24 24" aria-hidden="true" focusable="false">
+        <path d="M4 7h16" />
+        <path d="M6 7V5c0-1.1.9-2 2-2h8c1.1 0 2 .9 2 2v2" />
+        <rect x="5" y="7" width="14" height="14" rx="2" />
+        <path d="M9 12h6" />
+      </svg>
+    """,
+    "resources": """
+      <svg viewBox="0 0 24 24" aria-hidden="true" focusable="false">
+        <path d="M4 19.5A2.5 2.5 0 0 1 6.5 17H20" />
+        <path d="M6.5 3H20v18H6.5A2.5 2.5 0 0 1 4 18.5v-13A2.5 2.5 0 0 1 6.5 3Z" />
+      </svg>
+    """,
+}
+
 
 def render_workflow_card(title: str, body: str, page: str) -> None:
     """Render a compact workflow card as a single click target."""
+    icon = WORKFLOW_CARD_ICONS.get(page, "")
     with st.container(key=f"workflow-card-{page}"):
         st.markdown(
             f"""
         <div class="workflow-card">
-          <div class="workflow-card-title">{title}</div>
-          <div class="workflow-card-copy">{body}</div>
+          <div class="workflow-card-content">
+            <div class="workflow-card-title">{title}</div>
+            <div class="workflow-card-copy">{body}</div>
+          </div>
+          <div class="workflow-card-icon">{icon}</div>
         </div>
         """,
             unsafe_allow_html=True,
@@ -84,32 +136,32 @@ def render_overview() -> None:
     workflow_cards = [
         (
             "Data Management",
-            "Convert sequencing data and genomic tracks into DNAscape-ready inputs.",
+            "Prepare sequencing tables, genomic tracks, and other profile formats for downstream analysis.",
             "data-management",
         ),
         (
             "Mapping",
-            "Explore rmap workflows for kinetic inference and feature translation.",
+            "Infer spatial, temporal, or feature-dependent replication landscapes from compatible kinetic inputs.",
             "mapping",
         ),
         (
             "Simulation",
-            "Set up rsim workflows for stochastic replication programme simulation.",
+            "Generate replication dynamics under selected kinetic assumptions and compare simulated outputs.",
             "simulation",
         ),
         (
             "Plotting",
-            "Build compact visual summaries for inputs, mapped features, and simulations.",
+            "Create polished visual previews of input profiles, inferred features, simulations, and exports.",
             "plotting",
         ),
         (
             "Cached Files",
-            "Review reusable uploads, generated intermediates, figures, and exports.",
+            "Manage reusable uploads, generated intermediates, figures, and analysis exports in one place.",
             "cached-files",
         ),
         (
             "Resources",
-            "Open project documentation, source code, examples, and citation notes.",
+            "Find documentation, worked examples, source code, and citation guidance for the project.",
             "resources",
         ),
     ]
