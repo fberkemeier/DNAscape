@@ -168,7 +168,7 @@ def apply_style() -> None:
           --dnascape-plotting-expander-gap: var(--dnascape-shared-expander-gap);
           --dnascape-control-panel-height: 65dvh;
           --dnascape-control-stack-gap: 0.75rem;
-          --dnascape-page-intro-to-box-gap: -1rem;
+          --dnascape-page-intro-to-box-gap: -0.75rem;
           --dnascape-control-workspace-top-offset: var(--dnascape-page-intro-to-box-gap);
           --dnascape-control-section-gap: 0.1rem;
           --dnascape-control-section-header-padding-y: 0.18rem;
@@ -203,9 +203,13 @@ def apply_style() -> None:
           --dnascape-overview-card-min-height: 80px;
           --dnascape-overview-card-icon-box-size: 3rem;
           --dnascape-overview-card-icon-size: 3.7rem;
-          --dnascape-heading-space-before: 0rem;
-          --dnascape-heading-space-after: 0.6rem;
+          --dnascape-heading-space-before: -0.9rem;
+          --dnascape-heading-space-after: -0.5rem;
           --dnascape-page-intro-text-gap: 0rem;
+          --dnascape-heading-h1-to-h2-gap: var(--dnascape-heading-space-after);
+          --dnascape-heading-h2-to-h3-gap: var(--dnascape-heading-space-after);
+          --dnascape-page-intro-kicker-to-title-gap: var(--dnascape-page-intro-text-gap);
+          --dnascape-page-intro-title-to-body-gap: var(--dnascape-page-intro-text-gap);
         }
 
         html,
@@ -892,11 +896,20 @@ def apply_style() -> None:
           padding-top: var(--dnascape-overview-top-padding);
         }
 
-        h1, h2, h3 {
+        h1, h2, h3,
+        [data-testid="stMarkdownContainer"] :is(h1, h2, h3) {
           letter-spacing: 0;
           color: var(--dnascape-text);
-          margin-top: var(--dnascape-heading-space-before);
-          margin-bottom: var(--dnascape-heading-space-after);
+          margin-top: var(--dnascape-heading-space-before) !important;
+          margin-bottom: var(--dnascape-heading-space-after) !important;
+        }
+
+        [data-testid="stMarkdownContainer"] h1 + h2 {
+          margin-top: var(--dnascape-heading-h1-to-h2-gap) !important;
+        }
+
+        [data-testid="stMarkdownContainer"] h2 + h3 {
+          margin-top: var(--dnascape-heading-h2-to-h3-gap) !important;
         }
 
         [data-testid="stMarkdownContainer"] :is(h1, h2, h3, h4, h5, h6) a[href^="#"],
@@ -936,11 +949,19 @@ def apply_style() -> None:
         }
 
         .hero > :is(.eyebrow, h1, .lead) {
-          margin: 0;
+          margin: 0 !important;
         }
 
-        .hero > :is(h1, .lead) {
-          margin-top: var(--dnascape-page-intro-text-gap);
+        .hero > .eyebrow {
+          margin: 0 0 var(--dnascape-page-intro-kicker-to-title-gap) !important;
+        }
+
+        .hero > h1 {
+          margin: 0 0 var(--dnascape-page-intro-title-to-body-gap) !important;
+        }
+
+        .hero > .lead {
+          margin: 0 !important;
         }
 
         .hero h1 {
