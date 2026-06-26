@@ -30,7 +30,12 @@ def ensure_project_import_path() -> None:
 
 ensure_project_import_path()
 
-from app_shell import configure_page, render_page_intro, render_sidebar
+from app_shell import (
+    configure_page,
+    render_control_panel_marker,
+    render_page_intro,
+    render_sidebar,
+)
 
 
 configure_page("DNAscape | Simulation")
@@ -42,57 +47,7 @@ render_page_intro(
     "Simulate stochastic replication dynamics, vary kinetic assumptions, and preview DNAscape-ready outputs.",
 )
 
-st.markdown(
-    """
-    <span class="plotting-page-marker simulation-page-marker" aria-hidden="true"></span>
-    <style>
-      body:has(.simulation-page-marker) [data-testid="stWidgetLabel"] {
-        margin-bottom: 0.16rem;
-      }
-
-      body:has(.simulation-page-marker) [data-testid="stWidgetLabel"] p {
-        font-size: 0.86rem;
-        line-height: 1.25;
-      }
-
-      body:has(.simulation-page-marker) div[data-testid="stVerticalBlockBorderWrapper"] div[data-testid="stVerticalBlock"] {
-        gap: 0.62rem !important;
-      }
-
-      body:has(.simulation-page-marker) [data-testid="stSelectbox"] [data-baseweb="select"],
-      body:has(.simulation-page-marker) [data-testid="stSelectbox"] [data-baseweb="select"] *,
-      body:has(.simulation-page-marker) [data-testid="stSelectbox"] [data-baseweb="select"] input {
-        color: var(--dnascape-text) !important;
-        opacity: 1 !important;
-        -webkit-text-fill-color: var(--dnascape-text) !important;
-      }
-
-      body:has(.simulation-page-marker) [data-testid="stSelectbox"] [data-baseweb="select"] svg {
-        color: var(--dnascape-muted) !important;
-        fill: currentColor !important;
-        -webkit-text-fill-color: currentColor !important;
-      }
-
-      body:has(.simulation-page-marker) [data-baseweb="popover"] [role="option"],
-      body:has(.simulation-page-marker) [data-baseweb="popover"] [role="option"] *,
-      body:has(.simulation-page-marker) [data-baseweb="menu"] [role="option"],
-      body:has(.simulation-page-marker) [data-baseweb="menu"] [role="option"] * {
-        color: var(--dnascape-text) !important;
-        opacity: 1 !important;
-        -webkit-text-fill-color: var(--dnascape-text) !important;
-      }
-
-      body:has(.simulation-page-marker) [data-testid="stButton"] button[kind="primary"]:disabled,
-      body:has(.simulation-page-marker) [data-testid="stButton"] button[kind="primary"][aria-disabled="true"] {
-        background: var(--dnascape-accent) !important;
-        border-color: var(--dnascape-accent) !important;
-        color: white !important;
-        opacity: 0.88 !important;
-      }
-    </style>
-    """,
-    unsafe_allow_html=True,
-)
+render_control_panel_marker("simulation-page-marker")
 
 controls, preview = st.columns([0.35, 0.65], gap="medium")
 
@@ -1003,7 +958,14 @@ primary_feature = None
 chromosome = "simulated_region"
 
 with controls:
-    with st.container(border=True):
+    control_stack = st.container(key="dnascape-control-stack")
+
+with control_stack:
+    with st.container(
+        border=True,
+        height="stretch",
+        key="dnascape-control-card",
+    ):
         with st.expander("Data", expanded=True):
             source_cols = st.columns(2, gap="small")
             firing_table = None
@@ -1526,7 +1488,8 @@ with controls:
         ):
             missing_simulation_inputs.append("Fork speed")
 
-    with st.container():
+with control_stack:
+    with st.container(key="dnascape-control-action"):
         simulate_requested = st.button(
             "Simulate",
             type="primary",

@@ -12,7 +12,12 @@ APP_DIR = Path(__file__).resolve().parents[1]
 if str(APP_DIR) not in sys.path:
     sys.path.insert(0, str(APP_DIR))
 
-from app_shell import configure_page, render_page_intro, render_sidebar
+from app_shell import (
+    configure_page,
+    render_control_panel_marker,
+    render_page_intro,
+    render_sidebar,
+)
 
 
 configure_page("DNAscape | Data Management")
@@ -24,52 +29,7 @@ render_page_intro(
     "Upload a supported file and convert it between DNAscape-compatible formats.",
 )
 
-st.markdown(
-    """
-    <span class="data-management-page-marker" aria-hidden="true"></span>
-    <style>
-      .data-management-page-marker {
-        display: none !important;
-      }
-
-      body:has(.data-management-page-marker) div[data-testid="stVerticalBlockBorderWrapper"] div[data-testid="stVerticalBlock"] {
-        gap: 0.72rem !important;
-      }
-
-      body:has(.data-management-page-marker) [data-testid="stHorizontalBlock"],
-      body:has(.data-management-page-marker) [data-testid="column"] {
-        min-width: 0 !important;
-      }
-
-      .data-management-panel-title {
-        color: var(--dnascape-text);
-        font-size: 1.05rem;
-        font-weight: 650;
-        line-height: 1.35;
-        margin: 0 0 0.55rem;
-      }
-
-      .data-management-chip-row {
-        display: flex;
-        flex-wrap: wrap;
-        gap: 0.45rem;
-        margin: 0.2rem 0 0.35rem;
-      }
-
-      .data-management-chip {
-        background: color-mix(in srgb, var(--dnascape-text) 5%, var(--dnascape-panel));
-        border: 1px solid var(--dnascape-line);
-        border-radius: 999px;
-        color: var(--dnascape-muted);
-        font-size: 0.82rem;
-        line-height: 1.2;
-        padding: 0.34rem 0.58rem;
-      }
-    </style>
-    """,
-    unsafe_allow_html=True,
-)
-
+render_control_panel_marker("data-management-page-marker")
 
 TARGET_FORMATS = {
     "CSV": "csv",
@@ -215,48 +175,53 @@ source_error = None
 convert_clicked = False
 
 with left:
-    with st.container(border=True):
-        st.markdown('<div class="data-management-panel-title">Input</div>', unsafe_allow_html=True)
-        uploaded_file = st.file_uploader(
-            "Upload",
-            type=UPLOAD_TYPES,
-            help=f"Examples: {FORMAT_EXAMPLES}",
-            accept_multiple_files=False,
-        )
+    with st.container(key="dnascape-control-stack"):
+        with st.container(
+            border=True,
+            height="stretch",
+            key="dnascape-control-card",
+        ):
+            st.markdown('<div class="dnascape-panel-title">Input</div>', unsafe_allow_html=True)
+            uploaded_file = st.file_uploader(
+                "Upload",
+                type=UPLOAD_TYPES,
+                help=f"Examples: {FORMAT_EXAMPLES}",
+                accept_multiple_files=False,
+            )
 
-        if uploaded_file is not None:
-            source_format = detect_source_format(uploaded_file.name)
-            if source_format is None:
-                source_error = (
-                    "Could not detect a currently supported rdata format from the file name. "
-                    "Supported conversion formats are CSV, TSV, TXT, NPV, NPY, and NPZ. "
-                    "bigWig and bedGraph uploads are accepted for upcoming workflows."
-                )
+            if uploaded_file is not None:
+                source_format = detect_source_format(uploaded_file.name)
+                if source_format is None:
+                    source_error = (
+                        "Could not detect a currently supported rdata format from the file name. "
+                        "Supported conversion formats are CSV, TSV, TXT, NPV, NPY, and NPZ. "
+                        "bigWig and bedGraph uploads are accepted for upcoming workflows."
+                    )
 
-            if source_error:
-                st.error(source_error)
-            else:
-                chips = [
-                    f"Input: {FORMAT_LABELS[source_format]}",
-                    f"{uploaded_file.size / 1024:,.1f} KB",
-                ]
-                if uploaded_file.name.lower().endswith(".gz"):
-                    chips.append("GZ compressed")
+                if source_error:
+                    st.error(source_error)
+                else:
+                    chips = [
+                        f"Input: {FORMAT_LABELS[source_format]}",
+                        f"{uploaded_file.size / 1024:,.1f} KB",
+                    ]
+                    if uploaded_file.name.lower().endswith(".gz"):
+                        chips.append("GZ compressed")
 
-                st.markdown(
-                    "<div class='data-management-chip-row'>"
-                    + "".join(f"<span class='data-management-chip'>{chip}</span>" for chip in chips)
-                    + "</div>",
-                    unsafe_allow_html=True,
-                )
+                    st.markdown(
+                        "<div class='data-management-chip-row'>"
+                        + "".join(f"<span class='data-management-chip'>{chip}</span>" for chip in chips)
+                        + "</div>",
+                        unsafe_allow_html=True,
+                    )
 
-    with st.container():
-        convert_button_slot = st.empty()
+        with st.container(key="dnascape-control-action"):
+            convert_button_slot = st.empty()
 
 with right:
     with st.container(border=True):
         st.markdown(
-            '<div class="data-management-panel-title">Conversion</div>',
+            '<div class="dnascape-panel-title">Conversion</div>',
             unsafe_allow_html=True,
         )
 

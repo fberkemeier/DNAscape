@@ -162,8 +162,17 @@ def apply_style() -> None:
           --dnascape-sidebar-inner-width: min(82%, 16rem);
           --dnascape-sidebar-logo-width: min(70%, 10.25rem);
           --dnascape-sidebar-logo-aspect-ratio: 1538 / 829;
-          --dnascape-plotting-panel-padding: 1.2rem 1.15rem;
-          --dnascape-plotting-expander-gap: 0.5rem;
+          --dnascape-shared-panel-padding: 1.2rem 1.15rem;
+          --dnascape-shared-expander-gap: 0.5rem;
+          --dnascape-plotting-panel-padding: var(--dnascape-shared-panel-padding);
+          --dnascape-plotting-expander-gap: var(--dnascape-shared-expander-gap);
+          --dnascape-control-panel-height: 65dvh;
+          --dnascape-control-stack-gap: 0.75rem;
+          --dnascape-page-intro-to-box-gap: -1rem;
+          --dnascape-control-workspace-top-offset: var(--dnascape-page-intro-to-box-gap);
+          --dnascape-control-section-gap: 0.1rem;
+          --dnascape-control-section-header-padding-y: 0.18rem;
+          --dnascape-standard-content-top-offset: var(--dnascape-page-intro-to-box-gap);
           /* Dark-logo mask tweak points. The small logo keeps the same
              width-relative radius as the main logo; its y-position is scaled
              for the shorter small-logo PNG height, 930 / 829. */
@@ -194,6 +203,9 @@ def apply_style() -> None:
           --dnascape-overview-card-min-height: 80px;
           --dnascape-overview-card-icon-box-size: 3rem;
           --dnascape-overview-card-icon-size: 3.7rem;
+          --dnascape-heading-space-before: 0rem;
+          --dnascape-heading-space-after: 0.6rem;
+          --dnascape-page-intro-text-gap: 0rem;
         }
 
         html,
@@ -883,6 +895,8 @@ def apply_style() -> None:
         h1, h2, h3 {
           letter-spacing: 0;
           color: var(--dnascape-text);
+          margin-top: var(--dnascape-heading-space-before);
+          margin-bottom: var(--dnascape-heading-space-after);
         }
 
         [data-testid="stMarkdownContainer"] :is(h1, h2, h3, h4, h5, h6) a[href^="#"],
@@ -895,12 +909,16 @@ def apply_style() -> None:
         h1 {
           font-size: 3rem;
           line-height: 1.05;
-          margin-bottom: 0.8rem;
+        }
+
+        h2 {
+          font-size: 1.55rem;
+          line-height: 1.15;
         }
 
         h3 {
           font-size: 1.05rem;
-          margin-bottom: 0.4rem;
+          line-height: 1.25;
         }
 
         a {
@@ -913,14 +931,22 @@ def apply_style() -> None:
         }
 
         .hero {
-          margin: 1.5rem 0 0.8rem;
+          margin: 1.5rem 0 0.6rem;
           max-width: 1920px;
         }
 
+        .hero > :is(.eyebrow, h1, .lead) {
+          margin: 0;
+        }
+
+        .hero > :is(h1, .lead) {
+          margin-top: var(--dnascape-page-intro-text-gap);
+        }
+
         .hero h1 {
-          margin: -1.5rem 0 0rem;
-          max-width: 1920px;
           font-size: 2.1rem;
+          line-height: 1.05;
+          max-width: 1920px;
         }
 
         .eyebrow {
@@ -928,6 +954,7 @@ def apply_style() -> None:
           font-size: 0.82rem;
           font-weight: 700;
           letter-spacing: 0;
+          line-height: 1.2;
           margin-bottom: 0.55rem;
           text-transform: uppercase;
         }
@@ -935,7 +962,7 @@ def apply_style() -> None:
         .lead {
           color: var(--dnascape-muted);
           font-size: 1.12rem;
-          line-height: 1.7;
+          line-height: 1.35;
           margin: 0;
         }
 
@@ -1264,26 +1291,137 @@ def apply_style() -> None:
             inset 0 0 0 1px rgba(243, 238, 232, 0.08);
         }
 
-        .plotting-page-marker {
+        .dnascape-control-page-marker {
           display: none !important;
         }
 
-        body:has(.plotting-page-marker) div[data-testid="stVerticalBlockBorderWrapper"] {
+        .dnascape-standard-page-marker {
+          display: none !important;
+        }
+
+        body:has(.dnascape-standard-page-marker) .st-key-dnascape-standard-content {
+          margin-top: var(--dnascape-standard-content-top-offset) !important;
+        }
+
+        body:has(.dnascape-standard-page-marker) .st-key-dnascape-standard-content > div[data-testid="stVerticalBlock"] {
+          gap: var(--dnascape-control-stack-gap) !important;
+        }
+
+        body:has(.dnascape-control-page-marker) [data-testid="stWidgetLabel"] {
+          margin-bottom: 0.16rem;
+        }
+
+        body:has(.dnascape-control-page-marker) [data-testid="stWidgetLabel"] p {
+          font-size: 0.86rem;
+          line-height: 1.25;
+        }
+
+        body:has(.dnascape-control-page-marker) [data-testid="stSelectbox"] [data-baseweb="select"],
+        body:has(.dnascape-control-page-marker) [data-testid="stSelectbox"] [data-baseweb="select"] *,
+        body:has(.dnascape-control-page-marker) [data-testid="stSelectbox"] [data-baseweb="select"] input {
+          color: var(--dnascape-text) !important;
+          opacity: 1 !important;
+          -webkit-text-fill-color: var(--dnascape-text) !important;
+        }
+
+        body:has(.dnascape-control-page-marker) [data-testid="stSelectbox"] [data-baseweb="select"] svg {
+          color: var(--dnascape-muted) !important;
+          fill: currentColor !important;
+          -webkit-text-fill-color: currentColor !important;
+        }
+
+        body:has(.dnascape-control-page-marker) [data-baseweb="popover"] [role="option"],
+        body:has(.dnascape-control-page-marker) [data-baseweb="popover"] [role="option"] *,
+        body:has(.dnascape-control-page-marker) [data-baseweb="menu"] [role="option"],
+        body:has(.dnascape-control-page-marker) [data-baseweb="menu"] [role="option"] * {
+          color: var(--dnascape-text) !important;
+          opacity: 1 !important;
+          -webkit-text-fill-color: var(--dnascape-text) !important;
+        }
+
+        body:has(.dnascape-control-page-marker) [data-testid="stHorizontalBlock"],
+        body:has(.dnascape-control-page-marker) [data-testid="column"] {
+          min-width: 0 !important;
+        }
+
+        body:has(.dnascape-control-page-marker) [data-testid="stHorizontalBlock"]:has(.st-key-dnascape-control-stack) {
+          margin-top: var(--dnascape-control-workspace-top-offset) !important;
+        }
+
+        body:has(.dnascape-control-page-marker) .st-key-dnascape-control-stack {
+          height: var(--dnascape-control-panel-height) !important;
+          max-height: var(--dnascape-control-panel-height) !important;
+          min-height: 0 !important;
+        }
+
+        body:has(.dnascape-control-page-marker) .st-key-dnascape-control-stack > div[data-testid="stVerticalBlock"],
+        body:has(.dnascape-control-page-marker) .st-key-dnascape-control-stack div[data-testid="stVerticalBlock"]:has(> .st-key-dnascape-control-card) {
+          display: flex !important;
+          flex-direction: column !important;
+          gap: var(--dnascape-control-stack-gap) !important;
+          height: 100% !important;
+          max-height: 100% !important;
+          min-height: 0 !important;
+        }
+
+        body:has(.dnascape-control-page-marker) .st-key-dnascape-control-stack [data-testid="stElementContainer"]:has(.st-key-dnascape-control-card) {
+          display: flex !important;
+          flex: 1 1 auto !important;
+          max-height: 100% !important;
+          min-height: 0 !important;
+          overflow: hidden !important;
+        }
+
+        body:has(.dnascape-control-page-marker) .st-key-dnascape-control-card {
+          display: flex !important;
+          flex: 1 1 auto !important;
+          height: 100% !important;
+          max-height: 100% !important;
+          min-height: 0 !important;
+          overflow-x: hidden !important;
+          overflow-y: auto !important;
+          overscroll-behavior: contain;
+          scrollbar-gutter: stable;
+        }
+
+        body:has(.dnascape-control-page-marker) .st-key-dnascape-control-card > div[data-testid="stVerticalBlockBorderWrapper"] {
           background: var(--dnascape-panel) !important;
           border: 1px solid var(--dnascape-line) !important;
           border-radius: 8px !important;
           box-shadow: 0 1px 2px var(--dnascape-shadow) !important;
-          padding: var(--dnascape-plotting-panel-padding) !important;
+          display: block !important;
+          height: auto !important;
+          max-height: none !important;
+          min-height: 0 !important;
+          overflow: visible !important;
+          padding: var(--dnascape-shared-panel-padding) !important;
         }
 
-        body:has(.plotting-page-marker) div[data-testid="stVerticalBlockBorderWrapper"] > div:first-child {
+        body:has(.dnascape-control-page-marker) .st-key-dnascape-control-card div[data-testid="stVerticalBlockBorderWrapper"] div[data-testid="stVerticalBlock"] {
+          gap: var(--dnascape-control-section-gap) !important;
+          min-height: max-content !important;
+        }
+
+        body:has(.dnascape-control-page-marker) .st-key-dnascape-control-card div[data-testid="stVerticalBlockBorderWrapper"] > div:first-child {
+          min-height: 0 !important;
           padding: 0 !important;
         }
 
-        body:has(.plotting-page-marker) div[data-testid="stVerticalBlockBorderWrapper"] div[data-testid="stVerticalBlock"] {
-          gap: 0.5rem !important;
+        body:has(.dnascape-control-page-marker) .st-key-dnascape-control-card [data-testid="stElementContainer"]:has([data-testid="stExpander"]) {
+          margin-bottom: var(--dnascape-control-section-gap) !important;
         }
 
+        body:has(.dnascape-control-page-marker) .st-key-dnascape-control-card [data-testid="stExpander"] summary {
+          padding-top: var(--dnascape-control-section-header-padding-y) !important;
+          padding-bottom: var(--dnascape-control-section-header-padding-y) !important;
+        }
+
+        body:has(.dnascape-control-page-marker) .st-key-dnascape-control-stack [data-testid="stElementContainer"]:has(.st-key-dnascape-control-action),
+        body:has(.dnascape-control-page-marker) .st-key-dnascape-control-action {
+          flex: 0 0 auto !important;
+        }
+
+        .dnascape-panel-title,
         .plotting-panel-title {
           color: var(--dnascape-text);
           font-size: 1.05rem;
@@ -1292,26 +1430,74 @@ def apply_style() -> None:
           margin: 0 0 0.55rem;
         }
 
+        .data-management-chip-row {
+          display: flex;
+          flex-wrap: wrap;
+          gap: 0.45rem;
+          margin: 0.2rem 0 0.35rem;
+        }
+
+        .data-management-chip {
+          background: color-mix(in srgb, var(--dnascape-text) 5%, var(--dnascape-panel));
+          border: 1px solid var(--dnascape-line);
+          border-radius: 999px;
+          color: var(--dnascape-muted);
+          font-size: 0.82rem;
+          line-height: 1.2;
+          padding: 0.34rem 0.58rem;
+        }
+
+        body:has(.simulation-page-marker) [data-testid="stButton"] button[kind="primary"]:disabled,
+        body:has(.simulation-page-marker) [data-testid="stButton"] button[kind="primary"][aria-disabled="true"] {
+          background: var(--dnascape-accent) !important;
+          border-color: var(--dnascape-accent) !important;
+          color: white !important;
+          opacity: 0.88 !important;
+        }
+
+        :root[data-dnascape-effective-theme="dark"] body:has(.dnascape-control-page-marker) .st-key-dnascape-control-card > div[data-testid="stVerticalBlockBorderWrapper"] {
+          border-color: rgba(243, 238, 232, 0.52) !important;
+          box-shadow:
+            0 1px 2px var(--dnascape-shadow),
+            inset 0 0 0 1px rgba(243, 238, 232, 0.16) !important;
+        }
+
+        body:has(.dnascape-control-page-marker) div[data-testid="stVerticalBlockBorderWrapper"] {
+          background: var(--dnascape-panel) !important;
+          border: 1px solid var(--dnascape-line) !important;
+          border-radius: 8px !important;
+          box-shadow: 0 1px 2px var(--dnascape-shadow) !important;
+          padding: var(--dnascape-shared-panel-padding) !important;
+        }
+
+        body:has(.dnascape-control-page-marker) div[data-testid="stVerticalBlockBorderWrapper"] > div:first-child {
+          padding: 0 !important;
+        }
+
+        body:has(.dnascape-control-page-marker) div[data-testid="stVerticalBlockBorderWrapper"] div[data-testid="stVerticalBlock"] {
+          gap: 0.5rem !important;
+        }
+
         .plotting-panel-title--spaced {
           margin-top: 1.45rem;
         }
 
-        body:has(.plotting-page-marker) [data-testid="stExpander"] {
+        body:has(.dnascape-control-page-marker) [data-testid="stExpander"] {
           border: 0 !important;
           margin: 0 !important;
         }
 
-        body:has(.plotting-page-marker) [data-testid="stElementContainer"]:has([data-testid="stExpander"]) {
-          margin-bottom: var(--dnascape-plotting-expander-gap) !important;
+        body:has(.dnascape-control-page-marker) [data-testid="stElementContainer"]:has([data-testid="stExpander"]) {
+          margin-bottom: var(--dnascape-shared-expander-gap) !important;
         }
 
-        body:has(.plotting-page-marker) [data-testid="stExpander"] details {
+        body:has(.dnascape-control-page-marker) [data-testid="stExpander"] details {
           background: transparent !important;
           border: 0 !important;
           box-shadow: none !important;
         }
 
-        body:has(.plotting-page-marker) [data-testid="stExpander"] summary {
+        body:has(.dnascape-control-page-marker) [data-testid="stExpander"] summary {
           align-items: center;
           border-radius: 0.6rem;
           color: var(--dnascape-text) !important;
@@ -1323,50 +1509,50 @@ def apply_style() -> None:
           padding: 0.24rem 0.1rem !important;
         }
 
-        body:has(.plotting-page-marker) [data-testid="stExpander"] summary p,
-        body:has(.plotting-page-marker) [data-testid="stExpander"] summary span {
+        body:has(.dnascape-control-page-marker) [data-testid="stExpander"] summary p,
+        body:has(.dnascape-control-page-marker) [data-testid="stExpander"] summary span {
           font-weight: 680 !important;
           margin: 0 !important;
         }
 
-        body:has(.plotting-page-marker) [data-testid="stExpander"] summary:hover {
+        body:has(.dnascape-control-page-marker) [data-testid="stExpander"] summary:hover {
           color: var(--dnascape-accent) !important;
           background: color-mix(in srgb, var(--dnascape-accent) 4%, transparent);
         }
 
-        :root[data-dnascape-effective-theme="dark"] body:has(.plotting-page-marker) [data-testid="stExpander"] summary,
-        :root[data-dnascape-effective-theme="dark"] body:has(.plotting-page-marker) [data-testid="stExpander"] summary > div,
-        :root[data-dnascape-effective-theme="dark"] body:has(.plotting-page-marker) [data-testid="stExpander"] summary > div > div,
-        :root[data-dnascape-effective-theme="dark"] body:has(.plotting-page-marker) [data-testid="stExpander"] summary [data-testid="stMarkdownContainer"],
-        :root[data-dnascape-effective-theme="dark"] body:has(.plotting-page-marker) [data-testid="stExpander"] summary [data-baseweb],
-        :root[data-dnascape-effective-theme="dark"] body:has(.plotting-page-marker) [data-testid="stExpander"] summary [role="button"] {
+        :root[data-dnascape-effective-theme="dark"] body:has(.dnascape-control-page-marker) [data-testid="stExpander"] summary,
+        :root[data-dnascape-effective-theme="dark"] body:has(.dnascape-control-page-marker) [data-testid="stExpander"] summary > div,
+        :root[data-dnascape-effective-theme="dark"] body:has(.dnascape-control-page-marker) [data-testid="stExpander"] summary > div > div,
+        :root[data-dnascape-effective-theme="dark"] body:has(.dnascape-control-page-marker) [data-testid="stExpander"] summary [data-testid="stMarkdownContainer"],
+        :root[data-dnascape-effective-theme="dark"] body:has(.dnascape-control-page-marker) [data-testid="stExpander"] summary [data-baseweb],
+        :root[data-dnascape-effective-theme="dark"] body:has(.dnascape-control-page-marker) [data-testid="stExpander"] summary [role="button"] {
           background: transparent !important;
           border-color: transparent !important;
           box-shadow: none !important;
           color: var(--dnascape-text) !important;
         }
 
-        :root[data-dnascape-effective-theme="dark"] body:has(.plotting-page-marker) [data-testid="stExpander"] details[open] > summary,
-        :root[data-dnascape-effective-theme="dark"] body:has(.plotting-page-marker) [data-testid="stExpander"] summary:hover {
+        :root[data-dnascape-effective-theme="dark"] body:has(.dnascape-control-page-marker) [data-testid="stExpander"] details[open] > summary,
+        :root[data-dnascape-effective-theme="dark"] body:has(.dnascape-control-page-marker) [data-testid="stExpander"] summary:hover {
           background: var(--dnascape-hover-bg) !important;
           color: var(--dnascape-accent) !important;
         }
 
-        body:has(.plotting-page-marker) [data-testid="stExpander"] summary svg {
+        body:has(.dnascape-control-page-marker) [data-testid="stExpander"] summary svg {
           color: var(--dnascape-muted) !important;
           fill: currentColor !important;
         }
 
-        body:has(.plotting-page-marker) [data-testid="stExpander"] details[open] > summary svg,
-        body:has(.plotting-page-marker) [data-testid="stExpander"] summary:hover svg {
+        body:has(.dnascape-control-page-marker) [data-testid="stExpander"] details[open] > summary svg,
+        body:has(.dnascape-control-page-marker) [data-testid="stExpander"] summary:hover svg {
           color: var(--dnascape-accent) !important;
         }
 
-        body:has(.plotting-page-marker) [data-testid="stExpanderDetails"] {
-          padding: 0.5rem 0 0.1rem !important;
+        body:has(.dnascape-control-page-marker) [data-testid="stExpanderDetails"] {
+          padding: 0.5rem 0 0rem !important;
         }
 
-        :root[data-dnascape-effective-theme="dark"] body:has(.plotting-page-marker) div[data-testid="stVerticalBlockBorderWrapper"] {
+        :root[data-dnascape-effective-theme="dark"] body:has(.dnascape-control-page-marker) div[data-testid="stVerticalBlockBorderWrapper"] {
           border-color: rgba(243, 238, 232, 0.52) !important;
           box-shadow:
             0 1px 2px var(--dnascape-shadow),
@@ -2982,6 +3168,52 @@ def render_page_intro(kicker: str, title: str, body: str) -> None:
           <h1>{title}</h1>
           <p class="lead">{body}</p>
         </section>
+        """,
+        unsafe_allow_html=True,
+    )
+
+
+def render_control_panel_marker(
+    *marker_classes: str,
+    control_height: str = "65dvh",
+    workspace_top_offset: str = "var(--dnascape-page-intro-to-box-gap)",
+    section_gap: str = "0.1rem",
+    section_header_padding_y: str = "0.18rem",
+) -> None:
+    """Enable the shared scrollable left-control panel shell on a page."""
+    extra_classes = " ".join(marker_classes)
+    class_attr = f"dnascape-control-page-marker {extra_classes}".strip()
+    st.markdown(
+        f"""
+        <span class="{class_attr}" aria-hidden="true"></span>
+        <style>
+          body:has(.dnascape-control-page-marker) {{
+            --dnascape-control-panel-height: {control_height};
+            --dnascape-control-workspace-top-offset: {workspace_top_offset};
+            --dnascape-control-section-gap: {section_gap};
+            --dnascape-control-section-header-padding-y: {section_header_padding_y};
+          }}
+        </style>
+        """,
+        unsafe_allow_html=True,
+    )
+
+
+def render_standard_content_marker(
+    *marker_classes: str,
+    content_top_offset: str = "var(--dnascape-page-intro-to-box-gap)",
+) -> None:
+    """Enable shared intro-to-content spacing for non-control pages."""
+    extra_classes = " ".join(marker_classes)
+    class_attr = f"dnascape-standard-page-marker {extra_classes}".strip()
+    st.markdown(
+        f"""
+        <span class="{class_attr}" aria-hidden="true"></span>
+        <style>
+          body:has(.dnascape-standard-page-marker) {{
+            --dnascape-standard-content-top-offset: {content_top_offset};
+          }}
+        </style>
         """,
         unsafe_allow_html=True,
     )

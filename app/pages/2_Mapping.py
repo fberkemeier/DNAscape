@@ -38,7 +38,12 @@ def load_local_rmap():
     importlib.invalidate_caches()
     return importlib.import_module("dnascape").rmap
 
-from app_shell import configure_page, render_page_intro, render_sidebar
+from app_shell import (
+    configure_page,
+    render_control_panel_marker,
+    render_page_intro,
+    render_sidebar,
+)
 
 
 configure_page("DNAscape | Mapping")
@@ -50,37 +55,7 @@ render_page_intro(
     "Choose a target, set a precise mapping route, and preview mapped DNAscape outputs.",
 )
 
-st.markdown(
-    """
-    <span class="plotting-page-marker mapping-page-marker" aria-hidden="true"></span>
-    <style>
-      body:has(.mapping-page-marker) [data-testid="stSelectbox"] [data-baseweb="select"],
-      body:has(.mapping-page-marker) [data-testid="stSelectbox"] [data-baseweb="select"] *,
-      body:has(.mapping-page-marker) [data-testid="stSelectbox"] [data-baseweb="select"] input {
-        color: var(--dnascape-text) !important;
-        opacity: 1 !important;
-        -webkit-text-fill-color: var(--dnascape-text) !important;
-      }
-
-      body:has(.mapping-page-marker) [data-testid="stSelectbox"] [data-baseweb="select"] svg {
-        color: var(--dnascape-muted) !important;
-        fill: currentColor !important;
-        -webkit-text-fill-color: currentColor !important;
-      }
-
-      body:has(.mapping-page-marker) [data-baseweb="popover"] [role="option"],
-      body:has(.mapping-page-marker) [data-baseweb="popover"] [role="option"] *,
-      body:has(.mapping-page-marker) [data-baseweb="menu"] [role="option"],
-      body:has(.mapping-page-marker) [data-baseweb="menu"] [role="option"] * {
-        color: var(--dnascape-text) !important;
-        opacity: 1 !important;
-        -webkit-text-fill-color: var(--dnascape-text) !important;
-      }
-
-    </style>
-    """,
-    unsafe_allow_html=True,
-)
+render_control_panel_marker("mapping-page-marker")
 
 
 PREVIEW_DPI = 300
@@ -1069,7 +1044,14 @@ def render_mapping_workspace() -> None:
     chromosome = "profile"
 
     with controls:
-        with st.container(border=True, key="mapping-control-card"):
+        control_stack = st.container(key="dnascape-control-stack")
+
+    with control_stack:
+        with st.container(
+            border=True,
+            height="stretch",
+            key="dnascape-control-card",
+        ):
             with st.expander("Data", expanded=True):
                 target_cols = st.columns(2, gap="small")
                 with target_cols[0]:
@@ -1842,8 +1824,8 @@ def render_mapping_workspace() -> None:
 
 
     map_feedback_shown = False
-    with controls:
-        with st.container(key="mapping-action-button"):
+    with control_stack:
+        with st.container(key="dnascape-control-action"):
             if st.button(
                 "Map",
                 type="primary",

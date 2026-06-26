@@ -14,7 +14,12 @@ APP_DIR = Path(__file__).resolve().parents[1]
 if str(APP_DIR) not in sys.path:
     sys.path.insert(0, str(APP_DIR))
 
-from app_shell import configure_page, render_page_intro, render_sidebar
+from app_shell import (
+    configure_page,
+    render_control_panel_marker,
+    render_page_intro,
+    render_sidebar,
+)
 
 
 configure_page("DNAscape | Plotting")
@@ -27,103 +32,8 @@ render_page_intro(
 )
 
 PREVIEW_DPI = 300
-PLOTTING_CONTROL_STACK_HEIGHT = "60dvh"
 
-plotting_page_css = """
-    <span class="plotting-page-marker" aria-hidden="true"></span>
-    <style>
-      body:has(.plotting-page-marker) {
-        --dnascape-plotting-control-stack-height: __PLOTTING_CONTROL_STACK_HEIGHT__;
-        --dnascape-plotting-control-stack-gap: 0.75rem;
-      }
-
-      body:has(.plotting-page-marker) [data-testid="stWidgetLabel"] {
-        margin-bottom: 0.16rem;
-      }
-
-      body:has(.plotting-page-marker) [data-testid="stWidgetLabel"] p {
-        font-size: 0.86rem;
-        line-height: 1.25;
-      }
-
-      body:has(.plotting-page-marker) div[data-testid="stVerticalBlockBorderWrapper"] div[data-testid="stVerticalBlock"] {
-        gap: 0.5rem !important;
-      }
-
-      body:has(.plotting-page-marker) [data-testid="stHorizontalBlock"],
-      body:has(.plotting-page-marker) [data-testid="column"] {
-        min-width: 0 !important;
-      }
-
-      body:has(.plotting-page-marker) .st-key-plotting-control-stack {
-        height: var(--dnascape-plotting-control-stack-height) !important;
-        max-height: var(--dnascape-plotting-control-stack-height) !important;
-        min-height: 0 !important;
-      }
-
-      body:has(.plotting-page-marker) .st-key-plotting-control-stack > div[data-testid="stVerticalBlock"],
-      body:has(.plotting-page-marker) .st-key-plotting-control-stack div[data-testid="stVerticalBlock"]:has(> .st-key-plotting-control-card) {
-        display: flex !important;
-        flex-direction: column !important;
-        gap: var(--dnascape-plotting-control-stack-gap) !important;
-        height: 100% !important;
-        max-height: 100% !important;
-        min-height: 0 !important;
-      }
-
-      body:has(.plotting-page-marker) .st-key-plotting-control-stack [data-testid="stElementContainer"]:has(.st-key-plotting-control-card) {
-        display: flex !important;
-        flex: 1 1 auto !important;
-        max-height: 100% !important;
-        min-height: 0 !important;
-        overflow: hidden !important;
-      }
-
-      body:has(.plotting-page-marker) .st-key-plotting-control-card {
-        display: flex !important;
-        flex: 1 1 auto !important;
-        height: 100% !important;
-        max-height: 100% !important;
-        min-height: 0 !important;
-        overflow-x: hidden !important;
-        overflow-y: auto !important;
-        overscroll-behavior: contain;
-        scrollbar-gutter: stable;
-      }
-
-      body:has(.plotting-page-marker) .st-key-plotting-control-card > div[data-testid="stVerticalBlockBorderWrapper"] {
-        display: block !important;
-        height: auto !important;
-        max-height: none !important;
-        min-height: 0 !important;
-        overflow: visible !important;
-      }
-
-      body:has(.plotting-page-marker) .st-key-plotting-control-card div[data-testid="stVerticalBlockBorderWrapper"] div[data-testid="stVerticalBlock"] {
-        min-height: max-content !important;
-      }
-
-      body:has(.plotting-page-marker) .st-key-plotting-control-card div[data-testid="stVerticalBlockBorderWrapper"] > div:first-child {
-        min-height: 0 !important;
-      }
-
-      body:has(.plotting-page-marker) .st-key-plotting-control-stack [data-testid="stElementContainer"]:has(.st-key-plotting-action-button) {
-        flex: 0 0 auto !important;
-      }
-
-      body:has(.plotting-page-marker) .st-key-plotting-action-button {
-        flex: 0 0 auto !important;
-      }
-
-    </style>
-    """
-
-st.markdown(
-    plotting_page_css.replace(
-        "__PLOTTING_CONTROL_STACK_HEIGHT__", PLOTTING_CONTROL_STACK_HEIGHT
-    ),
-    unsafe_allow_html=True,
-)
+render_control_panel_marker()
 EXPORT_FORMATS = (
     ("PNG", "png", "image/png", ":material/download:"),
     ("PDF", "pdf", "application/pdf", ":material/picture_as_pdf:"),
@@ -248,318 +158,319 @@ def render_figure_preview(export_bytes: dict[str, bytes], file_stem: str) -> Non
         )
 
 
-@st.fragment
 def render_plotting_workspace() -> None:
     controls, preview = st.columns([0.35, 0.65], gap="medium")
 
     with controls:
-        with st.container(key="plotting-control-stack"):
-            # Keyed CSS makes this a vertical flex stack: card grows, button stays visible.
-            with st.container(
-                border=True,
-                height="stretch",
-                key="plotting-control-card",
-            ):
-                with st.container():
-                    with st.expander("Data", expanded=True):
-                        data_cols = st.columns(2, gap="small")
-                        with data_cols[0]:
-                            data_type = st.selectbox(
-                                "Type",
-                                list(DATA_TYPE_DEFAULTS),
-                                index=0,
-                            )
-                        data_defaults = DATA_TYPE_DEFAULTS[data_type]
+        control_stack = st.container(key="dnascape-control-stack")
 
-                        with data_cols[1]:
-                            uploaded_file = st.file_uploader(
-                                "Upload",
-                                type=["tsv", "csv", "txt", "gz"],
-                                accept_multiple_files=False,
-                            )
+    with control_stack:
+        # Shared control-panel CSS keeps the card scrollable and the action visible.
+        with st.container(
+            border=True,
+            height="stretch",
+            key="dnascape-control-card",
+        ):
+            with st.expander("Data", expanded=True):
+                data_cols = st.columns(2, gap="small")
+                with data_cols[0]:
+                    data_type = st.selectbox(
+                        "Type",
+                        list(DATA_TYPE_DEFAULTS),
+                        index=0,
+                    )
+                data_defaults = DATA_TYPE_DEFAULTS[data_type]
 
-                        table = None
-                        numeric_columns = []
-                        if uploaded_file is not None:
-                            try:
-                                suffixes = [
-                                    suffix.lower()
-                                    for suffix in Path(uploaded_file.name).suffixes
-                                ]
-                                compression = (
-                                    "gzip"
-                                    if uploaded_file.name.lower().endswith(".gz")
-                                    else None
-                                )
-                                separator = (
-                                    ","
-                                    if ".csv" in suffixes and ".tsv" not in suffixes
-                                    else "\t"
-                                )
-                                table = pd.read_csv(
-                                    uploaded_file,
-                                    sep=separator,
-                                    compression=compression,
-                                )
-                            except Exception as exc:
-                                st.error(f"Could not read data file: {exc}")
+                with data_cols[1]:
+                    uploaded_file = st.file_uploader(
+                        "Upload",
+                        type=["tsv", "csv", "txt", "gz"],
+                        accept_multiple_files=False,
+                    )
 
-                            if table is not None:
-                                numeric_columns = [
-                                    column
-                                    for column in table.columns
-                                    if pd.to_numeric(table[column], errors="coerce")
-                                    .notna()
-                                    .any()
-                                ]
-
-                                if not numeric_columns:
-                                    st.warning("No numeric chromosome columns were found.")
-
-                    with st.expander("Region", expanded=False):
-                        region_cols = st.columns(3, gap="small")
-                        with region_cols[0]:
-                            chromosome_options = numeric_columns if numeric_columns else [""]
-                            chromosome = st.selectbox(
-                                "Chromosome",
-                                chromosome_options,
-                                format_func=lambda value: value
-                                if value
-                                else "Select chromosome",
-                            )
-                            if chromosome == "":
-                                chromosome = None
-
-                        region_detail_cols = st.columns(3, gap="small")
-                        with region_detail_cols[0]:
-                            resolution = st.number_input(
-                                "Resolution",
-                                min_value=0.000001,
-                                value=1.0,
-                                step=1.0,
-                                format="%.1f",
-                                help="Spatial resolution in kb/bin.",
-                            )
-                        with region_detail_cols[1]:
-                            display_unit = st.selectbox(
-                                "Display",
-                                DISPLAY_UNITS,
-                                index=0,
-                                help="Unit used for the plot axis and default title.",
-                            )
-                        with region_detail_cols[2]:
-                            smooth_bins = st.number_input(
-                                "Smooth",
-                                min_value=1,
-                                max_value=501,
-                                value=1,
-                                step=1,
-                                help="Rolling mean window in bins. Use 1 to keep raw values.",
-                            )
-
-                        selected_values = None
-                        positions = None
-                        if table is not None and chromosome:
-                            raw_values = pd.to_numeric(
-                                table[chromosome], errors="coerce"
-                            ).to_numpy(dtype=float)
-                            raw_positions = np.arange(raw_values.size, dtype=float) * float(
-                                resolution
-                            )
-                            finite_mask = np.isfinite(raw_values)
-                            selected_values = raw_values[finite_mask]
-                            positions = raw_positions[finite_mask]
-
-                        if positions is not None and positions.size:
-                            max_position = max(
-                                0, int(np.ceil(float(np.nanmax(positions))))
-                            )
-                            min_position = 0
-                        else:
-                            max_position = max(1, int(np.ceil(float(resolution))))
-                            min_position = 0
-
-                        with region_cols[1]:
-                            region_start = st.number_input(
-                                "Start (kb)",
-                                min_value=min_position,
-                                max_value=max_position,
-                                value=min_position,
-                                step=1,
-                                format="%d",
-                            )
-                        with region_cols[2]:
-                            region_end = st.number_input(
-                                "End (kb)",
-                                min_value=min_position,
-                                max_value=max_position,
-                                value=max_position,
-                                step=1,
-                                format="%d",
-                            )
-
-                    with st.expander("Settings", expanded=False):
-                        finite_values = (
-                            selected_values[np.isfinite(selected_values)]
-                            if selected_values is not None
-                            else np.array([])
+                table = None
+                numeric_columns = []
+                if uploaded_file is not None:
+                    try:
+                        suffixes = [
+                            suffix.lower()
+                            for suffix in Path(uploaded_file.name).suffixes
+                        ]
+                        compression = (
+                            "gzip"
+                            if uploaded_file.name.lower().endswith(".gz")
+                            else None
                         )
-                        x_limit_default_min = float(region_start) / (
-                            1000.0 if display_unit == "Mb" else 1.0
+                        separator = (
+                            ","
+                            if ".csv" in suffixes and ".tsv" not in suffixes
+                            else "\t"
                         )
-                        x_limit_default_max = float(region_end) / (
-                            1000.0 if display_unit == "Mb" else 1.0
+                        table = pd.read_csv(
+                            uploaded_file,
+                            sep=separator,
+                            compression=compression,
                         )
-                        y_limit_default_min = (
-                            float(np.nanmin(finite_values)) if finite_values.size else 0.0
-                        )
-                        y_limit_default_max = (
-                            float(np.nanmax(finite_values)) if finite_values.size else 1.0
-                        )
-                        x_limit_step = max(
-                            abs(x_limit_default_max - x_limit_default_min) / 100.0,
-                            0.01 if display_unit == "Mb" else 1.0,
-                        )
-                        y_limit_step = max(
-                            abs(y_limit_default_max - y_limit_default_min) / 100.0,
-                            0.001,
-                        )
-                        text_cols = st.columns(2, gap="small")
-                        with text_cols[0]:
-                            include_title = st.checkbox("Title", value=True)
-                            title_override = st.text_input(
-                                "Title text",
-                                value="",
-                                placeholder="Auto",
-                                label_visibility="collapsed",
-                            )
-                        with text_cols[1]:
-                            include_label = st.checkbox("Label", value=True)
-                            legend_label = st.text_input(
-                                "Label text",
-                                value="",
-                                placeholder=chromosome or "Profile",
-                                label_visibility="collapsed",
-                            )
+                    except Exception as exc:
+                        st.error(f"Could not read data file: {exc}")
 
-                        axis_cols = st.columns(2, gap="small")
-                        with axis_cols[0]:
-                            include_x_axis = st.checkbox("x-axis", value=True)
-                            x_axis_title = st.text_input(
-                                "x-axis title",
-                                value=f"Genomic position ({display_unit})",
-                                label_visibility="collapsed",
-                            )
-                        with axis_cols[1]:
-                            include_y_axis = st.checkbox("y-axis", value=True)
-                            y_axis_title = st.text_input(
-                                "y-axis title",
-                                value=data_defaults["ytitle"],
-                                label_visibility="collapsed",
-                            )
+                    if table is not None:
+                        numeric_columns = [
+                            column
+                            for column in table.columns
+                            if pd.to_numeric(table[column], errors="coerce")
+                            .notna()
+                            .any()
+                        ]
 
-                        limit_toggle_cols = st.columns(2, gap="small")
-                        with limit_toggle_cols[0]:
-                            use_x_limits = st.checkbox("x limits", value=False)
-                        with limit_toggle_cols[1]:
-                            use_y_limits = st.checkbox(
-                                "y limits",
-                                value=False,
-                            )
+                        if not numeric_columns:
+                            st.warning("No numeric chromosome columns were found.")
 
-                        x_limit_min = x_limit_default_min
-                        x_limit_max = x_limit_default_max
-                        y_limit_min = y_limit_default_min
-                        y_limit_max = y_limit_default_max
-                        if use_x_limits:
-                            x_limit_cols = st.columns(2, gap="small")
-                            with x_limit_cols[0]:
-                                x_limit_min = st.number_input(
-                                    "x min",
-                                    value=x_limit_default_min,
-                                    step=x_limit_step,
-                                    format="%.3f" if display_unit == "Mb" else "%.1f",
-                                )
-                            with x_limit_cols[1]:
-                                x_limit_max = st.number_input(
-                                    "x max",
-                                    value=x_limit_default_max,
-                                    step=x_limit_step,
-                                    format="%.3f" if display_unit == "Mb" else "%.1f",
-                                )
+            with st.expander("Region", expanded=False):
+                region_cols = st.columns(3, gap="small")
+                with region_cols[0]:
+                    chromosome_options = numeric_columns if numeric_columns else [""]
+                    chromosome = st.selectbox(
+                        "Chromosome",
+                        chromosome_options,
+                        format_func=lambda value: value
+                        if value
+                        else "Select chromosome",
+                    )
+                    if chromosome == "":
+                        chromosome = None
 
-                        if use_y_limits:
-                            y_limit_cols = st.columns(2, gap="small")
-                            with y_limit_cols[0]:
-                                y_limit_min = st.number_input(
-                                    "y min",
-                                    value=y_limit_default_min,
-                                    step=y_limit_step,
-                                    format="%.6g",
-                                )
-                            with y_limit_cols[1]:
-                                y_limit_max = st.number_input(
-                                    "y max",
-                                    value=y_limit_default_max,
-                                    step=y_limit_step,
-                                    format="%.6g",
-                                )
+                region_detail_cols = st.columns(3, gap="small")
+                with region_detail_cols[0]:
+                    resolution = st.number_input(
+                        "Resolution",
+                        min_value=0.000001,
+                        value=1.0,
+                        step=1.0,
+                        format="%.1f",
+                        help="Spatial resolution in kb/bin.",
+                    )
+                with region_detail_cols[1]:
+                    display_unit = st.selectbox(
+                        "Display",
+                        DISPLAY_UNITS,
+                        index=0,
+                        help="Unit used for the plot axis and default title.",
+                    )
+                with region_detail_cols[2]:
+                    smooth_bins = st.number_input(
+                        "Smooth",
+                        min_value=1,
+                        max_value=501,
+                        value=1,
+                        step=1,
+                        help="Rolling mean window in bins. Use 1 to keep raw values.",
+                    )
 
-                        style_cols = st.columns(2, gap="small")
-                        with style_cols[0]:
-                            show_legend = st.checkbox(
-                                "Legend",
-                                value=True,
-                            )
-                            line_color = st.color_picker(
-                                "Color",
-                                value=data_defaults["color"],
-                            )
-                        with style_cols[1]:
-                            legend_location_label = st.selectbox(
-                                "Position",
-                                list(LEGEND_LOCATIONS),
-                                index=0,
-                            )
+                selected_values = None
+                positions = None
+                if table is not None and chromosome:
+                    raw_values = pd.to_numeric(
+                        table[chromosome], errors="coerce"
+                    ).to_numpy(dtype=float)
+                    raw_positions = np.arange(raw_values.size, dtype=float) * float(
+                        resolution
+                    )
+                    finite_mask = np.isfinite(raw_values)
+                    selected_values = raw_values[finite_mask]
+                    positions = raw_positions[finite_mask]
 
-                        transform_cols = st.columns(2, gap="small")
-                        with transform_cols[0]:
-                            log_y_axis = st.checkbox(
-                                "Log y-axis",
-                                value=False,
-                            )
-                        with transform_cols[1]:
-                            invert_y_axis = st.checkbox(
-                                "Invert y-axis",
-                                value=False,
-                            )
+                if positions is not None and positions.size:
+                    max_position = max(
+                        0, int(np.ceil(float(np.nanmax(positions))))
+                    )
+                    min_position = 0
+                else:
+                    max_position = max(1, int(np.ceil(float(resolution))))
+                    min_position = 0
 
-                        size_cols = st.columns(2, gap="small")
-                        with size_cols[0]:
-                            figure_width = st.number_input(
-                                "Width",
-                                min_value=3.0,
-                                max_value=16.0,
-                                value=9.5,
-                                step=0.5,
-                                format="%.1f",
-                            )
-                        with size_cols[1]:
-                            figure_height = st.number_input(
-                                "Height",
-                                min_value=2.0,
-                                max_value=10.0,
-                                value=3.8,
-                                step=0.2,
-                                format="%.1f",
-                            )
+                with region_cols[1]:
+                    region_start = st.number_input(
+                        "Start (kb)",
+                        min_value=min_position,
+                        max_value=max_position,
+                        value=min_position,
+                        step=1,
+                        format="%d",
+                    )
+                with region_cols[2]:
+                    region_end = st.number_input(
+                        "End (kb)",
+                        min_value=min_position,
+                        max_value=max_position,
+                        value=max_position,
+                        step=1,
+                        format="%d",
+                    )
 
-            with st.container(key="plotting-action-button"):
-                plot_requested = st.button(
-                    "Plot",
-                    type="primary",
-                    width="stretch",
+            with st.expander("Settings", expanded=False):
+                finite_values = (
+                    selected_values[np.isfinite(selected_values)]
+                    if selected_values is not None
+                    else np.array([])
                 )
+                x_limit_default_min = float(region_start) / (
+                    1000.0 if display_unit == "Mb" else 1.0
+                )
+                x_limit_default_max = float(region_end) / (
+                    1000.0 if display_unit == "Mb" else 1.0
+                )
+                y_limit_default_min = (
+                    float(np.nanmin(finite_values)) if finite_values.size else 0.0
+                )
+                y_limit_default_max = (
+                    float(np.nanmax(finite_values)) if finite_values.size else 1.0
+                )
+                x_limit_step = max(
+                    abs(x_limit_default_max - x_limit_default_min) / 100.0,
+                    0.01 if display_unit == "Mb" else 1.0,
+                )
+                y_limit_step = max(
+                    abs(y_limit_default_max - y_limit_default_min) / 100.0,
+                    0.001,
+                )
+                text_cols = st.columns(2, gap="small")
+                with text_cols[0]:
+                    include_title = st.checkbox("Title", value=True)
+                    title_override = st.text_input(
+                        "Title text",
+                        value="",
+                        placeholder="Auto",
+                        label_visibility="collapsed",
+                    )
+                with text_cols[1]:
+                    include_label = st.checkbox("Label", value=True)
+                    legend_label = st.text_input(
+                        "Label text",
+                        value="",
+                        placeholder=chromosome or "Profile",
+                        label_visibility="collapsed",
+                    )
+
+                axis_cols = st.columns(2, gap="small")
+                with axis_cols[0]:
+                    include_x_axis = st.checkbox("x-axis", value=True)
+                    x_axis_title = st.text_input(
+                        "x-axis title",
+                        value=f"Genomic position ({display_unit})",
+                        label_visibility="collapsed",
+                    )
+                with axis_cols[1]:
+                    include_y_axis = st.checkbox("y-axis", value=True)
+                    y_axis_title = st.text_input(
+                        "y-axis title",
+                        value=data_defaults["ytitle"],
+                        label_visibility="collapsed",
+                    )
+
+                limit_toggle_cols = st.columns(2, gap="small")
+                with limit_toggle_cols[0]:
+                    use_x_limits = st.checkbox("x limits", value=False)
+                with limit_toggle_cols[1]:
+                    use_y_limits = st.checkbox(
+                        "y limits",
+                        value=False,
+                    )
+
+                x_limit_min = x_limit_default_min
+                x_limit_max = x_limit_default_max
+                y_limit_min = y_limit_default_min
+                y_limit_max = y_limit_default_max
+                if use_x_limits:
+                    x_limit_cols = st.columns(2, gap="small")
+                    with x_limit_cols[0]:
+                        x_limit_min = st.number_input(
+                            "x min",
+                            value=x_limit_default_min,
+                            step=x_limit_step,
+                            format="%.3f" if display_unit == "Mb" else "%.1f",
+                        )
+                    with x_limit_cols[1]:
+                        x_limit_max = st.number_input(
+                            "x max",
+                            value=x_limit_default_max,
+                            step=x_limit_step,
+                            format="%.3f" if display_unit == "Mb" else "%.1f",
+                        )
+
+                if use_y_limits:
+                    y_limit_cols = st.columns(2, gap="small")
+                    with y_limit_cols[0]:
+                        y_limit_min = st.number_input(
+                            "y min",
+                            value=y_limit_default_min,
+                            step=y_limit_step,
+                            format="%.6g",
+                        )
+                    with y_limit_cols[1]:
+                        y_limit_max = st.number_input(
+                            "y max",
+                            value=y_limit_default_max,
+                            step=y_limit_step,
+                            format="%.6g",
+                        )
+
+                style_cols = st.columns(2, gap="small")
+                with style_cols[0]:
+                    show_legend = st.checkbox(
+                        "Legend",
+                        value=True,
+                    )
+                    line_color = st.color_picker(
+                        "Color",
+                        value=data_defaults["color"],
+                    )
+                with style_cols[1]:
+                    legend_location_label = st.selectbox(
+                        "Position",
+                        list(LEGEND_LOCATIONS),
+                        index=0,
+                    )
+
+                transform_cols = st.columns(2, gap="small")
+                with transform_cols[0]:
+                    log_y_axis = st.checkbox(
+                        "Log y-axis",
+                        value=False,
+                    )
+                with transform_cols[1]:
+                    invert_y_axis = st.checkbox(
+                        "Invert y-axis",
+                        value=False,
+                    )
+
+                size_cols = st.columns(2, gap="small")
+                with size_cols[0]:
+                    figure_width = st.number_input(
+                        "Width",
+                        min_value=3.0,
+                        max_value=16.0,
+                        value=9.5,
+                        step=0.5,
+                        format="%.1f",
+                    )
+                with size_cols[1]:
+                    figure_height = st.number_input(
+                        "Height",
+                        min_value=2.0,
+                        max_value=10.0,
+                        value=3.8,
+                        step=0.2,
+                        format="%.1f",
+                    )
+
+    with control_stack:
+        with st.container(key="dnascape-control-action"):
+            plot_requested = st.button(
+                "Plot",
+                type="primary",
+                width="stretch",
+            )
 
     with preview:
         with st.container(border=True):
