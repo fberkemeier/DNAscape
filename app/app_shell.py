@@ -162,6 +162,8 @@ def apply_style() -> None:
           --dnascape-sidebar-inner-width: min(82%, 16rem);
           --dnascape-sidebar-logo-width: min(70%, 10.25rem);
           --dnascape-sidebar-logo-aspect-ratio: 1538 / 829;
+          --dnascape-sidebar-logo-top-offset: -2.1rem;
+          --dnascape-sidebar-logo-to-nav-gap: 1rem;
           --dnascape-shared-panel-padding: 1.2rem 1.15rem;
           --dnascape-shared-expander-gap: 0.5rem;
           --dnascape-plotting-panel-padding: var(--dnascape-shared-panel-padding);
@@ -779,8 +781,15 @@ def apply_style() -> None:
         .dnascape-sidebar-logo {
           display: block;
           line-height: 0;
-          margin: -2rem auto 2.2rem;
+          margin: 0 auto;
           width: var(--dnascape-sidebar-logo-width) !important;
+        }
+
+        section[data-testid="stSidebar"] [data-testid="stElementContainer"]:has(.dnascape-sidebar-logo) {
+          margin: var(--dnascape-sidebar-logo-top-offset) auto
+            var(--dnascape-sidebar-logo-to-nav-gap) !important;
+          padding: 0 !important;
+          width: 100% !important;
         }
 
         .dnascape-sidebar-logo a {
@@ -801,7 +810,8 @@ def apply_style() -> None:
           aspect-ratio: var(--dnascape-sidebar-logo-aspect-ratio);
           display: block !important;
           line-height: 0;
-          margin: -2rem auto 2.2rem !important;
+          margin: var(--dnascape-sidebar-logo-top-offset) auto
+            var(--dnascape-sidebar-logo-to-nav-gap) !important;
           overflow: hidden;
           position: relative;
           width: var(--dnascape-sidebar-logo-width) !important;
