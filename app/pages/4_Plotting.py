@@ -15,10 +15,13 @@ if str(APP_DIR) not in sys.path:
     sys.path.insert(0, str(APP_DIR))
 
 from app_shell import (
+    compact_name_stem,
     configure_page,
+    register_generated_figure_exports,
     render_control_panel_marker,
     render_page_intro,
     render_sidebar,
+    safe_name_stem,
 )
 
 
@@ -91,8 +94,7 @@ def figure_bytes(fig, image_format: str) -> bytes:
 
 
 def safe_download_stem(*parts: object) -> str:
-    raw_name = "_".join(str(part) for part in parts if part is not None)
-    return "".join(char if char.isalnum() or char in "-_" else "_" for char in raw_name)
+    return safe_name_stem(*parts)
 
 
 def figure_export_bytes(fig) -> dict[str, bytes]:
@@ -473,7 +475,7 @@ def render_plotting_workspace() -> None:
             )
 
     with preview:
-        with st.container(border=True):
+        with st.container(border=True, key="dnascape-preview-card"):
             st.markdown(
                 '<div class="plotting-panel-title">Preview</div>',
                 unsafe_allow_html=True,
@@ -573,8 +575,9 @@ def render_plotting_workspace() -> None:
                                 showQ=False,
                                 return_handles=True,
                             )
-                            file_stem = safe_download_stem(
+                            file_stem = compact_name_stem(
                                 "dnascape",
+                                "plot",
                                 data_type,
                                 chromosome,
                                 f"{title_start:g}-{title_end:g}{display_unit}",
@@ -582,8 +585,47 @@ def render_plotting_workspace() -> None:
                             last_plot = {
                                 "exports": figure_export_bytes(fig),
                                 "file_stem": file_stem,
+                                "summary": data_type,
                             }
                             st.session_state[PLOT_STATE_KEY] = last_plot
+                            plot_metadata = {
+                                "settings": {
+                                    "data_type": data_type,
+                                    "chromosome": chromosome,
+                                    "region_start": region_start,
+                                    "region_end": region_end,
+                                    "resolution": resolution,
+                                    "display_unit": display_unit,
+                                    "smooth_bins": smooth_bins,
+                                    "title": plot_title if include_title else "",
+                                    "label": plot_label if include_label else "",
+                                    "x_axis_title": x_axis_title if include_x_axis else "",
+                                    "y_axis_title": y_axis_title if include_y_axis else "",
+                                    "use_x_limits": use_x_limits,
+                                    "x_limit_min": x_limit_min,
+                                    "x_limit_max": x_limit_max,
+                                    "use_y_limits": use_y_limits,
+                                    "y_limit_min": y_limit_min,
+                                    "y_limit_max": y_limit_max,
+                                    "invert_y_axis": invert_y_axis,
+                                    "log_y_axis": log_y_axis,
+                                    "show_legend": show_legend,
+                                    "legend_location": LEGEND_LOCATIONS[
+                                        legend_location_label
+                                    ],
+                                    "line_color": line_color,
+                                    "figure_width": figure_width,
+                                    "figure_height": figure_height,
+                                }
+                            }
+                            register_generated_figure_exports(
+                                source="Plotting",
+                                file_stem=file_stem,
+                                exports=last_plot["exports"],
+                                summary=last_plot["summary"],
+                                description="Plotting preview figure",
+                                metadata=plot_metadata,
+                            )
                             plt.close(fig)
 
             if last_plot is not None:

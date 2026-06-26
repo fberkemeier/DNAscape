@@ -39,10 +39,14 @@ def load_local_rmap():
     return importlib.import_module("dnascape").rmap
 
 from app_shell import (
+    compact_name_stem,
     configure_page,
+    register_generated_artifact,
+    register_generated_figure_exports,
     render_control_panel_marker,
     render_page_intro,
     render_sidebar,
+    safe_name_stem,
 )
 
 
@@ -67,6 +71,7 @@ EXPORT_FORMATS = (
     ("PDF", "pdf", "application/pdf", ":material/picture_as_pdf:"),
     ("SVG", "svg", "image/svg+xml", ":material/code:"),
 )
+RAW_CACHE_FORMATS = ("CSV", "TSV", "TXT", "NPY")
 MAP_STATE_KEY = "mapping_last_map"
 MAP_JOB_KEY = "mapping_active_job"
 MAP_JOB_STARTED_KEY = "mapping_job_started_this_run"
@@ -257,8 +262,7 @@ def figure_bytes(fig, image_format: str) -> bytes:
 
 
 def safe_download_stem(*parts: object) -> str:
-    raw_name = "_".join(str(part) for part in parts if part is not None)
-    return "".join(char if char.isalnum() or char in "-_" else "_" for char in raw_name)
+    return safe_name_stem(*parts)
 
 
 def feature_label(feature: str) -> str:
@@ -428,6 +432,21 @@ def raw_download_payload(
     array_buffer = BytesIO()
     np.save(array_buffer, frame.to_numpy())
     return array_buffer.getvalue(), "npy", "application/octet-stream"
+
+
+def raw_output_variants(
+    raw_result: dict[str, np.ndarray],
+    file_stem: str,
+) -> dict[str, dict[str, object]]:
+    variants = {}
+    for format_label in RAW_CACHE_FORMATS:
+        payload, extension, mime = raw_download_payload(raw_result, format_label)
+        variants[format_label] = {
+            "file_name": f"{file_stem}_raw.{extension}",
+            "mime": mime,
+            "payload": payload,
+        }
+    return variants
 
 
 def maybe_gzip_payload(
@@ -838,7 +857,7 @@ def build_mapping_preview(
                 showQ=False,
                 return_handles=True,
             )
-    file_stem = safe_download_stem(
+    file_stem = compact_name_stem(
         "dnascape",
         "mapping",
         settings["target_form"],
@@ -849,6 +868,7 @@ def build_mapping_preview(
     mapped_result = {
         "exports": figure_export_bytes(fig),
         "file_stem": file_stem,
+        "summary": feature_label(str(settings["target_feature"])),
         "raw": {
             "position_kb": np.asarray(map_positions, dtype=float),
             "time_min": np.asarray(settings.get("time_grid", []), dtype=float),
@@ -1629,7 +1649,7 @@ def render_mapping_workspace() -> None:
 
 
     def render_mapping_preview_panel(map_feedback_shown: bool = False) -> None:
-        with st.container(border=True):
+        with st.container(border=True, key="dnascape-preview-card"):
             st.markdown(
                 '<div class="plotting-panel-title">Preview</div>',
                 unsafe_allow_html=True,
@@ -1701,6 +1721,27 @@ def render_mapping_workspace() -> None:
                             preview_message_shown = True
                         else:
                             st.session_state[MAP_STATE_KEY] = last_map
+                            register_generated_figure_exports(
+                                source="Mapping",
+                                file_stem=last_map["file_stem"],
+                                exports=last_map["exports"],
+                                summary=last_map["summary"],
+                                description="Mapping preview figure",
+                                metadata={"settings": completed_job["plot_settings"]},
+                            )
+                            register_generated_artifact(
+                                source="Mapping",
+                                category="Raw output",
+                                file_name=f"{last_map['file_stem']}_raw",
+                                summary=last_map["summary"],
+                                description="Mapped DNAscape-ready raw output",
+                                cache_key=f"mapping:raw:{last_map['file_stem']}",
+                                artifact_type="raw",
+                                variants=raw_output_variants(
+                                    last_map["raw"],
+                                    last_map["file_stem"],
+                                ),
+                            )
                             render_slot.empty()
                     elif terminal_update["status"] == "cancelled":
                         st.info("Mapping stopped.")

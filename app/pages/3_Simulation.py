@@ -31,10 +31,14 @@ def ensure_project_import_path() -> None:
 ensure_project_import_path()
 
 from app_shell import (
+    compact_name_stem,
     configure_page,
+    register_generated_artifact,
+    register_generated_figure_exports,
     render_control_panel_marker,
     render_page_intro,
     render_sidebar,
+    safe_name_stem,
 )
 
 
@@ -57,6 +61,7 @@ EXPORT_FORMATS = (
     ("PDF", "pdf", "application/pdf", ":material/picture_as_pdf:"),
     ("SVG", "svg", "image/svg+xml", ":material/code:"),
 )
+RAW_CACHE_FORMATS = ("CSV", "TSV", "TXT", "NPY")
 SIM_STATE_KEY = "simulation_last_preview"
 SIM_JOB_KEY = "simulation_active_job"
 RSIM_PROGRESS_PATTERN = re.compile(
@@ -242,8 +247,7 @@ def figure_bytes(fig, image_format: str) -> bytes:
 
 
 def safe_download_stem(*parts: object) -> str:
-    raw_name = "_".join(str(part) for part in parts if part is not None)
-    return "".join(char if char.isalnum() or char in "-_" else "_" for char in raw_name)
+    return safe_name_stem(*parts)
 
 
 def figure_export_bytes(fig) -> dict[str, bytes]:
@@ -510,6 +514,21 @@ def simulation_raw_payload(
     array_buffer = BytesIO()
     np.save(array_buffer, frame.to_numpy())
     return array_buffer.getvalue(), "npy", "application/octet-stream"
+
+
+def simulation_raw_output_variants(
+    raw_result: dict[str, object],
+    file_stem: str,
+) -> dict[str, dict[str, object]]:
+    variants = {}
+    for format_label in RAW_CACHE_FORMATS:
+        payload, extension, mime = simulation_raw_payload(raw_result, format_label)
+        variants[format_label] = {
+            "file_name": f"{file_stem}_raw.{extension}",
+            "mime": mime,
+            "payload": payload,
+        }
+    return variants
 
 
 def maybe_gzip_payload(
@@ -852,17 +871,18 @@ def build_simulation_preview(
             return_handles=True,
         )
 
-    file_stem = safe_download_stem(
+    file_stem = compact_name_stem(
         "dnascape",
         "simulation",
         output_key,
-        safe_download_stem(preview_mode.lower().replace(" ", "_")),
+        preview_mode,
         settings["chromosome"],
         f"{settings['region_start']:g}-{settings['region_end']:g}kb",
     )
     preview_result = {
         "exports": figure_export_bytes(fig),
         "file_stem": file_stem,
+        "summary": output_label,
         "raw": {
             "kind": kind,
             "value_column": safe_download_stem(output_key).lower() or "value",
@@ -1497,7 +1517,7 @@ with control_stack:
         )
 
 with preview:
-    with st.container(border=True):
+    with st.container(border=True, key="dnascape-preview-card"):
         st.markdown(
             '<div class="plotting-panel-title">Preview</div>',
             unsafe_allow_html=True,
@@ -1679,6 +1699,27 @@ with preview:
                         st.error(f"Could not render the simulation preview: {exc}")
                     else:
                         st.session_state[SIM_STATE_KEY] = last_simulation
+                        register_generated_figure_exports(
+                            source="Simulation",
+                            file_stem=last_simulation["file_stem"],
+                            exports=last_simulation["exports"],
+                            summary=last_simulation["summary"],
+                            description="Simulation preview figure",
+                            metadata={"settings": completed_job["preview_settings"]},
+                        )
+                        register_generated_artifact(
+                            source="Simulation",
+                            category="Raw output",
+                            file_name=f"{last_simulation['file_stem']}_raw",
+                            summary=last_simulation["summary"],
+                            description="Simulated DNAscape-ready raw output",
+                            cache_key=f"simulation:raw:{last_simulation['file_stem']}",
+                            artifact_type="raw",
+                            variants=simulation_raw_output_variants(
+                                last_simulation["raw"],
+                                last_simulation["file_stem"],
+                            ),
+                        )
                         render_slot.empty()
                 elif terminal_update["status"] == "cancelled":
                     st.info("Simulation stopped.")

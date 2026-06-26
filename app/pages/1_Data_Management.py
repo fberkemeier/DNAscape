@@ -13,10 +13,13 @@ if str(APP_DIR) not in sys.path:
     sys.path.insert(0, str(APP_DIR))
 
 from app_shell import (
+    compact_name_stem,
     configure_page,
+    register_generated_artifact,
     render_control_panel_marker,
     render_page_intro,
     render_sidebar,
+    safe_name_stem,
 )
 
 
@@ -114,8 +117,7 @@ def detect_source_format(name: str) -> str | None:
 
 
 def safe_stem(*parts: object) -> str:
-    raw_name = "_".join(str(part) for part in parts if part)
-    return "".join(char if char.isalnum() or char in "-_" else "_" for char in raw_name)
+    return safe_name_stem(*parts)
 
 
 def convert_with_rdata(
@@ -135,7 +137,7 @@ def convert_with_rdata(
     with tempfile.TemporaryDirectory() as tmpdir:
         tmp_path = Path(tmpdir)
         source_path = tmp_path / f"input{upload_suffix(uploaded_file.name)}"
-        file_stem = safe_stem(upload_stem(uploaded_file.name))
+        file_stem = compact_name_stem("dnascape", "data", upload_stem(uploaded_file.name))
         output_extension = f"{target_format}.gz" if compress_output else target_format
         output_path = tmp_path / f"{file_stem}.{output_extension}"
         source_path.write_bytes(uploaded_file.getvalue())
@@ -219,7 +221,7 @@ with left:
             convert_button_slot = st.empty()
 
 with right:
-    with st.container(border=True):
+    with st.container(border=True, key="dnascape-preview-card"):
         st.markdown(
             '<div class="dnascape-panel-title">Conversion</div>',
             unsafe_allow_html=True,
@@ -335,6 +337,28 @@ with right:
                     conversion["spec"] = conversion_spec
                     conversion["source_id"] = upload_token(uploaded_file)
                     st.session_state[LAST_CONVERSION_KEY] = conversion
+                    extension = str(conversion.get("extension") or conversion["target_format"])
+                    register_generated_artifact(
+                        source="Data Management",
+                        category="Converted data",
+                        file_name=f"{conversion['file_stem']}.{extension}",
+                        payload=conversion["payload"],
+                        mime=conversion["mime"],
+                        summary=(
+                            f"{FORMAT_LABELS.get(conversion['source_format'], conversion['source_format'])} "
+                            f"to {FORMAT_LABELS.get(conversion['target_format'], conversion['target_format'])}"
+                        ),
+                        description=(
+                            f"{conversion['source_format']} -> {conversion['target_format']} "
+                            f"({conversion['data_form']})"
+                        ),
+                        cache_key=(
+                            f"data-management:{conversion['file_stem']}:"
+                            f"{conversion['source_id']}:"
+                            f"{conversion['target_format']}:{extension}:"
+                            f"{conversion['data_form']}"
+                        ),
+                    )
                 except Exception as exc:
                     st.error(f"rdata could not complete this conversion: {exc}")
 

@@ -1,10 +1,14 @@
 """Shared layout helpers for the DNAscape Streamlit prototype."""
 
 import base64
+from datetime import datetime
 import html
+import inspect
 import importlib.metadata
 import json
+import re
 import sys
+import time
 from pathlib import Path
 
 import streamlit as st
@@ -24,6 +28,79 @@ DOCS_URL = "https://dnascape.readthedocs.io/en/latest/"
 PACKAGE_NAME = "dnascape"
 ACTIVE_PAGE_KEY = "dnascape_active_page"
 LAST_QUERY_PAGE_KEY = "dnascape_last_query_page"
+GENERATED_ARTIFACTS_KEY = "dnascape_generated_artifacts"
+GENERATED_CACHE_LIMIT_KEY = "dnascape_generated_cache_limit"
+GENERATED_CACHE_KEEP_RAW_KEY = "dnascape_generated_cache_keep_raw"
+GENERATED_CACHE_KEEP_PLOTS_KEY = "dnascape_generated_cache_keep_plots"
+PERSISTENT_CONTROL_KEYS_KEY = "dnascape_persistent_control_keys"
+PERSISTENT_CONTROL_KEY_OWNERS_KEY = "dnascape_persistent_control_key_owners"
+DEFAULT_GENERATED_CACHE_LIMIT = 30
+MAX_GENERATED_CACHE_LIMIT = 200
+FIGURE_EXPORT_MIME = {
+    "png": "image/png",
+    "pdf": "application/pdf",
+    "svg": "image/svg+xml",
+}
+_GENERATED_NAME_LAST_STAMP = ""
+_GENERATED_NAME_STAMP_COUNT = 0
+NAME_PHRASE_ABBREVIATIONS = {
+    "data management": "data",
+    "replication timing": "rep_time",
+    "origin firing": "ori_fire",
+    "origin efficiency": "ori_eff",
+    "fork speed": "fork_spd",
+    "fork directionality": "fork_dir",
+    "replicated fraction": "rep_frac",
+    "initiation events": "init_evt",
+    "coalescence events": "coal_evt",
+    "right moving fork density": "r_fork_den",
+    "left moving fork density": "l_fork_den",
+    "single view": "single",
+    "multiple view": "multi",
+    "time array": "time_arr",
+    "space time": "xt",
+}
+NAME_TOKEN_ABBREVIATIONS = {
+    "dnascape": "dns",
+    "simulation": "sim",
+    "simulated": "sim",
+    "plotting": "plt",
+    "plot": "plt",
+    "mapping": "map",
+    "mapped": "map",
+    "conversion": "conv",
+    "converted": "conv",
+    "replication": "rep",
+    "replicated": "rep",
+    "timing": "time",
+    "initiation": "init",
+    "firing": "fire",
+    "origin": "ori",
+    "efficiency": "eff",
+    "fork": "fork",
+    "speed": "spd",
+    "directionality": "dir",
+    "direction": "dir",
+    "density": "den",
+    "events": "evt",
+    "coalescence": "coal",
+    "fraction": "frac",
+    "chromosome": "chr",
+    "custom": "cust",
+    "profile": "prof",
+    "constant": "const",
+    "histogram": "hist",
+    "multiple": "multi",
+    "single": "single",
+    "view": "view",
+    "space": "space",
+    "spacetime": "xt",
+    "temporal": "time",
+    "output": "out",
+    "array": "arr",
+    "region": "reg",
+    "management": "mgmt",
+}
 NAV_ITEMS = (
     ("overview", "Overview", "/"),
     ("data-management", "Data Management", "/Data_Management"),
@@ -65,6 +142,19 @@ THEME_LABELS = {
     "dark": "Dark",
     "system": "System",
 }
+PERSISTENT_CONTROL_WIDGETS = (
+    "selectbox",
+    "checkbox",
+    "toggle",
+    "number_input",
+    "slider",
+    "text_input",
+    "text_area",
+    "color_picker",
+    "radio",
+    "multiselect",
+)
+_PERSISTENT_CONTROL_WIDGETS_INSTALLED = False
 
 
 def package_version() -> str:
@@ -121,8 +211,191 @@ def set_active_page(slug: str) -> None:
     st.session_state[ACTIVE_PAGE_KEY] = normalize_page(slug)
 
 
+def persistent_control_keys() -> set[str]:
+    """Return the session-wide set of control widget keys to preserve."""
+    keys = st.session_state.get(PERSISTENT_CONTROL_KEYS_KEY)
+    if not isinstance(keys, (set, list, tuple)):
+        keys = set()
+    return {str(key) for key in keys if str(key)}
+
+
+def persistent_control_key_owners() -> dict[str, str]:
+    """Return the page owner for each persistent control key."""
+    owners = st.session_state.get(PERSISTENT_CONTROL_KEY_OWNERS_KEY)
+    if not isinstance(owners, dict):
+        return {}
+    return {
+        str(key): str(owner)
+        for key, owner in owners.items()
+        if str(key) and str(owner)
+    }
+
+
+def current_callsite_owner() -> str:
+    """Return the app-relative file path for the first non-shell caller."""
+    frame = inspect.currentframe()
+    frame = frame.f_back if frame is not None else None
+    app_shell_path = Path(__file__).resolve()
+    while frame is not None:
+        filename = Path(frame.f_code.co_filename).resolve()
+        if filename != app_shell_path:
+            try:
+                relative = filename.relative_to(ROOT_DIR)
+            except ValueError:
+                relative = Path(filename.name)
+            return Path(str(relative)).with_suffix("").as_posix()
+        frame = frame.f_back
+    return "app"
+
+
+def register_persistent_control_key(key: object, owner: str | None = None) -> str:
+    """Remember a widget key so Streamlit keeps it across page navigation."""
+    key_text = str(key)
+    keys = persistent_control_keys()
+    if key_text not in keys:
+        keys.add(key_text)
+        st.session_state[PERSISTENT_CONTROL_KEYS_KEY] = sorted(keys)
+
+    owner_text = str(owner or current_callsite_owner())
+    owners = persistent_control_key_owners()
+    if owners.get(key_text) != owner_text:
+        owners[key_text] = owner_text
+        st.session_state[PERSISTENT_CONTROL_KEY_OWNERS_KEY] = owners
+    return key_text
+
+
+def preserve_persistent_control_state(skip_owner: str | None = None) -> None:
+    """Interrupt Streamlit widget cleanup for DNAscape control keys."""
+    owners = persistent_control_key_owners()
+    for key in persistent_control_keys():
+        if skip_owner is not None and owners.get(key) == skip_owner:
+            continue
+        if key in st.session_state:
+            st.session_state[key] = st.session_state[key]
+
+
+def current_widget_callsite() -> tuple[str, int]:
+    """Return the owner path and line number for a widget caller."""
+    frame = inspect.currentframe()
+    frame = frame.f_back if frame is not None else None
+    while frame is not None:
+        filename = Path(frame.f_code.co_filename).resolve()
+        if filename != Path(__file__).resolve():
+            try:
+                relative = filename.relative_to(ROOT_DIR)
+            except ValueError:
+                relative = Path(filename.name)
+            return Path(str(relative)).with_suffix("").as_posix(), frame.f_lineno
+        frame = frame.f_back
+    return "app", 0
+
+
+def generated_control_key(widget_name: str, label: object, owner: str, line_number: int) -> str:
+    """Build a stable key for an unkeyed control from its page callsite."""
+    label_text = str(label or widget_name)
+    return safe_name_stem(
+        "dnascape",
+        "control",
+        owner,
+        widget_name,
+        line_number,
+        label_text,
+    )[:240]
+
+
+def widget_label_from_call(args: tuple[object, ...], kwargs: dict[str, object]) -> object:
+    """Return a widget label from positional or keyword arguments."""
+    if "label" in kwargs:
+        return kwargs["label"]
+    return args[0] if args else ""
+
+
+def widget_options_from_call(args: tuple[object, ...], kwargs: dict[str, object]) -> list[object] | None:
+    """Return select-like widget options when they are easy to inspect."""
+    options = kwargs.get("options")
+    if options is None and len(args) >= 2:
+        options = args[1]
+    if options is None:
+        return None
+    try:
+        return list(options)
+    except TypeError:
+        return None
+
+
+def sanitize_persistent_widget_state(
+    widget_name: str,
+    key: str,
+    args: tuple[object, ...],
+    kwargs: dict[str, object],
+) -> None:
+    """Reset stale preserved values when dynamic widget constraints change."""
+    if key not in st.session_state:
+        return
+
+    value = st.session_state[key]
+    if widget_name in {"selectbox", "radio"}:
+        options = widget_options_from_call(args, kwargs)
+        if options is not None and value not in options:
+            st.session_state.pop(key, None)
+        return
+
+    if widget_name == "multiselect":
+        options = widget_options_from_call(args, kwargs)
+        if options is not None and isinstance(value, (list, tuple, set)):
+            allowed = set(options)
+            st.session_state[key] = [
+                item for item in value if item in allowed
+            ]
+        return
+
+    if widget_name in {"number_input", "slider"} and isinstance(value, (int, float)):
+        min_value = kwargs.get("min_value")
+        max_value = kwargs.get("max_value")
+        if isinstance(min_value, (int, float)) and value < min_value:
+            st.session_state[key] = min_value
+        if isinstance(max_value, (int, float)) and value > max_value:
+            st.session_state[key] = max_value
+
+
+def install_persistent_control_widgets() -> None:
+    """Patch Streamlit controls so DNAscape settings persist for the session."""
+    global _PERSISTENT_CONTROL_WIDGETS_INSTALLED
+
+    if _PERSISTENT_CONTROL_WIDGETS_INSTALLED:
+        return
+
+    for widget_name in PERSISTENT_CONTROL_WIDGETS:
+        original_widget = getattr(st, widget_name, None)
+        if original_widget is None:
+            continue
+
+        def make_widget_wrapper(name, original):
+            def wrapped_widget(*args, **kwargs):
+                owner, line_number = current_widget_callsite()
+                key = kwargs.get("key")
+                if key is None:
+                    key = generated_control_key(
+                        name,
+                        widget_label_from_call(args, kwargs),
+                        owner,
+                        line_number,
+                    )
+                    kwargs["key"] = key
+                key_text = register_persistent_control_key(key, owner)
+                sanitize_persistent_widget_state(name, key_text, args, kwargs)
+                return original(*args, **kwargs)
+
+            return wrapped_widget
+
+        setattr(st, widget_name, make_widget_wrapper(widget_name, original_widget))
+
+    _PERSISTENT_CONTROL_WIDGETS_INSTALLED = True
+
+
 def configure_page(title: str) -> None:
     """Apply Streamlit page settings and shared visual styling."""
+    page_owner = current_callsite_owner()
     st.set_page_config(
         page_title=title,
         page_icon=TAB_LOGO_PATH,
@@ -134,8 +407,348 @@ def configure_page(title: str) -> None:
             "About": "DNAscape prototype workspace.",
         },
     )
+    preserve_persistent_control_state(skip_owner=page_owner)
+    install_persistent_control_widgets()
     apply_style()
     render_theme_toggle()
+
+
+def generated_name_stamp() -> str:
+    """Return the timestamp suffix used for generated file names."""
+    global _GENERATED_NAME_LAST_STAMP, _GENERATED_NAME_STAMP_COUNT
+
+    stamp = datetime.now().strftime("%Y%m%d%H%M%S")
+    if stamp == _GENERATED_NAME_LAST_STAMP:
+        _GENERATED_NAME_STAMP_COUNT += 1
+    else:
+        _GENERATED_NAME_LAST_STAMP = stamp
+        _GENERATED_NAME_STAMP_COUNT = 0
+
+    if _GENERATED_NAME_STAMP_COUNT:
+        return f"{stamp}_{_GENERATED_NAME_STAMP_COUNT:02d}"
+    return stamp
+
+
+def safe_name_stem(*parts: object) -> str:
+    """Return a filesystem-safe ASCII-ish stem."""
+    tokens = []
+    for part in parts:
+        if part is None:
+            continue
+        text = str(part).strip()
+        if text:
+            tokens.append(text)
+    raw_name = "_".join(tokens)
+    safe = re.sub(r"[^A-Za-z0-9_-]+", "_", raw_name)
+    safe = re.sub(r"_+", "_", safe).strip("_-")
+    return safe or "file"
+
+
+def compact_name_part(value: object) -> str:
+    """Shorten common DNAscape filename terms while keeping the name readable."""
+    text = str(value or "").strip()
+    if not text:
+        return ""
+    normalized = re.sub(r"[^A-Za-z0-9]+", " ", text).strip().lower()
+    if not normalized:
+        return ""
+    if normalized in NAME_PHRASE_ABBREVIATIONS:
+        return NAME_PHRASE_ABBREVIATIONS[normalized]
+    return "_".join(
+        NAME_TOKEN_ABBREVIATIONS.get(token, token)
+        for token in normalized.split()
+        if token
+    )
+
+
+def compact_name_stem(*parts: object, stamp: str | None = None) -> str:
+    """Return a compact generated-output name with a unique timestamp suffix."""
+    compact_parts = [compact_name_part(part) for part in parts]
+    stem = safe_name_stem(*[part for part in compact_parts if part])
+    unique_stamp = stamp or generated_name_stamp()
+    return safe_name_stem(stem, unique_stamp)
+
+
+def clamp_generated_cache_limit(value: object) -> int:
+    """Return a bounded generated-file cache limit."""
+    try:
+        limit = int(value)
+    except (TypeError, ValueError):
+        limit = DEFAULT_GENERATED_CACHE_LIMIT
+    return max(1, min(MAX_GENERATED_CACHE_LIMIT, limit))
+
+
+def generated_cache_limit() -> int:
+    """Read the per-session generated-file cache limit."""
+    limit = clamp_generated_cache_limit(
+        st.session_state.get(GENERATED_CACHE_LIMIT_KEY, DEFAULT_GENERATED_CACHE_LIMIT)
+    )
+    st.session_state[GENERATED_CACHE_LIMIT_KEY] = limit
+    return limit
+
+
+def set_generated_cache_limit(limit: object) -> int:
+    """Update the generated-file cache limit and prune older entries."""
+    bounded_limit = clamp_generated_cache_limit(limit)
+    st.session_state[GENERATED_CACHE_LIMIT_KEY] = bounded_limit
+    prune_generated_artifacts(bounded_limit)
+    return bounded_limit
+
+
+def generated_cache_keep_raw() -> bool:
+    """Return whether newly generated raw outputs should be cached."""
+    value = st.session_state.get(GENERATED_CACHE_KEEP_RAW_KEY, True)
+    keep_raw = bool(value)
+    st.session_state[GENERATED_CACHE_KEEP_RAW_KEY] = keep_raw
+    return keep_raw
+
+
+def set_generated_cache_keep_raw(value: object) -> bool:
+    """Update whether newly generated raw outputs should be cached."""
+    keep_raw = bool(value)
+    st.session_state[GENERATED_CACHE_KEEP_RAW_KEY] = keep_raw
+    return keep_raw
+
+
+def generated_cache_keep_plots() -> bool:
+    """Return whether newly generated plot exports should be cached."""
+    value = st.session_state.get(GENERATED_CACHE_KEEP_PLOTS_KEY, False)
+    keep_plots = bool(value)
+    st.session_state[GENERATED_CACHE_KEEP_PLOTS_KEY] = keep_plots
+    return keep_plots
+
+
+def set_generated_cache_keep_plots(value: object) -> bool:
+    """Update whether newly generated plot exports should be cached."""
+    keep_plots = bool(value)
+    st.session_state[GENERATED_CACHE_KEEP_PLOTS_KEY] = keep_plots
+    return keep_plots
+
+
+def generated_artifacts() -> list[dict[str, object]]:
+    """Return generated artifacts for this Streamlit session."""
+    artifacts = st.session_state.get(GENERATED_ARTIFACTS_KEY)
+    if not isinstance(artifacts, list):
+        artifacts = []
+        st.session_state[GENERATED_ARTIFACTS_KEY] = artifacts
+    prune_generated_artifacts()
+    return list(st.session_state.get(GENERATED_ARTIFACTS_KEY, []))
+
+
+def prune_generated_artifacts(limit: int | None = None) -> None:
+    """Keep the newest generated artifacts within the configured limit."""
+    artifacts = st.session_state.get(GENERATED_ARTIFACTS_KEY)
+    if not isinstance(artifacts, list):
+        st.session_state[GENERATED_ARTIFACTS_KEY] = []
+        return
+
+    bounded_limit = generated_cache_limit() if limit is None else clamp_generated_cache_limit(limit)
+    if len(artifacts) > bounded_limit:
+        del artifacts[: len(artifacts) - bounded_limit]
+
+
+def clear_generated_artifacts() -> None:
+    """Clear generated, non-uploaded artifacts for this Streamlit session."""
+    st.session_state[GENERATED_ARTIFACTS_KEY] = []
+
+
+def remove_generated_artifact(artifact_id: object) -> None:
+    """Remove one generated artifact by id."""
+    artifact_id = str(artifact_id)
+    artifacts = st.session_state.get(GENERATED_ARTIFACTS_KEY)
+    if not isinstance(artifacts, list):
+        return
+    st.session_state[GENERATED_ARTIFACTS_KEY] = [
+        artifact for artifact in artifacts if str(artifact.get("id")) != artifact_id
+    ]
+
+
+def artifact_size_label(size_bytes: object) -> str:
+    """Render a compact byte size label."""
+    try:
+        size = float(size_bytes)
+    except (TypeError, ValueError):
+        size = 0.0
+
+    for unit in ("B", "KB", "MB", "GB"):
+        if size < 1024 or unit == "GB":
+            if unit == "B":
+                return f"{int(size)} {unit}"
+            return f"{size:.1f} {unit}"
+        size /= 1024
+    return f"{size:.1f} GB"
+
+
+def should_keep_generated_artifact(artifact_type: str, category: str) -> bool:
+    """Return whether the current cache preferences retain this generated type."""
+    normalized_type = str(artifact_type or "").strip().casefold()
+    normalized_category = str(category or "").strip().casefold()
+    if normalized_type == "raw" or normalized_category == "raw output":
+        return generated_cache_keep_raw()
+    if normalized_type == "plot" or normalized_category == "plot":
+        return generated_cache_keep_plots()
+    return True
+
+
+def compact_generated_metadata(value: object) -> object:
+    """Keep hidden artifact metadata useful without storing bulky arrays."""
+    if value is None or isinstance(value, (str, int, float, bool)):
+        return value
+    if isinstance(value, Path):
+        return str(value)
+    if isinstance(value, dict):
+        return {
+            str(key): compact_generated_metadata(item)
+            for key, item in value.items()
+            if not str(key).startswith("_")
+        }
+    if isinstance(value, (list, tuple)):
+        if len(value) > 20:
+            return {"items": len(value)}
+        return [compact_generated_metadata(item) for item in value]
+    shape = getattr(value, "shape", None)
+    if shape is not None:
+        return {"shape": tuple(int(axis) for axis in shape)}
+    return str(value)
+
+
+def normalize_artifact_variants(
+    variants: dict[str, dict[str, object]] | None,
+    *,
+    fallback_file_name: str,
+    fallback_payload: bytes | None,
+    fallback_mime: str,
+) -> dict[str, dict[str, object]]:
+    """Return download variants with bytes payloads and stable display labels."""
+    normalized: dict[str, dict[str, object]] = {}
+    if variants:
+        for label, variant in variants.items():
+            payload = variant.get("payload")
+            if payload is None:
+                continue
+            variant_payload = bytes(payload)
+            variant_label = str(variant.get("label") or label).strip() or "File"
+            normalized[variant_label] = {
+                "label": variant_label,
+                "file_name": str(variant.get("file_name") or fallback_file_name),
+                "mime": str(variant.get("mime") or fallback_mime),
+                "payload": variant_payload,
+                "size": len(variant_payload),
+            }
+
+    if not normalized and fallback_payload is not None:
+        payload_bytes = bytes(fallback_payload)
+        normalized["File"] = {
+            "label": "File",
+            "file_name": fallback_file_name,
+            "mime": fallback_mime,
+            "payload": payload_bytes,
+            "size": len(payload_bytes),
+        }
+
+    return normalized
+
+
+def generated_artifact_size(artifact: dict[str, object]) -> int:
+    """Return total bytes retained for one generated artifact."""
+    variants = artifact.get("variants")
+    if isinstance(variants, dict) and variants:
+        return sum(
+            int(variant.get("size", len(variant.get("payload", b""))))
+            for variant in variants.values()
+            if isinstance(variant, dict)
+        )
+    return int(artifact.get("size", 0))
+
+
+def register_generated_artifact(
+    *,
+    source: str,
+    category: str,
+    file_name: str,
+    payload: bytes | None = None,
+    mime: str = "application/octet-stream",
+    summary: str = "",
+    description: str = "",
+    cache_key: str | None = None,
+    artifact_type: str = "file",
+    variants: dict[str, dict[str, object]] | None = None,
+    metadata: dict[str, object] | None = None,
+) -> None:
+    """Register a generated artifact without retaining uploaded source files."""
+    if not should_keep_generated_artifact(artifact_type, category):
+        return
+
+    clean_file_name = str(file_name).strip() or "dnascape-output.bin"
+    normalized_variants = normalize_artifact_variants(
+        variants,
+        fallback_file_name=clean_file_name,
+        fallback_payload=payload,
+        fallback_mime=mime,
+    )
+    if not normalized_variants:
+        return
+
+    first_variant = next(iter(normalized_variants.values()))
+    payload_bytes = bytes(first_variant["payload"])
+    artifact_id = cache_key or f"{source}:{category}:{clean_file_name}:{time.time_ns()}"
+    artifacts = st.session_state.get(GENERATED_ARTIFACTS_KEY)
+    if not isinstance(artifacts, list):
+        artifacts = []
+        st.session_state[GENERATED_ARTIFACTS_KEY] = artifacts
+
+    artifacts[:] = [
+        artifact for artifact in artifacts if str(artifact.get("id")) != artifact_id
+    ]
+    artifacts.append(
+        {
+            "id": artifact_id,
+            "source": str(source),
+            "category": str(category),
+            "artifact_type": str(artifact_type),
+            "file_name": clean_file_name,
+            "mime": str(first_variant["mime"]),
+            "summary": str(summary),
+            "description": str(description),
+            "payload": payload_bytes,
+            "size": sum(int(variant["size"]) for variant in normalized_variants.values()),
+            "variants": normalized_variants,
+            "metadata": compact_generated_metadata(metadata or {}),
+            "created_at": time.time(),
+        }
+    )
+    prune_generated_artifacts()
+
+
+def register_generated_figure_exports(
+    *,
+    source: str,
+    file_stem: str,
+    exports: dict[str, bytes],
+    summary: str = "",
+    description: str = "",
+    metadata: dict[str, object] | None = None,
+) -> None:
+    """Register generated figure exports as one multi-format artifact."""
+    variants = {
+        str(extension).upper(): {
+            "file_name": f"{file_stem}.{extension}",
+            "mime": FIGURE_EXPORT_MIME.get(str(extension), "application/octet-stream"),
+            "payload": payload,
+        }
+        for extension, payload in exports.items()
+    }
+    register_generated_artifact(
+        source=source,
+        category="Plot",
+        file_name=file_stem,
+        summary=summary,
+        description=description,
+        cache_key=f"{source}:plot:{file_stem}",
+        artifact_type="plot",
+        variants=variants,
+        metadata=metadata,
+    )
 
 
 def apply_style() -> None:
@@ -150,6 +763,7 @@ def apply_style() -> None:
           --dnascape-accent: var(--primary-color, #b03412);
           --dnascape-muted: color-mix(in srgb, var(--dnascape-text) 72%, var(--dnascape-bg));
           --dnascape-line: color-mix(in srgb, var(--dnascape-text) 14%, var(--dnascape-bg));
+          --dnascape-outer-line: var(--dnascape-line);
           --dnascape-divider: color-mix(in srgb, var(--dnascape-text) 24%, var(--dnascape-bg));
           --dnascape-sidebar-bg: color-mix(in srgb, var(--dnascape-bg) 92%, var(--dnascape-panel));
           --dnascape-hover-bg: color-mix(in srgb, var(--dnascape-accent) 8%, var(--dnascape-panel));
@@ -203,6 +817,7 @@ def apply_style() -> None:
           --dnascape-mobile-overview-top-padding: 1.3rem;
           --dnascape-overview-card-gap: 1rem;
           --dnascape-overview-card-min-height: 80px;
+          --dnascape-overview-card-equal-height: var(--dnascape-overview-card-min-height);
           --dnascape-overview-card-icon-box-size: 3rem;
           --dnascape-overview-card-icon-size: 3.7rem;
           --dnascape-heading-space-before: -0.9rem;
@@ -241,8 +856,9 @@ def apply_style() -> None:
           --secondary-background-color: #211f1d;
           --text-color: #f3eee8;
           --dnascape-accent: color-mix(in srgb, var(--primary-color, #b03412) 58%, #ffffff);
-          --dnascape-line: rgba(243, 238, 232, 0.36);
-          --dnascape-divider: rgba(243, 238, 232, 0.48);
+          --dnascape-line: color-mix(in srgb, var(--dnascape-text) 18%, var(--dnascape-bg));
+          --dnascape-outer-line: rgba(243, 238, 232, 0.68);
+          --dnascape-divider: color-mix(in srgb, var(--dnascape-text) 28%, var(--dnascape-bg));
           --dnascape-sidebar-active-bg: color-mix(in srgb, var(--dnascape-text) 7%, var(--dnascape-panel));
           --dnascape-shadow: rgba(0, 0, 0, 0.22);
           --dnascape-shadow-hover: rgba(0, 0, 0, 0.32);
@@ -1011,6 +1627,7 @@ def apply_style() -> None:
         }
 
         .workflow-card {
+          align-self: stretch;
           background: var(--dnascape-panel);
           border: 1px solid var(--dnascape-line);
           border-radius: 8px;
@@ -1020,9 +1637,11 @@ def apply_style() -> None:
           cursor: pointer;
           display: flex;
           align-items: center;
+          flex: 1 1 auto;
           gap: 1rem;
+          height: 100%;
           justify-content: space-between;
-          min-height: var(--dnascape-overview-card-min-height);
+          min-height: var(--dnascape-overview-card-equal-height);
           padding: 1.2rem 1.15rem;
           pointer-events: none;
           position: relative;
@@ -1033,16 +1652,44 @@ def apply_style() -> None:
         }
 
         body:has(.overview-page-marker) [class*="st-key-workflow-row-"] {
+          display: flex !important;
+          flex-direction: column !important;
+          margin: 0 !important;
+          padding: 0 !important;
+        }
+
+        body:has(.overview-page-marker) .st-key-workflow-grid > div[data-testid="stVerticalBlock"] {
+          gap: var(--dnascape-overview-card-gap) !important;
+        }
+
+        body:has(.overview-page-marker) .st-key-workflow-grid [data-testid="stElementContainer"]:has([class*="st-key-workflow-row-"]) {
           margin: 0 !important;
           padding: 0 !important;
         }
 
         body:has(.overview-page-marker) [class*="st-key-workflow-row-"]:not([class*="st-key-workflow-row-0"]) {
-          margin-top: var(--dnascape-overview-card-gap) !important;
+          margin-top: 0 !important;
         }
 
         body:has(.overview-page-marker) [class*="st-key-workflow-row-"] [data-testid="stHorizontalBlock"] {
+          align-items: stretch !important;
           gap: var(--dnascape-overview-card-gap) !important;
+        }
+
+        body:has(.overview-page-marker) [class*="st-key-workflow-row-"] [data-testid="column"] {
+          align-self: stretch !important;
+          display: flex !important;
+          flex-direction: column !important;
+          min-width: 0 !important;
+        }
+
+        body:has(.overview-page-marker) [class*="st-key-workflow-row-"] [data-testid="column"] > div,
+        body:has(.overview-page-marker) [class*="st-key-workflow-row-"] [data-testid="column"] > div > div,
+        body:has(.overview-page-marker) [class*="st-key-workflow-row-"] [data-testid="column"] [data-testid="stVerticalBlock"] {
+          display: flex !important;
+          flex: 1 1 auto !important;
+          flex-direction: column !important;
+          min-height: 0 !important;
         }
 
         .workflow-card:visited,
@@ -1060,12 +1707,20 @@ def apply_style() -> None:
         }
 
         body:has(.overview-page-marker) [class*="st-key-workflow-card-"]:not([class*="st-key-workflow-card-button-"]) {
-          min-height: var(--dnascape-overview-card-min-height);
+          display: flex !important;
+          flex: 1 1 auto !important;
+          flex-direction: column !important;
+          height: 100% !important;
+          min-height: var(--dnascape-overview-card-equal-height);
           position: relative;
         }
 
         body:has(.overview-page-marker) [class*="st-key-workflow-card-"]:not([class*="st-key-workflow-card-button-"]) [data-testid="stElementContainer"]:has(.workflow-card) {
+          display: flex !important;
+          flex: 1 1 auto !important;
+          height: 100% !important;
           margin: 0 !important;
+          min-height: 0 !important;
           padding: 0 !important;
           pointer-events: none;
           position: relative;
@@ -1317,9 +1972,7 @@ def apply_style() -> None:
 
         :root[data-dnascape-effective-theme="dark"] div[data-testid="stVerticalBlockBorderWrapper"] {
           border: 1px solid var(--dnascape-line) !important;
-          box-shadow:
-            0 1px 2px var(--dnascape-shadow),
-            inset 0 0 0 1px rgba(243, 238, 232, 0.08);
+          box-shadow: 0 1px 2px var(--dnascape-shadow);
         }
 
         .dnascape-control-page-marker {
@@ -1415,9 +2068,11 @@ def apply_style() -> None:
           scrollbar-gutter: stable;
         }
 
-        body:has(.dnascape-control-page-marker) .st-key-dnascape-control-card > div[data-testid="stVerticalBlockBorderWrapper"] {
+        body:has(.dnascape-control-page-marker) .st-key-dnascape-control-card > div[data-testid="stVerticalBlockBorderWrapper"],
+        body:has(.dnascape-control-page-marker) .st-key-dnascape-preview-card > div[data-testid="stVerticalBlockBorderWrapper"],
+        body:has(.cached-files-page-marker) .st-key-dnascape-cache-card > div[data-testid="stVerticalBlockBorderWrapper"] {
           background: var(--dnascape-panel) !important;
-          border: 1px solid var(--dnascape-line) !important;
+          border: 1px solid var(--dnascape-outer-line) !important;
           border-radius: 8px !important;
           box-shadow: 0 1px 2px var(--dnascape-shadow) !important;
           display: block !important;
@@ -1425,6 +2080,7 @@ def apply_style() -> None:
           max-height: none !important;
           min-height: 0 !important;
           overflow: visible !important;
+          outline: none !important;
           padding: var(--dnascape-shared-panel-padding) !important;
         }
 
@@ -1433,7 +2089,9 @@ def apply_style() -> None:
           min-height: max-content !important;
         }
 
-        body:has(.dnascape-control-page-marker) .st-key-dnascape-control-card div[data-testid="stVerticalBlockBorderWrapper"] > div:first-child {
+        body:has(.dnascape-control-page-marker) .st-key-dnascape-control-card > div[data-testid="stVerticalBlockBorderWrapper"] > div:first-child,
+        body:has(.dnascape-control-page-marker) .st-key-dnascape-preview-card > div[data-testid="stVerticalBlockBorderWrapper"] > div:first-child,
+        body:has(.cached-files-page-marker) .st-key-dnascape-cache-card > div[data-testid="stVerticalBlockBorderWrapper"] > div:first-child {
           min-height: 0 !important;
           padding: 0 !important;
         }
@@ -1484,29 +2142,6 @@ def apply_style() -> None:
           border-color: var(--dnascape-accent) !important;
           color: white !important;
           opacity: 0.88 !important;
-        }
-
-        :root[data-dnascape-effective-theme="dark"] body:has(.dnascape-control-page-marker) .st-key-dnascape-control-card > div[data-testid="stVerticalBlockBorderWrapper"] {
-          border-color: rgba(243, 238, 232, 0.52) !important;
-          box-shadow:
-            0 1px 2px var(--dnascape-shadow),
-            inset 0 0 0 1px rgba(243, 238, 232, 0.16) !important;
-        }
-
-        body:has(.dnascape-control-page-marker) div[data-testid="stVerticalBlockBorderWrapper"] {
-          background: var(--dnascape-panel) !important;
-          border: 1px solid var(--dnascape-line) !important;
-          border-radius: 8px !important;
-          box-shadow: 0 1px 2px var(--dnascape-shadow) !important;
-          padding: var(--dnascape-shared-panel-padding) !important;
-        }
-
-        body:has(.dnascape-control-page-marker) div[data-testid="stVerticalBlockBorderWrapper"] > div:first-child {
-          padding: 0 !important;
-        }
-
-        body:has(.dnascape-control-page-marker) div[data-testid="stVerticalBlockBorderWrapper"] div[data-testid="stVerticalBlock"] {
-          gap: 0.5rem !important;
         }
 
         .plotting-panel-title--spaced {
@@ -1581,13 +2216,6 @@ def apply_style() -> None:
 
         body:has(.dnascape-control-page-marker) [data-testid="stExpanderDetails"] {
           padding: 0.5rem 0 0rem !important;
-        }
-
-        :root[data-dnascape-effective-theme="dark"] body:has(.dnascape-control-page-marker) div[data-testid="stVerticalBlockBorderWrapper"] {
-          border-color: rgba(243, 238, 232, 0.52) !important;
-          box-shadow:
-            0 1px 2px var(--dnascape-shadow),
-            inset 0 0 0 1px rgba(243, 238, 232, 0.16) !important;
         }
 
         .plot-preview-frame {
@@ -2091,8 +2719,9 @@ def render_theme_toggle() -> None:
                 --dnascape-panel: #211f1d;
                 --dnascape-text: #f3eee8;
                 --dnascape-sidebar-bg: #1b1918;
-                --dnascape-line: rgba(243, 238, 232, 0.36);
-                --dnascape-divider: rgba(243, 238, 232, 0.48);
+                --dnascape-line: color-mix(in srgb, var(--dnascape-text) 18%, var(--dnascape-bg));
+                --dnascape-outer-line: rgba(243, 238, 232, 0.68);
+                --dnascape-divider: color-mix(in srgb, var(--dnascape-text) 28%, var(--dnascape-bg));
                 color-scheme: dark;
               }}
 
@@ -2920,6 +3549,38 @@ def render_theme_toggle() -> None:
               }});
           }}
 
+          function syncOverviewCardHeights() {{
+            if (!doc.querySelector(".overview-page-marker")) {{
+              root.style.removeProperty("--dnascape-overview-card-equal-height");
+              return;
+            }}
+
+            const cards = Array.from(doc.querySelectorAll(".workflow-card"));
+            if (!cards.length) {{
+              root.style.removeProperty("--dnascape-overview-card-equal-height");
+              return;
+            }}
+
+            root.style.setProperty(
+              "--dnascape-overview-card-equal-height",
+              "var(--dnascape-overview-card-min-height)",
+            );
+            void doc.body.offsetHeight;
+
+            const maxHeight = Math.ceil(
+              cards.reduce((height, card) => {{
+                const cardBox = card.getBoundingClientRect();
+                return Math.max(height, cardBox.height);
+              }}, 0),
+            );
+
+            if (maxHeight > 0) {{
+              root.style.setProperty("--dnascape-overview-card-equal-height", `${{maxHeight}}px`);
+            }} else {{
+              root.style.removeProperty("--dnascape-overview-card-equal-height");
+            }}
+          }}
+
           function applyTheme(theme, animate = false) {{
             const selected = normalize(theme);
             const effective = effectiveTheme(selected);
@@ -2945,6 +3606,7 @@ def render_theme_toggle() -> None:
           installSelectboxToggleCollapse();
           markSidebarToggleButton();
           syncPreviewClearButtons();
+          syncOverviewCardHeights();
           syncSidebarFooter();
           ensureMenuItem();
 
@@ -2959,6 +3621,7 @@ def render_theme_toggle() -> None:
               bindMenuButton();
               markSidebarToggleButton();
               syncPreviewClearButtons();
+              syncOverviewCardHeights();
               syncSidebarFooter();
               ensureMenuItem();
             }});
@@ -2972,6 +3635,7 @@ def render_theme_toggle() -> None:
             bindMenuButton();
             markSidebarToggleButton();
             syncPreviewClearButtons();
+            syncOverviewCardHeights();
             syncSidebarFooter();
             if (menuList()) {{
               ensureMenuItem();
