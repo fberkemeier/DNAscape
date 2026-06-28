@@ -1,0 +1,17 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="960" height="360" viewBox="0 0 960 360" role="img" aria-labelledby="title desc">
+  <title id="title">Placeholder replication tracks</title>
+  <desc id="desc">A placeholder schematic with several genomic signal tracks.</desc>
+  <rect width="960" height="360" fill="#f7f8fa"/>
+  <rect x="56" y="42" width="848" height="268" rx="8" fill="#ffffff" stroke="#cfd6df"/>
+  <text x="72" y="78" font-family="Arial, sans-serif" font-size="22" fill="#22313f">Example replication tracks</text>
+  <text x="72" y="105" font-family="Arial, sans-serif" font-size="13" fill="#5c6773">Placeholder: replace with notebook-generated genomic profiles.</text>
+  <line x1="110" y1="270" x2="860" y2="270" stroke="#9aa6b2" stroke-width="2"/>
+  <text x="110" y="292" font-family="Arial, sans-serif" font-size="12" fill="#5c6773">0 kb</text>
+  <text x="822" y="292" font-family="Arial, sans-serif" font-size="12" fill="#5c6773">region end</text>
+  <path d="M110 150 C190 104 260 186 340 142 S500 108 580 150 730 208 860 132" fill="none" stroke="#2d6cdf" stroke-width="4"/>
+  <path d="M110 198 C210 210 260 132 360 170 S540 230 640 180 748 128 860 178" fill="none" stroke="#d1495b" stroke-width="4"/>
+  <path d="M110 228 C240 160 330 252 440 208 S620 148 720 206 800 242 860 214" fill="none" stroke="#2e8b57" stroke-width="4"/>
+  <text x="118" y="140" font-family="Arial, sans-serif" font-size="13" fill="#2d6cdf">timing</text>
+  <text x="118" y="190" font-family="Arial, sans-serif" font-size="13" fill="#d1495b">firing</text>
+  <text x="118" y="248" font-family="Arial, sans-serif" font-size="13" fill="#2e8b57">fork speed</text>
+</svg>

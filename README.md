@@ -49,7 +49,17 @@ pip install .
 
 ### Streamlit app
 
-A Streamlit app is planned for browser-based data upload, visual exploration, simulation, download, zooming, and reproducible code export. Until then, use the Python package and example notebooks.
+The Streamlit app provides browser-based data upload, data conversion, mapping,
+simulation, plotting, downloads, and cached session artifacts.
+
+```bash
+pip install -r app/requirements.txt
+streamlit run app/streamlit_app.py
+```
+
+The Data Management page supports DNAscape-ready CSV/TSV/TXT/NPY-style files
+and genomic tracks such as bedGraph/BDG and BigWig/BW. BigWig import uses the
+optional `pyBigWig` dependency included in `app/requirements.txt`.
 
 ## Workflows
 

@@ -154,6 +154,22 @@ _RDATA_SUFFIXES = {
     "npz": ".npz",
 }
 
+_RDATA_TRACK_FORMAT_ALIASES = {
+    "bigwig": "bigwig",
+    ".bigwig": "bigwig",
+    "bw": "bigwig",
+    ".bw": "bigwig",
+    "bedgraph": "bedgraph",
+    ".bedgraph": "bedgraph",
+    "bdg": "bedgraph",
+    ".bdg": "bedgraph",
+}
+_RDATA_SOURCE_FORMAT_ALIASES = {
+    **_RDATA_FORMAT_ALIASES,
+    **_RDATA_TRACK_FORMAT_ALIASES,
+}
+_RDATA_TRACK_FORMATS = {"bigwig", "bedgraph"}
+
 _RDATA_FORM_ALIASES = {
     "auto": "auto",
     "table": "table",
@@ -205,6 +221,38 @@ def _normalise_rdata_format(fmt, *, path=None):
     return resolved
 
 
+def _normalise_rdata_source_format(fmt, *, path=None):
+    if fmt is None or fmt == "auto":
+        if path is None:
+            return "auto"
+        suffixes = [suffix.lower() for suffix in Path(path).suffixes]
+        if suffixes and suffixes[-1] == ".gz":
+            suffixes = suffixes[:-1]
+        if not suffixes:
+            raise ValueError("Could not infer data format from a path without a suffix.")
+        fmt = suffixes[-1]
+
+    key = str(fmt).strip().lower()
+    if key not in _RDATA_SOURCE_FORMAT_ALIASES:
+        allowed = ", ".join(sorted(k for k in _RDATA_SOURCE_FORMAT_ALIASES if not k.startswith(".")))
+        raise ValueError(f"Unsupported rdata source format {fmt!r}. Supported formats are: {allowed}.")
+    resolved = _RDATA_SOURCE_FORMAT_ALIASES[key]
+    if resolved == "auto":
+        raise ValueError("Could not infer rdata source format. Pass source_format explicitly.")
+    return resolved
+
+
+def infer_rdata_source_format(source, source_format="auto"):
+    """Infer a DNAscape data or genomic-track source format."""
+    if source_format not in (None, "auto"):
+        return _normalise_rdata_source_format(source_format)
+    if isinstance(source, (str, Path)):
+        return _normalise_rdata_source_format("auto", path=source)
+    if isinstance(source, pd.DataFrame):
+        return "dataframe"
+    return "array"
+
+
 def _normalise_rdata_form(data_form):
     key = str(data_form or "auto").strip().lower().replace("-", "_")
     if key not in _RDATA_FORM_ALIASES:
@@ -240,15 +288,15 @@ _RDATA_PROGRESS_WEIGHTS = {
     "npy": 1.0,
     "npv": 1.0,
     "npz": 1.5,
+    "bedgraph": 4.0,
+    "bigwig": 4.0,
 }
 
 
 def _rdata_route_source_format(source, source_format):
-    if isinstance(source, (str, Path)):
-        return _normalise_rdata_format(source_format, path=Path(source).expanduser())
-    if isinstance(source, pd.DataFrame):
-        return "dataframe"
-    return "array"
+    if _is_track_source_collection(source):
+        return _normalise_track_format(source[0], source_format=source_format)
+    return infer_rdata_source_format(source, source_format=source_format)
 
 
 def _rdata_progress_weight(data_format):
@@ -353,6 +401,576 @@ class _RDataProgress:
         self.completed_weight = self.total_weight
         self.stage_index = len(self.stages)
         self._event("complete", "done", 0.0, output_path=output_path)
+
+
+_TRACK_AGGREGATION_ALIASES = {
+    "mean": "mean",
+    "average": "mean",
+    "avg": "mean",
+    "sum": "sum",
+    "total": "sum",
+    "max": "max",
+    "maximum": "max",
+    "min": "min",
+    "minimum": "min",
+    "coverage": "coverage",
+    "covered": "coverage",
+    "std": "std",
+    "sd": "std",
+}
+
+_TRACK_MISSING_ALIASES = {
+    "nan": "nan",
+    "keep": "nan",
+    "keep_nan": "nan",
+    "none": "nan",
+    "zero": "zero",
+    "zeros": "zero",
+    "fill": "fill",
+    "value": "fill",
+    "drop": "drop",
+    "dropna": "drop",
+}
+
+_TRACK_INTERPOLATION_ALIASES = {
+    "none": "none",
+    "off": "none",
+    "linear": "linear",
+    "ffill": "ffill",
+    "forward": "ffill",
+    "forward_fill": "ffill",
+    "bfill": "bfill",
+    "backward": "bfill",
+    "backward_fill": "bfill",
+}
+
+_TRACK_NORMALIZATION_ALIASES = {
+    "none": "none",
+    "off": "none",
+    "minmax": "minmax",
+    "min_max": "minmax",
+    "0_1": "minmax",
+    "zscore": "zscore",
+    "z_score": "zscore",
+    "standard": "zscore",
+    "center": "center",
+    "centred": "center",
+    "centered": "center",
+    "maxabs": "maxabs",
+    "max_abs": "maxabs",
+}
+
+
+def _normalise_alias(value, aliases, name):
+    key = str(value or "none").strip().lower().replace("-", "_").replace(" ", "_")
+    if key not in aliases:
+        allowed = ", ".join(sorted(aliases))
+        raise ValueError(f"Unsupported {name} {value!r}. Supported values are: {allowed}.")
+    return aliases[key]
+
+
+def _normalise_track_aggregation(aggregation):
+    return _normalise_alias(aggregation, _TRACK_AGGREGATION_ALIASES, "track aggregation")
+
+
+def _normalise_track_missing(missing):
+    return _normalise_alias(missing, _TRACK_MISSING_ALIASES, "missing-value policy")
+
+
+def _normalise_track_interpolation(interpolation):
+    return _normalise_alias(interpolation, _TRACK_INTERPOLATION_ALIASES, "interpolation")
+
+
+def _normalise_track_normalization(normalize):
+    return _normalise_alias(normalize, _TRACK_NORMALIZATION_ALIASES, "normalization")
+
+
+def _normalise_track_format(source, source_format="auto"):
+    if source_format in (None, "auto") and isinstance(source, pd.DataFrame):
+        return "bedgraph"
+    data_format = infer_rdata_source_format(source, source_format=source_format)
+    if data_format not in _RDATA_TRACK_FORMATS:
+        raise ValueError(
+            "Genomic track conversion supports BigWig (.bw, .bigwig) and "
+            "bedGraph (.bedgraph, .bdg) inputs."
+        )
+    return data_format
+
+
+def _require_pybigwig():
+    try:
+        import pyBigWig  # type: ignore
+    except ImportError as exc:
+        raise ImportError(
+            "BigWig conversion requires pyBigWig. Install it with "
+            "`pip install pyBigWig`, then retry the DNAscape track import."
+        ) from exc
+    return pyBigWig
+
+
+def _natural_chrom_key(chromosome):
+    text = str(chromosome)
+    match = re.fullmatch(r"(?:chr)?(\d+)", text, flags=re.IGNORECASE)
+    if match:
+        return (0, int(match.group(1)), text)
+    special = {"chrx": 23, "x": 23, "chry": 24, "y": 24, "chrm": 25, "chrmt": 25, "m": 25, "mt": 25}
+    key = text.lower()
+    return (0, special[key], text) if key in special else (1, text)
+
+
+def _normalise_track_bound(value, name):
+    if value in (None, ""):
+        return None
+    value = int(value)
+    if value < 0:
+        raise ValueError(f"{name} must be non-negative.")
+    return value
+
+
+def _standardise_bedgraph_frame(frame, value_column=None):
+    if frame.empty:
+        raise ValueError("The bedGraph input is empty.")
+
+    columns_by_lower = {str(column).strip().lower(): column for column in frame.columns}
+
+    def pick(candidates, fallback_index):
+        for candidate in candidates:
+            if candidate in columns_by_lower:
+                return columns_by_lower[candidate]
+        if fallback_index < len(frame.columns):
+            return frame.columns[fallback_index]
+        return None
+
+    chrom_col = pick(("chrom", "chromosome", "chr", "#chrom"), 0)
+    start_col = pick(("start", "start_bp", "chromstart", "chrom_start"), 1)
+    end_col = pick(("end", "end_bp", "chromend", "chrom_end"), 2)
+    if value_column is None:
+        signal_col = pick(("signal", "value", "score", "coverage", "rfd", "timing"), 3)
+    elif isinstance(value_column, int):
+        signal_col = frame.columns[value_column]
+    else:
+        signal_col = columns_by_lower.get(str(value_column).strip().lower(), value_column)
+
+    missing = [
+        name for name, column in (
+            ("chromosome", chrom_col),
+            ("start", start_col),
+            ("end", end_col),
+            ("signal", signal_col),
+        )
+        if column is None or column not in frame.columns
+    ]
+    if missing:
+        raise ValueError(f"bedGraph input is missing required columns: {', '.join(missing)}.")
+
+    result = pd.DataFrame(
+        {
+            "chrom": frame[chrom_col].astype(str),
+            "start": pd.to_numeric(frame[start_col], errors="coerce"),
+            "end": pd.to_numeric(frame[end_col], errors="coerce"),
+            "signal": pd.to_numeric(frame[signal_col], errors="coerce"),
+        }
+    )
+    result = result[~result["chrom"].str.lower().isin({"track", "browser"})]
+    result = result.dropna(subset=["start", "end", "signal"])
+    result["start"] = result["start"].astype(np.int64)
+    result["end"] = result["end"].astype(np.int64)
+    result = result[result["end"] > result["start"]]
+    if result.empty:
+        raise ValueError("No valid bedGraph intervals were found.")
+    return result.reset_index(drop=True)
+
+
+def _read_bedgraph_track(source, value_column=None, encoding="utf-8"):
+    if isinstance(source, pd.DataFrame):
+        return _standardise_bedgraph_frame(source.copy(), value_column=value_column)
+
+    path = Path(source).expanduser()
+    raw = pd.read_csv(
+        path,
+        sep=r"\s+|,",
+        engine="python",
+        comment="#",
+        header=None,
+        encoding=encoding,
+    )
+    return _standardise_bedgraph_frame(raw, value_column=value_column)
+
+
+def _chromosome_list(chromosome, available):
+    available = sorted([str(chrom) for chrom in available], key=_natural_chrom_key)
+    if chromosome in (None, "", "all", "*"):
+        return available
+    if isinstance(chromosome, (list, tuple, set)):
+        requested = [str(chrom) for chrom in chromosome]
+    else:
+        requested = [str(chromosome)]
+    missing = [chrom for chrom in requested if chrom not in available]
+    if missing:
+        raise KeyError(f"Chromosome(s) not found in track: {', '.join(missing)}.")
+    return requested
+
+
+def _empty_track_bins(chromosome, start_bp, end_bp, bin_size, value_name):
+    starts = np.arange(start_bp, end_bp, bin_size, dtype=np.int64)
+    ends = np.minimum(starts + bin_size, end_bp).astype(np.int64)
+    midpoint = (starts + ends) / 2.0
+    return pd.DataFrame(
+        {
+            "chrom": str(chromosome),
+            "start_bp": starts,
+            "end_bp": ends,
+            "position_bp": midpoint,
+            "position_kb": midpoint / 1_000.0,
+            value_name: np.full(starts.size, np.nan, dtype=float),
+        }
+    )
+
+
+def _bin_bedgraph_chromosome(intervals, chromosome, start, end, bin_size, aggregation, value_name):
+    selected = intervals[intervals["chrom"] == str(chromosome)]
+    start_bp = _normalise_track_bound(start, "start")
+    end_bp = _normalise_track_bound(end, "end")
+    if selected.empty and (start_bp is None or end_bp is None):
+        raise ValueError(f"No intervals for {chromosome!r}; pass start and end to create empty bins.")
+    if start_bp is None:
+        start_bp = int(selected["start"].min())
+    if end_bp is None:
+        end_bp = int(selected["end"].max())
+    if end_bp <= start_bp:
+        raise ValueError("Track interval end must be greater than start.")
+
+    table = _empty_track_bins(chromosome, start_bp, end_bp, bin_size, value_name)
+    if selected.empty:
+        return table
+
+    starts = table["start_bp"].to_numpy(dtype=np.int64)
+    ends = table["end_bp"].to_numpy(dtype=np.int64)
+    n_bins = starts.size
+    values = np.full(n_bins, np.nan, dtype=float)
+    covered = np.zeros(n_bins, dtype=float)
+
+    if aggregation in {"mean", "sum", "std"}:
+        weighted = np.zeros(n_bins, dtype=float)
+        weighted_sq = np.zeros(n_bins, dtype=float)
+    elif aggregation == "max":
+        values[:] = -np.inf
+    elif aggregation == "min":
+        values[:] = np.inf
+
+    for row in selected.itertuples(index=False):
+        left = max(int(row.start), start_bp)
+        right = min(int(row.end), end_bp)
+        if right <= left:
+            continue
+        first_bin = max(0, (left - start_bp) // bin_size)
+        last_bin = min(n_bins - 1, (right - 1 - start_bp) // bin_size)
+        signal = float(row.signal)
+        for bin_index in range(first_bin, last_bin + 1):
+            overlap = min(ends[bin_index], right) - max(starts[bin_index], left)
+            if overlap <= 0:
+                continue
+            if aggregation in {"mean", "sum", "std"}:
+                weighted[bin_index] += overlap * signal
+                weighted_sq[bin_index] += overlap * signal * signal
+                covered[bin_index] += overlap
+            elif aggregation == "coverage":
+                covered[bin_index] += overlap
+            elif aggregation == "max":
+                values[bin_index] = max(values[bin_index], signal)
+            elif aggregation == "min":
+                values[bin_index] = min(values[bin_index], signal)
+
+    if aggregation == "mean":
+        values = np.divide(weighted, covered, out=np.full(n_bins, np.nan), where=covered > 0)
+    elif aggregation == "sum":
+        values = np.where(covered > 0, weighted, np.nan)
+    elif aggregation == "std":
+        mean = np.divide(weighted, covered, out=np.full(n_bins, np.nan), where=covered > 0)
+        second = np.divide(weighted_sq, covered, out=np.full(n_bins, np.nan), where=covered > 0)
+        values = np.sqrt(np.maximum(second - mean * mean, 0.0))
+    elif aggregation == "coverage":
+        widths = ends - starts
+        values = np.divide(covered, widths, out=np.zeros(n_bins, dtype=float), where=widths > 0)
+    elif aggregation == "max":
+        values = np.where(np.isfinite(values), values, np.nan)
+    elif aggregation == "min":
+        values = np.where(np.isfinite(values), values, np.nan)
+    else:
+        raise ValueError(f"Unsupported bedGraph aggregation {aggregation!r}.")
+
+    table[value_name] = values
+    return table
+
+
+def _bin_bigwig_chromosome(source, chromosome, start, end, bin_size, aggregation, value_name):
+    pyBigWig = _require_pybigwig()
+    path = Path(source).expanduser()
+    with pyBigWig.open(str(path)) as handle:
+        chrom_sizes = handle.chroms()
+        if chromosome not in chrom_sizes:
+            raise KeyError(f"Chromosome {chromosome!r} not found in {path}.")
+        start_bp = _normalise_track_bound(start, "start")
+        end_bp = _normalise_track_bound(end, "end")
+        if start_bp is None:
+            start_bp = 0
+        if end_bp is None:
+            end_bp = int(chrom_sizes[chromosome])
+        if end_bp <= start_bp:
+            raise ValueError("Track interval end must be greater than start.")
+        end_bp = min(end_bp, int(chrom_sizes[chromosome]))
+
+        table = _empty_track_bins(chromosome, start_bp, end_bp, bin_size, value_name)
+        starts = table["start_bp"].to_numpy(dtype=np.int64)
+        ends = table["end_bp"].to_numpy(dtype=np.int64)
+
+        if aggregation == "sum":
+            means = np.asarray(
+                handle.stats(chromosome, start_bp, end_bp, nBins=starts.size, type="mean"),
+                dtype=float,
+            )
+            coverage = np.asarray(
+                handle.stats(chromosome, start_bp, end_bp, nBins=starts.size, type="coverage"),
+                dtype=float,
+            )
+            values = means * np.nan_to_num(coverage, nan=0.0) * (ends - starts)
+        else:
+            stat = aggregation
+            if stat not in {"mean", "min", "max", "coverage", "std"}:
+                raise ValueError(f"Unsupported BigWig aggregation {aggregation!r}.")
+            values = np.asarray(
+                handle.stats(chromosome, start_bp, end_bp, nBins=starts.size, type=stat),
+                dtype=float,
+            )
+
+    table[value_name] = values
+    return table
+
+
+def _apply_track_interpolation(series, interpolation):
+    if interpolation == "none":
+        return series
+    if interpolation == "linear":
+        return series.interpolate(method="linear", limit_direction="both")
+    if interpolation == "ffill":
+        return series.ffill()
+    if interpolation == "bfill":
+        return series.bfill()
+    raise AssertionError(f"Unhandled interpolation {interpolation!r}.")
+
+
+def _smooth_track_series(series, smooth_window):
+    smooth_window = int(smooth_window or 0)
+    if smooth_window <= 1:
+        return series
+    return series.rolling(window=smooth_window, center=True, min_periods=1).mean()
+
+
+def _normalize_track_series(series, normalize):
+    values = series.to_numpy(dtype=float)
+    if normalize == "none":
+        return series
+    finite = values[np.isfinite(values)]
+    if finite.size == 0:
+        return pd.Series(values, index=series.index)
+    if normalize == "center":
+        return pd.Series(values - finite.mean(), index=series.index)
+    if normalize == "zscore":
+        std = finite.std()
+        if not np.isfinite(std) or std == 0:
+            result = np.full_like(values, np.nan, dtype=float)
+            result[np.isfinite(values)] = 0.0
+            return pd.Series(result, index=series.index)
+        return pd.Series((values - finite.mean()) / std, index=series.index)
+    if normalize == "minmax":
+        minimum = finite.min()
+        maximum = finite.max()
+        scale = maximum - minimum
+        if not np.isfinite(scale) or scale == 0:
+            result = np.full_like(values, np.nan, dtype=float)
+            result[np.isfinite(values)] = 0.0
+            return pd.Series(result, index=series.index)
+        return pd.Series((values - minimum) / scale, index=series.index)
+    if normalize == "maxabs":
+        scale = np.max(np.abs(finite))
+        if not np.isfinite(scale) or scale == 0:
+            result = np.full_like(values, np.nan, dtype=float)
+            result[np.isfinite(values)] = 0.0
+            return pd.Series(result, index=series.index)
+        return pd.Series(values / scale, index=series.index)
+    raise AssertionError(f"Unhandled normalization {normalize!r}.")
+
+
+def _postprocess_track_table(
+    table,
+    value_columns,
+    *,
+    missing="nan",
+    fill_value=0.0,
+    interpolation="none",
+    smooth_window=1,
+    normalize="none",
+):
+    missing = _normalise_track_missing(missing)
+    interpolation = _normalise_track_interpolation(interpolation)
+    normalize = _normalise_track_normalization(normalize)
+
+    result = table.copy()
+    for column in value_columns:
+        series = pd.to_numeric(result[column], errors="coerce").astype(float)
+        series = _apply_track_interpolation(series, interpolation)
+        if missing == "zero":
+            series = series.fillna(0.0)
+        elif missing == "fill":
+            series = series.fillna(float(fill_value))
+        result[column] = series
+
+    if missing == "drop":
+        result = result.dropna(subset=value_columns).reset_index(drop=True)
+
+    for column in value_columns:
+        series = pd.to_numeric(result[column], errors="coerce").astype(float)
+        series = _smooth_track_series(series, smooth_window)
+        series = _normalize_track_series(series, normalize)
+        result[column] = series
+
+    return result
+
+
+def _values_from_track_table(table, value_columns, data_form):
+    values = table[value_columns].to_numpy(dtype=float)
+    if len(value_columns) == 1:
+        values = values[:, 0]
+    if data_form == "auto":
+        data_form = "space" if len(value_columns) == 1 else "spacetime"
+    values, resolved_form = _coerce_rdata_values(values, data_form=data_form)
+    return values, resolved_form
+
+
+def _track_source_path(source):
+    if isinstance(source, (str, Path)):
+        return Path(source).expanduser()
+    return None
+
+
+def _track_label(source, fallback_index, label=None, value_name="value"):
+    if label:
+        return str(label)
+    if isinstance(source, (str, Path)):
+        return Path(source).name.rsplit(".", 1)[0] or value_name
+    return value_name if fallback_index == 0 else f"{value_name}_{fallback_index + 1}"
+
+
+def _is_track_source_collection(source):
+    if not isinstance(source, (list, tuple)):
+        return False
+    return bool(source) and all(isinstance(item, (str, Path, pd.DataFrame)) for item in source)
+
+
+def _convert_single_track_to_table(
+    source,
+    *,
+    source_format="auto",
+    chromosome=None,
+    start=None,
+    end=None,
+    bin_size=1_000,
+    aggregation="mean",
+    value_column=None,
+    value_name="value",
+    encoding="utf-8",
+):
+    data_format = _normalise_track_format(source, source_format=source_format)
+    aggregation = _normalise_track_aggregation(aggregation)
+    bin_size = int(bin_size)
+    if bin_size <= 0:
+        raise ValueError("bin_size must be a positive integer.")
+
+    if data_format == "bedgraph":
+        intervals = _read_bedgraph_track(source, value_column=value_column, encoding=encoding)
+        chromosomes = _chromosome_list(chromosome, intervals["chrom"].unique())
+        tables = [
+            _bin_bedgraph_chromosome(
+                intervals,
+                chrom,
+                start,
+                end,
+                bin_size,
+                aggregation,
+                value_name,
+            )
+            for chrom in chromosomes
+        ]
+        return pd.concat(tables, ignore_index=True), data_format, _track_source_path(source)
+
+    if data_format == "bigwig":
+        pyBigWig = _require_pybigwig()
+        source_path = _track_source_path(source)
+        if source_path is None:
+            raise TypeError("BigWig conversion requires a file path.")
+        with pyBigWig.open(str(source_path)) as handle:
+            available = handle.chroms().keys()
+        chromosomes = _chromosome_list(chromosome, available)
+        if chromosome in (None, "", "all", "*") and len(chromosomes) != 1:
+            raise ValueError("BigWig conversion requires an explicit chromosome.")
+        tables = [
+            _bin_bigwig_chromosome(
+                source_path,
+                chrom,
+                start,
+                end,
+                bin_size,
+                aggregation,
+                value_name,
+            )
+            for chrom in chromosomes
+        ]
+        return pd.concat(tables, ignore_index=True), data_format, source_path
+
+    raise AssertionError(f"Unhandled genomic track format {data_format!r}.")
+
+
+def inspect_genomic_track(source, *, source_format="auto", value_column=None, encoding="utf-8"):
+    """Return format and chromosome summary for a BigWig or bedGraph track."""
+    data_format = _normalise_track_format(source, source_format=source_format)
+    if data_format == "bedgraph":
+        intervals = _read_bedgraph_track(source, value_column=value_column, encoding=encoding)
+        summary = (
+            intervals.groupby("chrom", sort=False)
+            .agg(start=("start", "min"), end=("end", "max"), intervals=("signal", "size"))
+            .reset_index()
+        )
+        summary = summary.sort_values("chrom", key=lambda s: s.map(_natural_chrom_key)).reset_index(drop=True)
+        chrom_sizes = {str(row.chrom): int(row.end) for row in summary.itertuples(index=False)}
+        return {
+            "format": data_format,
+            "chromosomes": chrom_sizes,
+            "chromosome_names": list(chrom_sizes),
+            "table": summary,
+        }
+
+    if data_format == "bigwig":
+        pyBigWig = _require_pybigwig()
+        source_path = _track_source_path(source)
+        if source_path is None:
+            raise TypeError("BigWig inspection requires a file path.")
+        with pyBigWig.open(str(source_path)) as handle:
+            chrom_sizes = {str(chrom): int(size) for chrom, size in handle.chroms().items()}
+        return {
+            "format": data_format,
+            "chromosomes": chrom_sizes,
+            "chromosome_names": sorted(chrom_sizes, key=_natural_chrom_key),
+            "table": pd.DataFrame(
+                {
+                    "chrom": sorted(chrom_sizes, key=_natural_chrom_key),
+                    "start": 0,
+                    "end": [chrom_sizes[chrom] for chrom in sorted(chrom_sizes, key=_natural_chrom_key)],
+                    "intervals": np.nan,
+                }
+            ),
+        }
+
+    raise AssertionError(f"Unhandled genomic track format {data_format!r}.")
 
 
 def _infer_rdata_form(values):
@@ -733,6 +1351,132 @@ def rsave(
     )
 
 
+def rtrack(
+    source,
+    *,
+    source_format="auto",
+    chromosome=None,
+    start=None,
+    end=None,
+    bin_size=1_000,
+    aggregation="mean",
+    value_column=None,
+    labels=None,
+    missing="nan",
+    fill_value=0.0,
+    interpolation="none",
+    smooth_window=1,
+    normalize="none",
+    data_form="auto",
+    as_table=False,
+    return_metadata=False,
+    value_name="value",
+    encoding="utf-8",
+):
+    """Convert BigWig or bedGraph genomic signals into DNAscape-ready data.
+
+    Genomic coordinates are binned at ``bin_size`` base-pair resolution. A
+    single signal is returned as a spatial vector by default; multiple track
+    sources are returned as a space-time matrix with shape ``(space, tracks)``.
+    Use ``as_table=True`` to preserve chromosome and coordinate columns.
+    """
+    sources = list(source) if _is_track_source_collection(source) else [source]
+    label_list = None
+    if labels is not None:
+        label_list = [str(labels)] if isinstance(labels, str) else [str(label) for label in labels]
+        if len(label_list) != len(sources):
+            raise ValueError("labels must match the number of genomic track sources.")
+
+    coordinate_columns = ["chrom", "start_bp", "end_bp", "position_bp", "position_kb"]
+    combined = None
+    value_columns = []
+    source_paths = []
+    source_formats = []
+    shared_start = start
+    shared_end = end
+
+    for index, item in enumerate(sources):
+        if len(sources) == 1:
+            column_name = label_list[0] if label_list else value_name
+        else:
+            column_name = _track_label(
+                item,
+                index,
+                label=label_list[index] if label_list else None,
+                value_name=value_name,
+            )
+        if column_name in coordinate_columns or column_name in value_columns:
+            column_name = f"{column_name}_{index + 1}"
+
+        table, item_format, item_path = _convert_single_track_to_table(
+            item,
+            source_format=source_format,
+            chromosome=chromosome,
+            start=shared_start,
+            end=shared_end,
+            bin_size=bin_size,
+            aggregation=aggregation,
+            value_column=value_column,
+            value_name=column_name,
+            encoding=encoding,
+        )
+        source_formats.append(item_format)
+        if item_path is not None:
+            source_paths.append(item_path)
+
+        if combined is None:
+            combined = table[coordinate_columns + [column_name]].copy()
+            if shared_start in (None, "") and not combined.empty:
+                shared_start = int(combined["start_bp"].iloc[0])
+            if shared_end in (None, "") and not combined.empty:
+                shared_end = int(combined["end_bp"].iloc[-1])
+        else:
+            if not combined[coordinate_columns].reset_index(drop=True).equals(
+                table[coordinate_columns].reset_index(drop=True)
+            ):
+                raise ValueError(
+                    "All genomic tracks must resolve to the same bins. Pass "
+                    "chromosome, start, end and bin_size explicitly for multi-track imports."
+                )
+            combined[column_name] = table[column_name].to_numpy(dtype=float)
+        value_columns.append(column_name)
+
+    if combined is None:
+        raise ValueError("No genomic track sources were provided.")
+
+    combined = _postprocess_track_table(
+        combined,
+        value_columns,
+        missing=missing,
+        fill_value=fill_value,
+        interpolation=interpolation,
+        smooth_window=smooth_window,
+        normalize=normalize,
+    )
+    values, resolved_form = _values_from_track_table(combined, value_columns, data_form)
+
+    if not return_metadata:
+        return combined if as_table else values
+
+    source_format_result = source_formats[0] if len(set(source_formats)) == 1 else "tracks"
+    return {
+        "data": combined if as_table else values,
+        "values": values,
+        "table": combined,
+        "data_form": resolved_form,
+        "labels": value_columns,
+        "source_format": source_format_result,
+        "source_path": source_paths[0] if source_paths else None,
+        "source_paths": source_paths,
+        "chromosome": chromosome,
+        "start": shared_start,
+        "end": shared_end,
+        "bin_size": int(bin_size),
+        "aggregation": _normalise_track_aggregation(aggregation),
+        "value_columns": value_columns,
+    }
+
+
 def rdata(
     source,
     target="tsv",
@@ -750,6 +1494,15 @@ def rdata(
     value_name="value",
     return_data=False,
     progress=False,
+    bin_size=1_000,
+    start=None,
+    end=None,
+    aggregation="mean",
+    missing="nan",
+    fill_value=0.0,
+    interpolation="none",
+    smooth_window=1,
+    normalize="none",
 ):
     """Convert DNAscape-ready data between plain file formats.
 
@@ -757,8 +1510,10 @@ def rdata(
     ----------
     source : path-like, array-like, or pandas.DataFrame
         Input data. Files are auto-detected from ``.txt``, ``.csv``, ``.tsv``,
-        ``.npy``, ``.npv`` and ``.npz`` suffixes. ``.npv`` is treated as a
-        NumPy vector/array file using the same binary payload as ``.npy``.
+        ``.npy``, ``.npv`` and ``.npz`` suffixes. Genomic tracks are also
+        accepted from ``.bw``, ``.bigwig``, ``.bedgraph`` and ``.bdg`` files.
+        ``.npv`` is treated as a NumPy vector/array file using the same binary
+        payload as ``.npy``.
     target : str or path-like, default "tsv"
         Target file format or output path. Supported targets are ``"txt"``,
         ``"csv"``, ``"tsv"``, ``"npy"``, ``"npv"`` and ``"npz"``.
@@ -783,6 +1538,10 @@ def rdata(
         If True, print route-level progress and ETA messages. If callable, it
         receives event dictionaries for the ``load``, ``prepare``, ``write``
         and ``complete`` stages.
+    bin_size, start, end, aggregation, missing, interpolation, smooth_window, normalize
+        Genomic-track conversion options used for BigWig and bedGraph inputs.
+        Bins are emitted as DNAscape spatial arrays by default; multiple track
+        sources become space-time matrices.
 
     Returns
     -------
@@ -806,17 +1565,49 @@ def rdata(
     if tracker is not None:
         tracker.start("load")
 
-    payload = _rdata_payload_from_source(
-        source,
-        source_format=source_format,
-        data_form=data_form,
-        chromosome=chromosome,
-        value_column=value_column,
-        labels=labels,
-        array_key=array_key,
-        encoding=encoding,
-        input_sep=input_sep,
-    )
+    track_result = None
+    if source_route_format in _RDATA_TRACK_FORMATS:
+        track_result = rtrack(
+            source,
+            source_format=source_format,
+            chromosome=chromosome,
+            start=start,
+            end=end,
+            bin_size=bin_size,
+            aggregation=aggregation,
+            value_column=value_column,
+            labels=labels,
+            missing=missing,
+            fill_value=fill_value,
+            interpolation=interpolation,
+            smooth_window=smooth_window,
+            normalize=normalize,
+            data_form=data_form,
+            as_table=True,
+            return_metadata=True,
+            value_name=value_name,
+            encoding=encoding,
+        )
+        payload = _RDataPayload(
+            values=np.asarray(track_result["values"]),
+            table=track_result["table"] if target_format in {"csv", "tsv"} else None,
+            data_form=track_result["data_form"],
+            labels=track_result["labels"],
+            source_path=track_result["source_path"],
+            source_format=track_result["source_format"],
+        )
+    else:
+        payload = _rdata_payload_from_source(
+            source,
+            source_format=source_format,
+            data_form=data_form,
+            chromosome=chromosome,
+            value_column=value_column,
+            labels=labels,
+            array_key=array_key,
+            encoding=encoding,
+            input_sep=input_sep,
+        )
 
     if tracker is not None:
         tracker.finish("load")
@@ -848,7 +1639,7 @@ def rdata(
     return {
         "path": written_path,
         "values": payload.values,
-        "table": _rdata_to_dataframe(payload, value_name=value_name),
+        "table": track_result["table"] if track_result is not None else _rdata_to_dataframe(payload, value_name=value_name),
         "data_form": payload.data_form,
         "labels": payload.labels,
         "source_format": payload.source_format,

@@ -17,6 +17,15 @@ dependencies = [
   "scipy",
 ]
 
+[project.optional-dependencies]
+genomics = [
+  "pyBigWig",
+]
+app = [
+  "streamlit",
+  "pyBigWig",
+]
+
 [project.scripts]
 dnascape = "dnascape.cli:main"
 

@@ -1,112 +1,99 @@
 Installation
 ============
 
-DNAscape is currently distributed via GitHub and can be installed from source.:
+DNAscape requires Python 3.9 or later.
 
-https://github.com/fberkemeier/DNAscape
+Package
+-------
 
-The repository contains the core source code together with a set of Jupyter
-notebooks that reproduce the main workflows and illustrate typical use cases.
+Released package:
 
-Clone the repository and create an environment
---------------------
+.. code-block:: bash
 
-Clone DNAscape from GitHub and move into the project directory:
+   pip install dnascape
+
+Development install:
 
 .. code-block:: bash
 
    git clone https://github.com/fberkemeier/DNAscape.git
    cd DNAscape
-
-It is recommended to work inside a dedicated Python environment to avoid
-dependency conflicts. A standard ``venv`` workflow is sufficient.
-
-Create and activate a virtual environment:
-
-.. code-block:: bash
-
    python -m venv .venv
    source .venv/bin/activate
+   pip install -U pip
+   pip install -e .
 
-On Windows (PowerShell):
+Windows PowerShell:
 
 .. code-block:: powershell
 
    py -m venv .venv
    .\.venv\Scripts\Activate.ps1
+   python -m pip install -U pip
+   python -m pip install -e .
 
-Install DNAscape
-----------------
-
-With the environment activated, install DNAscape in editable mode from the
-repository root:
-
-.. code-block:: bash
-
-   pip install -U pip
-   pip install -e .
-
-This installs DNAscape into the active environment while allowing changes to
-the source code to be picked up immediately during development.
-
-Install Jupyter and run notebooks (optional)
---------------------------
-
-To run the example notebooks, install Jupyter into the same environment:
+Notebooks
+---------
 
 .. code-block:: bash
 
-   pip install notebook ipykernel
-
-If using notebooks regularly, it is recommended to register a kernel for this
-environment:
-
-.. code-block:: bash
-
+   pip install notebook jupyterlab ipykernel
    python -m ipykernel install --user --name dnascape --display-name "DNAscape"
+   python -m jupyterlab examples
 
-Launch Jupyter from the repository root:
+Start with ``examples/0-quickstart.ipynb``.
 
-.. code-block:: bash
-
-   python -m notebook
-
-or JupyterLab
+App
+---
 
 .. code-block:: bash
 
-   python -m jupyterlab
+   pip install -r app/requirements.txt
+   streamlit run app/streamlit_app.py
 
+The app includes Overview, Data Management, Mapping, Simulation, Plotting,
+Cached Files, and Resources.
 
-Open one of the example notebooks (for instance,
-``examples/DNAscape_tests.ipynb``) and run the cells sequentially
-(see :doc:`quickstart` for a first look). DNAscape is provided as a standard Python package. Once installed, it can be
-imported directly in notebooks and scripts.
+Docs
+----
 
-For convenience, the example notebooks use:
+.. code-block:: bash
+
+   pip install -r docs/requirements.txt
+   sphinx-build -b html docs/source docs/build/html
+
+Windows:
+
+.. code-block:: powershell
+
+   python -m pip install -r docs\requirements.txt
+   python -m sphinx -b html docs\source docs\build\html
+
+Open ``docs/build/html/index.html``.
+
+Tracks
+------
+
+BigWig import needs ``pyBigWig``:
+
+.. code-block:: bash
+
+   pip install pyBigWig
+
+bedGraph import uses pandas only.
+
+Verify
+------
 
 .. code-block:: python
 
-   from dnascape import *
+   import dnascape
 
-This makes all public functions defined in the DNAscape API available in the
-notebook namespace and simplifies interactive exploration.
+   print(dnascape.rmap.targets().head())
+   print(dnascape.rsim.output().head())
 
-Users who prefer more explicit imports may instead write:
+CLI:
 
-.. code-block:: python
+.. code-block:: bash
 
-   from dnascape import simulate_replication
-
-depending on their workflow.
-
-Notes on usage
---------------
-
-DNAscape is under active development. At this stage, most workflows are
-demonstrated through Jupyter notebooks, which provide a transparent record of
-data loading, mapping, simulation, and visualisation steps.
-
-As the API stabilises, DNAscape is designed to support use as a standard Python
-library, enabling its integration into scripts, pipelines, and automated
-analyses beyond interactive notebook use.
+   dnascape --help

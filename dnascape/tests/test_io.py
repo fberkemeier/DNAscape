@@ -5,8 +5,9 @@ from io import BytesIO
 from pathlib import Path
 
 import numpy as np
+import pandas as pd
 
-from dnascape.io import csv_to_tsv, rdata, rload, rsave
+from dnascape.io import csv_to_tsv, inspect_genomic_track, rdata, rload, rsave, rtrack
 
 
 class IOTests(unittest.TestCase):
@@ -115,6 +116,133 @@ class IOTests(unittest.TestCase):
             self.assertEqual(events[-1]["progress"], 1.0)
             self.assertEqual(events[-1]["output_path"], str(output_path))
 
+    def test_rtrack_bins_bedgraph_as_space_array(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            input_path = Path(tmpdir) / "signal.bedgraph"
+            input_path.write_text("chr1\t0\t10\t1\nchr1\t20\t30\t3\n", encoding="utf-8")
+
+            values = rtrack(
+                input_path,
+                chromosome="chr1",
+                start=0,
+                end=30,
+                bin_size=10,
+            )
+
+            np.testing.assert_allclose(values, np.array([1.0, np.nan, 3.0]), equal_nan=True)
+
+    def test_rtrack_interpolates_and_normalizes_bedgraph(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            input_path = Path(tmpdir) / "signal.bdg"
+            input_path.write_text("chr1\t0\t10\t1\nchr1\t20\t30\t3\n", encoding="utf-8")
+
+            values = rtrack(
+                input_path,
+                chromosome="chr1",
+                start=0,
+                end=30,
+                bin_size=10,
+                interpolation="linear",
+                normalize="minmax",
+            )
+
+            np.testing.assert_allclose(values, np.array([0.0, 0.5, 1.0]))
+
+    def test_rtrack_combines_tracks_as_spacetime_matrix(self):
+        first = np.array(
+            [
+                ["chr1", 0, 10, 1.0],
+                ["chr1", 10, 20, 2.0],
+            ],
+            dtype=object,
+        )
+        second = np.array(
+            [
+                ["chr1", 0, 10, 3.0],
+                ["chr1", 10, 20, 4.0],
+            ],
+            dtype=object,
+        )
+
+        result = rtrack(
+            [
+                pd.DataFrame(
+                    {"chrom": first[:, 0], "start": first[:, 1], "end": first[:, 2], "signal": first[:, 3]}
+                ),
+                pd.DataFrame(
+                    {"chrom": second[:, 0], "start": second[:, 1], "end": second[:, 2], "signal": second[:, 3]}
+                ),
+            ],
+            source_format="bedgraph",
+            chromosome="chr1",
+            start=0,
+            end=20,
+            bin_size=10,
+            labels=["early", "late"],
+            return_metadata=True,
+        )
+
+        self.assertEqual(result["data_form"], "spacetime")
+        self.assertEqual(result["labels"], ["early", "late"])
+        np.testing.assert_allclose(result["values"], np.array([[1.0, 3.0], [2.0, 4.0]]))
+
+    def test_inspect_genomic_track_summarizes_bedgraph_chromosomes(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            input_path = Path(tmpdir) / "signal.bedgraph"
+            input_path.write_text("chr2\t0\t5\t1\nchr1\t0\t10\t2\nchr1\t10\t20\t3\n", encoding="utf-8")
+
+            summary = inspect_genomic_track(input_path)
+
+            self.assertEqual(summary["format"], "bedgraph")
+            self.assertEqual(summary["chromosome_names"], ["chr1", "chr2"])
+            self.assertEqual(summary["chromosomes"]["chr1"], 20)
+
+    def test_rdata_converts_bedgraph_to_coordinate_table(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            input_path = Path(tmpdir) / "signal.bedgraph"
+            output_path = Path(tmpdir) / "signal.tsv"
+            input_path.write_text("chr1\t0\t10\t1\nchr1\t20\t30\t3\n", encoding="utf-8")
+
+            result = rdata(
+                input_path,
+                target=output_path,
+                chromosome="chr1",
+                start=0,
+                end=30,
+                bin_size=10,
+                missing="zero",
+                return_data=True,
+            )
+
+            self.assertEqual(result["source_format"], "bedgraph")
+            self.assertEqual(result["data_form"], "space")
+            self.assertEqual(
+                output_path.read_text(encoding="utf-8"),
+                "chrom\tstart_bp\tend_bp\tposition_bp\tposition_kb\tvalue\n"
+                "chr1\t0\t10\t5.0\t0.005\t1.0\n"
+                "chr1\t10\t20\t15.0\t0.015\t0.0\n"
+                "chr1\t20\t30\t25.0\t0.025\t3.0\n",
+            )
+
+    def test_rdata_converts_compressed_bedgraph_to_txt_vector(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            input_path = Path(tmpdir) / "signal.bedgraph.gz"
+            output_path = Path(tmpdir) / "signal.txt"
+            with gzip.open(input_path, "wt", encoding="utf-8") as handle:
+                handle.write("chr1\t0\t10\t1\nchr1\t20\t30\t3\n")
+
+            rdata(
+                input_path,
+                target=output_path,
+                chromosome="chr1",
+                start=0,
+                end=30,
+                bin_size=10,
+                interpolation="linear",
+            )
+
+            np.testing.assert_allclose(np.loadtxt(output_path), np.array([1.0, 2.0, 3.0]))
+
     def test_rdata_can_write_gzip_text_output(self):
         with tempfile.TemporaryDirectory() as tmpdir:
             input_path = Path(tmpdir) / "timing.csv"
@@ -188,10 +316,11 @@ class IOTests(unittest.TestCase):
             np.testing.assert_allclose(values, np.array([[1.0, 2.0, 3.0]]))
 
     def test_rload_and_rsave_are_public_api(self):
-        from dnascape import rload as public_rload, rsave as public_rsave
+        from dnascape import rload as public_rload, rsave as public_rsave, rtrack as public_rtrack
 
         self.assertIs(public_rload, rload)
         self.assertIs(public_rsave, rsave)
+        self.assertIs(public_rtrack, rtrack)
 
 
 if __name__ == "__main__":

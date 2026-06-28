@@ -1,0 +1,22 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="960" height="420" viewBox="0 0 960 420" role="img" aria-labelledby="title desc">
+  <title id="title">Placeholder Streamlit overview</title>
+  <desc id="desc">A placeholder screenshot frame for the app overview page.</desc>
+  <rect width="960" height="420" fill="#f7f8fa"/>
+  <rect x="46" y="34" width="868" height="336" rx="8" fill="#ffffff" stroke="#cfd6df"/>
+  <rect x="46" y="34" width="186" height="336" rx="8" fill="#243447"/>
+  <text x="72" y="76" font-family="Arial, sans-serif" font-size="18" fill="#ffffff">DNAscape</text>
+  <text x="72" y="120" font-family="Arial, sans-serif" font-size="13" fill="#dce5ed">Overview</text>
+  <text x="72" y="148" font-family="Arial, sans-serif" font-size="13" fill="#b9c5d0">Data Management</text>
+  <text x="72" y="176" font-family="Arial, sans-serif" font-size="13" fill="#b9c5d0">Mapping</text>
+  <text x="72" y="204" font-family="Arial, sans-serif" font-size="13" fill="#b9c5d0">Simulation</text>
+  <text x="270" y="78" font-family="Arial, sans-serif" font-size="24" fill="#22313f">Overview</text>
+  <text x="270" y="108" font-family="Arial, sans-serif" font-size="13" fill="#5c6773">Placeholder: replace with app screenshot.</text>
+  <g fill="#eef2f5" stroke="#cfd6df">
+    <rect x="270" y="144" width="178" height="82" rx="6"/>
+    <rect x="468" y="144" width="178" height="82" rx="6"/>
+    <rect x="666" y="144" width="178" height="82" rx="6"/>
+    <rect x="270" y="246" width="178" height="82" rx="6"/>
+    <rect x="468" y="246" width="178" height="82" rx="6"/>
+    <rect x="666" y="246" width="178" height="82" rx="6"/>
+  </g>
+</svg>

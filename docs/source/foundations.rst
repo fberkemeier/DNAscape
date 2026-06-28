@@ -1,58 +1,107 @@
-Foundations
-============
+Core Concepts
+=============
 
-This section summarises the main quantities and variables used throughout
-DNAscape to describe genome-wide DNA replication kinetics.
+DNAscape works with measured tracks, inferred kinetic fields, and simulated
+outputs on regular space and time grids.
 
-Models
----------------------
+Shapes
+------
 
-Functions
----------------------
+.. list-table::
+   :header-rows: 1
+   :widths: 20 18 30 32
 
-Notation
----------------------
+   * - Form
+     - Shape
+     - Meaning
+     - Examples
+   * - Space
+     - ``(n,)``
+     - One value per genomic bin.
+     - Timing, firing rate, fork speed, RFD.
+   * - Time
+     - ``(1, T)``
+     - One value per S-phase time bin.
+     - Replicated fraction, fork counts.
+   * - Space-time
+     - ``(n, T)``
+     - Position by time.
+     - Heatmaps, event densities, fork densities.
 
-``firing_rate``
-   Firing-rate profile for each origin of replication (ori) along the genome,
-   representing the instantaneous probability per unit time that an ori
-   initiates replication.
+``resolution_x`` is kb/bin. ``resolution_t`` is minutes/bin. BigWig and
+bedGraph coordinates are read in base pairs and converted after binning.
 
-``origin_efficiency``
-   Efficiency of each ori, defined as the probability that an ori fires at
-   least once during S phase.
-
-``inter_origin_distance``
-   Distances between neighbouring oris, represented either as an explicit
-   list or as a probability distribution.
-
-``num_origins``
-   Total number of oris in the genome or within a specified genomic region.
+Quantities
+----------
 
 ``replication_timing``
-   Genome-wide replication timing profile, giving the average replication
-   time of each genomic locus.
+   Average replication time per genomic bin.
 
-``s_phase_duration``
-   Total duration of S phase required for complete genome replication under
-   the specified model or experimental conditions.
-
-``fork_directionality``
-   Replication fork directionality (RFD), describing the imbalance between
-   leftward and rightward fork movement across the genome.
+``firing_rate``
+   Origin initiation propensity.
 
 ``fork_speed``
-   Replication fork speeds across the genome, represented either as a single
-   scalar value or as a spatially varying array.
+   Fork progression speed, usually kb/min.
 
-``num_active_forks``
-   Number of replication forks actively progressing at a given time during
-   S phase.
-
-``total_num_forks``
-   Total number of replication forks generated throughout the entire
-   replication process.
+``fork_directionality``
+   Net replication direction, comparable to OK-seq-like data.
 
 ``replicated_fraction``
-   Fraction of replicated DNA as a function of time, ranging from zero at
-   S-phase entry to one upon completion of genome replication.
+   Fraction replicated through S phase.
+
+``replicated_fraction_xt``
+   Local replicated fraction across position and time.
+
+``fork_density`` / ``fork_densities_xt``
+   Active fork density, optionally split by direction.
+
+``origin_efficiency``
+   Fraction of simulations in which a bin fires before passive replication.
+
+``initiation_events`` / ``coalescence_events``
+   Realized initiation and fork-coalescence events.
+
+``completion_time``
+   Simulated S-phase finish time.
+
+rmap And rsim
+-------------
+
+``rmap`` maps between compatible features. ``rsim`` simulates stochastic
+S phases from firing rate and fork speed. They chain naturally:
+
+.. code-block:: python
+
+   firing_rate = rmap(
+       source={"replication_timing": timing, "fork_speed": 1.4},
+       target="firing_rate",
+       assumptions={"resolution_x": 1.0, "target_form": "space"},
+   )
+
+   simulation = rsim(
+       source={"firing_rate": firing_rate, "fork_speed": 1.4},
+       assumptions={"sim_number": 100, "seed": 1, "verbose": False},
+   )
+
+Units
+-----
+
+* Positions in examples are kb.
+* BigWig/bedGraph ``start``, ``end``, and ``bin_size`` are base pairs.
+* Times are minutes.
+* Default geometry is linear. Use ``geometry="periodic"`` or ``perQ=True`` for
+  circular regions.
+
+Reproducibility
+---------------
+
+Record ``resolution_x``, ``resolution_t``, region, smoothing, normalization,
+geometry, ``sim_number``, and ``seed``. Set ``seed`` for simulations used in
+comparisons or figures.
+
+Downstream Use
+--------------
+
+DNAscape outputs are arrays and tables. Export them with ``rsave`` or
+``rdata`` for statistics, plotting, clustering, or comparison with other
+tracks.

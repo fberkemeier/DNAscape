@@ -1,0 +1,16 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="960" height="360" viewBox="0 0 960 360" role="img" aria-labelledby="title desc">
+  <title id="title">Placeholder observed versus predicted</title>
+  <desc id="desc">A placeholder line plot comparing observed and predicted replication timing.</desc>
+  <rect width="960" height="360" fill="#f7f8fa"/>
+  <rect x="64" y="42" width="832" height="264" rx="8" fill="#ffffff" stroke="#cfd6df"/>
+  <text x="84" y="78" font-family="Arial, sans-serif" font-size="22" fill="#22313f">Observed vs predicted feature</text>
+  <text x="84" y="105" font-family="Arial, sans-serif" font-size="13" fill="#5c6773">Placeholder: replace with a comparison generated from notebooks or the app.</text>
+  <line x1="124" y1="260" x2="832" y2="260" stroke="#9aa6b2" stroke-width="2"/>
+  <line x1="124" y1="130" x2="124" y2="260" stroke="#9aa6b2" stroke-width="2"/>
+  <path d="M124 210 C194 154 254 166 318 182 S450 240 528 190 632 132 710 158 782 230 832 206" fill="none" stroke="#2d6cdf" stroke-width="4"/>
+  <path d="M124 218 C194 164 256 158 320 188 S454 232 530 184 636 142 710 166 782 220 832 198" fill="none" stroke="#d1495b" stroke-width="4" stroke-dasharray="10 8"/>
+  <circle cx="684" cy="88" r="6" fill="#2d6cdf"/>
+  <text x="700" y="92" font-family="Arial, sans-serif" font-size="13" fill="#22313f">observed</text>
+  <line x1="684" y1="112" x2="708" y2="112" stroke="#d1495b" stroke-width="4" stroke-dasharray="8 6"/>
+  <text x="716" y="116" font-family="Arial, sans-serif" font-size="13" fill="#22313f">predicted</text>
+</svg>
