@@ -169,259 +169,266 @@ def convert_with_rdata(
     }
 
 
-left, right = st.columns([0.35, 0.65], gap="medium")
+@st.fragment
+def render_data_management_workspace() -> None:
+    left, right = st.columns([0.35, 0.65], gap="medium")
 
-uploaded_file = None
-source_format = None
-source_error = None
-convert_clicked = False
+    uploaded_file = None
+    source_format = None
+    source_error = None
+    convert_clicked = False
 
-with left:
-    with st.container(key="dnascape-control-stack"):
-        with st.container(
-            border=True,
-            height="stretch",
-            key="dnascape-control-card",
-        ):
-            st.markdown('<div class="dnascape-panel-title">Input</div>', unsafe_allow_html=True)
-            uploaded_file = st.file_uploader(
-                "Upload",
-                type=UPLOAD_TYPES,
-                help=f"Examples: {FORMAT_EXAMPLES}",
-                accept_multiple_files=False,
-            )
+    with left:
+        with st.container(key="dnascape-control-stack"):
+            with st.container(
+                border=True,
+                height="stretch",
+                key="dnascape-control-card",
+            ):
+                st.markdown('<div class="dnascape-panel-title">Input</div>', unsafe_allow_html=True)
+                uploaded_file = st.file_uploader(
+                    "Upload",
+                    type=UPLOAD_TYPES,
+                    help=f"Examples: {FORMAT_EXAMPLES}",
+                    accept_multiple_files=False,
+                )
 
-            if uploaded_file is not None:
-                source_format = detect_source_format(uploaded_file.name)
-                if source_format is None:
-                    source_error = (
-                        "Could not detect a currently supported rdata format from the file name. "
-                        "Supported conversion formats are CSV, TSV, TXT, NPV, NPY, and NPZ. "
-                        "bigWig and bedGraph uploads are accepted for upcoming workflows."
-                    )
+                if uploaded_file is not None:
+                    source_format = detect_source_format(uploaded_file.name)
+                    if source_format is None:
+                        source_error = (
+                            "Could not detect a currently supported rdata format from the file name. "
+                            "Supported conversion formats are CSV, TSV, TXT, NPV, NPY, and NPZ. "
+                            "bigWig and bedGraph uploads are accepted for upcoming workflows."
+                        )
 
-                if source_error:
-                    st.error(source_error)
-                else:
-                    chips = [
-                        f"Input: {FORMAT_LABELS[source_format]}",
-                        f"{uploaded_file.size / 1024:,.1f} KB",
-                    ]
-                    if uploaded_file.name.lower().endswith(".gz"):
-                        chips.append("GZ compressed")
+                    if source_error:
+                        st.error(source_error)
+                    else:
+                        chips = [
+                            f"Input: {FORMAT_LABELS[source_format]}",
+                            f"{uploaded_file.size / 1024:,.1f} KB",
+                        ]
+                        if uploaded_file.name.lower().endswith(".gz"):
+                            chips.append("GZ compressed")
 
-                    st.markdown(
-                        "<div class='data-management-chip-row'>"
-                        + "".join(f"<span class='data-management-chip'>{chip}</span>" for chip in chips)
-                        + "</div>",
-                        unsafe_allow_html=True,
-                    )
+                        st.markdown(
+                            "<div class='data-management-chip-row'>"
+                            + "".join(f"<span class='data-management-chip'>{chip}</span>" for chip in chips)
+                            + "</div>",
+                            unsafe_allow_html=True,
+                        )
 
-        with st.container(key="dnascape-control-action"):
-            convert_button_slot = st.empty()
+            with st.container(key="dnascape-control-action"):
+                convert_button_slot = st.empty()
 
-with right:
-    with st.container(border=True, key="dnascape-preview-card"):
-        st.markdown(
-            '<div class="dnascape-panel-title">Conversion</div>',
-            unsafe_allow_html=True,
-        )
-
-        conversion_ready = (
-            uploaded_file is not None
-            and source_error is None
-            and source_format is not None
-        )
-        conversion_spec = None
-        if not conversion_ready:
+    with right:
+        with st.container(border=True, key="dnascape-preview-card"):
             st.markdown(
-                """
-                <p class="small-muted">
-                Choose an input file and output format to define an rdata conversion.
-                </p>
-                """,
+                '<div class="dnascape-panel-title">Conversion</div>',
                 unsafe_allow_html=True,
             )
-        else:
-            route_cols = st.columns([0.42, 0.42, 0.16], gap="small")
-            with route_cols[0]:
-                st.selectbox(
-                    "From",
-                    [FORMAT_LABELS[source_format]],
-                    index=0,
-                    disabled=True,
-                )
-            with route_cols[1]:
-                target_label = st.selectbox(
-                    "To",
-                    list(TARGET_FORMATS),
-                    index=list(TARGET_FORMATS).index("TSV"),
-                )
-            with route_cols[2]:
-                compress_output = st.checkbox(
-                    "GZ",
-                    value=False,
-                    key="data_management_convert_gz",
-                )
 
-            options_cols = st.columns(2, gap="small")
-            with options_cols[0]:
-                data_form_label = st.selectbox(
-                    "Data form",
-                    list(DATA_FORM_LABELS),
-                    index=0,
-                    help="rdata shape convention for arrays and vectors.",
-                )
-            with options_cols[1]:
-                value_name = st.text_input(
-                    "Column label",
-                    value="value",
-                    help="Column label used when writing vector data to CSV/TSV.",
-                )
-
-            column_cols = st.columns(2, gap="small")
-            with column_cols[0]:
-                column_name = st.text_input(
-                    "Column",
-                    value="",
-                    placeholder="Optional",
-                    help="Optional table column to extract before conversion.",
-                    disabled=source_format not in {"csv", "tsv"},
-                )
-            with column_cols[1]:
-                array_key = st.text_input(
-                    "Array key",
-                    value="",
-                    placeholder="Auto",
-                    help="Optional NPZ array key.",
-                    disabled=source_format != "npz",
-                )
-
-            precision_cols = st.columns(2, gap="small")
-            with precision_cols[0]:
-                use_precision = st.checkbox("Round values", value=False)
-            with precision_cols[1]:
-                decimal_places = st.number_input(
-                    "Decimals",
-                    min_value=0,
-                    max_value=12,
-                    value=4,
-                    step=1,
-                    disabled=not use_precision,
-                )
-
-            conversion_spec = {
-                "source_format": source_format,
-                "target_format": TARGET_FORMATS[target_label],
-                "compress_output": compress_output,
-                "data_form": DATA_FORM_LABELS[data_form_label],
-                "column_name": column_name.strip() or None,
-                "array_key": array_key.strip() or None,
-                "decimal_places": int(decimal_places) if use_precision else None,
-                "value_name": value_name.strip() or "value",
-            }
-
-        with convert_button_slot:
-            convert_clicked = st.button(
-                "Convert",
-                type="primary",
-                width="stretch",
+            conversion_ready = (
+                uploaded_file is not None
+                and source_error is None
+                and source_format is not None
             )
-
-        if convert_clicked:
-            if not conversion_ready or conversion_spec is None or uploaded_file is None:
-                st.error("Upload a supported file before converting.")
+            conversion_spec = None
+            if not conversion_ready:
+                st.markdown(
+                    """
+                    <p class="small-muted">
+                    Choose an input file and output format to define an rdata conversion.
+                    </p>
+                    """,
+                    unsafe_allow_html=True,
+                )
             else:
-                try:
-                    conversion = convert_with_rdata(uploaded_file, **conversion_spec)
-                    conversion["spec"] = conversion_spec
-                    conversion["source_id"] = upload_token(uploaded_file)
-                    st.session_state[LAST_CONVERSION_KEY] = conversion
-                    extension = str(conversion.get("extension") or conversion["target_format"])
-                    register_generated_artifact(
-                        source="Data Management",
-                        category="Converted data",
-                        file_name=f"{conversion['file_stem']}.{extension}",
-                        payload=conversion["payload"],
-                        mime=conversion["mime"],
-                        summary=(
-                            f"{FORMAT_LABELS.get(conversion['source_format'], conversion['source_format'])} "
-                            f"to {FORMAT_LABELS.get(conversion['target_format'], conversion['target_format'])}"
-                        ),
-                        description=(
-                            f"{conversion['source_format']} -> {conversion['target_format']} "
-                            f"({conversion['data_form']})"
-                        ),
-                        cache_key=(
-                            f"data-management:{conversion['file_stem']}:"
-                            f"{conversion['source_id']}:"
-                            f"{conversion['target_format']}:{extension}:"
-                            f"{conversion['data_form']}"
-                        ),
+                route_cols = st.columns([0.42, 0.42, 0.16], gap="small")
+                with route_cols[0]:
+                    st.selectbox(
+                        "From",
+                        [FORMAT_LABELS[source_format]],
+                        index=0,
+                        disabled=True,
                     )
-                except Exception as exc:
-                    st.error(f"rdata could not complete this conversion: {exc}")
+                with route_cols[1]:
+                    target_label = st.selectbox(
+                        "To",
+                        list(TARGET_FORMATS),
+                        index=list(TARGET_FORMATS).index("TSV"),
+                    )
+                with route_cols[2]:
+                    compress_output = st.checkbox(
+                        "GZ",
+                        value=False,
+                        key="data_management_convert_gz",
+                    )
 
-        conversion = st.session_state.get(LAST_CONVERSION_KEY)
-        if conversion is not None and (
-            uploaded_file is None
-            or conversion.get("source_id") != upload_token(uploaded_file)
-        ):
-            conversion = None
+                options_cols = st.columns(2, gap="small")
+                with options_cols[0]:
+                    data_form_label = st.selectbox(
+                        "Data form",
+                        list(DATA_FORM_LABELS),
+                        index=0,
+                        help="rdata shape convention for arrays and vectors.",
+                    )
+                with options_cols[1]:
+                    value_name = st.text_input(
+                        "Column label",
+                        value="value",
+                        help="Column label used when writing vector data to CSV/TSV.",
+                    )
 
-        if conversion is not None and "spec" in conversion:
-            st.markdown(
-                """
-                <p class="small-muted">
-                Converted output is ready.
-                </p>
-                """,
-                unsafe_allow_html=True,
-            )
-            target_display = str(conversion["target_format"])
-            if conversion.get("compressed"):
-                target_display = f"{target_display}.gz"
-            st.caption(
-                f"{conversion['source_format']} -> {target_display} | "
-                f"{conversion['data_form']} | values shape {conversion['values_shape']}"
-            )
+                column_cols = st.columns(2, gap="small")
+                with column_cols[0]:
+                    column_name = st.text_input(
+                        "Column",
+                        value="",
+                        placeholder="Optional",
+                        help="Optional table column to extract before conversion.",
+                        disabled=source_format not in {"csv", "tsv"},
+                    )
+                with column_cols[1]:
+                    array_key = st.text_input(
+                        "Array key",
+                        value="",
+                        placeholder="Auto",
+                        help="Optional NPZ array key.",
+                        disabled=source_format != "npz",
+                    )
 
-            st.markdown(
-                """
-                <p class="small-muted">
-                Download the converted file.
-                </p>
-                """,
-                unsafe_allow_html=True,
-            )
-            st.caption("Export")
-            export_cols = st.columns([0.68, 0.32], gap="small")
-            with export_cols[0]:
-                output_file_name = st.text_input(
-                    "File name",
-                    key="data_management_output_file_name",
-                    placeholder="Name (auto)",
-                    label_visibility="collapsed",
-                )
+                precision_cols = st.columns(2, gap="small")
+                with precision_cols[0]:
+                    use_precision = st.checkbox("Round values", value=False)
+                with precision_cols[1]:
+                    decimal_places = st.number_input(
+                        "Decimals",
+                        min_value=0,
+                        max_value=12,
+                        value=4,
+                        step=1,
+                        disabled=not use_precision,
+                    )
 
-            payload = conversion["payload"]
-            extension = str(conversion.get("extension") or conversion["target_format"])
-            mime = conversion["mime"]
-            file_stem = safe_stem(output_file_name) or str(conversion["file_stem"])
-            file_name = f"{file_stem}.{extension}"
-            key_extension = extension.replace(".", "_")
-            compressed_suffix = "gz" if conversion.get("compressed") else "plain"
-            download_key = (
-                f"data_management_download_{file_stem}_{key_extension}_"
-                f"{compressed_suffix}"
-            )
-            with export_cols[1]:
-                st.download_button(
-                    "Download",
-                    data=payload,
-                    file_name=file_name,
-                    mime=mime,
-                    key=download_key,
-                    on_click="ignore",
+                conversion_spec = {
+                    "source_format": source_format,
+                    "target_format": TARGET_FORMATS[target_label],
+                    "compress_output": compress_output,
+                    "data_form": DATA_FORM_LABELS[data_form_label],
+                    "column_name": column_name.strip() or None,
+                    "array_key": array_key.strip() or None,
+                    "decimal_places": int(decimal_places) if use_precision else None,
+                    "value_name": value_name.strip() or "value",
+                }
+
+            with convert_button_slot:
+                convert_clicked = st.button(
+                    "Convert",
+                    type="primary",
+                    key="data_management_convert_button",
+                    disabled=False,
                     width="stretch",
                 )
+
+            if convert_clicked:
+                if not conversion_ready or conversion_spec is None or uploaded_file is None:
+                    st.error("Upload a supported file before converting.")
+                else:
+                    try:
+                        conversion = convert_with_rdata(uploaded_file, **conversion_spec)
+                        conversion["spec"] = conversion_spec
+                        conversion["source_id"] = upload_token(uploaded_file)
+                        st.session_state[LAST_CONVERSION_KEY] = conversion
+                        extension = str(conversion.get("extension") or conversion["target_format"])
+                        register_generated_artifact(
+                            source="Data Management",
+                            category="Converted data",
+                            file_name=f"{conversion['file_stem']}.{extension}",
+                            payload=conversion["payload"],
+                            mime=conversion["mime"],
+                            summary=(
+                                f"{FORMAT_LABELS.get(conversion['source_format'], conversion['source_format'])} "
+                                f"to {FORMAT_LABELS.get(conversion['target_format'], conversion['target_format'])}"
+                            ),
+                            description=(
+                                f"{conversion['source_format']} -> {conversion['target_format']} "
+                                f"({conversion['data_form']})"
+                            ),
+                            cache_key=(
+                                f"data-management:{conversion['file_stem']}:"
+                                f"{conversion['source_id']}:"
+                                f"{conversion['target_format']}:{extension}:"
+                                f"{conversion['data_form']}"
+                            ),
+                        )
+                    except Exception as exc:
+                        st.error(f"rdata could not complete this conversion: {exc}")
+
+            conversion = st.session_state.get(LAST_CONVERSION_KEY)
+            if conversion is not None and (
+                uploaded_file is None
+                or conversion.get("source_id") != upload_token(uploaded_file)
+            ):
+                conversion = None
+
+            if conversion is not None and "spec" in conversion:
+                st.markdown(
+                    """
+                    <p class="small-muted">
+                    Converted output is ready.
+                    </p>
+                    """,
+                    unsafe_allow_html=True,
+                )
+                target_display = str(conversion["target_format"])
+                if conversion.get("compressed"):
+                    target_display = f"{target_display}.gz"
+                st.caption(
+                    f"{conversion['source_format']} -> {target_display} | "
+                    f"{conversion['data_form']} | values shape {conversion['values_shape']}"
+                )
+
+                st.markdown(
+                    """
+                    <p class="small-muted">
+                    Download the converted file.
+                    </p>
+                    """,
+                    unsafe_allow_html=True,
+                )
+                st.caption("Export")
+                export_cols = st.columns([0.68, 0.32], gap="small")
+                with export_cols[0]:
+                    output_file_name = st.text_input(
+                        "File name",
+                        key="data_management_output_file_name",
+                        placeholder="Name (auto)",
+                        label_visibility="collapsed",
+                    )
+
+                payload = conversion["payload"]
+                extension = str(conversion.get("extension") or conversion["target_format"])
+                mime = conversion["mime"]
+                file_stem = safe_stem(output_file_name) or str(conversion["file_stem"])
+                file_name = f"{file_stem}.{extension}"
+                key_extension = extension.replace(".", "_")
+                compressed_suffix = "gz" if conversion.get("compressed") else "plain"
+                download_key = (
+                    f"data_management_download_{file_stem}_{key_extension}_"
+                    f"{compressed_suffix}"
+                )
+                with export_cols[1]:
+                    st.download_button(
+                        "Download",
+                        data=payload,
+                        file_name=file_name,
+                        mime=mime,
+                        key=download_key,
+                        on_click="ignore",
+                        width="stretch",
+                    )
+
+
+render_data_management_workspace()

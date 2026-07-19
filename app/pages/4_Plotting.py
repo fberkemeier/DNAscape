@@ -160,6 +160,7 @@ def render_figure_preview(export_bytes: dict[str, bytes], file_stem: str) -> Non
         )
 
 
+@st.fragment
 def render_plotting_workspace() -> None:
     controls, preview = st.columns([0.35, 0.65], gap="medium")
 
@@ -471,6 +472,8 @@ def render_plotting_workspace() -> None:
             plot_requested = st.button(
                 "Plot",
                 type="primary",
+                key="plotting_run_button",
+                disabled=False,
                 width="stretch",
             )
 

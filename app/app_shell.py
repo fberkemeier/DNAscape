@@ -2136,12 +2136,40 @@ def apply_style() -> None:
           padding: 0.34rem 0.58rem;
         }
 
-        body:has(.simulation-page-marker) [data-testid="stButton"] button[kind="primary"]:disabled,
-        body:has(.simulation-page-marker) [data-testid="stButton"] button[kind="primary"][aria-disabled="true"] {
+        .st-key-data_management_convert_button button,
+        .st-key-data_management_convert_button button:disabled,
+        .st-key-data_management_convert_button button[aria-disabled="true"],
+        .st-key-mapping_run_button button,
+        .st-key-mapping_run_button button:disabled,
+        .st-key-mapping_run_button button[aria-disabled="true"],
+        .st-key-simulation_run_button button,
+        .st-key-simulation_run_button button:disabled,
+        .st-key-simulation_run_button button[aria-disabled="true"],
+        .st-key-plotting_run_button button,
+        .st-key-plotting_run_button button:disabled,
+        .st-key-plotting_run_button button[aria-disabled="true"] {
           background: var(--dnascape-accent) !important;
           border-color: var(--dnascape-accent) !important;
           color: white !important;
-          opacity: 0.88 !important;
+          opacity: 1 !important;
+          -webkit-text-fill-color: white !important;
+        }
+
+        .st-key-data_management_convert_button button *,
+        .st-key-data_management_convert_button button:disabled *,
+        .st-key-data_management_convert_button button[aria-disabled="true"] *,
+        .st-key-mapping_run_button button *,
+        .st-key-mapping_run_button button:disabled *,
+        .st-key-mapping_run_button button[aria-disabled="true"] *,
+        .st-key-simulation_run_button button *,
+        .st-key-simulation_run_button button:disabled *,
+        .st-key-simulation_run_button button[aria-disabled="true"] *,
+        .st-key-plotting_run_button button *,
+        .st-key-plotting_run_button button:disabled *,
+        .st-key-plotting_run_button button[aria-disabled="true"] * {
+          color: white !important;
+          opacity: 1 !important;
+          -webkit-text-fill-color: white !important;
         }
 
         .plotting-panel-title--spaced {
@@ -3549,6 +3577,24 @@ def render_theme_toggle() -> None:
               }});
           }}
 
+          function syncActionButtons() {{
+            doc
+              .querySelectorAll(
+                [
+                  ".st-key-data_management_convert_button button",
+                  ".st-key-mapping_run_button button",
+                  ".st-key-simulation_run_button button",
+                  ".st-key-plotting_run_button button",
+                ].join(",")
+              )
+              .forEach((button) => {{
+                button.disabled = false;
+                button.removeAttribute("disabled");
+                button.setAttribute("aria-disabled", "false");
+                button.style.pointerEvents = "auto";
+              }});
+          }}
+
           function syncOverviewCardHeights() {{
             if (!doc.querySelector(".overview-page-marker")) {{
               root.style.removeProperty("--dnascape-overview-card-equal-height");
@@ -3606,6 +3652,7 @@ def render_theme_toggle() -> None:
           installSelectboxToggleCollapse();
           markSidebarToggleButton();
           syncPreviewClearButtons();
+          syncActionButtons();
           syncOverviewCardHeights();
           syncSidebarFooter();
           ensureMenuItem();
@@ -3621,6 +3668,7 @@ def render_theme_toggle() -> None:
               bindMenuButton();
               markSidebarToggleButton();
               syncPreviewClearButtons();
+              syncActionButtons();
               syncOverviewCardHeights();
               syncSidebarFooter();
               ensureMenuItem();
@@ -3635,6 +3683,7 @@ def render_theme_toggle() -> None:
             bindMenuButton();
             markSidebarToggleButton();
             syncPreviewClearButtons();
+            syncActionButtons();
             syncOverviewCardHeights();
             syncSidebarFooter();
             if (menuList()) {{

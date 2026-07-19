@@ -1,6 +1,5 @@
 """DNAscape Streamlit app shell and lightweight page router."""
 
-import importlib.util
 import sys
 from pathlib import Path
 
@@ -36,6 +35,7 @@ PAGE_MODULES = {
     "cached-files": APP_DIR / "pages" / "5_Cached_Files.py",
     "resources": APP_DIR / "pages" / "6_Resources.py",
 }
+PAGE_SHELL_MARKER_KEY = "dnascape_last_page_shell"
 
 WORKFLOW_CARD_ICONS = {
     "data-management": """
@@ -196,25 +196,41 @@ def render_overview() -> None:
     )
 
 
+@st.cache_resource(show_spinner=False)
+def compiled_page_script(path_text: str, mtime_ns: int):
+    """Compile a page script once per file version without rendering it."""
+    path = Path(path_text)
+    return compile(path.read_text(encoding="utf-8"), path_text, "exec")
+
+
+def preload_page_scripts() -> None:
+    """Warm page script compilation while leaving inactive page UI unrendered."""
+    for page_path in PAGE_MODULES.values():
+        compiled_page_script(str(page_path), page_path.stat().st_mtime_ns)
+
+
 def render_page_script(slug: str) -> None:
     """Execute a legacy page script inside the persistent app shell."""
     page_path = PAGE_MODULES[slug]
     module_name = f"_dnascape_router_{slug.replace('-', '_')}"
-    spec = importlib.util.spec_from_file_location(module_name, page_path)
-    if spec is None or spec.loader is None:
-        st.error(f"Could not load page: {page_path.name}")
-        return
 
     def noop(*_args: object, **_kwargs: object) -> None:
         return None
+
+    page_globals = {
+        "__builtins__": __builtins__,
+        "__file__": str(page_path),
+        "__name__": module_name,
+        "__package__": "",
+    }
+    page_code = compiled_page_script(str(page_path), page_path.stat().st_mtime_ns)
 
     original_configure_page = app_shell_module.configure_page
     original_render_sidebar = app_shell_module.render_sidebar
     app_shell_module.configure_page = noop
     app_shell_module.render_sidebar = noop
     try:
-        module = importlib.util.module_from_spec(spec)
-        spec.loader.exec_module(module)
+        exec(page_code, page_globals)
     finally:
         app_shell_module.configure_page = original_configure_page
         app_shell_module.render_sidebar = original_render_sidebar
@@ -235,6 +251,15 @@ def render_page(slug: str) -> None:
 
 
 configure_page("DNAscape")
+preload_page_scripts()
 current_page = active_page_slug()
+previous_page = st.session_state.get(PAGE_SHELL_MARKER_KEY)
+page_slot = st.empty()
+# Keep control-panel interactions smooth: only blank the main area when the
+# left-navigation route changes, not on every widget-triggered rerun.
+if previous_page != current_page:
+    page_slot.empty()
 render_sidebar(current_page, use_router=True)
-render_page(current_page)
+with page_slot.container():
+    render_page(current_page)
+st.session_state[PAGE_SHELL_MARKER_KEY] = current_page

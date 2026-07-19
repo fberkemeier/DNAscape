@@ -7,7 +7,6 @@ import queue
 import re
 import sys
 import threading
-import time
 from io import BytesIO
 from pathlib import Path
 
@@ -53,7 +52,6 @@ render_page_intro(
 
 render_control_panel_marker("simulation-page-marker")
 
-controls, preview = st.columns([0.35, 0.65], gap="medium")
 
 PREVIEW_DPI = 300
 EXPORT_FORMATS = (
@@ -969,869 +967,869 @@ def drain_simulation_job(job: dict[str, object]) -> dict[str, object] | None:
     return terminal_update
 
 
-active_simulation_job = st.session_state.get(SIM_JOB_KEY)
-source_inputs = {}
-primary_table = None
-primary_columns = []
-primary_values = None
-primary_feature = None
-chromosome = "simulated_region"
+@st.fragment
+def render_simulation_workspace() -> None:
+    controls, preview = st.columns([0.35, 0.65], gap="medium")
+    active_simulation_job = st.session_state.get(SIM_JOB_KEY)
+    source_inputs = {}
+    primary_table = None
+    primary_columns = []
+    primary_values = None
+    primary_feature = None
+    chromosome = "simulated_region"
 
-with controls:
-    control_stack = st.container(key="dnascape-control-stack")
+    with controls:
+        control_stack = st.container(key="dnascape-control-stack")
 
-with control_stack:
-    with st.container(
-        border=True,
-        height="stretch",
-        key="dnascape-control-card",
-    ):
-        with st.expander("Data", expanded=True):
-            source_cols = st.columns(2, gap="small")
-            firing_table = None
-            firing_columns = []
-            firing_values = None
-            fork_table = None
-            fork_columns = []
-            fork_values = None
+    with control_stack:
+        with st.container(
+            border=True,
+            height="stretch",
+            key="dnascape-control-card",
+        ):
+            with st.expander("Data", expanded=True):
+                source_cols = st.columns(2, gap="small")
+                firing_table = None
+                firing_columns = []
+                firing_values = None
+                fork_table = None
+                fork_columns = []
+                fork_values = None
 
-            with source_cols[0]:
-                firing_mode = st.selectbox(
-                    "Firing rate",
-                    LINE_INPUT_MODES,
-                    index=0,
-                )
+                with source_cols[0]:
+                    firing_mode = st.selectbox(
+                        "Firing rate",
+                        LINE_INPUT_MODES,
+                        index=0,
+                    )
+                    if firing_mode == "Profile":
+                        firing_upload = st.file_uploader(
+                            "Upload profile",
+                            type=["tsv", "csv", "txt", "gz"],
+                            accept_multiple_files=False,
+                            key="simulation_firing_upload",
+                        )
+                        firing_table, firing_columns, firing_error = read_numeric_table(
+                            firing_upload
+                        )
+                        if firing_error:
+                            st.error(f"Could not read firing rate profile: {firing_error}")
+                        elif firing_table is not None and not firing_columns:
+                            st.warning("No numeric chromosomes were found in the firing rate profile.")
+                    else:
+                        firing_value = st.number_input(
+                            "Constant rate",
+                            min_value=0.0,
+                            value=0.01,
+                            step=0.001,
+                            format="%.6g",
+                        )
+                        source_inputs["firing_rate"] = {
+                            "mode": "constant",
+                            "value": float(firing_value),
+                        }
+
+                with source_cols[1]:
+                    fork_mode = st.selectbox(
+                        "Fork speed",
+                        LINE_INPUT_MODES[::-1],
+                        index=0,
+                    )
+                    if fork_mode == "Profile":
+                        fork_upload = st.file_uploader(
+                            "Upload profile",
+                            type=["tsv", "csv", "txt", "gz"],
+                            accept_multiple_files=False,
+                            key="simulation_fork_upload",
+                        )
+                        fork_table, fork_columns, fork_error = read_numeric_table(
+                            fork_upload
+                        )
+                        if fork_error:
+                            st.error(f"Could not read fork-speed profile: {fork_error}")
+                        elif fork_table is not None and not fork_columns:
+                            st.warning("No numeric chromosomes were found in the fork-speed profile.")
+                    else:
+                        fork_value = st.number_input(
+                            "Constant speed",
+                            min_value=0.000001,
+                            value=1.4,
+                            step=0.1,
+                            format="%.3g",
+                            help="Fork speed in kb/min.",
+                        )
+                        source_inputs["fork_speed"] = {
+                            "mode": "constant",
+                            "value": float(fork_value),
+                        }
+
+                profile_column_sources = []
+                if firing_mode == "Profile" and firing_columns:
+                    profile_column_sources.append(("firing rate", firing_columns))
+                if fork_mode == "Profile" and fork_columns:
+                    profile_column_sources.append(("fork speed", fork_columns))
+
+                shared_chromosome_columns = []
+                if profile_column_sources:
+                    base_columns = profile_column_sources[0][1]
+                    other_column_sets = [
+                        set(columns) for _, columns in profile_column_sources[1:]
+                    ]
+                    shared_chromosome_columns = [
+                        column
+                        for column in base_columns
+                        if all(column in column_set for column_set in other_column_sets)
+                    ]
+
+                selected_chromosome = None
+                if profile_column_sources:
+                    if (
+                        st.session_state.get("simulation_chromosome")
+                        not in shared_chromosome_columns
+                    ):
+                        st.session_state["simulation_chromosome"] = (
+                            shared_chromosome_columns[0]
+                            if shared_chromosome_columns
+                            else None
+                        )
+                    selected_chromosome = st.selectbox(
+                        "Chromosome",
+                        shared_chromosome_columns,
+                        index=0 if shared_chromosome_columns else None,
+                        disabled=not shared_chromosome_columns,
+                        placeholder="Select chromosome",
+                        key="simulation_chromosome",
+                    )
+                    if len(profile_column_sources) > 1 and not shared_chromosome_columns:
+                        st.warning("Uploaded profiles do not share a numeric chromosome.")
+
                 if firing_mode == "Profile":
-                    firing_upload = st.file_uploader(
-                        "Upload profile",
-                        type=["tsv", "csv", "txt", "gz"],
-                        accept_multiple_files=False,
-                        key="simulation_firing_upload",
-                    )
-                    firing_table, firing_columns, firing_error = read_numeric_table(
-                        firing_upload
-                    )
-                    if firing_error:
-                        st.error(f"Could not read firing rate profile: {firing_error}")
-                    elif firing_table is not None and not firing_columns:
-                        st.warning("No numeric chromosomes were found in the firing rate profile.")
-                else:
-                    firing_value = st.number_input(
-                        "Constant rate",
-                        min_value=0.0,
-                        value=0.01,
-                        step=0.001,
-                        format="%.6g",
-                    )
+                    if (
+                        firing_table is not None
+                        and selected_chromosome
+                        and selected_chromosome in firing_table
+                    ):
+                        firing_values = pd.to_numeric(
+                            firing_table[selected_chromosome],
+                            errors="coerce",
+                        ).to_numpy(dtype=float)
+
                     source_inputs["firing_rate"] = {
-                        "mode": "constant",
-                        "value": float(firing_value),
+                        "mode": "profile",
+                        "table": firing_table,
+                        "columns": firing_columns,
+                        "chromosome": selected_chromosome,
+                        "values": firing_values,
                     }
+                    if primary_values is None and firing_values is not None:
+                        primary_table = firing_table
+                        primary_columns = firing_columns
+                        primary_values = firing_values
+                        primary_feature = "firing_rate"
+                        chromosome = selected_chromosome or "firing_rate"
 
-            with source_cols[1]:
-                fork_mode = st.selectbox(
-                    "Fork speed",
-                    LINE_INPUT_MODES[::-1],
-                    index=0,
-                )
                 if fork_mode == "Profile":
-                    fork_upload = st.file_uploader(
-                        "Upload profile",
-                        type=["tsv", "csv", "txt", "gz"],
-                        accept_multiple_files=False,
-                        key="simulation_fork_upload",
-                    )
-                    fork_table, fork_columns, fork_error = read_numeric_table(
-                        fork_upload
-                    )
-                    if fork_error:
-                        st.error(f"Could not read fork-speed profile: {fork_error}")
-                    elif fork_table is not None and not fork_columns:
-                        st.warning("No numeric chromosomes were found in the fork-speed profile.")
-                else:
-                    fork_value = st.number_input(
-                        "Constant speed",
-                        min_value=0.000001,
-                        value=1.4,
-                        step=0.1,
-                        format="%.3g",
-                        help="Fork speed in kb/min.",
-                    )
+                    if (
+                        fork_table is not None
+                        and selected_chromosome
+                        and selected_chromosome in fork_table
+                    ):
+                        fork_values = pd.to_numeric(
+                            fork_table[selected_chromosome],
+                            errors="coerce",
+                        ).to_numpy(dtype=float)
+
                     source_inputs["fork_speed"] = {
-                        "mode": "constant",
-                        "value": float(fork_value),
+                        "mode": "profile",
+                        "table": fork_table,
+                        "columns": fork_columns,
+                        "chromosome": selected_chromosome,
+                        "values": fork_values,
                     }
+                    if primary_values is None and fork_values is not None:
+                        primary_table = fork_table
+                        primary_columns = fork_columns
+                        primary_values = fork_values
+                        primary_feature = "fork_speed"
+                        chromosome = selected_chromosome or "fork_speed"
 
-            profile_column_sources = []
-            if firing_mode == "Profile" and firing_columns:
-                profile_column_sources.append(("firing rate", firing_columns))
-            if fork_mode == "Profile" and fork_columns:
-                profile_column_sources.append(("fork speed", fork_columns))
-
-            shared_chromosome_columns = []
-            if profile_column_sources:
-                base_columns = profile_column_sources[0][1]
-                other_column_sets = [
-                    set(columns) for _, columns in profile_column_sources[1:]
-                ]
-                shared_chromosome_columns = [
-                    column
-                    for column in base_columns
-                    if all(column in column_set for column_set in other_column_sets)
-                ]
-
-            selected_chromosome = None
-            if profile_column_sources:
-                if (
-                    st.session_state.get("simulation_chromosome")
-                    not in shared_chromosome_columns
-                ):
-                    st.session_state["simulation_chromosome"] = (
-                        shared_chromosome_columns[0]
-                        if shared_chromosome_columns
-                        else None
-                    )
-                selected_chromosome = st.selectbox(
-                    "Chromosome",
-                    shared_chromosome_columns,
-                    index=0 if shared_chromosome_columns else None,
-                    disabled=not shared_chromosome_columns,
-                    placeholder="Select chromosome",
-                    key="simulation_chromosome",
-                )
-                if len(profile_column_sources) > 1 and not shared_chromosome_columns:
-                    st.warning("Uploaded profiles do not share a numeric chromosome.")
-
-            if firing_mode == "Profile":
-                if (
-                    firing_table is not None
-                    and selected_chromosome
-                    and selected_chromosome in firing_table
-                ):
-                    firing_values = pd.to_numeric(
-                        firing_table[selected_chromosome],
-                        errors="coerce",
-                    ).to_numpy(dtype=float)
-
-                source_inputs["firing_rate"] = {
-                    "mode": "profile",
-                    "table": firing_table,
-                    "columns": firing_columns,
-                    "chromosome": selected_chromosome,
-                    "values": firing_values,
-                }
-                if primary_values is None and firing_values is not None:
-                    primary_table = firing_table
-                    primary_columns = firing_columns
-                    primary_values = firing_values
-                    primary_feature = "firing_rate"
-                    chromosome = selected_chromosome or "firing_rate"
-
-            if fork_mode == "Profile":
-                if (
-                    fork_table is not None
-                    and selected_chromosome
-                    and selected_chromosome in fork_table
-                ):
-                    fork_values = pd.to_numeric(
-                        fork_table[selected_chromosome],
-                        errors="coerce",
-                    ).to_numpy(dtype=float)
-
-                source_inputs["fork_speed"] = {
-                    "mode": "profile",
-                    "table": fork_table,
-                    "columns": fork_columns,
-                    "chromosome": selected_chromosome,
-                    "values": fork_values,
-                }
-                if primary_values is None and fork_values is not None:
-                    primary_table = fork_table
-                    primary_columns = fork_columns
-                    primary_values = fork_values
-                    primary_feature = "fork_speed"
-                    chromosome = selected_chromosome or "fork_speed"
-
-        with st.expander("Region", expanded=False):
-            region_top_cols = st.columns(2, gap="small")
-            with region_top_cols[0]:
-                resolution = st.number_input(
-                    "Resolution",
-                    min_value=0.000001,
-                    value=1.0,
-                    step=1.0,
-                    format="%.1f",
-                    help="Spatial resolution in kb/bin.",
-                )
-            with region_top_cols[1]:
-                resolution_time = st.number_input(
-                    "Time step",
-                    min_value=0.000001,
-                    value=5.0,
-                    step=1.0,
-                    format="%.1f",
-                    help="Temporal resolution in min/bin for time-dependent outputs.",
-                )
-
-            if primary_values is not None:
-                finite_primary = np.isfinite(primary_values)
-                primary_positions_full = (
-                    np.arange(primary_values.size, dtype=float) * float(resolution)
-                )
-                primary_positions = primary_positions_full[finite_primary]
-                max_position = (
-                    max(1, int(np.ceil(float(np.nanmax(primary_positions)))))
-                    if primary_positions.size
-                    else max(1, int(np.ceil(float(resolution))))
-                )
-                region_cols = st.columns(2, gap="small")
-                with region_cols[0]:
-                    region_start = st.number_input(
-                        "Start (kb)",
-                        min_value=0,
-                        max_value=max_position,
-                        value=0,
-                        step=1,
-                        format="%d",
-                    )
-                with region_cols[1]:
-                    region_end = st.number_input(
-                        "End (kb)",
-                        min_value=0,
-                        max_value=max_position,
-                        value=max_position,
-                        step=1,
-                        format="%d",
-                    )
-            else:
-                region_cols = st.columns(2, gap="small")
-                with region_cols[0]:
-                    region_start = st.number_input(
-                        "Start (kb)",
-                        min_value=0,
-                        value=0,
-                        step=1,
-                        format="%d",
-                    )
-                with region_cols[1]:
-                    region_end = st.number_input(
-                        "End (kb)",
-                        min_value=1,
-                        value=250,
-                        step=1,
-                        format="%d",
-                    )
-
-        with st.expander("Simulation settings", expanded=False):
-            setup_cols = st.columns(2, gap="small")
-            with setup_cols[0]:
-                sim_number = st.number_input(
-                    "Replicates",
-                    min_value=1,
-                    max_value=5000,
-                    value=20,
-                    step=1,
-                    format="%d",
-                )
-            with setup_cols[1]:
-                geometry_label = st.selectbox(
-                    "Geometry",
-                    GEOMETRY_OPTIONS,
-                    index=0,
-                )
-
-            timing_cols = st.columns(2, gap="small")
-            with timing_cols[0]:
-                time_max = st.number_input(
-                    "Time window",
-                    min_value=1.0,
-                    value=300.0,
-                    step=10.0,
-                    format="%.1f",
-                    help="Upper bound of the preview time grid in minutes.",
-                )
-            with timing_cols[1]:
-                max_rep_time = st.number_input(
-                    "Max replication time",
-                    min_value=1.0,
-                    value=1200.0,
-                    step=50.0,
-                    format="%.1f",
-                )
-
-            stall_cols = st.columns(2, gap="small")
-            with stall_cols[0]:
-                stall_rate = st.number_input(
-                    "Stall rate",
-                    min_value=0.0,
-                    value=0.0,
-                    step=0.01,
-                    format="%.3f",
-                )
-            with stall_cols[1]:
-                recover_stalls = st.checkbox(
-                    "Recover stalled forks",
-                    value=True,
-                    disabled=stall_rate <= 0.0,
-                )
-
-            tau = st.number_input(
-                "Stall duration",
-                min_value=0.000001,
-                value=15.0,
-                step=1.0,
-                format="%.1f",
-                disabled=stall_rate <= 0.0 or not recover_stalls,
-                help="Mean recovery time in minutes for transient stalls.",
-            )
-
-            use_firing_factors = st.checkbox(
-                "Finite firing-factor pool",
-                value=False,
-            )
-            if use_firing_factors:
-                factor_cols = st.columns(2, gap="small")
-                with factor_cols[0]:
-                    ffiring_nr = st.number_input(
-                        "Pool size",
-                        min_value=2.0,
-                        value=60.0,
+            with st.expander("Region", expanded=False):
+                region_top_cols = st.columns(2, gap="small")
+                with region_top_cols[0]:
+                    resolution = st.number_input(
+                        "Resolution",
+                        min_value=0.000001,
+                        value=1.0,
                         step=1.0,
                         format="%.1f",
+                        help="Spatial resolution in kb/bin.",
                     )
-                with factor_cols[1]:
-                    ffiring_recycle = st.number_input(
-                        "Recycle rate",
+                with region_top_cols[1]:
+                    resolution_time = st.number_input(
+                        "Time step",
+                        min_value=0.000001,
+                        value=5.0,
+                        step=1.0,
+                        format="%.1f",
+                        help="Temporal resolution in min/bin for time-dependent outputs.",
+                    )
+
+                if primary_values is not None:
+                    finite_primary = np.isfinite(primary_values)
+                    primary_positions_full = (
+                        np.arange(primary_values.size, dtype=float) * float(resolution)
+                    )
+                    primary_positions = primary_positions_full[finite_primary]
+                    max_position = (
+                        max(1, int(np.ceil(float(np.nanmax(primary_positions)))))
+                        if primary_positions.size
+                        else max(1, int(np.ceil(float(resolution))))
+                    )
+                    region_cols = st.columns(2, gap="small")
+                    with region_cols[0]:
+                        region_start = st.number_input(
+                            "Start (kb)",
+                            min_value=0,
+                            max_value=max_position,
+                            value=0,
+                            step=1,
+                            format="%d",
+                        )
+                    with region_cols[1]:
+                        region_end = st.number_input(
+                            "End (kb)",
+                            min_value=0,
+                            max_value=max_position,
+                            value=max_position,
+                            step=1,
+                            format="%d",
+                        )
+                else:
+                    region_cols = st.columns(2, gap="small")
+                    with region_cols[0]:
+                        region_start = st.number_input(
+                            "Start (kb)",
+                            min_value=0,
+                            value=0,
+                            step=1,
+                            format="%d",
+                        )
+                    with region_cols[1]:
+                        region_end = st.number_input(
+                            "End (kb)",
+                            min_value=1,
+                            value=250,
+                            step=1,
+                            format="%d",
+                        )
+
+            with st.expander("Simulation settings", expanded=False):
+                setup_cols = st.columns(2, gap="small")
+                with setup_cols[0]:
+                    sim_number = st.number_input(
+                        "Replicates",
+                        min_value=1,
+                        max_value=5000,
+                        value=20,
+                        step=1,
+                        format="%d",
+                    )
+                with setup_cols[1]:
+                    geometry_label = st.selectbox(
+                        "Geometry",
+                        GEOMETRY_OPTIONS,
+                        index=0,
+                    )
+
+                timing_cols = st.columns(2, gap="small")
+                with timing_cols[0]:
+                    time_max = st.number_input(
+                        "Time window",
+                        min_value=1.0,
+                        value=300.0,
+                        step=10.0,
+                        format="%.1f",
+                        help="Upper bound of the preview time grid in minutes.",
+                    )
+                with timing_cols[1]:
+                    max_rep_time = st.number_input(
+                        "Max replication time",
+                        min_value=1.0,
+                        value=1200.0,
+                        step=50.0,
+                        format="%.1f",
+                    )
+
+                stall_cols = st.columns(2, gap="small")
+                with stall_cols[0]:
+                    stall_rate = st.number_input(
+                        "Stall rate",
                         min_value=0.0,
                         value=0.0,
-                        step=0.05,
-                        format="%.2f",
+                        step=0.01,
+                        format="%.3f",
                     )
-                ffiring_forkQ = st.checkbox(
-                    "Couple to active forks",
+                with stall_cols[1]:
+                    recover_stalls = st.checkbox(
+                        "Recover stalled forks",
+                        value=True,
+                        disabled=stall_rate <= 0.0,
+                    )
+
+                tau = st.number_input(
+                    "Stall duration",
+                    min_value=0.000001,
+                    value=15.0,
+                    step=1.0,
+                    format="%.1f",
+                    disabled=stall_rate <= 0.0 or not recover_stalls,
+                    help="Mean recovery time in minutes for transient stalls.",
+                )
+
+                use_firing_factors = st.checkbox(
+                    "Finite firing-factor pool",
                     value=False,
                 )
-            else:
-                ffiring_nr = None
-                ffiring_recycle = 0.0
-                ffiring_forkQ = False
-
-            seed_cols = st.columns(2, gap="small")
-            with seed_cols[0]:
-                use_seed = st.checkbox("Fixed seed", value=False)
-            with seed_cols[1]:
-                seed_value = st.number_input(
-                    "Seed",
-                    min_value=0,
-                    value=1,
-                    step=1,
-                    format="%d",
-                    disabled=not use_seed,
-                )
-
-        with st.expander("Plotting settings", expanded=False):
-            selector_cols = st.columns([1.2, 0.8], gap="small")
-            with selector_cols[0]:
-                preview_output_label = st.selectbox(
-                    "Output",
-                    list(SIMULATION_OUTPUTS),
-                    index=0,
-                )
-
-            output_spec = SIMULATION_OUTPUTS[preview_output_label]
-            output_kind = str(output_spec["kind"])
-            is_heatmap = output_kind == "xt"
-            view_options = SIMULATION_VIEW_OPTIONS[output_kind]
-            with selector_cols[1]:
-                preview_mode = st.selectbox(
-                    "View",
-                    view_options,
-                    index=0,
-                )
-
-            is_histogram = preview_mode == "Histogram"
-            if is_histogram:
-                default_x_axis_title = str(output_spec.get("label", preview_output_label))
-                default_y_axis_title = "Frequency"
-            elif output_kind == "space":
-                default_x_axis_title = "Genomic position (kb)"
-                default_y_axis_title = str(output_spec["ytitle"])
-            elif output_kind == "time":
-                default_x_axis_title = "S-phase time (min)"
-                default_y_axis_title = str(output_spec["ytitle"])
-            else:
-                default_x_axis_title = "Genomic position (kb)"
-                default_y_axis_title = "S-phase time (min)"
-
-            text_cols = st.columns([1.15, 0.85], gap="small")
-            with text_cols[0]:
-                title_override = st.text_input(
-                    "Title",
-                    value="",
-                    placeholder="Auto",
-                )
-            with text_cols[1]:
-                label_override = st.text_input(
-                    "Label",
-                    value="",
-                    placeholder=str(output_spec.get("label", preview_output_label)),
-                )
-
-            axis_cols = st.columns(2, gap="small")
-            with axis_cols[0]:
-                x_axis_title = st.text_input(
-                    "x-axis",
-                    value=default_x_axis_title,
-                )
-            with axis_cols[1]:
-                y_axis_title = st.text_input(
-                    "y-axis",
-                    value=default_y_axis_title,
-                )
-
-            line_color = str(output_spec.get("color", "#1f77b4"))
-            show_legend = False
-            legend_location_label = "Best"
-            show_colorbar = False
-            cmap = str(output_spec.get("cmap", HEATMAP_PALETTES[0]))
-            invert_y_axis = False
-            log_y_axis = False
-            use_y_limits = False
-            hist_density = False
-            hist_bin_size = 5.0 if output_kind != "time" else 2.0
-
-            if is_histogram:
-                histogram_cols = st.columns([0.78, 0.74, 0.98], gap="small")
-                with histogram_cols[0]:
-                    show_legend = st.checkbox("Legend", value=False)
-                with histogram_cols[1]:
-                    hist_density = st.checkbox("Density", value=False)
-                with histogram_cols[2]:
-                    hist_bin_size = st.number_input(
-                        "Bin size",
-                        min_value=0.1,
-                        value=hist_bin_size,
-                        step=0.5 if output_kind != "time" else 0.2,
-                        format="%.2f",
+                if use_firing_factors:
+                    factor_cols = st.columns(2, gap="small")
+                    with factor_cols[0]:
+                        ffiring_nr = st.number_input(
+                            "Pool size",
+                            min_value=2.0,
+                            value=60.0,
+                            step=1.0,
+                            format="%.1f",
+                        )
+                    with factor_cols[1]:
+                        ffiring_recycle = st.number_input(
+                            "Recycle rate",
+                            min_value=0.0,
+                            value=0.0,
+                            step=0.05,
+                            format="%.2f",
+                        )
+                    ffiring_forkQ = st.checkbox(
+                        "Couple to active forks",
+                        value=False,
                     )
-            elif is_heatmap:
-                style_cols = st.columns([0.78, 1.22], gap="small")
-                with style_cols[0]:
-                    show_colorbar = st.checkbox("Colorbar", value=True)
-                with style_cols[1]:
-                    cmap = st.selectbox(
-                        "Palette",
-                        HEATMAP_PALETTES,
-                        index=HEATMAP_PALETTES.index(str(output_spec["cmap"])),
+                else:
+                    ffiring_nr = None
+                    ffiring_recycle = 0.0
+                    ffiring_forkQ = False
+
+                seed_cols = st.columns(2, gap="small")
+                with seed_cols[0]:
+                    use_seed = st.checkbox("Fixed seed", value=False)
+                with seed_cols[1]:
+                    seed_value = st.number_input(
+                        "Seed",
+                        min_value=0,
+                        value=1,
+                        step=1,
+                        format="%d",
+                        disabled=not use_seed,
                     )
 
-                scale_cols = st.columns(3, gap="small")
-                with scale_cols[0]:
-                    invert_y_axis = st.checkbox("Invert y-axis", value=False)
-                with scale_cols[1]:
-                    log_y_axis = st.checkbox("Log y-axis", value=False)
-                with scale_cols[2]:
-                    use_y_limits = st.checkbox("Y limits", value=False)
-            else:
-                style_cols = st.columns([0.72, 1.0, 0.92], gap="small")
-                with style_cols[0]:
-                    show_legend = st.checkbox("Legend", value=True)
-                with style_cols[1]:
-                    legend_location_label = st.selectbox(
-                        "Position",
-                        list(LEGEND_LOCATIONS),
+            with st.expander("Plotting settings", expanded=False):
+                selector_cols = st.columns([1.2, 0.8], gap="small")
+                with selector_cols[0]:
+                    preview_output_label = st.selectbox(
+                        "Output",
+                        list(SIMULATION_OUTPUTS),
                         index=0,
-                        disabled=not show_legend,
-                    )
-                with style_cols[2]:
-                    line_color = st.color_picker(
-                        "Color",
-                        value=str(output_spec["color"]),
                     )
 
-                scale_cols = st.columns(3, gap="small")
-                with scale_cols[0]:
-                    invert_y_axis = st.checkbox("Invert y-axis", value=False)
-                with scale_cols[1]:
-                    log_y_axis = st.checkbox("Log y-axis", value=False)
-                with scale_cols[2]:
-                    use_y_limits = st.checkbox("Y limits", value=False)
-
-            default_figure_height = 3.6 if is_histogram else (4.6 if preview_mode == "Multiple view" else (4.1 if is_heatmap else 3.8))
-
-            size_cols = st.columns(2, gap="small")
-            with size_cols[0]:
-                figure_width = st.number_input(
-                    "Width",
-                    min_value=3.0,
-                    max_value=16.0,
-                    value=9.5,
-                    step=0.5,
-                    format="%.1f",
-                )
-            with size_cols[1]:
-                figure_height = st.number_input(
-                    "Height",
-                    min_value=2.0,
-                    max_value=12.0,
-                    value=default_figure_height,
-                    step=0.2,
-                    format="%.1f",
-                )
-
-            y_limit_min = 0.0
-            y_limit_max = 1.0
-            if use_y_limits:
-                y_limit_cols = st.columns(2, gap="small")
-                with y_limit_cols[0]:
-                    y_limit_min = st.number_input(
-                        "Min",
-                        value=0.0,
-                        step=1.0 if output_spec["kind"] != "time" else 0.1,
-                    )
-                with y_limit_cols[1]:
-                    y_limit_max = st.number_input(
-                        "Max",
-                        value=1.0,
-                        step=1.0 if output_spec["kind"] != "time" else 0.1,
+                output_spec = SIMULATION_OUTPUTS[preview_output_label]
+                output_kind = str(output_spec["kind"])
+                is_heatmap = output_kind == "xt"
+                view_options = SIMULATION_VIEW_OPTIONS[output_kind]
+                with selector_cols[1]:
+                    preview_mode = st.selectbox(
+                        "View",
+                        view_options,
+                        index=0,
                     )
 
-        missing_simulation_inputs = []
-        if (
-            source_inputs.get("firing_rate", {}).get("mode") == "profile"
-            and source_inputs.get("firing_rate", {}).get("values") is None
-        ):
-            missing_simulation_inputs.append("Firing rate")
-        if (
-            source_inputs.get("fork_speed", {}).get("mode") == "profile"
-            and source_inputs.get("fork_speed", {}).get("values") is None
-        ):
-            missing_simulation_inputs.append("Fork speed")
-
-with control_stack:
-    with st.container(key="dnascape-control-action"):
-        simulate_requested = st.button(
-            "Simulate",
-            type="primary",
-            width="stretch",
-        )
-
-with preview:
-    with st.container(border=True, key="dnascape-preview-card"):
-        st.markdown(
-            '<div class="plotting-panel-title">Preview</div>',
-            unsafe_allow_html=True,
-        )
-
-        last_simulation = st.session_state.get(SIM_STATE_KEY)
-        simulation_feedback_shown = False
-        active_simulation_job = st.session_state.get(SIM_JOB_KEY)
-
-        if simulate_requested:
-            simulation_feedback_shown = True
-            if missing_simulation_inputs:
-                st.info(
-                    "Add the required input data for "
-                    + ", ".join(missing_simulation_inputs)
-                    + " before simulating."
-                )
-            elif region_end <= region_start:
-                st.error("Region end must be greater than the region start.")
-            elif time_max < resolution_time:
-                st.error("The time window must be at least as large as the selected time step.")
-            elif use_y_limits and y_limit_max <= y_limit_min:
-                st.error("The y-axis maximum must be greater than the minimum.")
-            else:
-                source_payload = {}
-                preview_positions = np.array([], dtype=float)
-                reference_mask = None
-
-                for feature, input_state in source_inputs.items():
-                    if input_state["mode"] == "constant":
-                        source_payload[feature] = float(input_state["value"])
-                        continue
-
-                    raw_values = np.asarray(input_state["values"], dtype=float)
-                    raw_positions = np.arange(raw_values.size, dtype=float) * float(
-                        resolution
-                    )
-                    region_mask = (
-                        np.isfinite(raw_values)
-                        & (raw_positions >= float(region_start))
-                        & (raw_positions <= float(region_end))
-                    )
-
-                    if reference_mask is None:
-                        reference_mask = region_mask
-                        preview_positions = raw_positions[region_mask]
-                    elif raw_values.shape[0] == reference_mask.shape[0]:
-                        region_mask = reference_mask & np.isfinite(raw_values)
-
-                    source_payload[feature] = raw_values[region_mask]
-
-                if reference_mask is None:
-                    preview_positions = interval_positions(
-                        region_start,
-                        region_end,
-                        resolution,
-                    )
-
-                uploaded_lengths = [
-                    int(np.asarray(value).size)
-                    for value in source_payload.values()
-                    if np.asarray(value).ndim > 0
-                ]
-                if uploaded_lengths and any(length == 0 for length in uploaded_lengths):
-                    st.warning("The selected region does not contain any bins.")
-                elif len(set(uploaded_lengths)) > 1:
-                    st.error(
-                        "Uploaded spatial profiles do not share the same number of bins in the selected region."
-                    )
+                is_histogram = preview_mode == "Histogram"
+                if is_histogram:
+                    default_x_axis_title = str(output_spec.get("label", preview_output_label))
+                    default_y_axis_title = "Frequency"
+                elif output_kind == "space":
+                    default_x_axis_title = "Genomic position (kb)"
+                    default_y_axis_title = str(output_spec["ytitle"])
+                elif output_kind == "time":
+                    default_x_axis_title = "S-phase time (min)"
+                    default_y_axis_title = str(output_spec["ytitle"])
                 else:
-                    if active_simulation_job is not None:
-                        active_simulation_job["cancel_event"].set()
+                    default_x_axis_title = "Genomic position (kb)"
+                    default_y_axis_title = "S-phase time (min)"
 
-                    simulation_assumptions = {
-                        "resolution": float(resolution),
-                        "resolution_time": float(resolution_time),
-                        "sim_number": int(sim_number),
-                        "geometry": geometry_label.lower(),
-                        "stall_rate": float(stall_rate),
-                        "tau": float(tau) if stall_rate > 0.0 and recover_stalls else np.inf,
-                        "ffiring_nr": ffiring_nr,
-                        "ffiring_recycle": float(ffiring_recycle),
-                        "ffiring_forkQ": bool(ffiring_forkQ),
-                        "max_rep_time": float(max_rep_time),
-                        "seed": int(seed_value) if use_seed else None,
-                        "verbose": True,
-                        "print_every": 1,
-                    }
+                text_cols = st.columns([1.15, 0.85], gap="small")
+                with text_cols[0]:
+                    title_override = st.text_input(
+                        "Title",
+                        value="",
+                        placeholder="Auto",
+                    )
+                with text_cols[1]:
+                    label_override = st.text_input(
+                        "Label",
+                        value="",
+                        placeholder=str(output_spec.get("label", preview_output_label)),
+                    )
 
-                    output_spec = SIMULATION_OUTPUTS[preview_output_label]
-                    if output_spec["kind"] in {"time", "xt"}:
-                        time_grid = simulation_time_grid(resolution_time, time_max)
-                        simulation_assumptions["time_grid"] = time_grid
-                        if output_spec["kind"] == "time":
-                            simulation_assumptions["time_statsQ"] = True
-                        else:
-                            simulation_assumptions["time_stats_xtQ"] = True
+                axis_cols = st.columns(2, gap="small")
+                with axis_cols[0]:
+                    x_axis_title = st.text_input(
+                        "x-axis",
+                        value=default_x_axis_title,
+                    )
+                with axis_cols[1]:
+                    y_axis_title = st.text_input(
+                        "y-axis",
+                        value=default_y_axis_title,
+                    )
 
-                    if not uploaded_lengths:
-                        simulation_assumptions["interval_kb"] = (
-                            float(region_start),
-                            float(region_end),
+                line_color = str(output_spec.get("color", "#1f77b4"))
+                show_legend = False
+                legend_location_label = "Best"
+                show_colorbar = False
+                cmap = str(output_spec.get("cmap", HEATMAP_PALETTES[0]))
+                invert_y_axis = False
+                log_y_axis = False
+                use_y_limits = False
+                hist_density = False
+                hist_bin_size = 5.0 if output_kind != "time" else 2.0
+
+                if is_histogram:
+                    histogram_cols = st.columns([0.78, 0.74, 0.98], gap="small")
+                    with histogram_cols[0]:
+                        show_legend = st.checkbox("Legend", value=False)
+                    with histogram_cols[1]:
+                        hist_density = st.checkbox("Density", value=False)
+                    with histogram_cols[2]:
+                        hist_bin_size = st.number_input(
+                            "Bin size",
+                            min_value=0.1,
+                            value=hist_bin_size,
+                            step=0.5 if output_kind != "time" else 0.2,
+                            format="%.2f",
+                        )
+                elif is_heatmap:
+                    style_cols = st.columns([0.78, 1.22], gap="small")
+                    with style_cols[0]:
+                        show_colorbar = st.checkbox("Colorbar", value=True)
+                    with style_cols[1]:
+                        cmap = st.selectbox(
+                            "Palette",
+                            HEATMAP_PALETTES,
+                            index=HEATMAP_PALETTES.index(str(output_spec["cmap"])),
                         )
 
-                    active_simulation_job = start_simulation_job(
-                        source_payload,
-                        simulation_assumptions,
-                        {
-                            "chromosome": chromosome,
-                            "region_start": region_start,
-                            "region_end": region_end,
-                            "preview_output_label": preview_output_label,
-                            "preview_mode": preview_mode,
-                            "position_kb": np.asarray(preview_positions, dtype=float),
-                            "input_firing_rate": source_payload.get("firing_rate"),
-                            "input_fork_speed": source_payload.get("fork_speed"),
-                            "title": title_override.strip(),
-                            "label": label_override.strip(),
-                            "x_axis_title": x_axis_title,
-                            "y_axis_title": y_axis_title,
-                            "figure_width": figure_width,
-                            "figure_height": figure_height,
-                            "use_y_limits": use_y_limits,
-                            "y_limit_min": y_limit_min,
-                            "y_limit_max": y_limit_max,
-                            "invert_y_axis": invert_y_axis,
-                            "log_y_axis": log_y_axis,
-                            "show_legend": show_legend,
-                            "legend_location_label": legend_location_label,
-                            "line_color": line_color,
-                            "show_colorbar": show_colorbar,
-                            "cmap": cmap,
-                            "hist_bin_size": hist_bin_size,
-                            "hist_density": hist_density,
-                        },
-                    )
-                    st.session_state[SIM_JOB_KEY] = active_simulation_job
-
-        if active_simulation_job is not None:
-            terminal_update = drain_simulation_job(active_simulation_job)
-
-            if terminal_update is None:
-                progress = active_simulation_job["progress"]
-                st.progress(progress["value"], text=progress["text"])
-                if st.button(
-                    "Stop simulation",
-                    type="secondary",
-                    width="stretch",
-                    key="simulation_stop_button",
-                ):
-                    active_simulation_job["cancel_event"].set()
-                    active_simulation_job["progress"] = {
-                        "value": progress["value"],
-                        "text": "Stopping simulation...",
-                    }
-                    st.rerun()
-
-                if active_simulation_job["thread"].is_alive():
-                    time.sleep(0.25)
-                    st.rerun()
+                    scale_cols = st.columns(3, gap="small")
+                    with scale_cols[0]:
+                        invert_y_axis = st.checkbox("Invert y-axis", value=False)
+                    with scale_cols[1]:
+                        log_y_axis = st.checkbox("Log y-axis", value=False)
+                    with scale_cols[2]:
+                        use_y_limits = st.checkbox("Y limits", value=False)
                 else:
-                    time.sleep(0.05)
-                    st.rerun()
-            else:
-                completed_job = active_simulation_job
-                st.session_state.pop(SIM_JOB_KEY, None)
-                active_simulation_job = None
+                    style_cols = st.columns([0.72, 1.0, 0.92], gap="small")
+                    with style_cols[0]:
+                        show_legend = st.checkbox("Legend", value=True)
+                    with style_cols[1]:
+                        legend_location_label = st.selectbox(
+                            "Position",
+                            list(LEGEND_LOCATIONS),
+                            index=0,
+                            disabled=not show_legend,
+                        )
+                    with style_cols[2]:
+                        line_color = st.color_picker(
+                            "Color",
+                            value=str(output_spec["color"]),
+                        )
 
-                if terminal_update["status"] == "complete":
-                    render_slot = st.empty()
-                    render_slot.progress(0.98, text="Rendering preview...")
-                    try:
-                        last_simulation = build_simulation_preview(
-                            terminal_update["result"],
-                            completed_job["preview_settings"],
-                        )
-                    except Exception as exc:
-                        render_slot.empty()
-                        st.error(f"Could not render the simulation preview: {exc}")
-                    else:
-                        st.session_state[SIM_STATE_KEY] = last_simulation
-                        register_generated_figure_exports(
-                            source="Simulation",
-                            file_stem=last_simulation["file_stem"],
-                            exports=last_simulation["exports"],
-                            summary=last_simulation["summary"],
-                            description="Simulation preview figure",
-                            metadata={"settings": completed_job["preview_settings"]},
-                        )
-                        register_generated_artifact(
-                            source="Simulation",
-                            category="Raw output",
-                            file_name=f"{last_simulation['file_stem']}_raw",
-                            summary=last_simulation["summary"],
-                            description="Simulated DNAscape-ready raw output",
-                            cache_key=f"simulation:raw:{last_simulation['file_stem']}",
-                            artifact_type="raw",
-                            variants=simulation_raw_output_variants(
-                                last_simulation["raw"],
-                                last_simulation["file_stem"],
-                            ),
-                        )
-                        render_slot.empty()
-                elif terminal_update["status"] == "cancelled":
-                    st.info("Simulation stopped.")
-                elif terminal_update["status"] == "error":
-                    st.error(
-                        f"rsim could not complete this simulation: {terminal_update['message']}"
+                    scale_cols = st.columns(3, gap="small")
+                    with scale_cols[0]:
+                        invert_y_axis = st.checkbox("Invert y-axis", value=False)
+                    with scale_cols[1]:
+                        log_y_axis = st.checkbox("Log y-axis", value=False)
+                    with scale_cols[2]:
+                        use_y_limits = st.checkbox("Y limits", value=False)
+
+                default_figure_height = 3.6 if is_histogram else (4.6 if preview_mode == "Multiple view" else (4.1 if is_heatmap else 3.8))
+
+                size_cols = st.columns(2, gap="small")
+                with size_cols[0]:
+                    figure_width = st.number_input(
+                        "Width",
+                        min_value=3.0,
+                        max_value=16.0,
+                        value=9.5,
+                        step=0.5,
+                        format="%.1f",
+                    )
+                with size_cols[1]:
+                    figure_height = st.number_input(
+                        "Height",
+                        min_value=2.0,
+                        max_value=12.0,
+                        value=default_figure_height,
+                        step=0.2,
+                        format="%.1f",
                     )
 
-        if active_simulation_job is not None:
-            pass
-        elif last_simulation is not None:
-            render_figure_preview(last_simulation["exports"], last_simulation["file_stem"])
-        elif simulation_feedback_shown:
-            pass
-        elif primary_table is None:
-            st.markdown(
-                """
-                <p class="small-muted">
-                Choose kinetic inputs, define a genomic interval, and run rsim to preview a simulated output.
-                </p>
-                """,
-                unsafe_allow_html=True,
-            )
-        elif primary_values is None or primary_values.size == 0:
-            st.info("Choose a numeric input chromosome.")
-        else:
-            st.markdown(
-                """
-                <p class="small-muted">
-                Click Simulate to generate a simulation preview.
-                </p>
-                """,
-                unsafe_allow_html=True,
-            )
+                y_limit_min = 0.0
+                y_limit_max = 1.0
+                if use_y_limits:
+                    y_limit_cols = st.columns(2, gap="small")
+                    with y_limit_cols[0]:
+                        y_limit_min = st.number_input(
+                            "Min",
+                            value=0.0,
+                            step=1.0 if output_spec["kind"] != "time" else 0.1,
+                        )
+                    with y_limit_cols[1]:
+                        y_limit_max = st.number_input(
+                            "Max",
+                            value=1.0,
+                            step=1.0 if output_spec["kind"] != "time" else 0.1,
+                        )
 
-        with st.expander("Raw output", expanded=False):
-            last_simulation_for_download = st.session_state.get(SIM_STATE_KEY)
+            missing_simulation_inputs = []
             if (
-                last_simulation_for_download is not None
-                and "raw" in last_simulation_for_download
+                source_inputs.get("firing_rate", {}).get("mode") == "profile"
+                and source_inputs.get("firing_rate", {}).get("values") is None
             ):
+                missing_simulation_inputs.append("Firing rate")
+            if (
+                source_inputs.get("fork_speed", {}).get("mode") == "profile"
+                and source_inputs.get("fork_speed", {}).get("values") is None
+            ):
+                missing_simulation_inputs.append("Fork speed")
+
+    with control_stack:
+        with st.container(key="dnascape-control-action"):
+            simulate_requested = st.button(
+                "Simulate",
+                type="primary",
+                key="simulation_run_button",
+                disabled=False,
+                width="stretch",
+            )
+
+    def render_simulation_preview_fragment() -> None:
+        with preview:
+            with st.container(border=True, key="dnascape-preview-card"):
                 st.markdown(
-                    """
-                    <p class="small-muted">
-                    Download the currently previewed rsim output in a DNAscape-ready format.
-                    </p>
-                    """,
+                    '<div class="plotting-panel-title">Preview</div>',
                     unsafe_allow_html=True,
                 )
-                st.caption("Export")
-                default_raw_file_name = (
-                    f"{last_simulation_for_download['file_stem']}_raw"
-                )
-                if (
-                    st.session_state.get("simulation_raw_file_name_source")
-                    != default_raw_file_name
-                ):
-                    st.session_state["simulation_raw_file_name"] = ""
-                    st.session_state["simulation_raw_file_name_source"] = (
-                        default_raw_file_name
+
+                last_simulation = st.session_state.get(SIM_STATE_KEY)
+                simulation_feedback_shown = False
+                active_simulation_job = st.session_state.get(SIM_JOB_KEY)
+
+                if simulate_requested:
+                    simulation_feedback_shown = True
+                    if missing_simulation_inputs:
+                        st.info(
+                            "Add the required input data for "
+                            + ", ".join(missing_simulation_inputs)
+                            + " before simulating."
+                        )
+                    elif region_end <= region_start:
+                        st.error("Region end must be greater than the region start.")
+                    elif time_max < resolution_time:
+                        st.error("The time window must be at least as large as the selected time step.")
+                    elif use_y_limits and y_limit_max <= y_limit_min:
+                        st.error("The y-axis maximum must be greater than the minimum.")
+                    else:
+                        source_payload = {}
+                        preview_positions = np.array([], dtype=float)
+                        reference_mask = None
+
+                        for feature, input_state in source_inputs.items():
+                            if input_state["mode"] == "constant":
+                                source_payload[feature] = float(input_state["value"])
+                                continue
+
+                            raw_values = np.asarray(input_state["values"], dtype=float)
+                            raw_positions = np.arange(raw_values.size, dtype=float) * float(
+                                resolution
+                            )
+                            region_mask = (
+                                np.isfinite(raw_values)
+                                & (raw_positions >= float(region_start))
+                                & (raw_positions <= float(region_end))
+                            )
+
+                            if reference_mask is None:
+                                reference_mask = region_mask
+                                preview_positions = raw_positions[region_mask]
+                            elif raw_values.shape[0] == reference_mask.shape[0]:
+                                region_mask = reference_mask & np.isfinite(raw_values)
+
+                            source_payload[feature] = raw_values[region_mask]
+
+                        if reference_mask is None:
+                            preview_positions = interval_positions(
+                                region_start,
+                                region_end,
+                                resolution,
+                            )
+
+                        uploaded_lengths = [
+                            int(np.asarray(value).size)
+                            for value in source_payload.values()
+                            if np.asarray(value).ndim > 0
+                        ]
+                        if uploaded_lengths and any(length == 0 for length in uploaded_lengths):
+                            st.warning("The selected region does not contain any bins.")
+                        elif len(set(uploaded_lengths)) > 1:
+                            st.error(
+                                "Uploaded spatial profiles do not share the same number of bins in the selected region."
+                            )
+                        else:
+                            if active_simulation_job is not None:
+                                active_simulation_job["cancel_event"].set()
+
+                            simulation_assumptions = {
+                                "resolution": float(resolution),
+                                "resolution_time": float(resolution_time),
+                                "sim_number": int(sim_number),
+                                "geometry": geometry_label.lower(),
+                                "stall_rate": float(stall_rate),
+                                "tau": float(tau) if stall_rate > 0.0 and recover_stalls else np.inf,
+                                "ffiring_nr": ffiring_nr,
+                                "ffiring_recycle": float(ffiring_recycle),
+                                "ffiring_forkQ": bool(ffiring_forkQ),
+                                "max_rep_time": float(max_rep_time),
+                                "seed": int(seed_value) if use_seed else None,
+                                "verbose": True,
+                                "print_every": 1,
+                            }
+
+                            output_spec = SIMULATION_OUTPUTS[preview_output_label]
+                            if output_spec["kind"] in {"time", "xt"}:
+                                time_grid = simulation_time_grid(resolution_time, time_max)
+                                simulation_assumptions["time_grid"] = time_grid
+                                if output_spec["kind"] == "time":
+                                    simulation_assumptions["time_statsQ"] = True
+                                else:
+                                    simulation_assumptions["time_stats_xtQ"] = True
+
+                            if not uploaded_lengths:
+                                simulation_assumptions["interval_kb"] = (
+                                    float(region_start),
+                                    float(region_end),
+                                )
+
+                            active_simulation_job = start_simulation_job(
+                                source_payload,
+                                simulation_assumptions,
+                                {
+                                    "chromosome": chromosome,
+                                    "region_start": region_start,
+                                    "region_end": region_end,
+                                    "preview_output_label": preview_output_label,
+                                    "preview_mode": preview_mode,
+                                    "position_kb": np.asarray(preview_positions, dtype=float),
+                                    "input_firing_rate": source_payload.get("firing_rate"),
+                                    "input_fork_speed": source_payload.get("fork_speed"),
+                                    "title": title_override.strip(),
+                                    "label": label_override.strip(),
+                                    "x_axis_title": x_axis_title,
+                                    "y_axis_title": y_axis_title,
+                                    "figure_width": figure_width,
+                                    "figure_height": figure_height,
+                                    "use_y_limits": use_y_limits,
+                                    "y_limit_min": y_limit_min,
+                                    "y_limit_max": y_limit_max,
+                                    "invert_y_axis": invert_y_axis,
+                                    "log_y_axis": log_y_axis,
+                                    "show_legend": show_legend,
+                                    "legend_location_label": legend_location_label,
+                                    "line_color": line_color,
+                                    "show_colorbar": show_colorbar,
+                                    "cmap": cmap,
+                                    "hist_bin_size": hist_bin_size,
+                                    "hist_density": hist_density,
+                                },
+                            )
+                            st.session_state[SIM_JOB_KEY] = active_simulation_job
+
+                @st.fragment(run_every=0.5)
+                def render_active_simulation_job() -> None:
+                    active_job = st.session_state.get(SIM_JOB_KEY)
+                    if active_job is None:
+                        return
+
+                    terminal_update = drain_simulation_job(active_job)
+                    if terminal_update is None:
+                        progress = active_job["progress"]
+                        st.progress(progress["value"], text=progress["text"])
+                        return
+
+                    completed_job = active_job
+                    st.session_state.pop(SIM_JOB_KEY, None)
+
+                    if terminal_update["status"] == "complete":
+                        render_slot = st.empty()
+                        render_slot.progress(0.98, text="Rendering preview...")
+                        try:
+                            last_simulation_result = build_simulation_preview(
+                                terminal_update["result"],
+                                completed_job["preview_settings"],
+                            )
+                        except Exception as exc:
+                            render_slot.empty()
+                            st.error(f"Could not render the simulation preview: {exc}")
+                        else:
+                            st.session_state[SIM_STATE_KEY] = last_simulation_result
+                            register_generated_figure_exports(
+                                source="Simulation",
+                                file_stem=last_simulation_result["file_stem"],
+                                exports=last_simulation_result["exports"],
+                                summary=last_simulation_result["summary"],
+                                description="Simulation preview figure",
+                                metadata={"settings": completed_job["preview_settings"]},
+                            )
+                            register_generated_artifact(
+                                source="Simulation",
+                                category="Raw output",
+                                file_name=f"{last_simulation_result['file_stem']}_raw",
+                                summary=last_simulation_result["summary"],
+                                description="Simulated DNAscape-ready raw output",
+                                cache_key=f"simulation:raw:{last_simulation_result['file_stem']}",
+                                artifact_type="raw",
+                                variants=simulation_raw_output_variants(
+                                    last_simulation_result["raw"],
+                                    last_simulation_result["file_stem"],
+                                ),
+                            )
+                            render_slot.empty()
+                            st.rerun()
+                    elif terminal_update["status"] == "cancelled":
+                        st.info("Simulation stopped.")
+                    elif terminal_update["status"] == "error":
+                        st.error(
+                            f"rsim could not complete this simulation: {terminal_update['message']}"
+                        )
+
+                if active_simulation_job is not None:
+                    render_active_simulation_job()
+                    active_simulation_job = st.session_state.get(SIM_JOB_KEY)
+
+                if active_simulation_job is not None:
+                    pass
+                elif last_simulation is not None:
+                    render_figure_preview(last_simulation["exports"], last_simulation["file_stem"])
+                elif simulation_feedback_shown:
+                    pass
+                elif primary_table is None:
+                    st.markdown(
+                        """
+                        <p class="small-muted">
+                        Choose kinetic inputs, define a genomic interval, and run rsim to preview a simulated output.
+                        </p>
+                        """,
+                        unsafe_allow_html=True,
+                    )
+                elif primary_values is None or primary_values.size == 0:
+                    st.info("Choose a numeric input chromosome.")
+                else:
+                    st.markdown(
+                        """
+                        <p class="small-muted">
+                        Click Simulate to generate a simulation preview.
+                        </p>
+                        """,
+                        unsafe_allow_html=True,
                     )
 
-                export_cols = st.columns([0.46, 0.18, 0.12, 0.24], gap="small")
-                with export_cols[0]:
-                    raw_file_name = st.text_input(
-                        "File name",
-                        key="simulation_raw_file_name",
-                        placeholder="Name (auto)",
-                        label_visibility="collapsed",
-                    )
-                with export_cols[1]:
-                    raw_format = st.selectbox(
-                        "File type",
-                        ["CSV", "TSV", "TXT", "Array"],
-                        index=0,
-                        key="simulation_raw_format",
-                        label_visibility="collapsed",
-                    )
-                with export_cols[2]:
-                    raw_gzip = st.checkbox(
-                        "GZ",
-                        key="simulation_raw_gzip",
-                        help="Compress the raw output as gzip.",
-                    )
-                payload, extension, mime = simulation_raw_payload(
-                    last_simulation_for_download["raw"],
-                    raw_format,
-                )
-                payload, extension, mime = maybe_gzip_payload(
-                    payload,
-                    extension,
-                    mime,
-                    raw_gzip,
-                )
-                raw_file_stem = (
-                    safe_download_stem(raw_file_name) or default_raw_file_name
-                )
-                with export_cols[3]:
-                    st.download_button(
-                        "Download",
-                        data=payload,
-                        file_name=f"{raw_file_stem}.{extension}",
-                        mime=mime,
-                        on_click="ignore",
-                        width="stretch",
-                    )
-            else:
-                st.markdown(
-                    """
-                    <p class="small-muted">
-                    Run a simulation to enable raw output export.
-                    </p>
-                    """,
-                    unsafe_allow_html=True,
-                )
+                with st.expander("Raw output", expanded=False):
+                    last_simulation_for_download = st.session_state.get(SIM_STATE_KEY)
+                    if (
+                        last_simulation_for_download is not None
+                        and "raw" in last_simulation_for_download
+                    ):
+                        st.markdown(
+                            """
+                            <p class="small-muted">
+                            Download the currently previewed rsim output in a DNAscape-ready format.
+                            </p>
+                            """,
+                            unsafe_allow_html=True,
+                        )
+                        st.caption("Export")
+                        default_raw_file_name = (
+                            f"{last_simulation_for_download['file_stem']}_raw"
+                        )
+                        if (
+                            st.session_state.get("simulation_raw_file_name_source")
+                            != default_raw_file_name
+                        ):
+                            st.session_state["simulation_raw_file_name"] = ""
+                            st.session_state["simulation_raw_file_name_source"] = (
+                                default_raw_file_name
+                            )
+
+                        export_cols = st.columns([0.46, 0.18, 0.12, 0.24], gap="small")
+                        with export_cols[0]:
+                            raw_file_name = st.text_input(
+                                "File name",
+                                key="simulation_raw_file_name",
+                                placeholder="Name (auto)",
+                                label_visibility="collapsed",
+                            )
+                        with export_cols[1]:
+                            raw_format = st.selectbox(
+                                "File type",
+                                ["CSV", "TSV", "TXT", "Array"],
+                                index=0,
+                                key="simulation_raw_format",
+                                label_visibility="collapsed",
+                            )
+                        with export_cols[2]:
+                            raw_gzip = st.checkbox(
+                                "GZ",
+                                key="simulation_raw_gzip",
+                                help="Compress the raw output as gzip.",
+                            )
+                        payload, extension, mime = simulation_raw_payload(
+                            last_simulation_for_download["raw"],
+                            raw_format,
+                        )
+                        payload, extension, mime = maybe_gzip_payload(
+                            payload,
+                            extension,
+                            mime,
+                            raw_gzip,
+                        )
+                        raw_file_stem = (
+                            safe_download_stem(raw_file_name) or default_raw_file_name
+                        )
+                        with export_cols[3]:
+                            st.download_button(
+                                "Download",
+                                data=payload,
+                                file_name=f"{raw_file_stem}.{extension}",
+                                mime=mime,
+                                on_click="ignore",
+                                width="stretch",
+                            )
+                    else:
+                        st.markdown(
+                            """
+                            <p class="small-muted">
+                            Run a simulation to enable raw output export.
+                            </p>
+                            """,
+                            unsafe_allow_html=True,
+                        )
+    render_simulation_preview_fragment()
+
+
+render_simulation_workspace()

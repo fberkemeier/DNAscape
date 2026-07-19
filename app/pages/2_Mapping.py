@@ -8,7 +8,6 @@ import queue
 import re
 import sys
 import threading
-import time
 from io import BytesIO
 from pathlib import Path
 
@@ -989,16 +988,6 @@ def discard_mapping_job(job: dict[str, object] | None) -> None:
             break
 
 
-def rerun_preview_fragment() -> bool:
-    """Rerun only the preview fragment when Streamlit allows fragment scope."""
-    from streamlit.runtime.scriptrunner import get_script_run_ctx
-
-    ctx = get_script_run_ctx(suppress_warning=True)
-    if ctx is not None and ctx.fragment_ids_this_run:
-        st.rerun(scope="fragment")
-    return False
-
-
 def render_figure_preview(export_bytes: dict[str, bytes], file_stem: str) -> None:
     preview_src = base64.b64encode(export_bytes["png"]).decode("ascii")
     expand_toggle_id = f"map-preview-expand-{safe_download_stem(file_stem) or 'figure'}"
@@ -1670,47 +1659,36 @@ def render_mapping_workspace() -> None:
 
             preview_message_shown = False
             if active_mapping_job is not None:
-                job_started_this_run = bool(
-                    st.session_state.pop(MAP_JOB_STARTED_KEY, False)
-                )
-                terminal_update = (
-                    None if job_started_this_run else drain_mapping_job(active_mapping_job)
-                )
+                @st.fragment(run_every=0.5)
+                def render_active_mapping_job() -> None:
+                    active_job = st.session_state.get(MAP_JOB_KEY)
+                    if active_job is None:
+                        return
 
-                if terminal_update is None:
-                    progress = active_mapping_job["progress"]
-                    st.progress(progress["value"], text=progress["text"])
-                    if st.button(
-                        "Stop mapping",
-                        type="secondary",
-                        width="stretch",
-                        key="mapping_stop_button",
-                    ):
-                        discard_mapping_job(active_mapping_job)
-                        st.session_state.pop(MAP_JOB_KEY, None)
-                        st.info("Mapping stopped.")
-                        active_mapping_job = None
-                        preview_message_shown = True
+                    job_started_this_run = bool(
+                        st.session_state.pop(MAP_JOB_STARTED_KEY, False)
+                    )
+                    terminal_update = (
+                        None if job_started_this_run else drain_mapping_job(active_job)
+                    )
 
-                    if (
-                        active_mapping_job is not None
-                        and not job_started_this_run
-                        and not active_mapping_job["thread"].is_alive()
-                    ):
-                        st.session_state.pop(MAP_JOB_KEY, None)
-                        st.warning("Mapping ended before returning a result.")
-                        active_mapping_job = None
-                        preview_message_shown = True
-                else:
-                    completed_job = active_mapping_job
+                    if terminal_update is None:
+                        progress = active_job["progress"]
+                        st.progress(progress["value"], text=progress["text"])
+                        if not job_started_this_run and not active_job["thread"].is_alive():
+                            st.session_state.pop(MAP_JOB_KEY, None)
+                            st.warning("Mapping ended before returning a result.")
+                            st.rerun()
+                        return
+
+                    completed_job = active_job
                     st.session_state.pop(MAP_JOB_KEY, None)
-                    active_mapping_job = None
 
                     if terminal_update["status"] == "complete":
                         render_slot = st.empty()
                         render_slot.progress(0.98, text="Rendering preview...")
                         try:
-                            last_map = build_mapping_preview(
+                            last_map_result = build_mapping_preview(
                                 terminal_update["mapped_values"],
                                 terminal_update["position_kb"],
                                 completed_job["plot_settings"],
@@ -1718,40 +1696,41 @@ def render_mapping_workspace() -> None:
                         except Exception as exc:
                             render_slot.empty()
                             st.error(f"Could not render the mapping preview: {exc}")
-                            preview_message_shown = True
                         else:
-                            st.session_state[MAP_STATE_KEY] = last_map
+                            st.session_state[MAP_STATE_KEY] = last_map_result
                             register_generated_figure_exports(
                                 source="Mapping",
-                                file_stem=last_map["file_stem"],
-                                exports=last_map["exports"],
-                                summary=last_map["summary"],
+                                file_stem=last_map_result["file_stem"],
+                                exports=last_map_result["exports"],
+                                summary=last_map_result["summary"],
                                 description="Mapping preview figure",
                                 metadata={"settings": completed_job["plot_settings"]},
                             )
                             register_generated_artifact(
                                 source="Mapping",
                                 category="Raw output",
-                                file_name=f"{last_map['file_stem']}_raw",
-                                summary=last_map["summary"],
+                                file_name=f"{last_map_result['file_stem']}_raw",
+                                summary=last_map_result["summary"],
                                 description="Mapped DNAscape-ready raw output",
-                                cache_key=f"mapping:raw:{last_map['file_stem']}",
+                                cache_key=f"mapping:raw:{last_map_result['file_stem']}",
                                 artifact_type="raw",
                                 variants=raw_output_variants(
-                                    last_map["raw"],
-                                    last_map["file_stem"],
+                                    last_map_result["raw"],
+                                    last_map_result["file_stem"],
                                 ),
                             )
                             render_slot.empty()
+                            st.rerun()
                     elif terminal_update["status"] == "cancelled":
                         st.info("Mapping stopped.")
-                        preview_message_shown = True
                     elif terminal_update["status"] == "error":
                         st.error(
                             "rmap could not complete this mapping: "
                             f"{terminal_update['message']}"
                         )
-                        preview_message_shown = True
+
+                render_active_mapping_job()
+                active_mapping_job = st.session_state.get(MAP_JOB_KEY)
 
             if active_mapping_job is not None:
                 pass
@@ -1858,18 +1837,14 @@ def render_mapping_workspace() -> None:
                         unsafe_allow_html=True,
                     )
 
-            if active_mapping_job is not None:
-                time.sleep(0.5)
-                if not rerun_preview_fragment():
-                    st.rerun()
-
-
     map_feedback_shown = False
     with control_stack:
         with st.container(key="dnascape-control-action"):
             if st.button(
                 "Map",
                 type="primary",
+                key="mapping_run_button",
+                disabled=False,
                 width="stretch",
             ):
                 map_feedback_shown = start_mapping_from_current_controls()
