@@ -1,6 +1,6 @@
+import gzip
 import tempfile
 import unittest
-import gzip
 from io import BytesIO
 from pathlib import Path
 
@@ -316,7 +316,9 @@ class IOTests(unittest.TestCase):
             np.testing.assert_allclose(values, np.array([[1.0, 2.0, 3.0]]))
 
     def test_rload_and_rsave_are_public_api(self):
-        from dnascape import rload as public_rload, rsave as public_rsave, rtrack as public_rtrack
+        from dnascape import rload as public_rload
+        from dnascape import rsave as public_rsave
+        from dnascape import rtrack as public_rtrack
 
         self.assertIs(public_rload, rload)
         self.assertIs(public_rsave, rsave)

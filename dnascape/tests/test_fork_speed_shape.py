@@ -3,8 +3,7 @@ from unittest.mock import patch
 
 import numpy as np
 
-from dnascape import rmap
-from dnascape import fitting
+from dnascape import fitting, rmap
 
 
 class ForkSpeedShapeTests(unittest.TestCase):

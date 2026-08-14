@@ -5,11 +5,11 @@ import inspect
 import os
 import tempfile
 import time
+import weakref
 
 import numpy as np
 
-from .utils import etaf, fast_shift_add
-
+from .utils import etaf
 
 _SOURCE_ALIASES = {
     "firing": "firing_rate",
@@ -39,6 +39,11 @@ _ASSUMPTION_ALIASES = {
     "time_stats_xt": "time_stats_xtQ",
     "time_stats_dens": "time_stats_densQ",
 }
+
+# Keep the legacy default grid immutable. ``rsim`` converts it to an ndarray
+# before use, so callers cannot accidentally mutate the default shared by
+# later simulations.
+_DEFAULT_TIME_GRID = tuple(float(value) for value in range(1501))
 
 
 def _normalise_structured_key(name, aliases):
@@ -194,6 +199,12 @@ def _as_speed_field(field, name, n_bins):
     raise ValueError(f"{name} must be scalar, (n,), (1,T), (n,1), or (n,T).")
 
 
+def _as_inverse_speed_field(field, name, n_bins):
+    """Validate a speed field and prepare its invariant reciprocal."""
+    kind, values, time_points = _as_speed_field(field, name, n_bins)
+    return kind, 1.0 / values, time_points
+
+
 def _normalise_firing_rate(firing_rate=None, ori_rate=None, initiation_rate=None):
     supplied = [
         name
@@ -218,6 +229,44 @@ def _normalise_firing_rate(firing_rate=None, ori_rate=None, initiation_rate=None
     raise ValueError("A firing_rate input is required.")
 
 
+def _validated_time_grid(time_grid, *, required=False):
+    if time_grid is None:
+        if required:
+            raise ValueError("time statistics require a time_grid array.")
+        return None
+    values = np.asarray(time_grid, dtype=float)
+    if values.ndim != 1 or values.size == 0:
+        raise ValueError("time_grid must be a non-empty one-dimensional array.")
+    if np.any(~np.isfinite(values)):
+        raise ValueError("time_grid must contain only finite values.")
+    if values.size > 1 and np.any(np.diff(values) <= 0):
+        raise ValueError("time_grid must be strictly increasing.")
+    return values
+
+
+def _validated_positive_integer(value, name):
+    """Return a positive integer without silently truncating fractions."""
+    try:
+        numeric = float(value)
+    except (TypeError, ValueError) as exc:
+        raise ValueError(f"{name} must be a positive integer.") from exc
+    if not np.isfinite(numeric) or numeric <= 0 or not numeric.is_integer():
+        raise ValueError(f"{name} must be a positive integer.")
+    return int(numeric)
+
+
+def _close_and_unlink_memmap(mapping, path):
+    """Close a memmap handle before unlinking its temporary backing file."""
+    try:
+        mapping.flush()
+    finally:
+        mapping.close()
+    try:
+        os.unlink(path)
+    except FileNotFoundError:
+        pass
+
+
 def simulate_replication(
     firing_rate=None,
     fork_speed=1.4,
@@ -236,12 +285,15 @@ def simulate_replication(
     time_stats_xtQ=False,  # space-time stats are handled in rsim; kept for API symmetry
     time_stats_densQ=None,  # deprecated alias; kept for backwards compatibility
     time_grid=None,
-    max_rep_time=1200.0,
+    max_rep_time: "float | None" = 1200.0,
     n_bins=None,
     genome_length=None,
     interval_kb=None,
     ori_rate=None,
     initiation_rate=None,
+    _firing_cumulative_hazard=None,
+    _prepared_firing_field=None,
+    _prepared_inverse_speed_field=None,
 ):
     """Run one stochastic replication simulation.
 
@@ -251,8 +303,6 @@ def simulate_replication(
     ``interval_kb``.
     """
     rng = np.random.default_rng() if rng is None else rng
-    if time_stats_densQ is not None:
-        time_stats_xtQ = bool(time_stats_densQ)
     if resolution_x is not None:
         resolution_space = resolution_x
     if resolution_t is not None:
@@ -265,6 +315,17 @@ def simulate_replication(
     resolution_time = float(resolution_time)
     if not np.isfinite(resolution_time) or resolution_time <= 0:
         raise ValueError("resolution_t must be a finite positive number.")
+
+    stall_rate = float(stall_rate)
+    if not np.isfinite(stall_rate) or not 0.0 <= stall_rate <= 1.0:
+        raise ValueError("stall_rate must be a finite probability between 0 and 1.")
+    tau = float(tau)
+    if np.isnan(tau) or tau <= 0:
+        raise ValueError("tau must be positive or np.inf.")
+    if max_rep_time is not None:
+        max_rep_time = float(max_rep_time)
+        if not np.isfinite(max_rep_time) or max_rep_time <= 0:
+            raise ValueError("max_rep_time must be finite and positive, or None.")
 
     firing_rate = _normalise_firing_rate(
         firing_rate=firing_rate,
@@ -280,23 +341,49 @@ def simulate_replication(
         interval_kb=interval_kb,
     )
 
-    I_kind, I_val, TI = _as_rate_field(firing_rate, "firing_rate", n_bins=n)
-    v_kind, v_val, Tv = _as_speed_field(fork_speed, "fork_speed", n_bins=n)
+    if _prepared_firing_field is None:
+        I_kind, I_val, _TI = _as_rate_field(firing_rate, "firing_rate", n_bins=n)
+    else:
+        I_kind, I_val, _TI = _prepared_firing_field
 
+    if _prepared_inverse_speed_field is None:
+        v_kind, inv_v, Tv = _as_inverse_speed_field(
+            fork_speed,
+            "fork_speed",
+            n_bins=n,
+        )
+    else:
+        v_kind, inv_v, Tv = _prepared_inverse_speed_field
+
+    inv_v_values = np.asarray(inv_v, dtype=float)
+    inv_v_scalar = None
     inv_v_x = None
     inv_v_t = None
     inv_v_xt = None
     if v_kind == "scalar":
-        inv_v_scalar = 1.0 / v_val
+        if inv_v_values.size != 1:
+            raise RuntimeError("A scalar prepared fork-speed field must contain one value.")
+        inv_v_scalar = float(inv_v_values.reshape(-1)[0])
     elif v_kind == "x":
-        inv_v_x = 1.0 / v_val
+        if inv_v_values.shape != (n,):
+            raise RuntimeError(f"A spatial prepared fork-speed field must have shape ({n},).")
+        inv_v_x = inv_v_values
     elif v_kind == "t":
-        inv_v_t = 1.0 / v_val
+        if inv_v_values.ndim != 1 or inv_v_values.size == 0:
+            raise RuntimeError("A temporal prepared fork-speed field must be one-dimensional.")
+        inv_v_t = inv_v_values
+        Tv = int(inv_v_t.size)
+    elif v_kind == "xt":
+        if inv_v_values.ndim != 2 or inv_v_values.shape[1] != n:
+            raise RuntimeError(
+                f"A space-time prepared fork-speed field must have shape (time, {n})."
+            )
+        inv_v_xt = inv_v_values
+        Tv = int(inv_v_xt.shape[0])
     else:
-        inv_v_xt = 1.0 / v_val
-        Tv = inv_v_xt.shape[0]
+        raise RuntimeError(f"Unknown prepared fork-speed field kind: {v_kind!r}.")
 
-    p = float(stall_rate)
+    p = stall_rate
     stall_left_mask = rng.random(n) < p
     stall_right_mask = rng.random(n) < p
     stall_delay_left = np.zeros(n, float)
@@ -315,8 +402,11 @@ def simulate_replication(
         if not np.isfinite(t) or t < 0.0:
             return 0
         r = int(t // resolution_time)
-        if (inv_v_t is not None or inv_v_xt is not None) and r >= Tv:
-            r = Tv - 1
+        if inv_v_t is not None or inv_v_xt is not None:
+            if Tv is None:
+                raise RuntimeError("A time-dependent speed field has no time axis.")
+            if r >= Tv:
+                r = Tv - 1
         return r
 
     def _edge_forward(t_here, k_to):
@@ -328,6 +418,8 @@ def simulate_replication(
             return resolution_space * inv_v_t[r] + stall_delay_left[k_to]
         if inv_v_x is not None:
             return resolution_space * inv_v_x[k_to] + stall_delay_left[k_to]
+        if inv_v_scalar is None:
+            raise RuntimeError("The prepared fork-speed field has an invalid kind.")
         return resolution_space * inv_v_scalar + stall_delay_left[k_to]
 
     def _edge_backward(t_here, k_to):
@@ -339,22 +431,32 @@ def simulate_replication(
             return resolution_space * inv_v_t[r] + stall_delay_right[k_to]
         if inv_v_x is not None:
             return resolution_space * inv_v_x[k_to] + stall_delay_right[k_to]
+        if inv_v_scalar is None:
+            raise RuntimeError("The prepared fork-speed field has an invalid kind.")
         return resolution_space * inv_v_scalar + stall_delay_right[k_to]
 
     # firing proposals t0
     t0 = np.full(n, np.inf, float)
     if I_kind == "x":
-        rate = I_val
+        rate = np.asarray(I_val, dtype=float)
         pos = rate > 0
         if np.any(pos):
             t0[pos] = rng.exponential(scale=1.0 / rate[pos])
     elif I_kind == "scalar":
-        if I_val > 0:
-            t0[:] = rng.exponential(scale=1.0 / I_val, size=n)
+        scalar_rate = float(np.asarray(I_val, dtype=float).reshape(-1)[0])
+        if scalar_rate > 0:
+            t0[:] = rng.exponential(scale=1.0 / scalar_rate, size=n)
     elif I_kind == "t":
+        rates_t = np.asarray(I_val, dtype=float)
         u = rng.random(n)
         target = -np.log(u)
-        H = np.cumsum(I_val * resolution_time)
+        H = (
+            np.asarray(_firing_cumulative_hazard, dtype=float)
+            if _firing_cumulative_hazard is not None
+            else np.cumsum(rates_t * resolution_time)
+        )
+        if H.shape != rates_t.shape:
+            raise ValueError("Prepared firing cumulative hazard does not match firing_rate.")
         hit = target <= H[-1] if H.size else np.zeros(n, dtype=bool)
         if np.any(hit):
             kh = np.flatnonzero(hit).astype(np.int64, copy=False)
@@ -363,16 +465,23 @@ def simulate_replication(
             m0 = jh > 0
             if np.any(m0):
                 prevH[m0] = H[jh[m0] - 1]
-            lam = I_val[jh]
+            lam = rates_t[jh]
             frac = np.ones_like(lam)
             poslam = lam > 0
             frac[poslam] = (target[kh[poslam]] - prevH[poslam]) / (lam[poslam] * resolution_time)
             frac = np.clip(frac, 0.0, 1.0)
             t0[kh] = (jh.astype(float) + frac) * resolution_time
-    else:
+    elif I_kind == "xt":
+        rates_xt = np.asarray(I_val, dtype=float)
         u = rng.random(n)
         target = -np.log(u)
-        H = np.cumsum(I_val * resolution_time, axis=0)
+        H = (
+            np.asarray(_firing_cumulative_hazard, dtype=float)
+            if _firing_cumulative_hazard is not None
+            else np.cumsum(rates_xt * resolution_time, axis=0)
+        )
+        if H.shape != rates_xt.shape:
+            raise ValueError("Prepared firing cumulative hazard does not match firing_rate.")
         ge = H >= target[None, :]
         hit = ge.any(axis=0)
         j = np.argmax(ge, axis=0).astype(np.int64, copy=False)
@@ -383,12 +492,14 @@ def simulate_replication(
             m0 = jh > 0
             if np.any(m0):
                 prevH[m0] = H[jh[m0] - 1, kh[m0]]
-            lam = I_val[jh, kh]
+            lam = rates_xt[jh, kh]
             frac = np.ones_like(lam)
             poslam = lam > 0
             frac[poslam] = (target[kh[poslam]] - prevH[poslam]) / (lam[poslam] * resolution_time)
             frac = np.clip(frac, 0.0, 1.0)
             t0[kh] = (jh.astype(float) + frac) * resolution_time
+    else:
+        raise RuntimeError(f"Unknown prepared firing-rate field kind: {I_kind!r}.")
 
     # firing-factor gating (unchanged)
     use_factors = ffiring_nr is not None
@@ -400,9 +511,10 @@ def simulate_replication(
         if Amax < cost:
             raise ValueError("ffiring_nr must be >= 2 if modelling two forks per origin firing.")
 
-        r = 0.0 if ffiring_forkQ else float(ffiring_recycle)
-        if not ffiring_forkQ and (not np.isfinite(r) or r < 0):
+        recycle_rate = float(ffiring_recycle)
+        if not np.isfinite(recycle_rate) or recycle_rate < 0:
             raise ValueError("ffiring_recycle must be a finite non-negative number.")
+        r = 0.0 if ffiring_forkQ else recycle_rate
 
         def recover(A_now, dt):
             if r == 0.0 or dt <= 0.0:
@@ -647,9 +759,8 @@ def simulate_replication(
     # --- time statistics (1D only, stays here) ---
     time_stats = None
     if time_statsQ:
-        if time_grid is None:
-            raise ValueError("time_statsQ=True requires a time_grid array.")
-        time_grid = np.asarray(time_grid, dtype=float)
+        time_grid = _validated_time_grid(time_grid, required=True)
+        assert time_grid is not None
         t_max_grid = float(time_grid[-1])
 
         def count_from_intervals(starts, ends):
@@ -663,7 +774,7 @@ def simulate_replication(
             ended = np.searchsorted(ends, time_grid, side="left")
             return (started - ended).astype(float)
 
-        # build fork/stall intervals via traversal edges (cheap vs mÃ—n)
+        # build fork/stall intervals via traversal edges (cheap vs m×n)
         pk = prev.astype(np.int64, copy=False)
         good = (pk >= 0) & np.isfinite(replication_time_min) & np.isfinite(replication_time_min[pk])
         cols = np.flatnonzero(good).astype(np.int64, copy=False)
@@ -755,7 +866,7 @@ def simulate_replication(
         interorigin_dist_kb,
         time_stats,
         fork_directionality,
-        # NEW minimal extra return for post dens compilation (no mÃ—n arrays):
+        # NEW minimal extra return for post dens compilation (no m×n arrays):
         t, src, prev,
     )
 
@@ -776,7 +887,7 @@ def rsim(
     time_statsQ=False,
     time_stats_xtQ=False,
     time_stats_densQ=None,  # deprecated alias; kept for backwards compatibility
-    time_grid=np.arange(0.0, 1500.0 + 1.0, 1.0),
+    time_grid=_DEFAULT_TIME_GRID,
     max_rep_time=1200.0,
     seed=None,
     verbose=True,
@@ -792,6 +903,8 @@ def rsim(
     resolution=None,
     source=None,
     assumptions=None,
+    retain_rep_times_per_sim=True,
+    retain_inter_origin_distances=True,
 ):
     """Run replicate stochastic simulations and return averaged features.
 
@@ -836,6 +949,8 @@ def rsim(
         "initiation_rate": initiation_rate,
         "geometry": geometry,
         "resolution": resolution,
+        "retain_rep_times_per_sim": retain_rep_times_per_sim,
+        "retain_inter_origin_distances": retain_inter_origin_distances,
     }
 
     if source is not None:
@@ -906,6 +1021,8 @@ def rsim(
     initiation_rate = params["initiation_rate"]
     geometry = params["geometry"]
     resolution = params["resolution"]
+    retain_rep_times_per_sim = bool(params["retain_rep_times_per_sim"])
+    retain_inter_origin_distances = bool(params["retain_inter_origin_distances"])
 
     if time_stats_densQ is not None:
         time_stats_xtQ = bool(time_stats_densQ)
@@ -922,6 +1039,30 @@ def rsim(
         resolution_space = resolution_x
     if resolution_t is not None:
         resolution_time = resolution_t
+
+    resolution_space = float(resolution_space)
+    if not np.isfinite(resolution_space) or resolution_space <= 0:
+        raise ValueError("resolution_x must be a finite positive number.")
+    resolution_time = float(resolution_time)
+    if not np.isfinite(resolution_time) or resolution_time <= 0:
+        raise ValueError("resolution_t must be a finite positive number.")
+    stall_rate = float(stall_rate)
+    if not np.isfinite(stall_rate) or not 0.0 <= stall_rate <= 1.0:
+        raise ValueError("stall_rate must be a finite probability between 0 and 1.")
+    tau = float(tau)
+    if np.isnan(tau) or tau <= 0:
+        raise ValueError("tau must be positive or np.inf.")
+    if max_rep_time is not None:
+        max_rep_time = float(max_rep_time)
+        if not np.isfinite(max_rep_time) or max_rep_time <= 0:
+            raise ValueError("max_rep_time must be finite and positive, or None.")
+    if ffiring_nr is not None:
+        ffiring_nr = float(ffiring_nr)
+        if not np.isfinite(ffiring_nr) or ffiring_nr < 2:
+            raise ValueError("ffiring_nr must be finite and >= 2 when enabled.")
+        ffiring_recycle = float(ffiring_recycle)
+        if not np.isfinite(ffiring_recycle) or ffiring_recycle < 0:
+            raise ValueError("ffiring_recycle must be a finite non-negative number.")
 
     if geometry is not None:
         if not isinstance(geometry, str):
@@ -943,7 +1084,8 @@ def rsim(
         interval_kb=interval_kb,
     )
 
-    sim_number = int(sim_number)
+    sim_number = _validated_positive_integer(sim_number, "sim_number")
+    print_every = _validated_positive_integer(print_every, "print_every")
 
     ss = np.random.SeedSequence(seed) if seed is not None else np.random.SeedSequence()
     generators = [np.random.default_rng(s) for s in ss.spawn(sim_number)]
@@ -951,10 +1093,15 @@ def rsim(
     sum_rep_time = np.zeros(n, dtype=float)
     count_rep_time = np.zeros(n, dtype=np.int64)
 
-    rep_times_per_sim = np.empty((sim_number, n), dtype=float)
+    rep_times_per_sim = (
+        np.empty((sim_number, n), dtype=float)
+        if retain_rep_times_per_sim
+        else None
+    )
+    s_phase_durations_min = np.empty(sim_number, dtype=float)
     nr_oris = np.empty(sim_number, dtype=np.int64)
 
-    all_iods = []
+    all_iods = [] if retain_inter_origin_distances else None
     fire_counts = np.zeros(n, dtype=np.int64)
 
     sum_fdir = np.zeros(n, dtype=float)
@@ -962,9 +1109,8 @@ def rsim(
 
     need_time_grid = time_statsQ or time_stats_xtQ
     if need_time_grid:
-        if time_grid is None:
-            raise ValueError("time_statsQ/time_stats_xtQ require a time_grid array.")
-        time_grid = np.asarray(time_grid, dtype=float)
+        time_grid = _validated_time_grid(time_grid, required=True)
+        assert time_grid is not None
         m = int(time_grid.size)
         dt_grid_out = float(time_grid[1] - time_grid[0]) if m >= 2 else 1.0
         sum_replicated_fraction = np.zeros(m, float)
@@ -975,6 +1121,7 @@ def rsim(
         sum_replicated_fraction = None
 
     if time_statsQ:
+        assert m is not None
         sum_total_forks = np.zeros(m, float)
         sum_active_forks = np.zeros(m, float)
         sum_stalled_forks = np.zeros(m, float)
@@ -989,13 +1136,29 @@ def rsim(
 
     # --- allocate space-time accumulators (disk-backed) ---
     if time_stats_xtQ:
+        assert m is not None
+        assert time_grid is not None
         if dens_memmap_dir is None:
             dens_memmap_dir = tempfile.gettempdir()
         os.makedirs(dens_memmap_dir, exist_ok=True)
 
+        dens_block_n = _validated_positive_integer(dens_block_n, "dens_block_n")
+
         def _mm(name, shape, dtype):
             path = os.path.join(dens_memmap_dir, f"{name}_{int(time.time()*1e6)}.dat")
-            return np.memmap(path, mode="w+", dtype=dtype, shape=shape)
+            array = np.memmap(path, mode="w+", dtype=dtype, shape=shape)
+            # Returned transposed views retain this root as their base. The
+            # finalizer therefore runs only after the last output view is gone.
+            mapping = getattr(array, "_mmap", None)
+            if mapping is None:
+                raise RuntimeError("Could not attach cleanup to the density memmap.")
+            weakref.finalize(
+                array,
+                _close_and_unlink_memmap,
+                mapping,
+                path,
+            )
+            return array
 
         # store sums as float32 (you can change to uint16 if sim_number <= 65535)
         sum_replicated_fraction_xt = _mm("sum_replicated_fraction_xt", (m, n), np.float32)
@@ -1010,9 +1173,6 @@ def rsim(
         sum_right_moving_fork_density_xt[:] = 0.0
         sum_left_moving_fork_density_xt[:] = 0.0
 
-        dens_block_n = int(dens_block_n)
-        if dens_block_n <= 0:
-            raise ValueError("dens_block_n must be a positive integer.")
     else:
         sum_replicated_fraction_xt = None
         sum_initiation_events_xt = None
@@ -1021,6 +1181,29 @@ def rsim(
         sum_left_moving_fork_density_xt = None
 
     start_time = time.time()
+
+    prepared_firing_field = _as_rate_field(
+        firing_rate,
+        "firing_rate",
+        n_bins=n,
+    )
+    firing_kind, firing_values, _ = prepared_firing_field
+    prepared_inverse_speed_field = _as_inverse_speed_field(
+        fork_speed,
+        "fork_speed",
+        n_bins=n,
+    )
+    if firing_kind == "t":
+        firing_cumulative_hazard = np.cumsum(
+            firing_values * resolution_time,
+        )
+    elif firing_kind == "xt":
+        firing_cumulative_hazard = np.cumsum(
+            firing_values * resolution_time,
+            axis=0,
+        )
+    else:
+        firing_cumulative_hazard = None
 
     for i, g in enumerate(generators, start=1):
         fired_idx, _, _, rep_time, iod, time_stats, fdir, t_fire, src, prev = simulate_replication(
@@ -1045,16 +1228,21 @@ def rsim(
             n_bins=n,
             genome_length=None,
             interval_kb=None,
+            _firing_cumulative_hazard=firing_cumulative_hazard,
+            _prepared_firing_field=prepared_firing_field,
+            _prepared_inverse_speed_field=prepared_inverse_speed_field,
         )
 
-        rep_times_per_sim[i - 1, :] = rep_time
+        if rep_times_per_sim is not None:
+            rep_times_per_sim[i - 1, :] = rep_time
+        s_phase_durations_min[i - 1] = np.max(rep_time)
         nr_oris[i - 1] = int(fired_idx.size)
 
         finite_mask = np.isfinite(rep_time)
         sum_rep_time[finite_mask] += rep_time[finite_mask]
         count_rep_time[finite_mask] += 1
 
-        if iod.size:
+        if all_iods is not None and iod.size:
             all_iods.append(iod)
         if fired_idx.size:
             fire_counts[fired_idx] += 1
@@ -1064,6 +1252,7 @@ def rsim(
 
         # --- 1D replicated-fraction time series (RAM) ---
         if time_grid is not None:
+            assert sum_replicated_fraction is not None
             rep_sorted = np.sort(rep_time[finite_mask])
             if rep_sorted.size:
                 sum_replicated_fraction += (
@@ -1072,6 +1261,10 @@ def rsim(
 
         # --- 1D time series accumulate (RAM) ---
         if time_statsQ and time_stats is not None:
+            assert sum_total_forks is not None
+            assert sum_active_forks is not None
+            assert sum_stalled_forks is not None
+            assert sum_firing_factors is not None
             sum_total_forks += time_stats["total_forks"]
             sum_active_forks += time_stats["active_forks"]
             sum_stalled_forks += time_stats["stalled_forks"]
@@ -1082,6 +1275,12 @@ def rsim(
 
         # --- 2D space-time stats accumulate (disk memmap, block-by-block, no giant temporaries) ---
         if time_stats_xtQ:
+            assert time_grid is not None
+            assert sum_replicated_fraction_xt is not None
+            assert sum_initiation_events_xt is not None
+            assert sum_coalescence_events_xt is not None
+            assert sum_right_moving_fork_density_xt is not None
+            assert sum_left_moving_fork_density_xt is not None
             t_max_grid = float(time_grid[-1])
 
             # (a) replicated fraction in (t,x)
@@ -1153,10 +1352,17 @@ def rsim(
                         if np.any(Lm):
                             _range_add(sum_left_moving_fork_density_xt, cols0[Lm], j0[Lm], j1[Lm])
 
-        if verbose and (i % int(print_every) == 0 or i == int(sim_number)):
+        if verbose and (i % print_every == 0 or i == sim_number):
             etaf(it=i, maxiter=int(sim_number), start_time=start_time, label="rsim")
 
-    all_iods_kb = np.concatenate(all_iods) if all_iods else np.array([], dtype=float)
+    if all_iods is None:
+        all_iods_kb = None
+    else:
+        all_iods_kb = (
+            np.concatenate(all_iods)
+            if all_iods
+            else np.array([], dtype=float)
+        )
 
     avg_rep_time_min = np.full(n, np.inf, dtype=float)
     nonzero = count_rep_time > 0
@@ -1166,7 +1372,6 @@ def rsim(
     fd_ok = count_fdir > 0
     fork_directionality[fd_ok] = sum_fdir[fd_ok] / count_fdir[fd_ok].astype(float)
 
-    s_phase_durations_min = rep_times_per_sim.max(axis=1)
     efficiencies = fire_counts.astype(float) / float(sim_number)
 
     avg_replicated_fraction = (
@@ -1177,6 +1382,10 @@ def rsim(
 
     # --- finalise outputs ---
     if time_statsQ:
+        assert sum_total_forks is not None
+        assert sum_active_forks is not None
+        assert sum_stalled_forks is not None
+        assert sum_firing_factors is not None
         invS = 1.0 / float(sim_number)
         avg_total_forks = sum_total_forks * invS
         avg_active_forks = sum_active_forks * invS
@@ -1189,6 +1398,12 @@ def rsim(
         avg_firing_factors = None
 
     if time_stats_xtQ:
+        assert time_grid is not None
+        assert sum_replicated_fraction_xt is not None
+        assert sum_initiation_events_xt is not None
+        assert sum_coalescence_events_xt is not None
+        assert sum_right_moving_fork_density_xt is not None
+        assert sum_left_moving_fork_density_xt is not None
         post_start = time.time()
         post_blocks = (n + dens_block_n - 1) // dens_block_n
         for j, x0 in enumerate(range(0, n, dens_block_n), start=1):
@@ -1219,13 +1434,14 @@ def rsim(
         avg_right_moving_fork_density_xt = None
         avg_left_moving_fork_density_xt = None
 
+    nr_oris_list = nr_oris.tolist()
     return dict(
         replication_timing=avg_rep_time_min,
         rep_times_per_sim=rep_times_per_sim,
         s_phase_duration=s_phase_durations_min,
         completion_time=s_phase_durations_min,
-        num_oris=nr_oris.tolist(),
-        num_origins=nr_oris.tolist(),
+        num_oris=nr_oris_list,
+        num_origins=nr_oris_list,
         inter_origin_distances=all_iods_kb,
         inter_origin_distance=all_iods_kb,
         efficiency=efficiencies,
@@ -1290,6 +1506,14 @@ _RSIM_INPUT_DESCRIPTIONS = {
         "accumulation."
     ),
     "dens_memmap_dir": "Directory for temporary memmap files used by space-time fields.",
+    "retain_rep_times_per_sim": (
+        "Retain the full (sim_number, n) replication-time matrix. Disable to "
+        "reduce memory when only ensemble summaries are needed."
+    ),
+    "retain_inter_origin_distances": (
+        "Retain pooled per-realization inter-origin distances. Disable to "
+        "avoid storing the pooled distribution."
+    ),
     "n_bins": "Number of genomic bins when no spatial kinetic input is supplied.",
     "genome_length": "Genome length in kb, used with the spatial resolution to infer n_bins.",
     "interval_kb": (
@@ -1320,8 +1544,8 @@ _RSIM_OUTPUT_RECORDS = [
     },
     {
         "output": "rep_times_per_sim",
-        "shape/type": "(sim_number, n) array",
-        "returned when": "always",
+        "shape/type": "(sim_number, n) array or None",
+        "returned when": "retain_rep_times_per_sim=True",
         "description": "Full replication-time profile for every simulated S phase.",
     },
     {
@@ -1350,8 +1574,8 @@ _RSIM_OUTPUT_RECORDS = [
     },
     {
         "output": "inter_origin_distances",
-        "shape/type": "1D array",
-        "returned when": "always",
+        "shape/type": "1D array or None",
+        "returned when": "retain_inter_origin_distances=True",
         "description": (
             "Pooled distances between neighboring fired origins; alias of "
             "inter_origin_distance."
@@ -1359,8 +1583,8 @@ _RSIM_OUTPUT_RECORDS = [
     },
     {
         "output": "inter_origin_distance",
-        "shape/type": "1D array",
-        "returned when": "always",
+        "shape/type": "1D array or None",
+        "returned when": "retain_inter_origin_distances=True",
         "description": "Pooled distances between neighboring fired origins.",
     },
     {
@@ -1529,5 +1753,5 @@ def _rsim_output():
     )
 
 
-rsim.input = _rsim_input
-rsim.output = _rsim_output
+rsim.input = _rsim_input  # type: ignore[reportFunctionMemberAccess]
+rsim.output = _rsim_output  # type: ignore[reportFunctionMemberAccess]

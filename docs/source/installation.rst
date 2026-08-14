@@ -43,16 +43,28 @@ Notebooks
 
 Start with ``examples/0-quickstart.ipynb``.
 
-App
----
+NiceGUI Interface Prototype
+---------------------------
 
 .. code-block:: bash
 
    pip install -r app/requirements.txt
-   streamlit run app/streamlit_app.py
+   python -m app
 
-The app includes Overview, Data Management, Mapping, Simulation, Plotting,
-Cached Files, and Resources.
+The interface prototype includes Overview, Data Management, Mapping,
+Simulation, Plotting, Cached Files, and Resources. Scientific actions are not
+connected yet.
+
+Preserved Streamlit App
+-----------------------
+
+.. code-block:: bash
+
+   pip install -r app_streamlit/requirements.txt
+   streamlit run app_streamlit/streamlit_app.py
+
+The existing Streamlit workflows remain available during the interface
+transition.
 
 Docs
 ----

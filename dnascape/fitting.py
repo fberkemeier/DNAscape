@@ -1,7 +1,7 @@
 """Fitting algorithms and fitting-oriented helpers."""
 
-import os
 import math
+import os
 import time
 
 import numpy as np
@@ -11,7 +11,11 @@ from scipy.special import gamma
 
 from .constants import mapt
 from .io import _resolve_data_path, savecsv
-from .mapping import _normalise_resolution_x, map_firing_timing, map_replicated_fraction_xt
+from .mapping import (
+    _normalise_resolution_x,
+    map_firing_timing,
+    map_replicated_fraction_xt,
+)
 from .simulation import rsim
 from .utils import etaferr, mean_squared_error, smoothf
 
@@ -344,7 +348,7 @@ def map_timing_firing(
     #np.savetxt(f"data/fit_error/mse_chr{chr_number}.txt", mse_list, fmt="%.6f")
 
     if save_errQ:
-        savecsv(arr=mse_list, chr_number=chr_number, stitle=f'fit_error', outpath="fit_error")
+        savecsv(arr=mse_list, chr_number=chr_number, stitle="fit_error", outpath="fit_error")
         
     return x
 
@@ -2577,7 +2581,6 @@ def _fit_exponential_speed_shape(
         raise ValueError("time_grid must be a non-empty one-dimensional array.")
 
     n_positions = T.size
-    n_time = time_axis.size
     x_axis = np.arange(n_positions, dtype=float) * float(resolution)
     t_norm = _normalised_fit_axis(time_axis)
     x_norm = _normalised_fit_axis(x_axis)
@@ -4113,7 +4116,18 @@ def _fit_crossed_spacetime_speed(
         s_low, s_high = space_bounds(q)
         candidate = np.clip(np.asarray(space, dtype=float) * ratio_full ** space_step, s_low, s_high)
         if smooth_window is not None and smooth_window > 2 and candidate.size > 2:
-            candidate = np.clip(smoothf(candidate, window=smooth_window), s_low, s_high)
+            # ``smoothf`` uses zero-padded convolution. Dividing by the
+            # smoothed support removes edge attenuation, which otherwise
+            # dominates short regions when the default window spans them.
+            smoothed = smoothf(candidate, window=smooth_window)
+            support = smoothf(np.ones_like(candidate), window=smooth_window)
+            candidate = np.divide(
+                smoothed,
+                support,
+                out=candidate.copy(),
+                where=support > 0,
+            )
+            candidate = np.clip(candidate, s_low, s_high)
         return candidate
 
     def temporal_candidates(space, q):

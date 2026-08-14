@@ -1,14 +1,15 @@
 """Data IO helpers and path resolution for DNAscape."""
 
-from pathlib import Path
-from collections import defaultdict
-from dataclasses import dataclass
-from typing import Optional
+import csv
 import gzip
 import re
 import shutil
 import tempfile
 import time
+from collections import defaultdict
+from dataclasses import dataclass
+from pathlib import Path
+from typing import Optional
 
 import numpy as np
 import pandas as pd
@@ -36,19 +37,6 @@ def _resolve_data_path(relative_path, for_write=False):
         if cand.exists():
             return cand
     return Path('data') / rel
-
-for folder in (
-    Path("figures"),
-    Path("data/firing_rate"),
-    Path("data/replication_timing"),
-    Path("data/fork_directionality"),
-    Path("data/efficiency"),
-    Path("data/output"),
-    Path("data/fit_error"),
-    Path("data/region"),
-    Path("data/other"),
-):
-    folder.mkdir(parents=True, exist_ok=True)
 
 def load(d='replication_timing', cell_line='H1', chr_number=1, example='hESC'):
     if d != 'example':
@@ -719,29 +707,52 @@ def _bin_bigwig_chromosome(source, chromosome, start, end, bin_size, aggregation
         if end_bp <= start_bp:
             raise ValueError("Track interval end must be greater than start.")
         end_bp = min(end_bp, int(chrom_sizes[chromosome]))
+        if end_bp <= start_bp:
+            raise ValueError("Track interval does not overlap the selected chromosome.")
 
         table = _empty_track_bins(chromosome, start_bp, end_bp, bin_size, value_name)
         starts = table["start_bp"].to_numpy(dtype=np.int64)
         ends = table["end_bp"].to_numpy(dtype=np.int64)
 
+        def exact_bin_stats(stat):
+            """Query fixed-width bins without stretching the final partial bin."""
+            values = np.full(starts.size, np.nan, dtype=float)
+            widths = ends - starts
+            full_count = int(np.count_nonzero(widths == int(bin_size)))
+            if full_count:
+                full_end = int(starts[0] + full_count * int(bin_size))
+                values[:full_count] = np.asarray(
+                    handle.stats(
+                        chromosome,
+                        int(starts[0]),
+                        full_end,
+                        nBins=full_count,
+                        type=stat,
+                        exact=True,
+                    ),
+                    dtype=float,
+                )
+            for index in range(full_count, starts.size):
+                value = handle.stats(
+                    chromosome,
+                    int(starts[index]),
+                    int(ends[index]),
+                    nBins=1,
+                    type=stat,
+                    exact=True,
+                )[0]
+                values[index] = np.nan if value is None else float(value)
+            return values
+
         if aggregation == "sum":
-            means = np.asarray(
-                handle.stats(chromosome, start_bp, end_bp, nBins=starts.size, type="mean"),
-                dtype=float,
-            )
-            coverage = np.asarray(
-                handle.stats(chromosome, start_bp, end_bp, nBins=starts.size, type="coverage"),
-                dtype=float,
-            )
+            means = exact_bin_stats("mean")
+            coverage = exact_bin_stats("coverage")
             values = means * np.nan_to_num(coverage, nan=0.0) * (ends - starts)
         else:
             stat = aggregation
             if stat not in {"mean", "min", "max", "coverage", "std"}:
                 raise ValueError(f"Unsupported BigWig aggregation {aggregation!r}.")
-            values = np.asarray(
-                handle.stats(chromosome, start_bp, end_bp, nBins=starts.size, type=stat),
-                dtype=float,
-            )
+            values = exact_bin_stats(stat)
 
     table[value_name] = values
     return table
@@ -1031,16 +1042,32 @@ def _coerce_rdata_values(values, data_form="auto"):
     raise AssertionError(f"Unhandled rdata form {form!r}.")
 
 
-def _read_rdata_table(path, source_format, encoding="utf-8", input_sep=None):
+def _sniff_rdata_separator(path, source_format, encoding="utf-8"):
+    """Return an explicit delimiter while retaining legacy delimiter detection."""
+    default = {"csv": ",", "tsv": "\t"}.get(source_format)
+    opener = gzip.open if str(path).lower().endswith(".gz") else open
+    try:
+        with opener(path, "rt", encoding=encoding, errors="replace", newline="") as handle:
+            sample = handle.read(16_384)
+        if not sample:
+            return default
+        return csv.Sniffer().sniff(sample, delimiters=",\t;|").delimiter
+    except (csv.Error, OSError, UnicodeError):
+        return default
+
+
+def _read_rdata_table(
+    path,
+    source_format,
+    encoding="utf-8",
+    input_sep=None,
+    usecols=None,
+):
     if input_sep is not None:
         sep = input_sep
-    elif source_format == "csv":
-        sep = None
-    elif source_format == "tsv":
-        sep = "\t"
     else:
-        sep = None
-    kwargs = {"encoding": encoding}
+        sep = _sniff_rdata_separator(path, source_format, encoding=encoding)
+    kwargs = {"encoding": encoding, "usecols": usecols}
     if sep is None:
         kwargs.update({"sep": None, "engine": "python"})
     else:
@@ -1088,8 +1115,22 @@ def _rdata_payload_from_source(
     if isinstance(source, (str, Path)):
         source_path = Path(source).expanduser()
         inferred_format = _normalise_rdata_format(source_format, path=source_path)
-        if inferred_format in {"csv", "tsv"}:
-            table = _read_rdata_table(source_path, inferred_format, encoding=encoding, input_sep=input_sep)
+        selected_column = chromosome if chromosome is not None else value_column
+        if inferred_format in {"csv", "tsv"} or (
+            inferred_format == "txt" and selected_column is not None
+        ):
+            usecols = (
+                (lambda column: column == selected_column)
+                if selected_column is not None
+                else None
+            )
+            table = _read_rdata_table(
+                source_path,
+                inferred_format,
+                encoding=encoding,
+                input_sep=input_sep,
+                usecols=usecols,
+            )
             if chromosome is not None:
                 if chromosome not in table.columns:
                     raise KeyError(f"Column {chromosome!r} not found in {source_path}.")

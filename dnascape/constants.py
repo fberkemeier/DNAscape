@@ -19,9 +19,9 @@ class NameMapping:
     
     def __getitem__(self, key):
         key = str(key)
-        if key in self.long_from_short:   # short â†’ long
+        if key in self.long_from_short:   # short → long
             return self.long_from_short[key]
-        if key in self.short_from_long:   # long â†’ long (canonical)
+        if key in self.short_from_long:   # long → long (canonical)
             return key
         raise KeyError(f"Unknown key: {key}")
 

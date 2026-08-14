@@ -1,18 +1,17 @@
-"""Shared layout helpers for the DNAscape Streamlit prototype."""
+"""Shared layout helpers for the DNAscape Streamlit application."""
 
 import base64
-from datetime import datetime
 import html
-import inspect
 import importlib.metadata
 import json
 import re
 import sys
 import time
+from datetime import datetime
+from functools import lru_cache
 from pathlib import Path
 
 import streamlit as st
-
 
 APP_DIR = Path(__file__).resolve().parent
 ROOT_DIR = APP_DIR.parent
@@ -30,12 +29,14 @@ ACTIVE_PAGE_KEY = "dnascape_active_page"
 LAST_QUERY_PAGE_KEY = "dnascape_last_query_page"
 GENERATED_ARTIFACTS_KEY = "dnascape_generated_artifacts"
 GENERATED_CACHE_LIMIT_KEY = "dnascape_generated_cache_limit"
+GENERATED_CACHE_BYTES_LIMIT_KEY = "dnascape_generated_cache_bytes_limit"
 GENERATED_CACHE_KEEP_RAW_KEY = "dnascape_generated_cache_keep_raw"
 GENERATED_CACHE_KEEP_PLOTS_KEY = "dnascape_generated_cache_keep_plots"
-PERSISTENT_CONTROL_KEYS_KEY = "dnascape_persistent_control_keys"
-PERSISTENT_CONTROL_KEY_OWNERS_KEY = "dnascape_persistent_control_key_owners"
 DEFAULT_GENERATED_CACHE_LIMIT = 30
 MAX_GENERATED_CACHE_LIMIT = 200
+DEFAULT_GENERATED_CACHE_BYTES_LIMIT = 256 * 1024 * 1024
+MIN_GENERATED_CACHE_BYTES_LIMIT = 8 * 1024 * 1024
+MAX_GENERATED_CACHE_BYTES_LIMIT = 8 * 1024 * 1024 * 1024
 FIGURE_EXPORT_MIME = {
     "png": "image/png",
     "pdf": "application/pdf",
@@ -101,6 +102,38 @@ NAME_TOKEN_ABBREVIATIONS = {
     "region": "reg",
     "management": "mgmt",
 }
+
+
+def _coerce_int(value: object, default: int = 0) -> int:
+    """Convert simple scalar state safely without trusting arbitrary objects."""
+
+    if not isinstance(value, (str, bytes, bytearray, int, float)):
+        return int(default)
+    try:
+        return int(value)
+    except (TypeError, ValueError, OverflowError):
+        return int(default)
+
+
+def _coerce_float(value: object, default: float = 0.0) -> float:
+    """Convert simple scalar state safely without invoking custom protocols."""
+
+    if not isinstance(value, (str, bytes, bytearray, int, float)):
+        return float(default)
+    try:
+        return float(value)
+    except (TypeError, ValueError, OverflowError):
+        return float(default)
+
+
+def _coerce_bytes(value: object) -> bytes | None:
+    """Return immutable bytes for supported payload containers only."""
+
+    if isinstance(value, bytes):
+        return value
+    if isinstance(value, (bytearray, memoryview)):
+        return bytes(value)
+    return None
 NAV_ITEMS = (
     ("overview", "Overview", "/"),
     ("data-management", "Data Management", "/Data_Management"),
@@ -142,21 +175,6 @@ THEME_LABELS = {
     "dark": "Dark",
     "system": "System",
 }
-PERSISTENT_CONTROL_WIDGETS = (
-    "selectbox",
-    "checkbox",
-    "toggle",
-    "number_input",
-    "slider",
-    "text_input",
-    "text_area",
-    "color_picker",
-    "radio",
-    "multiselect",
-)
-_PERSISTENT_CONTROL_WIDGETS_INSTALLED = False
-
-
 def package_version() -> str:
     """Read the installed package version, falling back to pyproject.toml."""
     try:
@@ -201,201 +219,13 @@ def active_page_slug(default: str = "overview") -> str:
     return normalize_page(st.session_state[ACTIVE_PAGE_KEY], default=default)
 
 
-def active_page_label(default: str = "overview") -> str:
-    """Return the display label for the active router page."""
-    return PAGE_LABELS[active_page_slug(default)]
-
-
 def set_active_page(slug: str) -> None:
     """Select a page in the single-script Streamlit router."""
     st.session_state[ACTIVE_PAGE_KEY] = normalize_page(slug)
 
 
-def persistent_control_keys() -> set[str]:
-    """Return the session-wide set of control widget keys to preserve."""
-    keys = st.session_state.get(PERSISTENT_CONTROL_KEYS_KEY)
-    if not isinstance(keys, (set, list, tuple)):
-        keys = set()
-    return {str(key) for key in keys if str(key)}
-
-
-def persistent_control_key_owners() -> dict[str, str]:
-    """Return the page owner for each persistent control key."""
-    owners = st.session_state.get(PERSISTENT_CONTROL_KEY_OWNERS_KEY)
-    if not isinstance(owners, dict):
-        return {}
-    return {
-        str(key): str(owner)
-        for key, owner in owners.items()
-        if str(key) and str(owner)
-    }
-
-
-def current_callsite_owner() -> str:
-    """Return the app-relative file path for the first non-shell caller."""
-    frame = inspect.currentframe()
-    frame = frame.f_back if frame is not None else None
-    app_shell_path = Path(__file__).resolve()
-    while frame is not None:
-        filename = Path(frame.f_code.co_filename).resolve()
-        if filename != app_shell_path:
-            try:
-                relative = filename.relative_to(ROOT_DIR)
-            except ValueError:
-                relative = Path(filename.name)
-            return Path(str(relative)).with_suffix("").as_posix()
-        frame = frame.f_back
-    return "app"
-
-
-def register_persistent_control_key(key: object, owner: str | None = None) -> str:
-    """Remember a widget key so Streamlit keeps it across page navigation."""
-    key_text = str(key)
-    keys = persistent_control_keys()
-    if key_text not in keys:
-        keys.add(key_text)
-        st.session_state[PERSISTENT_CONTROL_KEYS_KEY] = sorted(keys)
-
-    owner_text = str(owner or current_callsite_owner())
-    owners = persistent_control_key_owners()
-    if owners.get(key_text) != owner_text:
-        owners[key_text] = owner_text
-        st.session_state[PERSISTENT_CONTROL_KEY_OWNERS_KEY] = owners
-    return key_text
-
-
-def preserve_persistent_control_state(skip_owner: str | None = None) -> None:
-    """Interrupt Streamlit widget cleanup for DNAscape control keys."""
-    owners = persistent_control_key_owners()
-    for key in persistent_control_keys():
-        if skip_owner is not None and owners.get(key) == skip_owner:
-            continue
-        if key in st.session_state:
-            st.session_state[key] = st.session_state[key]
-
-
-def current_widget_callsite() -> tuple[str, int]:
-    """Return the owner path and line number for a widget caller."""
-    frame = inspect.currentframe()
-    frame = frame.f_back if frame is not None else None
-    while frame is not None:
-        filename = Path(frame.f_code.co_filename).resolve()
-        if filename != Path(__file__).resolve():
-            try:
-                relative = filename.relative_to(ROOT_DIR)
-            except ValueError:
-                relative = Path(filename.name)
-            return Path(str(relative)).with_suffix("").as_posix(), frame.f_lineno
-        frame = frame.f_back
-    return "app", 0
-
-
-def generated_control_key(widget_name: str, label: object, owner: str, line_number: int) -> str:
-    """Build a stable key for an unkeyed control from its page callsite."""
-    label_text = str(label or widget_name)
-    return safe_name_stem(
-        "dnascape",
-        "control",
-        owner,
-        widget_name,
-        line_number,
-        label_text,
-    )[:240]
-
-
-def widget_label_from_call(args: tuple[object, ...], kwargs: dict[str, object]) -> object:
-    """Return a widget label from positional or keyword arguments."""
-    if "label" in kwargs:
-        return kwargs["label"]
-    return args[0] if args else ""
-
-
-def widget_options_from_call(args: tuple[object, ...], kwargs: dict[str, object]) -> list[object] | None:
-    """Return select-like widget options when they are easy to inspect."""
-    options = kwargs.get("options")
-    if options is None and len(args) >= 2:
-        options = args[1]
-    if options is None:
-        return None
-    try:
-        return list(options)
-    except TypeError:
-        return None
-
-
-def sanitize_persistent_widget_state(
-    widget_name: str,
-    key: str,
-    args: tuple[object, ...],
-    kwargs: dict[str, object],
-) -> None:
-    """Reset stale preserved values when dynamic widget constraints change."""
-    if key not in st.session_state:
-        return
-
-    value = st.session_state[key]
-    if widget_name in {"selectbox", "radio"}:
-        options = widget_options_from_call(args, kwargs)
-        if options is not None and value not in options:
-            st.session_state.pop(key, None)
-        return
-
-    if widget_name == "multiselect":
-        options = widget_options_from_call(args, kwargs)
-        if options is not None and isinstance(value, (list, tuple, set)):
-            allowed = set(options)
-            st.session_state[key] = [
-                item for item in value if item in allowed
-            ]
-        return
-
-    if widget_name in {"number_input", "slider"} and isinstance(value, (int, float)):
-        min_value = kwargs.get("min_value")
-        max_value = kwargs.get("max_value")
-        if isinstance(min_value, (int, float)) and value < min_value:
-            st.session_state[key] = min_value
-        if isinstance(max_value, (int, float)) and value > max_value:
-            st.session_state[key] = max_value
-
-
-def install_persistent_control_widgets() -> None:
-    """Patch Streamlit controls so DNAscape settings persist for the session."""
-    global _PERSISTENT_CONTROL_WIDGETS_INSTALLED
-
-    if _PERSISTENT_CONTROL_WIDGETS_INSTALLED:
-        return
-
-    for widget_name in PERSISTENT_CONTROL_WIDGETS:
-        original_widget = getattr(st, widget_name, None)
-        if original_widget is None:
-            continue
-
-        def make_widget_wrapper(name, original):
-            def wrapped_widget(*args, **kwargs):
-                owner, line_number = current_widget_callsite()
-                key = kwargs.get("key")
-                if key is None:
-                    key = generated_control_key(
-                        name,
-                        widget_label_from_call(args, kwargs),
-                        owner,
-                        line_number,
-                    )
-                    kwargs["key"] = key
-                key_text = register_persistent_control_key(key, owner)
-                sanitize_persistent_widget_state(name, key_text, args, kwargs)
-                return original(*args, **kwargs)
-
-            return wrapped_widget
-
-        setattr(st, widget_name, make_widget_wrapper(widget_name, original_widget))
-
-    _PERSISTENT_CONTROL_WIDGETS_INSTALLED = True
-
-
 def configure_page(title: str) -> None:
     """Apply Streamlit page settings and shared visual styling."""
-    page_owner = current_callsite_owner()
     st.set_page_config(
         page_title=title,
         page_icon=TAB_LOGO_PATH,
@@ -404,11 +234,9 @@ def configure_page(title: str) -> None:
         menu_items={
             "Get help": DOCS_URL,
             "Report a bug": f"{GITHUB_URL}/issues",
-            "About": "DNAscape prototype workspace.",
+            "About": "DNAscape tools for quantitative DNA replication analysis.",
         },
     )
-    preserve_persistent_control_state(skip_owner=page_owner)
-    install_persistent_control_widgets()
     apply_style()
     render_theme_toggle()
 
@@ -471,10 +299,7 @@ def compact_name_stem(*parts: object, stamp: str | None = None) -> str:
 
 def clamp_generated_cache_limit(value: object) -> int:
     """Return a bounded generated-file cache limit."""
-    try:
-        limit = int(value)
-    except (TypeError, ValueError):
-        limit = DEFAULT_GENERATED_CACHE_LIMIT
+    limit = _coerce_int(value, DEFAULT_GENERATED_CACHE_LIMIT)
     return max(1, min(MAX_GENERATED_CACHE_LIMIT, limit))
 
 
@@ -495,9 +320,41 @@ def set_generated_cache_limit(limit: object) -> int:
     return bounded_limit
 
 
+def clamp_generated_cache_bytes_limit(value: object) -> int:
+    """Return a bounded generated-artifact byte budget."""
+
+    limit = _coerce_int(value, DEFAULT_GENERATED_CACHE_BYTES_LIMIT)
+    return max(
+        MIN_GENERATED_CACHE_BYTES_LIMIT,
+        min(MAX_GENERATED_CACHE_BYTES_LIMIT, limit),
+    )
+
+
+def generated_cache_bytes_limit() -> int:
+    """Read the per-session byte budget for generated artifacts."""
+
+    limit = clamp_generated_cache_bytes_limit(
+        st.session_state.get(
+            GENERATED_CACHE_BYTES_LIMIT_KEY,
+            DEFAULT_GENERATED_CACHE_BYTES_LIMIT,
+        )
+    )
+    st.session_state[GENERATED_CACHE_BYTES_LIMIT_KEY] = limit
+    return limit
+
+
+def set_generated_cache_bytes_limit(limit: object) -> int:
+    """Update the generated-artifact byte budget and prune oldest entries."""
+
+    bounded_limit = clamp_generated_cache_bytes_limit(limit)
+    st.session_state[GENERATED_CACHE_BYTES_LIMIT_KEY] = bounded_limit
+    prune_generated_artifacts(byte_limit=bounded_limit)
+    return bounded_limit
+
+
 def generated_cache_keep_raw() -> bool:
     """Return whether newly generated raw outputs should be cached."""
-    value = st.session_state.get(GENERATED_CACHE_KEEP_RAW_KEY, True)
+    value = st.session_state.get(GENERATED_CACHE_KEEP_RAW_KEY, False)
     keep_raw = bool(value)
     st.session_state[GENERATED_CACHE_KEEP_RAW_KEY] = keep_raw
     return keep_raw
@@ -535,8 +392,12 @@ def generated_artifacts() -> list[dict[str, object]]:
     return list(st.session_state.get(GENERATED_ARTIFACTS_KEY, []))
 
 
-def prune_generated_artifacts(limit: int | None = None) -> None:
-    """Keep the newest generated artifacts within the configured limit."""
+def prune_generated_artifacts(
+    limit: int | None = None,
+    *,
+    byte_limit: int | None = None,
+) -> None:
+    """Keep newest artifacts within both count and retained-byte budgets."""
     artifacts = st.session_state.get(GENERATED_ARTIFACTS_KEY)
     if not isinstance(artifacts, list):
         st.session_state[GENERATED_ARTIFACTS_KEY] = []
@@ -545,6 +406,21 @@ def prune_generated_artifacts(limit: int | None = None) -> None:
     bounded_limit = generated_cache_limit() if limit is None else clamp_generated_cache_limit(limit)
     if len(artifacts) > bounded_limit:
         del artifacts[: len(artifacts) - bounded_limit]
+    bounded_bytes = (
+        generated_cache_bytes_limit()
+        if byte_limit is None
+        else clamp_generated_cache_bytes_limit(byte_limit)
+    )
+    retained_bytes = sum(generated_artifact_size(artifact) for artifact in artifacts)
+    while artifacts and retained_bytes > bounded_bytes:
+        removed = artifacts.pop(0)
+        retained_bytes -= generated_artifact_size(removed)
+
+
+def generated_cache_usage() -> int:
+    """Return bytes currently retained by generated artifact variants."""
+
+    return sum(generated_artifact_size(item) for item in generated_artifacts())
 
 
 def clear_generated_artifacts() -> None:
@@ -565,10 +441,7 @@ def remove_generated_artifact(artifact_id: object) -> None:
 
 def artifact_size_label(size_bytes: object) -> str:
     """Render a compact byte size label."""
-    try:
-        size = float(size_bytes)
-    except (TypeError, ValueError):
-        size = 0.0
+    size = _coerce_float(size_bytes)
 
     for unit in ("B", "KB", "MB", "GB"):
         if size < 1024 or unit == "GB":
@@ -623,10 +496,9 @@ def normalize_artifact_variants(
     normalized: dict[str, dict[str, object]] = {}
     if variants:
         for label, variant in variants.items():
-            payload = variant.get("payload")
-            if payload is None:
+            variant_payload = _coerce_bytes(variant.get("payload"))
+            if variant_payload is None:
                 continue
-            variant_payload = bytes(payload)
             variant_label = str(variant.get("label") or label).strip() or "File"
             normalized[variant_label] = {
                 "label": variant_label,
@@ -653,12 +525,21 @@ def generated_artifact_size(artifact: dict[str, object]) -> int:
     """Return total bytes retained for one generated artifact."""
     variants = artifact.get("variants")
     if isinstance(variants, dict) and variants:
-        return sum(
-            int(variant.get("size", len(variant.get("payload", b""))))
-            for variant in variants.values()
-            if isinstance(variant, dict)
-        )
-    return int(artifact.get("size", 0))
+        total = 0
+        for variant in variants.values():
+            if not isinstance(variant, dict):
+                continue
+            payload = _coerce_bytes(variant.get("payload"))
+            total += (
+                len(payload)
+                if payload is not None
+                else max(0, _coerce_int(variant.get("size", 0)))
+            )
+        return total
+    payload = _coerce_bytes(artifact.get("payload"))
+    if payload is not None:
+        return len(payload)
+    return max(0, _coerce_int(artifact.get("size", 0)))
 
 
 def register_generated_artifact(
@@ -690,7 +571,9 @@ def register_generated_artifact(
         return
 
     first_variant = next(iter(normalized_variants.values()))
-    payload_bytes = bytes(first_variant["payload"])
+    payload_bytes = _coerce_bytes(first_variant["payload"])
+    if payload_bytes is None:
+        return
     artifact_id = cache_key or f"{source}:{category}:{clean_file_name}:{time.time_ns()}"
     artifacts = st.session_state.get(GENERATED_ARTIFACTS_KEY)
     if not isinstance(artifacts, list):
@@ -711,7 +594,10 @@ def register_generated_artifact(
             "summary": str(summary),
             "description": str(description),
             "payload": payload_bytes,
-            "size": sum(int(variant["size"]) for variant in normalized_variants.values()),
+            "size": sum(
+                _coerce_int(variant["size"])
+                for variant in normalized_variants.values()
+            ),
             "variants": normalized_variants,
             "metadata": compact_generated_metadata(metadata or {}),
             "created_at": time.time(),
@@ -752,7 +638,7 @@ def register_generated_figure_exports(
 
 
 def apply_style() -> None:
-    """Keep the prototype calm, sparse, and workspace-like."""
+    """Keep the application calm, sparse, and workspace-like."""
     st.markdown(
         """
         <style>
@@ -2300,6 +2186,10 @@ def apply_style() -> None:
           cursor: pointer;
         }
 
+        .plot-preview-action[href] {
+          cursor: pointer;
+        }
+
         .plot-preview-clear-placeholder {
           color: var(--dnascape-text) !important;
           pointer-events: none;
@@ -3577,24 +3467,6 @@ def render_theme_toggle() -> None:
               }});
           }}
 
-          function syncActionButtons() {{
-            doc
-              .querySelectorAll(
-                [
-                  ".st-key-data_management_convert_button button",
-                  ".st-key-mapping_run_button button",
-                  ".st-key-simulation_run_button button",
-                  ".st-key-plotting_run_button button",
-                ].join(",")
-              )
-              .forEach((button) => {{
-                button.disabled = false;
-                button.removeAttribute("disabled");
-                button.setAttribute("aria-disabled", "false");
-                button.style.pointerEvents = "auto";
-              }});
-          }}
-
           function syncOverviewCardHeights() {{
             if (!doc.querySelector(".overview-page-marker")) {{
               root.style.removeProperty("--dnascape-overview-card-equal-height");
@@ -3652,7 +3524,6 @@ def render_theme_toggle() -> None:
           installSelectboxToggleCollapse();
           markSidebarToggleButton();
           syncPreviewClearButtons();
-          syncActionButtons();
           syncOverviewCardHeights();
           syncSidebarFooter();
           ensureMenuItem();
@@ -3668,7 +3539,6 @@ def render_theme_toggle() -> None:
               bindMenuButton();
               markSidebarToggleButton();
               syncPreviewClearButtons();
-              syncActionButtons();
               syncOverviewCardHeights();
               syncSidebarFooter();
               ensureMenuItem();
@@ -3683,7 +3553,6 @@ def render_theme_toggle() -> None:
             bindMenuButton();
             markSidebarToggleButton();
             syncPreviewClearButtons();
-            syncActionButtons();
             syncOverviewCardHeights();
             syncSidebarFooter();
             if (menuList()) {{
@@ -3711,6 +3580,14 @@ def render_theme_toggle() -> None:
     )
 
 
+@lru_cache(maxsize=8)
+def encoded_image(path_text: str, modified_ns: int) -> str:
+    """Return cached base64 for a versioned static image asset."""
+
+    del modified_ns
+    return base64.b64encode(Path(path_text).read_bytes()).decode("ascii")
+
+
 def render_sidebar_logo(
     path: Path,
     alt: str,
@@ -3722,7 +3599,7 @@ def render_sidebar_logo(
     if not path.exists():
         return
 
-    encoded_png = base64.b64encode(path.read_bytes()).decode("ascii")
+    encoded_png = encoded_image(str(path), path.stat().st_mtime_ns)
     escaped_alt = html.escape(alt, quote=True)
     escaped_href = html.escape(href, quote=True)
     logo_markup = f"""
@@ -3760,7 +3637,7 @@ def render_main_logo(path: Path, alt: str) -> None:
     if not path.exists():
         return
 
-    encoded_png = base64.b64encode(path.read_bytes()).decode("ascii")
+    encoded_png = encoded_image(str(path), path.stat().st_mtime_ns)
     escaped_alt = html.escape(alt, quote=True)
     st.markdown(
         f"""

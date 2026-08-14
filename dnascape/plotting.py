@@ -1,15 +1,10 @@
 """Plotting helpers for DNAscape outputs."""
 
-import numpy as np
 import matplotlib.pyplot as plt
-import seaborn as sns
 import matplotlib.ticker as mticker
+import numpy as np
 from matplotlib.colors import LogNorm, is_color_like
-from scipy import stats
-from scipy.stats import gaussian_kde, mode
-from scipy.ndimage import zoom
 
-from .io import load_gene_models_from_gtf_gz
 from .utils import match_yaxis_scales
 
 
@@ -148,7 +143,7 @@ def plot_gene_track(
         if show_names:
             name = g.get("gene_name", g["gene_id"])
             if len(name) > max_label_chars:
-                name = name[: max_label_chars - 1] + "â€¦"
+                name = name[: max_label_chars - 1] + "…"
             label = name
             if show_direction and strand in {"+", "-"}:
                 label = f"{name} ({strand})"
@@ -986,7 +981,8 @@ def mplotf(marrays, mlabels=None, mx_array=None, mdual_axis=None, mresolution=No
            showgeneQ=False, gtf_gz_path="data/other/gencode/gencode.v49.annotation.gtf.gz", gene_chrom=1,
            gene_denseQ=True, gene_show_names=True, gene_show_direction=False,
            figsize=(10, 4), layout_rect=(0.12, 0.15, 0.98, 0.95), hspace=0.15,
-           mheight_ratios=None, mlogxQ=None, mlabel_loc=None, **kwargs):
+           mheight_ratios=None, mlogxQ=None, mlabel_loc=None,
+           showQ=True, return_handles=False, **kwargs):
 
     k = len(marrays)
     W, H = figsize
@@ -1193,6 +1189,8 @@ def mplotf(marrays, mlabels=None, mx_array=None, mdual_axis=None, mresolution=No
 
     gi = 0
     if showgeneQ:
+        from .io import load_gene_models_from_gtf_gz
+
         chrom_try = f"chr{gene_chrom}" if isinstance(gene_chrom, (int, np.integer)) else str(gene_chrom)
 
         genes = load_gene_models_from_gtf_gz(
@@ -1319,10 +1317,15 @@ def mplotf(marrays, mlabels=None, mx_array=None, mdual_axis=None, mresolution=No
             transparent=transparentQ,
         )
 
-    plt.show()
+    if showQ:
+        plt.show()
+    if return_handles:
+        return fig, axs
+    return None
 
 def ploth(*arrays, labels=None, bin_size=5, alpha=0.5, density=False, statsQ=True,
-          figsize=(10,4), xtitle='Index', ytitle='Value', xmax=None, saveQ=False, sname='test', ext='pdf'):
+          figsize=(10,4), xtitle='Index', ytitle='Value', xmax=None, saveQ=False,
+          sname='test', ext='pdf', showQ=True, return_handles=False):
 
     arrays = [np.asarray(a) for a in arrays]
     max_val = max(np.nanmax(a) for a in arrays)
@@ -1332,7 +1335,7 @@ def ploth(*arrays, labels=None, bin_size=5, alpha=0.5, density=False, statsQ=Tru
     else:
         bins = np.arange(0, max_val + bin_size, bin_size)
 
-    plt.figure(figsize=figsize)
+    fig = plt.figure(figsize=figsize)
 
     legend_entries = []
 
@@ -1362,7 +1365,11 @@ def ploth(*arrays, labels=None, bin_size=5, alpha=0.5, density=False, statsQ=Tru
 
     if saveQ:
         plt.savefig(f"figures/histogram_{sname}.{ext}", bbox_inches='tight')
-    plt.show()
+    if showQ:
+        plt.show()
+    if return_handles:
+        return fig, fig.axes[0]
+    return None
 
 def plotb(array, label=None, resolution=1, figsize=(10,4), xtitle='Index', ytitle='Value', saveQ=False, sname='test', ext='pdf'):
     arr = np.asarray(array)
@@ -1384,6 +1391,8 @@ def plotb(array, label=None, resolution=1, figsize=(10,4), xtitle='Index', ytitl
 
 def plotd(x, y, frac=0.1, random_state=None, xlabel='X', ylabel='Y', title='Density', figsize=(10,4),
           xlim=None, ylim=None, saveQ=False, sname='test', ext='pdf'):
+
+    from scipy.stats import gaussian_kde
 
     # keep only valid positive values
     mask = (x > 0) & (y > 0)
@@ -1519,6 +1528,7 @@ def plothm(
     fig=None,
     ax=None,
     showQ=True,
+    return_handles=False,
 ):
     # 1. Prepare Data
     F = np.asarray(field, dtype=float)
@@ -1526,6 +1536,8 @@ def plothm(
 
     # 2. Handle Resolution Tweak (Resampling)
     if resolution_hm is not None:
+        from scipy.ndimage import zoom
+
         zoom_t = resolution_hm / orig_nt
         zoom_x = resolution_hm / orig_nx
         F_plot = zoom(F, (zoom_t, zoom_x), order=1)
@@ -1629,3 +1641,6 @@ def plothm(
 
     if showQ:
         plt.show()
+    if return_handles:
+        return fig, ax
+    return None

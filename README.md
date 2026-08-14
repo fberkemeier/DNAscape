@@ -47,19 +47,31 @@ pip install -r requirements.txt
 pip install .
 ```
 
-### Streamlit app
+### NiceGUI interface prototype
 
-The Streamlit app provides browser-based data upload, data conversion, mapping,
-simulation, plotting, downloads, and cached session artifacts.
+The new NiceGUI prototype mirrors the DNAscape workflow, visual style, pages,
+forms, and controls. It is currently an interface-only prototype: navigation
+and inputs can be explored, but scientific actions are not connected yet. The
+prototype requires Python 3.10 or newer.
 
 ```bash
 pip install -r app/requirements.txt
-streamlit run app/streamlit_app.py
+python -m app
 ```
 
-The Data Management page supports DNAscape-ready CSV/TSV/TXT/NPY-style files
+### Preserved Streamlit app
+
+The existing Streamlit implementation remains available with its data upload,
+conversion, mapping, simulation, plotting, download, and session-cache workflows.
+
+```bash
+pip install -r app_streamlit/requirements.txt
+streamlit run app_streamlit/streamlit_app.py
+```
+
+Its Data Management page supports DNAscape-ready CSV/TSV/TXT/NPY-style files
 and genomic tracks such as bedGraph/BDG and BigWig/BW. BigWig import uses the
-optional `pyBigWig` dependency included in `app/requirements.txt`.
+optional `pyBigWig` dependency included in `app_streamlit/requirements.txt`.
 
 ## Workflows
 
@@ -155,6 +167,8 @@ For exploratory modelling, the Python API and notebooks are recommended because 
 
 ```text
 dnascape/      Python package: mapping, simulation, fitting, plotting, IO
+app/           NiceGUI interface prototype
+app_streamlit/ Preserved Streamlit application
 examples/      Jupyter notebooks and compact analysis examples
 docs/          ReadTheDocs source
 data/          small bundled data used by examples
@@ -162,7 +176,9 @@ data/          small bundled data used by examples
 
 ## Project Status
 
-DNAscape is developed as a Python package first. The current workflow is the Python API plus notebooks, with a CLI for scripted runs and a planned Streamlit app for interactive use.
+DNAscape is developed as a Python package first. The repository includes the
+Python API, notebooks, a CLI for scripted runs, a NiceGUI interface prototype,
+and the preserved Streamlit application.
 
 ## Citation
 

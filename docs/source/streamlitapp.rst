@@ -5,7 +5,7 @@ Run from the repository root:
 
 .. code-block:: bash
 
-   streamlit run app/streamlit_app.py
+   streamlit run app_streamlit/streamlit_app.py
 
 Use the app for inspection, short mapping runs, simulation previews, and
 exports. Use Python for final reproducible analysis.

@@ -8,12 +8,16 @@ version = "1.0.0"
 description = "DNAscape: tools for modelling and simulating DNA replication kinetics."
 readme = "README.md"
 requires-python = ">=3.9"
+license = { file = "LICENSE" }
+authors = [
+  { name = "Francisco Berkemeier" },
+]
 
 dependencies = [
-  "numpy",
+  # Fitting uses numpy.trapezoid, introduced in NumPy 2.0.
+  "numpy>=2.0",
   "pandas",
   "matplotlib",
-  "seaborn",
   "scipy",
 ]
 
@@ -22,12 +26,57 @@ genomics = [
   "pyBigWig",
 ]
 app = [
-  "streamlit",
+  "nicegui>=3.12,<4",
+]
+streamlit = [
+  # Preserved Streamlit interface and optional genomic-track support.
+  "streamlit>=1.58",
   "pyBigWig",
 ]
+test = [
+  "pytest>=8",
+  # Exercise both local interfaces; AppTest uses the real Streamlit widget tree.
+  "nicegui>=3.12,<4",
+  "streamlit>=1.58",
+]
+
+[project.urls]
+Documentation = "https://dnascape.readthedocs.io/en/latest/"
+Repository = "https://github.com/fberkemeier/DNAscape"
+Issues = "https://github.com/fberkemeier/DNAscape/issues"
 
 [project.scripts]
 dnascape = "dnascape.cli:main"
 
 [tool.setuptools]
-packages = ["dnascape", "dnascape.tests"]
+packages = ["dnascape"]
+
+[tool.pytest.ini_options]
+testpaths = ["dnascape/tests", "app/tests", "app_streamlit/tests"]
+addopts = "-ra"
+
+[tool.pyright]
+# The local front ends are the typed application boundary.  The historical
+# scientific modules remain dynamically typed and are covered by numerical
+# regression tests instead of being hidden among hundreds of low-signal union
+# diagnostics.
+include = ["app", "app_streamlit"]
+exclude = [".venv", ".pytest_cache"]
+venvPath = "."
+venv = ".venv"
+pythonVersion = "3.10"
+typeCheckingMode = "basic"
+reportMissingTypeStubs = "none"
+
+[tool.ruff]
+target-version = "py39"
+line-length = 100
+extend-exclude = [".venv", ".pytest_cache", ".ruff_cache"]
+
+[tool.ruff.lint]
+# Keep editor diagnostics focused on correctness, unsafe defaults, and imports.
+select = ["E9", "F", "I", "B"]
+
+[tool.ruff.lint.per-file-ignores]
+# This compatibility facade intentionally re-exports the legacy public API.
+"dnascape/core.py" = ["F403"]

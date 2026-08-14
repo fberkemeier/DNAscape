@@ -1,7 +1,6 @@
 """Deterministic mapping functions between replication observables."""
 
 import numpy as np
-from scipy.integrate import cumulative_trapezoid
 
 from .utils import fast_shift_add, interp_nans, logistic, smoothf
 
@@ -878,7 +877,7 @@ def map_coalescence_events_profile(
 
 
 def bwmap(chrom, cell_line='Rat', bin_size=10_000,
-          bins=["S1","S2","S3","S4"],
+          bins=("S1", "S2", "S3", "S4"),
           min_total=1e-9, fill_nans=True):
 
     from scipy.optimize import curve_fit

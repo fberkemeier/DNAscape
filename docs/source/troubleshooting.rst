@@ -20,9 +20,8 @@ Run from the repository root:
 
 .. code-block:: bash
 
-   python -m pip install -e .
-   python -m pip install -r app/requirements.txt
-   streamlit run app/streamlit_app.py
+   python -m pip install -r app_streamlit/requirements.txt
+   streamlit run app_streamlit/streamlit_app.py
 
 Missing Column
 --------------

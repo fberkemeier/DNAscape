@@ -1,10 +1,10 @@
-"""DNAscape Streamlit app shell and lightweight page router."""
+"""DNAscape Streamlit app shell and lazy page router."""
 
+import importlib
 import sys
 from pathlib import Path
 
 import streamlit as st
-
 
 APP_DIR = Path(__file__).resolve().parent
 ROOT_DIR = APP_DIR.parent
@@ -13,9 +13,8 @@ for import_path in (ROOT_DIR, APP_DIR):
     if import_path_text not in sys.path:
         sys.path.insert(0, import_path_text)
 
-import app_shell as app_shell_module
-
-from app_shell import (
+from app_streamlit.app_shell import (
+    APP_VERSION,
     DOCS_URL,
     GITHUB_URL,
     LOGO_PATH,
@@ -25,17 +24,16 @@ from app_shell import (
     render_sidebar,
     set_active_page,
 )
-
+from app_streamlit.state import harvest_completed_workflow_jobs, preserve_persistent_widget_state
 
 PAGE_MODULES = {
-    "data-management": APP_DIR / "pages" / "1_Data_Management.py",
-    "mapping": APP_DIR / "pages" / "2_Mapping.py",
-    "simulation": APP_DIR / "pages" / "3_Simulation.py",
-    "plotting": APP_DIR / "pages" / "4_Plotting.py",
-    "cached-files": APP_DIR / "pages" / "5_Cached_Files.py",
-    "resources": APP_DIR / "pages" / "6_Resources.py",
+    "data-management": "app_streamlit.pages.1_Data_Management",
+    "mapping": "app_streamlit.pages.2_Mapping",
+    "simulation": "app_streamlit.pages.3_Simulation",
+    "plotting": "app_streamlit.pages.4_Plotting",
+    "cached-files": "app_streamlit.pages.5_Cached_Files",
+    "resources": "app_streamlit.pages.6_Resources",
 }
-PAGE_SHELL_MARKER_KEY = "dnascape_last_page_shell"
 
 WORKFLOW_CARD_ICONS = {
     "data-management": """
@@ -156,7 +154,7 @@ def render_overview() -> None:
         ),
         (
             "Cached Files",
-            "Manage reusable uploads, generated intermediates, figures, and analysis exports in one place.",
+            "Manage data and figure exports retained during this session.",
             "cached-files",
         ),
         (
@@ -175,9 +173,9 @@ def render_overview() -> None:
                         render_workflow_card(title, body, page)
 
     st.markdown(
-        """
+        f"""
         <div class="workflow-line">
-          <span>v1.0.0</span>
+          <span>v{APP_VERSION}</span>
         </div>
         """,
         unsafe_allow_html=True,
@@ -196,44 +194,14 @@ def render_overview() -> None:
     )
 
 
-@st.cache_resource(show_spinner=False)
-def compiled_page_script(path_text: str, mtime_ns: int):
-    """Compile a page script once per file version without rendering it."""
-    path = Path(path_text)
-    return compile(path.read_text(encoding="utf-8"), path_text, "exec")
+def render_page_module(slug: str) -> None:
+    """Import the active page normally and call its explicit renderer."""
 
-
-def preload_page_scripts() -> None:
-    """Warm page script compilation while leaving inactive page UI unrendered."""
-    for page_path in PAGE_MODULES.values():
-        compiled_page_script(str(page_path), page_path.stat().st_mtime_ns)
-
-
-def render_page_script(slug: str) -> None:
-    """Execute a legacy page script inside the persistent app shell."""
-    page_path = PAGE_MODULES[slug]
-    module_name = f"_dnascape_router_{slug.replace('-', '_')}"
-
-    def noop(*_args: object, **_kwargs: object) -> None:
-        return None
-
-    page_globals = {
-        "__builtins__": __builtins__,
-        "__file__": str(page_path),
-        "__name__": module_name,
-        "__package__": "",
-    }
-    page_code = compiled_page_script(str(page_path), page_path.stat().st_mtime_ns)
-
-    original_configure_page = app_shell_module.configure_page
-    original_render_sidebar = app_shell_module.render_sidebar
-    app_shell_module.configure_page = noop
-    app_shell_module.render_sidebar = noop
-    try:
-        exec(page_code, page_globals)
-    finally:
-        app_shell_module.configure_page = original_configure_page
-        app_shell_module.render_sidebar = original_render_sidebar
+    module = importlib.import_module(PAGE_MODULES[slug])
+    renderer = getattr(module, "render_page", None)
+    if not callable(renderer):
+        raise RuntimeError(f"Page module {module.__name__!r} has no render_page().")
+    renderer()
 
 
 def render_page(slug: str) -> None:
@@ -247,19 +215,12 @@ def render_page(slug: str) -> None:
         render_overview()
         return
 
-    render_page_script(slug)
+    render_page_module(slug)
 
 
 configure_page("DNAscape")
-preload_page_scripts()
+preserve_persistent_widget_state()
+harvest_completed_workflow_jobs()
 current_page = active_page_slug()
-previous_page = st.session_state.get(PAGE_SHELL_MARKER_KEY)
-page_slot = st.empty()
-# Keep control-panel interactions smooth: only blank the main area when the
-# left-navigation route changes, not on every widget-triggered rerun.
-if previous_page != current_page:
-    page_slot.empty()
 render_sidebar(current_page, use_router=True)
-with page_slot.container():
-    render_page(current_page)
-st.session_state[PAGE_SHELL_MARKER_KEY] = current_page
+render_page(current_page)

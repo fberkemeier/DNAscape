@@ -1,8 +1,63 @@
 """Shared numerical and utility helpers for DNAscape."""
 
 import time
+from contextlib import contextmanager
+from threading import local
+
 import numpy as np
-from numpy.fft import rfft, irfft
+from numpy.fft import irfft, rfft
+
+_PROGRESS_STATE = local()
+
+
+@contextmanager
+def progress_context(report=None, cancel=None, *, suppress_output=False):
+    """Route ETA updates to one worker-local callback.
+
+    This avoids redirecting process-global stdout when the Streamlit app runs
+    scientific work in a background thread.  Outside this context ``etaf`` and
+    ``etaferr`` retain their existing console behaviour.
+    """
+
+    previous = (
+        getattr(_PROGRESS_STATE, "report", None),
+        getattr(_PROGRESS_STATE, "cancel", None),
+        getattr(_PROGRESS_STATE, "suppress_output", False),
+    )
+    _PROGRESS_STATE.report = report
+    _PROGRESS_STATE.cancel = cancel
+    _PROGRESS_STATE.suppress_output = bool(suppress_output)
+    try:
+        yield
+    finally:
+        _PROGRESS_STATE.report, _PROGRESS_STATE.cancel, _PROGRESS_STATE.suppress_output = previous
+
+
+def _progress_update(it, maxiter, eta_sec, label=None, err=None):
+    cancel = getattr(_PROGRESS_STATE, "cancel", None)
+    if callable(cancel):
+        cancel()
+
+    report = getattr(_PROGRESS_STATE, "report", None)
+    if not callable(report):
+        return
+    total = max(1, int(maxiter))
+    iteration = min(total, max(0, int(it)))
+    fraction = iteration / total
+    normalized_label = str(label or "Working").strip().lower()
+    if normalized_label in {"rsim_finalize", "rsim_finalise", "rsim_post"}:
+        value = 0.95 + 0.04 * fraction
+        prefix = "Finalizing"
+    elif normalized_label == "rsim":
+        value = 0.04 + 0.90 * fraction
+        prefix = "Simulating"
+    else:
+        value = 0.04 + 0.90 * fraction
+        prefix = str(label or "Mapping").replace("_", " ").title()
+    text = f"{prefix}... {iteration}/{total} - ETA {hms(eta_sec)}"
+    if err is not None:
+        text += f" - MSE {float(err):.3e}"
+    report(min(0.99, value), text)
 
 def logistic(x, k, x0):
     return 1.0 / (1.0 + np.exp(-k * (x - x0)))
@@ -82,7 +137,7 @@ def match_yaxis_scales(ax1, ax2, y1, y2):
     y2_hi = hi * (y2.max() - y2.min()) + y2.min()
 
     # ------------------------------------------------------------------
-    # SAFETY FOR LOG-SCALE AXES â€” enforce positive bounds > 0
+    # SAFETY FOR LOG-SCALE AXES — enforce positive bounds > 0
     # ------------------------------------------------------------------
     eps = 1e-9
     if ax1.get_yscale() == 'log':
@@ -125,11 +180,13 @@ def etaf(it, maxiter, start_time, done=None, label=None):
         done = it >= maxiter
     if done:
         eta_sec = 0.0
-    print(
-        f"{_eta_label(label)}[{it}/{maxiter}]  Elapsed: {hms(elapsed)}  ETA: {hms(eta_sec)}",
-        end="\n" if done else "\r",
-        flush=True,
-    )
+    _progress_update(it, maxiter, eta_sec, label=label)
+    if not getattr(_PROGRESS_STATE, "suppress_output", False):
+        print(
+            f"{_eta_label(label)}[{it}/{maxiter}]  Elapsed: {hms(elapsed)}  ETA: {hms(eta_sec)}",
+            end="\n" if done else "\r",
+            flush=True,
+        )
 
 def etaferr(it, maxiter, start_time, err, done=None, label="rmap"):
     elapsed = time.time() - start_time
@@ -140,8 +197,10 @@ def etaferr(it, maxiter, start_time, err, done=None, label="rmap"):
         done = it >= maxiter
     if done:
         eta_sec = 0.0
-    print(
-        f"{_eta_label(label)}[{it}/{maxiter}]  Elapsed: {hms(elapsed)}  ETA: {hms(eta_sec)}  MSE: {err:.4e}",
-        end="\n" if done else "\r",
-        flush=True,
-    )
+    _progress_update(it, maxiter, eta_sec, label=label, err=err)
+    if not getattr(_PROGRESS_STATE, "suppress_output", False):
+        print(
+            f"{_eta_label(label)}[{it}/{maxiter}]  Elapsed: {hms(elapsed)}  ETA: {hms(eta_sec)}  MSE: {err:.4e}",
+            end="\n" if done else "\r",
+            flush=True,
+        )
