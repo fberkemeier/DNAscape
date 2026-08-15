@@ -1,13 +1,18 @@
 # DNAscape NiceGUI interface prototype
 
-This folder contains a local, presentation-only NiceGUI prototype inspired by
-the existing Streamlit application in `app_streamlit/`.
+This folder contains the local DNAscape NiceGUI interface.
 
 The prototype includes the full navigation shell, responsive layouts, light
 and dark themes, page sections, scientific controls, placeholder previews,
 tabs, expanders, and visible action buttons. Navigation and ordinary controls
-are interactive. Scientific actions, exports, and cache mutations are
-deliberately inert and the prototype does not import or call `dnascape`.
+are interactive. The Simulation page now provides the first live scientific
+path: constant firing-rate and fork-speed inputs run through `dnascape.rsim`
+in a background worker, with progress and a result plot in Preview. Plot
+downloads support PNG, SVG, and PDF; selected raw outputs support text, NPY,
+and NPZ downloads with optional gzip. Detailed time-series and space-time
+statistics are available behind an off-by-default switch so ordinary runs stay
+fast and memory-bounded. Profile inputs and the remaining scientific actions
+and cache mutations are still being connected incrementally.
 
 ## Install and launch
 
@@ -36,10 +41,14 @@ or duplicated in this folder.
 ## Prototype boundary
 
 - `app/main.py` owns the NiceGUI process and persistent shell.
-- `app/pages/` contains the seven presentation-only pages.
-- `app/static/styles.css` adapts the Streamlit visual language to NiceGUI and
-  includes desktop, tablet, and mobile layouts.
-- `app_streamlit/` remains the complete Streamlit application.
+- `app/pages/` contains the seven workflow pages.
+- `app/simulation_service.py` validates bounded constant-input jobs and bridges
+  the Simulation page to `dnascape.rsim` without coupling scientific code to
+  NiceGUI elements.
+- `app/simulation_exports.py` lazily creates bounded plot and raw-data downloads
+  from completed Simulation results.
+- `app/static/styles.css` implements the DNAscape visual language and includes
+  desktop, tablet, and mobile layouts.
 
-Backend integration should be added only after the information architecture
-and interaction design have been approved.
+The constant-input Simulation path is the first backend integration. Mapping,
+profile uploads, and session persistence remain subsequent steps.

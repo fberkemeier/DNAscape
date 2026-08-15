@@ -6,7 +6,7 @@ from collections.abc import Callable
 
 from nicegui import ui
 
-from app.pages.common import DATA_ICON
+from app.pages.common import DATA_ICON, PLOT_ICON_SVG
 
 WORKFLOWS = (
     (
@@ -31,7 +31,7 @@ WORKFLOWS = (
         "plotting",
         "Plotting",
         "Create polished previews of input profiles, inferred features, simulations, and exports.",
-        "show_chart",
+        None,
     ),
     (
         "cached-files",
@@ -59,9 +59,11 @@ def render(navigate: Callable[[str], None]) -> None:
     """Render the overview and its six navigable workflow cards."""
 
     with ui.column().classes("dn-overview"):
-        ui.element("img").props(
-            'src="/dnascape-assets/dnascape_logo_small.svg" alt="DNAscape" draggable=false'
-        ).classes("dn-main-logo")
+        with ui.element("div").classes("dn-main-logo-frame"):
+            ui.element("img").props(
+                'src="/dnascape-assets/dnascape_logo_small.svg" '
+                'alt="DNAscape" draggable=false'
+            ).classes("dn-main-logo")
         with ui.column().classes("dn-overview-copy"):
             ui.label("Overview").classes("dn-eyebrow")
             ui.label(
@@ -77,4 +79,8 @@ def render(navigate: Callable[[str], None]) -> None:
                     with ui.element("div"):
                         ui.label(title).classes("dn-workflow-title")
                         ui.label(body).classes("dn-workflow-copy")
-                    ui.icon(icon).classes("dn-workflow-icon")
+                    if slug == "plotting":
+                        ui.html(PLOT_ICON_SVG).classes("dn-workflow-icon dn-plot-icon-wrap")
+                    else:
+                        assert icon is not None
+                        ui.icon(icon).classes("dn-workflow-icon")

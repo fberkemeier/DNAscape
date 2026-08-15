@@ -55,6 +55,7 @@ body {
   height: 2.8rem;
   min-height: 2.8rem;
   padding: 0 0.8rem;
+  z-index: 2000 !important;
 }
 
 .dn-header-badge {
@@ -64,31 +65,174 @@ body {
 }
 
 .dn-menu-button,
-.dn-theme-button {
+.dn-theme-button,
+.dn-app-menu-button {
   color: var(--dn-muted) !important;
 }
 
 .dn-menu-button:hover,
-.dn-theme-button:hover {
+.dn-theme-button:hover,
+.dn-app-menu-button:hover {
   background: var(--dn-active) !important;
   color: var(--dn-text) !important;
+}
+
+/* The drawer control reads as a miniature side panel, with the built-in
+   chevron showing the direction of the next action. */
+.dn-drawer-toggle {
+  background: transparent !important;
+  border: 0 !important;
+  border-radius: 50% !important;
+  box-shadow: none !important;
+  color: var(--dn-text) !important;
+  height: 2rem !important;
+  min-height: 2rem !important;
+  min-width: 2rem !important;
+  padding: 0 !important;
+  position: relative;
+  transition: background 120ms ease, color 120ms ease;
+  width: 2rem;
+}
+
+.dn-drawer-toggle .q-icon {
+  font-size: 1.15rem !important;
+}
+
+.dn-drawer-toggle .q-focus-helper {
+  display: none;
+}
+
+.dn-drawer-toggle:hover {
+  background: var(--dn-active) !important;
+}
+
+.dn-drawer-toggle:focus-visible {
+  outline: 2px solid var(--dn-accent);
+  outline-offset: 2px;
+}
+
+.dn-app-menu-button {
+  color: var(--dn-muted) !important;
+  min-height: 2rem !important;
+  min-width: 2rem !important;
+}
+
+.dn-app-menu-button:hover,
+.dn-app-menu-button:focus-visible {
+  background: var(--dn-active) !important;
+  color: var(--dn-text) !important;
+}
+
+.dn-app-menu-button:focus-visible {
+  outline: 2px solid var(--dn-accent);
+  outline-offset: 1px;
+}
+
+.dn-app-menu-button .q-icon {
+  font-size: 1.25rem;
+}
+
+.dn-app-menu {
+  background: var(--dn-panel) !important;
+  border: 1px solid var(--dn-line);
+  border-radius: 9px !important;
+  box-shadow: 0 12px 34px rgba(16, 24, 40, 0.14) !important;
+  color: var(--dn-text) !important;
+  min-width: 13.75rem;
+  padding: 0.38rem;
+}
+
+body.body--dark .dn-app-menu {
+  box-shadow: 0 14px 38px rgba(0, 0, 0, 0.36) !important;
+}
+
+.dn-app-menu > .q-list,
+.dn-app-menu .q-list {
+  background: transparent !important;
+  padding: 0;
+}
+
+.dn-app-menu-item {
+  border-radius: 6px;
+  color: var(--dn-text) !important;
+  cursor: pointer;
+  font-size: 0.88rem;
+  font-weight: 400 !important;
+  min-height: 2.35rem !important;
+  padding: 0.35rem 0.62rem !important;
+}
+
+.dn-app-menu-item .q-item__section--avatar {
+  min-width: 1.85rem;
+  padding-right: 0.42rem;
+}
+
+.dn-app-menu-item:hover,
+.dn-app-menu-item:focus-within {
+  background: var(--dn-active) !important;
+}
+
+.dn-app-menu-icon,
+.dn-app-menu-item .q-icon {
+  color: var(--dn-muted) !important;
+  font-size: 1.08rem !important;
+  min-width: 1.35rem;
+}
+
+.dn-app-menu-icon.nicegui-html,
+.dn-app-menu-icon .dn-github-icon {
+  display: block;
+  height: 1.08rem;
+  line-height: 0;
+  min-width: 1.08rem;
+  width: 1.08rem;
+}
+
+.dn-app-menu-item:hover .dn-app-menu-icon,
+.dn-app-menu-item:hover .q-icon,
+.dn-app-menu-item:focus-within .dn-app-menu-icon,
+.dn-app-menu-item:focus-within .q-icon {
+  color: var(--dn-accent) !important;
 }
 
 .dn-drawer {
   background: var(--dn-sidebar) !important;
   border-right: 1px solid var(--dn-line) !important;
+  bottom: 0 !important;
   color: var(--dn-text);
+  height: 100dvh !important;
+  top: 0 !important;
+  overflow: hidden !important;
+  scrollbar-width: none;
+  z-index: 2100 !important;
+}
+
+.dn-drawer::-webkit-scrollbar,
+.dn-drawer .q-drawer__content::-webkit-scrollbar,
+.dn-drawer-content::-webkit-scrollbar {
+  display: none;
+  height: 0;
+  width: 0;
 }
 
 .dn-drawer-content {
   box-sizing: border-box;
   gap: 0 !important;
-  height: calc(100dvh - 2.8rem);
-  min-height: 0;
+  height: 100dvh !important;
+  min-height: 100dvh;
   overflow-x: hidden;
-  overflow-y: auto;
+  overflow-y: hidden;
   padding: 0.9rem 0.9rem 3rem;
   width: 100%;
+  scrollbar-width: none;
+}
+
+.dn-drawer .q-drawer__content {
+  box-sizing: border-box;
+  height: 100dvh !important;
+  min-height: 100dvh;
+  overflow: hidden !important;
+  scrollbar-width: none;
 }
 
 .dn-logo-link {
@@ -135,6 +279,25 @@ body.body--dark .dn-main-logo {
   filter: invert(1) hue-rotate(180deg) saturate(0.95) brightness(1.08);
 }
 
+/* In dark mode a small transparent offset circle turns the logo sun into a
+   crescent without changing the shared SVG asset or its existing filter. */
+body.body--dark .dn-logo-link .dn-sidebar-logo {
+  -webkit-mask-image: radial-gradient(
+    circle 2.5px at 47.95% 3%,
+    transparent 0 86%,
+    #000 100%
+  );
+  -webkit-mask-repeat: no-repeat;
+  -webkit-mask-size: 100% 100%;
+  mask-image: radial-gradient(
+    circle 2.5px at 47.95% 3%,
+    transparent 0 86%,
+    #000 100%
+  );
+  mask-repeat: no-repeat;
+  mask-size: 100% 100%;
+}
+
 .dn-nav-list {
   gap: 0.16rem;
   padding: 0.05rem 0.1rem 0;
@@ -160,17 +323,85 @@ body.body--dark .dn-main-logo {
   margin-right: 0.5rem;
 }
 
+.dn-nav-label {
+  color: inherit;
+  font-size: inherit;
+  line-height: inherit;
+}
+
+.dn-plot-icon-wrap {
+  align-items: center;
+  color: var(--dn-accent);
+  display: inline-flex;
+  justify-content: center;
+  line-height: 0;
+}
+
+.dn-nav-plot-icon {
+  flex: 0 0 auto;
+  font-size: 1.18rem;
+  height: 1em;
+  margin-right: 0.5rem;
+  width: 1em;
+}
+
+.dn-plot-icon {
+  display: block;
+  height: 1em;
+  overflow: visible;
+  width: 1em;
+}
+
+.dn-plot-icon-axis,
+.dn-plot-icon-line {
+  fill: none;
+  stroke: currentColor;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+
+.dn-plot-icon-axis {
+  opacity: 0.82;
+  stroke-width: 1.65;
+}
+
+.dn-plot-icon-line {
+  stroke-width: 1.9;
+}
+
+.dn-plot-icon-point {
+  fill: currentColor;
+  stroke: none;
+}
+
 .dn-nav-button:hover {
   background: var(--dn-hover) !important;
 }
 
 .dn-nav-active {
   background: var(--dn-active) !important;
-  font-weight: 550;
+  font-weight: 400 !important;
 }
 
 .dn-nav-active .q-icon {
   color: var(--dn-accent);
+}
+
+body.body--dark .dn-nav-button,
+body.body--dark .dn-nav-button .q-btn__content,
+body.body--dark .dn-nav-button .q-btn__content .block,
+body.body--dark .dn-nav-label {
+  color: var(--dn-text) !important;
+}
+
+body.body--dark .dn-nav-button .q-icon,
+body.body--dark .dn-nav-plot-icon {
+  color: var(--dn-accent) !important;
+}
+
+body.body--dark .dn-nav-active {
+  background: var(--dn-active) !important;
+  color: var(--dn-text) !important;
 }
 
 .dn-sidebar-links {
@@ -296,56 +527,107 @@ body.body--dark .dn-main-logo {
 
 .dn-control-stack,
 .dn-preview-stack {
-  gap: 0.85rem;
+  gap: 0.7rem;
   min-width: 0;
   width: 100%;
 }
 
 .dn-control-card {
-  max-height: calc(100dvh - 11.2rem);
-  min-height: 32rem;
+  box-sizing: border-box;
+  container-name: dn-controls;
+  container-type: inline-size;
+  gap: 0 !important;
+  max-height: max(14rem, calc(100dvh - 14rem));
+  min-height: 0;
+  overflow-x: hidden;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  padding: 0.9rem 0.95rem 0 !important;
+  position: relative;
+  scrollbar-color: color-mix(in srgb, var(--dn-muted) 45%, transparent) transparent;
+  scrollbar-gutter: stable both-edges;
+  scrollbar-width: thin;
+}
+
+.dn-control-card .dn-panel-title {
+  margin-bottom: 0.35rem;
+}
+
+.dn-preview-card {
+  box-sizing: border-box;
+  max-height: max(14rem, calc(100dvh - 14rem));
+  min-height: min(32rem, max(14rem, calc(100dvh - 14rem)));
   overflow-x: hidden;
   overflow-y: auto;
   overscroll-behavior: contain;
   scrollbar-color: color-mix(in srgb, var(--dn-muted) 45%, transparent) transparent;
-  scrollbar-gutter: stable;
+  scrollbar-gutter: stable both-edges;
   scrollbar-width: thin;
-}
-
-.dn-preview-card {
-  min-height: 32rem;
 }
 
 .dn-expansion {
   background: transparent !important;
-  border-bottom: 1px solid var(--dn-line);
+  border: 0 !important;
   border-radius: 0 !important;
   color: var(--dn-text) !important;
-  margin: 0 !important;
+  margin: 0.1rem 0 !important;
   width: 100%;
 }
 
+.dn-expansion + .dn-expansion {
+  margin-top: 0.16rem !important;
+}
+
 .dn-expansion > .q-expansion-item__container > .q-item {
+  border-radius: 6px;
   color: var(--dn-text) !important;
-  font-size: 0.9rem;
+  font-size: 0.87rem;
   font-weight: 600;
-  min-height: 2.45rem;
-  padding: 0.35rem 0.15rem;
+  min-height: 2.25rem;
+  padding: 0.25rem 0.2rem;
+  transition: background-color 120ms ease;
+}
+
+.dn-expansion > .q-expansion-item__container > .q-item:hover {
+  background: color-mix(in srgb, var(--dn-soft) 72%, transparent);
+}
+
+.dn-expansion > .q-expansion-item__container > .q-item:focus-visible {
+  outline: 2px solid var(--dn-accent);
+  outline-offset: -2px;
+}
+
+.dn-expansion.q-expansion-item--expanded
+  > .q-expansion-item__container
+  > .q-expansion-item__content {
+  border-top: 0 !important;
+}
+
+.dn-control-card .dn-expansion .q-expansion-item__border,
+.dn-control-card .dn-expansion > .q-expansion-item__container > .q-separator {
+  display: none !important;
+  opacity: 0 !important;
 }
 
 .dn-expansion .q-item__section--avatar {
   color: var(--dn-muted);
-  min-width: 1.9rem;
+  min-width: 1.75rem;
+}
+
+.dn-expansion .q-item__section--avatar .q-icon,
+.dn-expansion .q-item__section--side .q-icon {
+  font-size: 1.15rem;
 }
 
 .dn-expansion-content {
-  gap: 0.55rem;
-  padding: 0.2rem 0.1rem 0.85rem;
+  gap: 0.42rem;
+  padding: 0.16rem 0.22rem 0.62rem;
   width: 100%;
 }
 
 .dn-field,
 .dn-field .q-field,
+.dn-upload-field,
 .dn-upload-compact {
   width: 100%;
 }
@@ -353,7 +635,7 @@ body.body--dark .dn-main-logo {
 .dn-field-grid {
   align-items: start;
   display: grid;
-  gap: 0.55rem;
+  gap: 0.42rem 0.58rem;
   grid-template-columns: repeat(2, minmax(0, 1fr));
   width: 100%;
 }
@@ -364,7 +646,7 @@ body.body--dark .dn-main-logo {
 
 .dn-field-heading {
   color: var(--dn-text);
-  font-size: 0.89rem;
+  font-size: 0.86rem;
   font-weight: 650;
 }
 
@@ -379,13 +661,103 @@ body.body--dark .dn-main-logo {
   width: 100%;
 }
 
+/* Source inputs are deliberately flat: the expansion already supplies the
+   visual grouping, so another card border only adds noise. */
+.dn-source-compact {
+  background: transparent;
+  border: 0;
+  border-radius: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 0.34rem;
+  min-width: 0;
+  padding: 0.16rem 0.1rem 0.28rem;
+  width: 100%;
+}
+
+.dn-source-head {
+  align-items: center;
+  display: flex;
+  gap: 0.55rem;
+  justify-content: space-between;
+  min-width: 0;
+  width: 100%;
+}
+
+.dn-source-head .dn-field-heading {
+  flex: 1 1 auto;
+  line-height: 1.2;
+  min-width: 0;
+}
+
+.dn-source-mode {
+  flex: 0 1 8.25rem;
+  max-width: 8.25rem;
+  min-width: 6.9rem;
+}
+
+.dn-source-mode.q-field--dense .q-field__control,
+.dn-source-mode .q-field--dense .q-field__control {
+  background: color-mix(in srgb, var(--dn-soft) 84%, transparent);
+  border-radius: 6px 6px 0 0;
+}
+
+.dn-source-fields {
+  display: flex;
+  flex-direction: column;
+  gap: 0.34rem;
+  min-width: 0;
+  width: 100%;
+}
+
+.dn-data-fields {
+  display: grid;
+  gap: 0.42rem 0.58rem;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  min-width: 0;
+  width: 100%;
+}
+
+.dn-control-card .q-field--dense .q-field__control,
+.dn-control-card .q-field--dense .q-field__marginal {
+  min-height: 2.35rem;
+}
+
+.dn-control-card .q-field--dense .q-field__label {
+  font-size: 0.76rem;
+}
+
+.dn-control-card .q-checkbox,
+.dn-control-card .q-toggle {
+  align-self: flex-start;
+  min-height: 1.9rem;
+}
+
+.dn-control-card .q-checkbox__label,
+.dn-control-card .q-toggle__label {
+  font-size: 0.84rem;
+  line-height: 1.3;
+}
+
+.dn-control-card .q-checkbox__inner {
+  font-size: 2.05rem;
+  min-width: 2.05rem;
+  width: 2.05rem;
+}
+
+.dn-control-card .q-toggle__inner {
+  font-size: 2.05rem;
+  min-width: 2.87rem;
+  width: 2.87rem;
+}
+
 .dn-source-block .dn-field-heading {
   color: var(--dn-text);
   letter-spacing: 0.01em;
 }
 
 .dn-data-section > .q-expansion-item__container > .q-item {
-  background: color-mix(in srgb, var(--dn-soft) 55%, transparent);
+  background: transparent;
 }
 
 .dn-output-section {
@@ -407,7 +779,7 @@ body.body--dark .dn-main-logo {
 
 .dn-source-grid {
   display: grid;
-  gap: 0.65rem;
+  gap: 0.38rem 0.7rem;
   grid-template-columns: repeat(2, minmax(0, 1fr));
   width: 100%;
 }
@@ -439,19 +811,34 @@ body.body--dark .dn-main-logo {
   color: var(--dn-text) !important;
 }
 
+.dn-upload-field {
+  display: flex;
+  flex-direction: column;
+  gap: 0.24rem !important;
+}
+
+.dn-upload-formats {
+  color: var(--dn-muted) !important;
+  font-size: 0.67rem;
+  line-height: 1.3;
+  margin: 0 0.1rem;
+}
+
 .dn-upload-compact {
   background: var(--dn-panel) !important;
   border: 1px dashed var(--dn-divider) !important;
   border-radius: 8px !important;
   box-shadow: none !important;
   color: var(--dn-text) !important;
+  cursor: pointer;
   min-height: 4.35rem;
   overflow: hidden;
+  transition: background 120ms ease, border-color 120ms ease, box-shadow 120ms ease;
 }
 
 .dn-upload-compact .q-uploader__header {
   background: color-mix(in srgb, var(--dn-soft) 78%, var(--dn-panel)) !important;
-  border-bottom: 1px solid var(--dn-line);
+  border-bottom: 0;
   color: var(--dn-text) !important;
   min-height: 3.15rem;
   padding: 0.48rem 0.6rem;
@@ -470,10 +857,23 @@ body.body--dark .dn-main-logo {
 }
 
 .dn-upload-compact .q-uploader__subtitle {
-  color: var(--dn-muted) !important;
-  font-size: 0.67rem;
-  line-height: 1.2;
-  opacity: 1;
+  display: none !important;
+}
+
+.dn-upload-compact .q-uploader__header .q-uploader__title {
+  font-size: 0 !important;
+}
+
+.dn-upload-compact .q-uploader__header .q-uploader__title::before {
+  content: 'Upload data';
+  font-size: 0.82rem;
+  font-weight: 620;
+  line-height: 1.25;
+}
+
+.dn-upload-compact .q-uploader__file-status,
+.dn-upload-compact .q-uploader__file .q-linear-progress {
+  display: none !important;
 }
 
 .dn-upload-compact .q-uploader__header .q-btn {
@@ -510,6 +910,42 @@ body.body--dark .dn-main-logo {
   margin-bottom: 0;
 }
 
+.dn-upload-dragging,
+.dn-upload-compact.q-uploader--dnd {
+  background: var(--dn-soft) !important;
+  border-color: var(--dn-muted) !important;
+  border-style: solid !important;
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--dn-muted) 28%, transparent) !important;
+}
+
+.dn-upload-dragging .q-uploader__header,
+.dn-upload-compact.q-uploader--dnd .q-uploader__header {
+  background: transparent !important;
+}
+
+.dn-upload-dragging .q-uploader__header .q-uploader__title::before,
+.dn-upload-compact.q-uploader--dnd .q-uploader__header .q-uploader__title::before {
+  content: 'Drop data here';
+}
+
+.dn-control-card .dn-upload-compact {
+  min-height: 3.25rem;
+}
+
+.dn-control-card .dn-upload-compact .q-uploader__header {
+  min-height: 2.75rem;
+  padding: 0.38rem 0.5rem;
+}
+
+.dn-control-card .dn-upload-compact .q-uploader__list {
+  max-height: 5rem;
+  padding: 0.28rem 0.42rem;
+}
+
+.dn-control-card .dn-upload-compact .q-uploader__list:empty {
+  display: none;
+}
+
 .dn-action-primary,
 .dn-action-secondary {
   border-radius: 7px !important;
@@ -525,6 +961,12 @@ body.body--dark .dn-main-logo {
 
 .dn-action-primary:hover {
   filter: brightness(1.06);
+}
+
+.dn-action-primary:focus-visible,
+.dn-primary-action:focus-visible {
+  outline: 2px solid var(--dn-accent);
+  outline-offset: 2px;
 }
 
 .dn-action-secondary {
@@ -552,9 +994,79 @@ body.body--dark .dn-main-logo {
   width: 100%;
 }
 
+.dn-control-card .dn-inline-actions {
+  align-items: center;
+  gap: 0.08rem 0.42rem;
+  padding: 0.04rem 0;
+}
+
+.dn-control-card .dn-inline-actions .q-checkbox,
+.dn-control-card .dn-inline-actions .q-toggle {
+  flex: 0 1 auto;
+  margin: 0;
+  max-width: 100%;
+}
+
+.dn-control-card .dn-inline-actions .q-checkbox__label,
+.dn-control-card .dn-inline-actions .q-toggle__label {
+  white-space: normal;
+}
+
 .dn-inline-actions .dn-action-primary,
 .dn-inline-actions .dn-action-secondary {
   width: auto;
+}
+
+/* The main workflow action remains reachable while the compact controls
+   scroll. It is kept in normal flow as the final card child, so the final
+   setting is never hidden underneath it. */
+.dn-action-dock {
+  align-self: stretch;
+  background:
+    linear-gradient(
+      180deg,
+      color-mix(in srgb, var(--dn-panel) 74%, transparent),
+      var(--dn-panel) 34%
+    );
+  border-top: 1px solid color-mix(in srgb, var(--dn-line) 72%, transparent);
+  bottom: 0;
+  box-sizing: border-box;
+  flex: 0 0 auto;
+  margin: 0.34rem -0.95rem 0;
+  padding: 0.68rem 0.95rem 0.92rem;
+  position: sticky;
+  width: calc(100% + 1.9rem);
+  z-index: 5;
+}
+
+.dn-action-dock::before {
+  background: linear-gradient(180deg, transparent, var(--dn-panel));
+  content: "";
+  height: 0.55rem;
+  left: 0;
+  pointer-events: none;
+  position: absolute;
+  right: 0;
+  top: -0.55rem;
+}
+
+.dn-action-dock .dn-action-primary,
+.dn-action-dock .dn-primary-action {
+  min-height: 2.45rem;
+  width: 100%;
+}
+
+.dn-action-plot-icon {
+  flex: 0 0 auto;
+  font-size: 1.2rem;
+  height: 1em;
+  margin-right: 0.4rem;
+  width: 1em;
+}
+
+.dn-action-label {
+  color: inherit;
+  line-height: 1;
 }
 
 .dn-chart-wrap {
@@ -581,8 +1093,36 @@ body.body--dark .dn-main-logo {
   position: absolute;
   right: 0.65rem;
   top: 0.65rem;
+  transition: opacity 140ms ease, transform 140ms ease;
   width: auto;
   z-index: 4;
+}
+
+/* Mouse users see the plot controls only when engaging with the plot. The
+   controls remain in the tab order, so focus-within also reveals them. */
+@media (hover: hover) and (pointer: fine) {
+  .dn-plot-shell .dn-plot-toolbar {
+    opacity: 0;
+    pointer-events: none;
+    transform: translateY(-0.22rem);
+  }
+
+  .dn-plot-shell:hover .dn-plot-toolbar,
+  .dn-plot-shell:focus-within .dn-plot-toolbar,
+  .dn-plot-toolbar:focus-within {
+    opacity: 1;
+    pointer-events: auto;
+    transform: translateY(0);
+  }
+}
+
+/* Touch and other no-hover inputs must never depend on a hover reveal. */
+@media (hover: none), (pointer: coarse) {
+  .dn-plot-shell .dn-plot-toolbar {
+    opacity: 1;
+    pointer-events: auto;
+    transform: none;
+  }
 }
 
 .dn-plot-tool {
@@ -611,6 +1151,104 @@ body.body--dark .dn-main-logo {
   outline-offset: 1px;
 }
 
+.dn-plot-download-trigger[aria-expanded="true"] {
+  background: var(--dn-hover) !important;
+  color: var(--dn-accent) !important;
+}
+
+.dn-plot-download-menu {
+  background: var(--dn-panel) !important;
+  border: 1px solid var(--dn-line);
+  border-radius: 7px !important;
+  box-shadow: 0 10px 28px color-mix(in srgb, var(--dn-text) 16%, transparent) !important;
+  color: var(--dn-text) !important;
+  min-width: 7.5rem;
+  padding: 0.28rem;
+}
+
+.dn-plot-download-menu > .q-list,
+.dn-plot-download-menu .q-list {
+  background: transparent !important;
+  padding: 0;
+}
+
+.dn-plot-download-item {
+  border-radius: 5px;
+  color: var(--dn-text) !important;
+  font-size: 0.82rem;
+  font-weight: 400;
+  min-height: 2.15rem !important;
+  padding: 0.32rem 0.55rem !important;
+}
+
+.dn-plot-download-item:hover,
+.dn-plot-download-item:focus-within {
+  background: var(--dn-hover) !important;
+  color: var(--dn-accent) !important;
+}
+
+.dn-plot-dialog {
+  background: var(--dn-panel) !important;
+  border: 1px solid var(--dn-line) !important;
+  border-radius: 10px !important;
+  box-shadow: 0 18px 54px color-mix(in srgb, var(--dn-text) 20%, transparent) !important;
+  color: var(--dn-text) !important;
+  display: flex !important;
+  flex-direction: column;
+  gap: 0.75rem !important;
+  height: min(90dvh, 56rem);
+  max-height: none !important;
+  max-width: none !important;
+  overflow: hidden;
+  padding: 0.9rem 1rem 1rem !important;
+  width: min(94vw, 88rem);
+}
+
+.dn-plot-dialog-header {
+  align-items: center;
+  border-bottom: 1px solid var(--dn-line);
+  flex: 0 0 auto;
+  min-height: 2.25rem;
+  padding: 0 0 0.55rem;
+  width: 100%;
+}
+
+.dn-plot-dialog-header .dn-panel-title {
+  margin: 0;
+}
+
+.dn-plot-dialog-header .q-btn {
+  color: var(--dn-muted) !important;
+}
+
+.dn-plot-dialog-header .q-btn:hover,
+.dn-plot-dialog-header .q-btn:focus-visible {
+  background: var(--dn-hover) !important;
+  color: var(--dn-accent) !important;
+}
+
+.dn-chart-wrap-large {
+  display: flex;
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow: hidden;
+  width: 100%;
+}
+
+.dn-chart-wrap-large .dn-chart {
+  display: flex;
+  flex: 1 1 auto;
+  flex-direction: column;
+  height: 100%;
+  min-height: 0;
+}
+
+.dn-chart-wrap-large .dn-chart svg {
+  flex: 1 1 auto;
+  height: auto;
+  min-height: 0;
+}
+
 .dn-chart {
   background: linear-gradient(180deg, var(--dn-soft), var(--dn-panel));
   border: 1px solid var(--dn-line);
@@ -633,12 +1271,6 @@ body.body--dark .dn-main-logo {
   height: 230px;
   overflow: visible;
   width: 100%;
-}
-
-.dn-grid-lines path {
-  fill: none;
-  stroke: var(--dn-line);
-  stroke-width: 0.7;
 }
 
 .dn-line polyline {
@@ -727,6 +1359,22 @@ body.body--dark .dn-main-logo {
   line-height: 1.25;
 }
 
+.dn-simulation-progress {
+  color: var(--dn-accent) !important;
+  height: 0.32rem !important;
+  margin: 0.3rem 0 0.15rem;
+  width: 100%;
+}
+
+.dn-simulation-progress .q-linear-progress__track {
+  background: var(--dn-line) !important;
+  opacity: 0.72 !important;
+}
+
+.dn-simulation-progress .q-linear-progress__model {
+  background: var(--dn-accent) !important;
+}
+
 .dn-overview {
   gap: 0 !important;
   margin: 0 auto;
@@ -742,6 +1390,35 @@ body.body--dark .dn-main-logo {
   max-height: none;
   object-fit: contain;
   width: min(25.5rem, 72vw);
+}
+
+.dn-main-logo-frame {
+  display: block;
+  line-height: 0;
+  margin: 0 auto 0.4rem;
+  width: min(25.5rem, 72vw);
+}
+
+.dn-main-logo-frame .dn-main-logo {
+  margin: 0;
+  width: 100%;
+}
+
+body.body--dark .dn-main-logo-frame .dn-main-logo {
+  -webkit-mask-image: radial-gradient(
+    circle 6.1px at 47.95% 3%,
+    transparent 0 86%,
+    #000 100%
+  );
+  -webkit-mask-repeat: no-repeat;
+  -webkit-mask-size: 100% 100%;
+  mask-image: radial-gradient(
+    circle 6.1px at 47.95% 3%,
+    transparent 0 86%,
+    #000 100%
+  );
+  mask-repeat: no-repeat;
+  mask-size: 100% 100%;
 }
 
 .dn-overview-copy {
@@ -879,6 +1556,13 @@ body.body--dark .dn-main-logo {
   margin: 0.35rem 0;
 }
 
+@container dn-controls (max-width: 24rem) {
+  .dn-source-grid,
+  .dn-data-fields {
+    grid-template-columns: 1fr;
+  }
+}
+
 @media (max-width: 1100px) {
   .dn-page-host {
     padding-left: 1.25rem;
@@ -918,19 +1602,38 @@ body.body--dark .dn-main-logo {
     grid-template-columns: 1fr;
   }
 
-  .dn-control-card {
-    max-height: none;
-    min-height: 0;
-    overflow: visible;
+  .dn-control-card,
+  .dn-preview-card {
+    max-height: max(14rem, calc(100dvh - 12.3rem));
+    overflow-x: hidden;
+    overflow-y: auto;
   }
 
   .dn-preview-card {
-    min-height: 24rem;
+    min-height: min(24rem, max(14rem, calc(100dvh - 12.3rem)));
   }
 
   .dn-main-logo {
     margin-bottom: 0.3rem;
     width: min(18rem, 82vw);
+  }
+
+  .dn-main-logo-frame {
+    margin-bottom: 0.3rem;
+    width: min(18rem, 82vw);
+  }
+
+  body.body--dark .dn-main-logo-frame .dn-main-logo {
+    -webkit-mask-image: radial-gradient(
+      circle 4.3px at 47.95% 3%,
+      transparent 0 86%,
+      #000 100%
+    );
+    mask-image: radial-gradient(
+      circle 4.3px at 47.95% 3%,
+      transparent 0 86%,
+      #000 100%
+    );
   }
 
   .dn-overview-copy {
@@ -946,7 +1649,6 @@ body.body--dark .dn-main-logo {
     padding: 1.05rem 1.1rem;
   }
 
-  .dn-source-grid,
   .dn-field-grid-three,
   .dn-cache-row {
     grid-template-columns: 1fr;
@@ -955,9 +1657,34 @@ body.body--dark .dn-main-logo {
 
 @media (max-width: 520px) {
   .dn-field-grid,
+  .dn-source-grid,
+  .dn-data-fields,
   .dn-stat-grid,
   .dn-cache-controls {
     grid-template-columns: 1fr;
+  }
+
+  .dn-control-card,
+  .dn-preview-card {
+    max-height: max(13rem, calc(100dvh - 11.3rem));
+  }
+
+  .dn-control-card {
+    padding-left: 0.75rem !important;
+    padding-right: 0.75rem !important;
+  }
+
+  .dn-preview-card {
+    min-height: min(22rem, max(13rem, calc(100dvh - 11.3rem)));
+  }
+
+  .dn-action-dock {
+    margin-left: -0.75rem;
+    margin-right: -0.75rem;
+    padding-bottom: max(0.92rem, env(safe-area-inset-bottom));
+    padding-left: 0.75rem;
+    padding-right: 0.75rem;
+    width: calc(100% + 1.5rem);
   }
 
   .dn-page-title {
@@ -982,5 +1709,47 @@ body.body--dark .dn-main-logo {
     min-height: 1.85rem !important;
     min-width: 1.85rem !important;
     width: 1.85rem !important;
+  }
+
+  .dn-plot-dialog {
+    border-radius: 8px !important;
+    height: calc(100dvh - 1rem);
+    padding: 0.75rem !important;
+    width: calc(100vw - 1rem);
+  }
+}
+
+@media (max-height: 620px) {
+  .dn-drawer-content {
+    padding-bottom: 0.8rem;
+  }
+
+  .dn-drawer-content > .q-space {
+    display: none;
+  }
+
+  .dn-nav-list {
+    flex: 1 1 auto;
+    min-height: 5rem;
+    overflow-x: hidden;
+    overflow-y: auto;
+    scrollbar-color: color-mix(in srgb, var(--dn-muted) 45%, transparent) transparent;
+    scrollbar-gutter: stable;
+    scrollbar-width: thin;
+  }
+
+  .dn-sidebar-links {
+    flex: 0 0 auto;
+    margin-top: 0.45rem;
+  }
+
+  .dn-version {
+    flex: 0 0 auto;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .dn-plot-toolbar {
+    transition: none;
   }
 }

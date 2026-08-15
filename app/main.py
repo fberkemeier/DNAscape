@@ -7,10 +7,12 @@ from pathlib import Path
 
 from nicegui import app as nicegui_app
 from nicegui import ui
+from nicegui.elements.button import Button
+from nicegui.elements.tooltip import Tooltip
 
 from app import __version__
 from app.pages import PAGE_RENDERERS
-from app.pages.common import DATA_ICON
+from app.pages.common import DATA_ICON, PLOT_ICON_SVG
 
 APP_DIR = Path(__file__).resolve().parent
 ROOT_DIR = APP_DIR.parent
@@ -22,7 +24,7 @@ NAV_ITEMS = (
     ("data-management", "Data Manager", DATA_ICON),
     ("mapping", "Mapping", "map"),
     ("simulation", "Simulation", "monitor"),
-    ("plotting", "Plotting", "show_chart"),
+    ("plotting", "Plotting", None),
     ("cached-files", "Cached Files", "inventory_2"),
     ("resources", "Resources", "menu_book"),
 )
@@ -76,9 +78,9 @@ def index() -> None:
         render_navigation.refresh()
         render_active_page.refresh()
 
-    # ``top_corner=False`` keeps the global header above the drawer; Quasar's
-    # breakpoint still switches it to overlay behavior on narrow screens.
-    with ui.left_drawer(value=True, bordered=True, top_corner=False).props(
+    # The drawer occupies the full left edge, including the header corner.
+    # Quasar's breakpoint still switches it to overlay behavior on narrow screens.
+    with ui.left_drawer(value=True, bordered=True, top_corner=True).props(
         "width=240 breakpoint=900"
     ) as drawer:
         drawer.classes("dn-drawer").mark("navigation-drawer")
@@ -100,11 +102,26 @@ def index() -> None:
             def render_navigation() -> None:
                 with ui.column().classes("dn-nav-list"):
                     for slug, label, icon in NAV_ITEMS:
-                        button = ui.button(
-                            label,
-                            icon=icon,
-                            on_click=_handler(navigate, slug),
-                        ).props("flat no-caps align=left").mark(f"nav-{slug}")
+                        if slug == "plotting":
+                            with (
+                                ui.button(on_click=_handler(navigate, slug))
+                                .props("flat no-caps align=left")
+                                .mark(f"nav-{slug}")
+                            ) as button:
+                                ui.html(PLOT_ICON_SVG).classes(
+                                    "dn-nav-plot-icon dn-plot-icon-wrap"
+                                )
+                                ui.label(label).classes("dn-nav-label")
+                        else:
+                            button = (
+                                ui.button(
+                                    label,
+                                    icon=icon,
+                                    on_click=_handler(navigate, slug),
+                                )
+                                .props("flat no-caps align=left")
+                                .mark(f"nav-{slug}")
+                            )
                         button.classes(
                             "dn-nav-button dn-nav-active"
                             if page_state["active"] == slug
@@ -125,19 +142,105 @@ def index() -> None:
                     ui.icon("lightbulb").tooltip("Report an issue or suggest a feature")
             ui.label(f"v{__version__.replace('-prototype', '')}").classes("dn-version")
 
-    with ui.header(elevated=False).classes("dn-header"):
-        (
-            ui.button(icon="menu", on_click=drawer.toggle)
-            .props('flat round dense aria-label="Collapse or expand navigation"')
-            .classes("dn-menu-button")
-            .mark("drawer-toggle")
-            .tooltip("Collapse or expand navigation")
+    drawer_toggle_button: Button
+    drawer_toggle_tooltip: Tooltip
+
+    def sync_drawer_toggle() -> None:
+        drawer_is_open = bool(drawer.value)
+        label = "Collapse navigation" if drawer_is_open else "Expand navigation"
+        icon = "first_page" if drawer_is_open else "last_page"
+        drawer_toggle_button.set_icon(icon)
+        drawer_toggle_button.props["aria-label"] = label
+        drawer_toggle_tooltip.set_text(label)
+
+    def toggle_drawer() -> None:
+        drawer.toggle()
+        sync_drawer_toggle()
+
+    def toggle_theme() -> None:
+        dark_mode.toggle()
+
+    def open_external(target: str) -> None:
+        ui.navigate.to(target, new_tab=True)
+
+    def external_menu_item(
+        label: str,
+        marker: str,
+        target: str,
+        *,
+        icon: str | None = None,
+        github_icon: bool = False,
+    ) -> None:
+        with (
+            ui.menu_item(on_click=_handler(open_external, target))
+            .props(f'aria-label="{label} (opens in a new tab)"')
+            .classes("dn-app-menu-item")
+            .mark(marker)
+        ):
+            with ui.item_section().props("avatar"):
+                if github_icon:
+                    ui.html(GITHUB_ICON_SVG).classes("dn-app-menu-icon")
+                elif icon is not None:
+                    ui.icon(icon).classes("dn-app-menu-icon")
+            with ui.item_section():
+                ui.label(label)
+
+    @ui.refreshable
+    def render_app_menu_items() -> None:
+        use_light_theme = bool(dark_mode.value)
+        theme_label = "Light theme" if use_light_theme else "Dark theme"
+        theme_icon = "light_mode" if use_light_theme else "dark_mode"
+        with (
+            ui.menu_item(on_click=toggle_theme)
+            .props(f'aria-label="Switch to {theme_label.lower()}"')
+            .classes("dn-app-menu-item")
+            .mark("menu-theme")
+        ):
+            with ui.item_section().props("avatar"):
+                ui.icon(theme_icon).classes("dn-app-menu-icon").mark("theme-action-icon")
+            with ui.item_section():
+                ui.label(theme_label)
+        external_menu_item(
+            "Documentation",
+            "menu-documentation",
+            DOCS_URL,
+            icon="menu_book",
         )
+        external_menu_item("GitHub", "menu-github", GITHUB_URL, github_icon=True)
+        external_menu_item(
+            "Raise an issue",
+            "menu-issue",
+            f"{GITHUB_URL}/issues",
+            icon="lightbulb",
+        )
+
+    drawer.on_value_change(lambda: sync_drawer_toggle())
+    dark_mode.on_value_change(lambda: render_app_menu_items.refresh())
+
+    with ui.header(elevated=False).classes("dn-header"):
+        with (
+            ui.button(icon="first_page", on_click=toggle_drawer)
+            .props('flat round dense aria-label="Collapse navigation"')
+            .classes("dn-drawer-toggle")
+            .mark("drawer-toggle")
+        ) as drawer_toggle_button:
+            drawer_toggle_tooltip = ui.tooltip("Collapse navigation")
         ui.space()
         ui.badge("PROTOTYPE").props("outline").classes("dn-header-badge")
-        ui.button(icon="contrast", on_click=dark_mode.toggle).props("flat round dense").classes(
-            "dn-theme-button"
-        ).tooltip("Toggle light and dark theme")
+        with (
+            ui.button(icon="menu")
+            .props('flat round dense aria-label="Open application menu"')
+            .classes("dn-app-menu-button")
+            .mark("app-menu-toggle")
+        ):
+            ui.tooltip("Application menu")
+            with (
+                ui.menu()
+                .props('anchor="bottom right" self="top right"')
+                .classes("dn-app-menu")
+                .mark("app-menu")
+            ):
+                render_app_menu_items()
 
     with ui.column().classes("dn-page-host"):
 

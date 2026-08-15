@@ -1,5 +1,5 @@
 <svg xmlns="http://www.w3.org/2000/svg" width="960" height="420" viewBox="0 0 960 420" role="img" aria-labelledby="title desc">
-  <title id="title">Placeholder Streamlit overview</title>
+  <title id="title">Placeholder NiceGUI overview</title>
   <desc id="desc">A placeholder screenshot frame for the app overview page.</desc>
   <rect width="960" height="420" fill="#f7f8fa"/>
   <rect x="46" y="34" width="868" height="336" rx="8" fill="#ffffff" stroke="#cfd6df"/>

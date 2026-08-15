@@ -14,7 +14,7 @@ _PROGRESS_STATE = local()
 def progress_context(report=None, cancel=None, *, suppress_output=False):
     """Route ETA updates to one worker-local callback.
 
-    This avoids redirecting process-global stdout when the Streamlit app runs
+    This avoids redirecting process-global stdout when a local app runs
     scientific work in a background thread.  Outside this context ``etaf`` and
     ``etaferr`` retain their existing console behaviour.
     """

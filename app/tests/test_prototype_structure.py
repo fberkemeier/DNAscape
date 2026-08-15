@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import ast
+import re
 from pathlib import Path
 
 APP_DIR = Path(__file__).resolve().parents[1]
@@ -33,6 +34,30 @@ def _tree(path: Path) -> ast.Module:
     return ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
 
 
+def _css_declarations(styles: str, selector: str) -> dict[str, str]:
+    """Return declarations for a simple top-level CSS selector."""
+
+    match = re.search(rf"{re.escape(selector)}\s*\{{([^{{}}]*)\}}", styles, re.DOTALL)
+    if match is None:
+        match = next(
+            (
+                candidate
+                for candidate in re.finditer(r"([^{}]+)\{([^{}]*)\}", styles, re.DOTALL)
+                if selector
+                in {item.strip() for item in candidate.group(1).split(",")}
+            ),
+            None,
+        )
+    assert match is not None, f"missing CSS selector: {selector}"
+    declarations: dict[str, str] = {}
+    for declaration in match.group(match.lastindex or 1).split(";"):
+        if ":" not in declaration:
+            continue
+        name, value = declaration.split(":", 1)
+        declarations[name.strip()] = " ".join(value.split())
+    return declarations
+
+
 def test_all_seven_page_modules_exist_and_define_render() -> None:
     for file_name in PAGE_MODULES:
         path = APP_DIR / "pages" / file_name
@@ -45,15 +70,24 @@ def test_all_seven_page_modules_exist_and_define_render() -> None:
         assert "render" in definitions, file_name
 
 
-def test_prototype_never_imports_scientific_package() -> None:
+def test_ui_only_imports_scientific_package_through_simulation_service() -> None:
+    scientific_imports: list[tuple[str, str]] = []
     for path in APP_DIR.rglob("*.py"):
         if "tests" in path.parts:
             continue
         for node in ast.walk(_tree(path)):
             if isinstance(node, ast.Import):
-                assert all(alias.name != "dnascape" and not alias.name.startswith("dnascape.") for alias in node.names)
+                for alias in node.names:
+                    if alias.name == "dnascape" or alias.name.startswith("dnascape."):
+                        scientific_imports.append((path.name, alias.name))
             elif isinstance(node, ast.ImportFrom):
-                assert node.module != "dnascape" and not str(node.module).startswith("dnascape.")
+                module = str(node.module)
+                if module == "dnascape" or module.startswith("dnascape."):
+                    scientific_imports.append((path.name, module))
+    assert scientific_imports
+    assert {file_name for file_name, _module in scientific_imports} == {
+        "simulation_service.py"
+    }
 
 
 def test_shell_exposes_complete_navigation_and_local_entrypoint() -> None:
@@ -66,12 +100,25 @@ def test_shell_exposes_complete_navigation_and_local_entrypoint() -> None:
     assert 'mark("navigation-drawer")' in source
     assert 'mark("drawer-toggle")' in source
     assert "value=True" in source
-    assert "top_corner=False" in source
-    assert 'aria-label="Collapse or expand navigation"' in source
+    assert "top_corner=True" in source
+    assert "top_corner=False" not in source
+    assert 'icon = "first_page" if drawer_is_open else "last_page"' in source
+    assert 'mark("app-menu-toggle")' in source
+    assert 'mark("app-menu")' in source
+    assert 'mark("menu-theme")' in source
+    assert 'mark("theme-action-icon")' in source
+    assert 'theme_icon = "light_mode" if use_light_theme else "dark_mode"' in source
     assert 'aria-label="Go to Overview"' in source
     assert "GITHUB_ICON_SVG" in source
     assert 'ui.icon("code")' not in source
     assert '("data-management", "Data Manager", DATA_ICON)' in source
+    assert '("plotting", "Plotting", None)' in source
+    assert "PLOT_ICON_SVG" in source
+    menu_order = tuple(
+        source.index(f'"{marker}"')
+        for marker in ("menu-theme", "menu-documentation", "menu-github", "menu-issue")
+    )
+    assert menu_order == tuple(sorted(menu_order))
     assert '"table_view"' not in source
     assert '"database"' not in source
     assert (APP_DIR / "__main__.py").is_file()
@@ -92,9 +139,12 @@ def test_workflow_copy_and_data_sections_use_updated_ui_semantics() -> None:
     for page in ("mapping.py", "simulation.py", "plotting.py"):
         assert "icon=DATA_ICON" in ui_sources[page]
         assert 'panel_title("Controls")' in ui_sources[page]
+        assert "action_dock" in ui_sources[page]
+        assert "with action_dock():" in ui_sources[page]
         assert "stat_strip(" in ui_sources[page]
         assert "preview_plot(" in ui_sources[page]
         assert "raw_output_controls(" in ui_sources[page]
+        assert "ui.radio(" not in ui_sources[page]
         assert "dn-plot-export-actions" not in ui_sources[page]
         assert 'expansion("Export plot"' not in ui_sources[page]
         for label in (
@@ -104,14 +154,39 @@ def test_workflow_copy_and_data_sections_use_updated_ui_semantics() -> None:
             "Line / bar color",
             "Heatmap palette",
             "Histogram bins",
-            "Grid",
             "Colorbar",
             "Log Y",
             "Invert Y",
         ):
             assert f'label="{label}"' in ui_sources[page] or f'("{label}"' in ui_sources[page]
-    for icon in ("fit_screen", "download", "delete_outline"):
+    for icon in ("fit_screen", "download"):
         assert f'icon="{icon}"' in ui_sources["common.py"]
+    assert 'icon="delete_outline"' not in ui_sources["common.py"]
+    for page in ("mapping.py", "simulation.py", "plotting.py"):
+        assert 'checkbox("Grid"' not in ui_sources[page]
+    assert "def action_dock(" in ui_sources["common.py"]
+    assert 'classes("dn-action-dock")' in ui_sources["common.py"]
+    assert 'mark("scientific-action-dock")' in ui_sources["common.py"]
+    assert '["Profile", "Constant"],' in ui_sources["common.py"]
+    assert 'mark(f"source-{marker}-mode")' in ui_sources["common.py"]
+    assert "ui.radio(" not in ui_sources["common.py"]
+    assert 'mark("plotting-source-mode")' in ui_sources["plotting.py"]
+    assert 'mark("plotting-prepared-fields")' in ui_sources["plotting.py"]
+    assert 'mark("plotting-upload-fields")' in ui_sources["plotting.py"]
+    assert "PLOT_ICON_SVG" in ui_sources["overview.py"]
+    assert "plot_action_button" in ui_sources["plotting.py"]
+    assert "plot_action_button()" in ui_sources["plotting.py"]
+    assert "def data_upload(" in ui_sources["common.py"]
+    assert 'ui.upload(label="Upload data", auto_upload=False)' in ui_sources["common.py"]
+    assert 'classes("dn-upload-field")' in ui_sources["common.py"]
+    assert 'classes("dn-upload-formats")' in ui_sources["common.py"]
+    assert '"dragenter"' in ui_sources["common.py"]
+    assert '"dragleave"' in ui_sources["common.py"]
+    assert "dn-upload-dragging" in ui_sources["common.py"]
+    assert 'value="Upload a profile"' in ui_sources["common.py"]
+    assert 'marker="data-manager-upload"' in ui_sources["data_management.py"]
+    assert 'marker="plotting-data-upload"' in ui_sources["plotting.py"]
+    assert sum(source.count("ui.upload(") for source in ui_sources.values()) == 1
     assert '"Raw data"' in ui_sources["common.py"]
     visible_prototype_copy = (
         "Interface prototype",
@@ -139,6 +214,91 @@ def test_styles_include_theme_and_responsive_breakpoints() -> None:
     assert ".dn-upload-compact .q-uploader__header" in styles
     assert ".dn-plot-export-actions" not in styles
     assert ".dn-icon-link > .q-icon" in styles
+    assert ".dn-source-compact" in styles
+    assert ".dn-source-mode" in styles
+    assert ".dn-source-fields" in styles
+    assert ".dn-action-dock" in styles
+    assert "bottom: 0" in styles
+    assert "position: sticky" in styles
+    assert ".dn-nav-active" in styles
+    assert "font-weight: 400 !important" in styles
+    assert ".dn-drawer-toggle" in styles
+    assert ".dn-app-menu-button" in styles
+    assert ".dn-app-menu-item" in styles
+    assert ".dn-main-logo-frame" in styles
+    assert "mask-image: radial-gradient" in styles
+    assert ".dn-upload-dragging" in styles
+    assert "Drop data here" in styles
+    assert ".dn-upload-formats" in styles
+
+
+def test_scientific_layout_hooks_keep_controls_aligned_and_actions_clear() -> None:
+    styles = (APP_DIR / "static" / "styles.css").read_text(encoding="utf-8")
+
+    control_card = _css_declarations(styles, ".dn-control-card")
+    assert control_card["scrollbar-gutter"] == "stable both-edges"
+    assert "calc(100dvh - 14rem)" in control_card["max-height"]
+
+    expansion = _css_declarations(styles, ".dn-expansion")
+    assert expansion["width"] == "100%"
+    assert expansion["margin"].endswith("!important")
+    adjacent_expansion = _css_declarations(styles, ".dn-expansion + .dn-expansion")
+    assert adjacent_expansion["margin-top"] != "0"
+
+    action_dock = _css_declarations(styles, ".dn-action-dock")
+    assert action_dock["bottom"] == "0"
+    assert action_dock["position"] == "sticky"
+    assert "padding" in action_dock
+
+    common = (APP_DIR / "pages" / "common.py").read_text(encoding="utf-8")
+    for page_name in ("mapping.py", "simulation.py", "plotting.py"):
+        page = (APP_DIR / "pages" / page_name).read_text(encoding="utf-8")
+        assert "with action_dock():" in page
+    assert 'classes("dn-action-dock")' in common
+
+
+def test_navigation_theme_and_compact_height_styles_are_explicit() -> None:
+    styles = (APP_DIR / "static" / "styles.css").read_text(encoding="utf-8")
+
+    drawer_toggle = _css_declarations(styles, ".dn-drawer-toggle")
+    assert drawer_toggle["background"] == "transparent !important"
+    assert drawer_toggle["border"] == "0 !important"
+    assert drawer_toggle["box-shadow"] == "none !important"
+
+    drawer_content = _css_declarations(styles, ".dn-drawer-content")
+    assert drawer_content["overflow-y"] == "hidden"
+    compact_height = styles[styles.index("@media (max-height: 620px)") :]
+    compact_drawer_content = _css_declarations(compact_height, ".dn-drawer-content")
+    assert compact_drawer_content.get("overflow-y", "hidden") == "hidden"
+    compact_nav = _css_declarations(compact_height, ".dn-nav-list")
+    assert compact_nav["overflow-y"] == "auto"
+
+    dark_nav = _css_declarations(styles, "body.body--dark .dn-nav-button")
+    assert dark_nav["color"] == "var(--dn-text) !important"
+    assert "body.body--dark .dn-nav-button .q-btn__content" in styles
+    assert "body.body--dark .dn-nav-button .q-btn__content .block" in styles
+    assert "body.body--dark .dn-nav-active" in styles
+
+    # Both logo sizes use the same slightly-left, slightly-raised crescent cutout.
+    assert re.search(r"circle 2\.5\d*px at 47\.95% 3(?:\.0)?%", styles)
+    assert re.search(r"circle 6\.1\d*px at 47\.95% 3(?:\.0)?%", styles)
+
+
+def test_plotting_and_issue_icons_have_shared_semantics() -> None:
+    common = (APP_DIR / "pages" / "common.py").read_text(encoding="utf-8")
+    main = (APP_DIR / "main.py").read_text(encoding="utf-8")
+    overview = (APP_DIR / "pages" / "overview.py").read_text(encoding="utf-8")
+    plotting = (APP_DIR / "pages" / "plotting.py").read_text(encoding="utf-8")
+
+    combined = "\n".join((common, main, overview, plotting))
+    assert "PLOT_ICON_SVG" in combined
+    assert "dn-plot-icon" in combined
+    assert "dn-plot-icon-axis" in combined
+    assert "dn-plot-icon-line" in combined
+    assert 'icon="multiline_chart"' not in plotting
+    assert '"plotting", "Plotting", "multiline_chart"' not in main
+    assert '"menu-issue"' in main
+    assert 'icon="lightbulb"' in main
 
 
 def test_reused_logo_assets_exist() -> None:

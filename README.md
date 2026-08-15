@@ -50,28 +50,17 @@ pip install .
 ### NiceGUI interface prototype
 
 The new NiceGUI prototype mirrors the DNAscape workflow, visual style, pages,
-forms, and controls. It is currently an interface-only prototype: navigation
-and inputs can be explored, but scientific actions are not connected yet. The
-prototype requires Python 3.10 or newer.
+forms, and controls. Its Simulation page now runs bounded constant-input
+ensembles through `rsim` in a background worker and displays live progress and
+a result plot. Its optional detailed mode adds time-series and space-time
+outputs, while plot and selected raw-data downloads are generated lazily.
+Profile inputs and the remaining scientific actions are being connected
+incrementally. The prototype requires Python 3.10 or newer.
 
 ```bash
 pip install -r app/requirements.txt
 python -m app
 ```
-
-### Preserved Streamlit app
-
-The existing Streamlit implementation remains available with its data upload,
-conversion, mapping, simulation, plotting, download, and session-cache workflows.
-
-```bash
-pip install -r app_streamlit/requirements.txt
-streamlit run app_streamlit/streamlit_app.py
-```
-
-Its Data Management page supports DNAscape-ready CSV/TSV/TXT/NPY-style files
-and genomic tracks such as bedGraph/BDG and BigWig/BW. BigWig import uses the
-optional `pyBigWig` dependency included in `app_streamlit/requirements.txt`.
 
 ## Workflows
 
@@ -168,7 +157,6 @@ For exploratory modelling, the Python API and notebooks are recommended because 
 ```text
 dnascape/      Python package: mapping, simulation, fitting, plotting, IO
 app/           NiceGUI interface prototype
-app_streamlit/ Preserved Streamlit application
 examples/      Jupyter notebooks and compact analysis examples
 docs/          ReadTheDocs source
 data/          small bundled data used by examples
@@ -178,7 +166,7 @@ data/          small bundled data used by examples
 
 DNAscape is developed as a Python package first. The repository includes the
 Python API, notebooks, a CLI for scripted runs, a NiceGUI interface prototype,
-and the preserved Streamlit application.
+and its automated tests and documentation.
 
 ## Citation
 

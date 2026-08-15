@@ -7,10 +7,10 @@ from collections.abc import Callable
 from nicegui import ui
 
 from app.pages.common import (
+    data_upload,
     expansion,
     inert_button,
     mini_table,
-    muted,
     page_intro,
     panel,
     panel_title,
@@ -30,16 +30,16 @@ def render(_navigate: Callable[[str], None]) -> None:
         with ui.column().classes("dn-control-stack"):
             with panel(extra_classes="dn-control-card"):
                 panel_title("Input")
-                ui.upload(label="Upload", auto_upload=False).props(
-                    "flat bordered accept=.csv,.tsv,.txt,.npy,.npz,.bw,.bigwig,.bedgraph,.gz"
-                ).classes("dn-upload-compact")
+                data_upload(
+                    accept=".csv,.tsv,.txt,.npy,.npz,.bw,.bigwig,.bedgraph,.gz",
+                    accepted_formats="CSV, TSV, TXT, NumPy, BigWig, bedGraph, GZ",
+                    marker="data-manager-upload",
+                )
                 ui.select(
                     ["No retained uploads"],
                     value="No retained uploads",
                     label="Retained source",
                 ).classes("dn-field")
-                muted("Supported formats: CSV, TSV, TXT, NumPy, BigWig, bedGraph, and gzip variants.")
-
                 with expansion("Source inspection", expanded=True, icon="manage_search"):
                     with two_column_fields():
                         ui.select(

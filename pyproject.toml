@@ -28,16 +28,10 @@ genomics = [
 app = [
   "nicegui>=3.12,<4",
 ]
-streamlit = [
-  # Preserved Streamlit interface and optional genomic-track support.
-  "streamlit>=1.58",
-  "pyBigWig",
-]
 test = [
   "pytest>=8",
-  # Exercise both local interfaces; AppTest uses the real Streamlit widget tree.
+  # Exercise the local NiceGUI interface with its real component tree.
   "nicegui>=3.12,<4",
-  "streamlit>=1.58",
 ]
 
 [project.urls]
@@ -52,15 +46,15 @@ dnascape = "dnascape.cli:main"
 packages = ["dnascape"]
 
 [tool.pytest.ini_options]
-testpaths = ["dnascape/tests", "app/tests", "app_streamlit/tests"]
+testpaths = ["dnascape/tests", "app/tests"]
 addopts = "-ra"
 
 [tool.pyright]
-# The local front ends are the typed application boundary.  The historical
+# The local front end is the typed application boundary.  The historical
 # scientific modules remain dynamically typed and are covered by numerical
 # regression tests instead of being hidden among hundreds of low-signal union
 # diagnostics.
-include = ["app", "app_streamlit"]
+include = ["app"]
 exclude = [".venv", ".pytest_cache"]
 venvPath = "."
 venv = ".venv"

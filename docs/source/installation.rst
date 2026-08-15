@@ -51,20 +51,9 @@ NiceGUI Interface Prototype
    pip install -r app/requirements.txt
    python -m app
 
-The interface prototype includes Overview, Data Management, Mapping,
-Simulation, Plotting, Cached Files, and Resources. Scientific actions are not
-connected yet.
-
-Preserved Streamlit App
------------------------
-
-.. code-block:: bash
-
-   pip install -r app_streamlit/requirements.txt
-   streamlit run app_streamlit/streamlit_app.py
-
-The existing Streamlit workflows remain available during the interface
-transition.
+The interface includes Overview, Data Manager, Mapping, Simulation, Plotting,
+Cached Files, and Resources. Constant-input Simulation runs are connected to
+``rsim`` with bounded optional detailed outputs and plot/raw-data downloads.
 
 Docs
 ----

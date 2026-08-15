@@ -11,7 +11,7 @@ turns timing, initiation, fork-direction, and custom tracks into kinetic
 features such as firing rate, fork speed, replicated fraction, fork density,
 origin efficiency, and completion time.
 
-Use it as a Python package for reproducible analysis, or as a Streamlit app
+Use it as a Python package for reproducible analysis, or as a NiceGUI app
 for interactive data conversion, mapping, simulation, plotting, and export.
 
 Quick Links
@@ -21,7 +21,7 @@ Quick Links
 * :doc:`mappingfunctions`: infer and translate features with ``rmap``.
 * :doc:`simulationengine`: simulate replication programmes with ``rsim``.
 * :doc:`datamanagement`: prepare tables, arrays, BigWig, and bedGraph tracks.
-* :doc:`streamlitapp`: use the interactive app.
+* :doc:`niceguiapp`: use the interactive app.
 * :doc:`api_reference`: public functions and feature names.
 
 rmap / rsim
@@ -61,7 +61,7 @@ Contents
    datamanagement
    mappingfunctions
    simulationengine
-   streamlitapp
+   niceguiapp
    notebooks
    examples
    visualisation
