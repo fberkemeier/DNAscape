@@ -47,16 +47,27 @@ pip install -r requirements.txt
 pip install .
 ```
 
-### NiceGUI interface prototype
+### NiceGUI interface
 
-The new NiceGUI prototype mirrors the DNAscape workflow, visual style, pages,
-forms, and controls. Its Simulation page now runs bounded scalar or uploaded
-kinetic fields through `rsim` in a background worker and displays live progress
-and a result plot. Its optional detailed mode adds temporal and space-time
-outputs. The Mapping page resolves the public `rmap` route catalogue, inspects
-profile uploads automatically, runs the selected route in a background worker,
-and previews the mapped output. Plot and selected raw-data downloads are
-generated lazily. The prototype requires Python 3.10 or newer.
+The NiceGUI app mirrors the DNAscape workflow, visual style, pages, forms, and
+controls. Its Data Manager automatically inspects local files or bounded public
+links and converts BigWig or bedGraph tracks into regularly binned,
+DNAscape-ready chromosome profiles. It can export one chromosome or a labelled
+all-chromosome collection, with plain TSV as the default and an optional bounded
+plot preview. Selected profiles can also be smoothed, multiplied by a factor or
+rescaled into an explicit target interval (optionally inverted), and
+threshold-filtered while retaining their original sample grid. Value-scaling
+choices are mutually exclusive. Its Simulation page runs up to 50,000 scalar or
+uploaded-profile replicates through `rsim` in a background worker and displays
+live progress and a result plot. Standard results include completion time,
+origins per replicate, and inter-origin distances. Optional one-dimensional
+time courses are separate from the memory-intensive position-by-time fields.
+Replication-timing previews can show the full-ensemble mean ± standard-deviation
+band and a memory-bounded subset of up to 50 individual simulations. The
+Mapping page resolves the public `rmap` route catalogue, inspects profile uploads
+automatically, runs the selected route in a background worker, and previews the
+mapped output. Plot and selected raw-data downloads are generated lazily. The app
+requires Python 3.10 or newer.
 
 ```bash
 pip install -r app/requirements.txt

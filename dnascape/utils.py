@@ -11,7 +11,7 @@ _PROGRESS_STATE = local()
 
 
 @contextmanager
-def progress_context(report=None, cancel=None, *, suppress_output=False):
+def progress_context(report=None, cancel=None, *, suppress_output=False, metric_report=None):
     """Route ETA updates to one worker-local callback.
 
     This avoids redirecting process-global stdout when a local app runs
@@ -23,14 +23,21 @@ def progress_context(report=None, cancel=None, *, suppress_output=False):
         getattr(_PROGRESS_STATE, "report", None),
         getattr(_PROGRESS_STATE, "cancel", None),
         getattr(_PROGRESS_STATE, "suppress_output", False),
+        getattr(_PROGRESS_STATE, "metric_report", None),
     )
     _PROGRESS_STATE.report = report
     _PROGRESS_STATE.cancel = cancel
     _PROGRESS_STATE.suppress_output = bool(suppress_output)
+    _PROGRESS_STATE.metric_report = metric_report
     try:
         yield
     finally:
-        _PROGRESS_STATE.report, _PROGRESS_STATE.cancel, _PROGRESS_STATE.suppress_output = previous
+        (
+            _PROGRESS_STATE.report,
+            _PROGRESS_STATE.cancel,
+            _PROGRESS_STATE.suppress_output,
+            _PROGRESS_STATE.metric_report,
+        ) = previous
 
 
 def check_cancelled():
@@ -44,13 +51,17 @@ def check_cancelled():
 def _progress_update(it, maxiter, eta_sec, label=None, err=None):
     check_cancelled()
 
-    report = getattr(_PROGRESS_STATE, "report", None)
-    if not callable(report):
-        return
     total = max(1, int(maxiter))
     iteration = min(total, max(0, int(it)))
     fraction = iteration / total
     normalized_label = str(label or "Working").strip().lower()
+    metric_report = getattr(_PROGRESS_STATE, "metric_report", None)
+    if err is not None and callable(metric_report):
+        metric_report(normalized_label, iteration, total, float(err))
+
+    report = getattr(_PROGRESS_STATE, "report", None)
+    if not callable(report):
+        return
     if normalized_label in {"rsim_finalize", "rsim_finalise", "rsim_post"}:
         value = 0.95 + 0.04 * fraction
         prefix = "Finalizing"
@@ -65,14 +76,17 @@ def _progress_update(it, maxiter, eta_sec, label=None, err=None):
         text += f" - MSE {float(err):.3e}"
     report(min(0.99, value), text)
 
+
 def logistic(x, k, x0):
     return 1.0 / (1.0 + np.exp(-k * (x - x0)))
+
 
 def interp_nans(y):
     y = np.asarray(y, float)
     x = np.arange(y.size)
     m = np.isfinite(y)
     return y if m.sum() < 2 else np.where(m, y, np.interp(x, x[m], y[m]))
+
 
 def smoothf(data, window=50):
     data = np.asarray(data, float)
@@ -90,8 +104,9 @@ def smoothf(data, window=50):
     fft_A = rfft(data, size)
     fft_B = rfft(kernel, size)
     conv_full = irfft(fft_A * fft_B, size)
-    conv = conv_full[win//2 : win//2 + n]
+    conv = conv_full[win // 2 : win // 2 + n]
     return conv
+
 
 def rescale(arr, interval):
     new_min, new_max = interval
@@ -101,12 +116,13 @@ def rescale(arr, interval):
         return np.full_like(arr, (new_min + new_max) / 2.0)
     return (arr - old_min) / (old_max - old_min) * (new_max - new_min) + new_min
 
+
 def fast_shift_add(dst, src, shift, perQ=False):
-    
+
     if shift == 0:
         dst += src
         return
-    
+
     if perQ:
         # periodic wrap
         dst += np.roll(src, shift)
@@ -116,6 +132,7 @@ def fast_shift_add(dst, src, shift, perQ=False):
             dst[shift:] += src[:-shift]
         else:
             dst[:shift] += src[-shift:]
+
 
 def match_yaxis_scales(ax1, ax2, y1, y2):
     y1 = np.asarray(y1, float)
@@ -146,11 +163,11 @@ def match_yaxis_scales(ax1, ax2, y1, y2):
     # SAFETY FOR LOG-SCALE AXES — enforce positive bounds > 0
     # ------------------------------------------------------------------
     eps = 1e-9
-    if ax1.get_yscale() == 'log':
+    if ax1.get_yscale() == "log":
         y1_lo = max(y1_lo, eps)
         y1_hi = max(y1_hi, y1_lo * 1.1)
 
-    if ax2.get_yscale() == 'log':
+    if ax2.get_yscale() == "log":
         y2_lo = max(y2_lo, eps)
         y2_hi = max(y2_hi, y2_lo * 1.1)
 
@@ -158,8 +175,10 @@ def match_yaxis_scales(ax1, ax2, y1, y2):
     ax1.set_ylim(y1_lo, y1_hi)
     ax2.set_ylim(y2_lo, y2_hi)
 
+
 def mean_squared_error(a, b):
     return float(np.mean((a - b) ** 2))
+
 
 def hms(t):
     h = int(t // 3600)
@@ -167,11 +186,14 @@ def hms(t):
     s = int(t % 60)
     return f"{h:02d}:{m:02d}:{s:02d}"
 
+
 def arrint(a, b):
     return np.intersect1d(a, b)
 
+
 def arrcomp(a, b):
     return np.setdiff1d(a, b)
+
 
 def _eta_label(label):
     return "" if label is None else f"[{label}]  "
@@ -193,6 +215,7 @@ def etaf(it, maxiter, start_time, done=None, label=None):
             end="\n" if done else "\r",
             flush=True,
         )
+
 
 def etaferr(it, maxiter, start_time, err, done=None, label="rmap"):
     elapsed = time.time() - start_time

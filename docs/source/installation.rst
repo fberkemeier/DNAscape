@@ -52,8 +52,9 @@ NiceGUI Interface Prototype
    python -m app
 
 The interface includes Overview, Data Manager, Mapping, Simulation, Plotting,
-Cached Files, and Resources. Constant-input Simulation runs are connected to
-``rsim`` with bounded optional detailed outputs and plot/raw-data downloads.
+Cached Files, and Resources. Simulation runs are connected to ``rsim`` with
+separate optional time-course and space-time outputs, bounded retained previews,
+and plot/raw-data downloads.
 
 Docs
 ----

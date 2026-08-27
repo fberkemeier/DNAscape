@@ -1,20 +1,44 @@
-"""Bounded ``rdata`` conversions for the local Data Manager."""
+"""Bounded data preparation and ``rdata`` conversion for the Data Manager."""
 
 from __future__ import annotations
 
+import gzip
+import io
+import math
 import tempfile
-from dataclasses import dataclass, replace
+from collections.abc import Callable, Mapping
+from dataclasses import dataclass, field, replace
 from pathlib import Path, PurePath
+from types import MappingProxyType
 from typing import Any
+from urllib.parse import urlsplit, urlunsplit
 
 import numpy as np
+import pandas as pd
 
-from app.mapping_uploads import MAX_DECOMPRESSED_BYTES, UploadInspection, materialize_upload
+from app.bigwig_service import inspect_bigwig, read_bigwig_bins
+from app.mapping_uploads import (
+    MAX_ARCHIVE_MEMBERS,
+    MAX_ARRAY_ELEMENTS,
+    MAX_DECOMPRESSED_BYTES,
+    UploadInspection,
+    materialize_upload,
+)
 from app.simulation_exports import ExportArtifact, safe_export_filename
-from dnascape.io import inspect_genomic_track, rdata
+from dnascape.io import inspect_genomic_track, rdata, rsave, rtrack
 
-_TARGET_FORMATS = frozenset({"npy", "npv", "npz", "txt", "tsv", "csv"})
-_OUTPUT_FORMS = frozenset({"scalar", "space", "time", "spacetime", "table"})
+# Public UI order: interoperable text first, NumPy-specific formats last.
+DATA_EXPORT_FORMATS: tuple[tuple[str, str], ...] = (
+    ("tsv", "TSV"),
+    ("csv", "CSV"),
+    ("txt", "TXT"),
+    ("npy", "NPY"),
+    ("npv", "NPV"),
+    ("npz", "NPZ"),
+)
+DEFAULT_TARGET_FORMAT = "tsv"
+
+_TARGET_FORMATS = frozenset(key for key, _label in DATA_EXPORT_FORMATS)
 _INPUT_FORMS = frozenset({"scalar", "x", "t", "xt", "table", "track"})
 _FORM_TO_RDATA = {
     "scalar": "scalar",
@@ -32,7 +56,21 @@ _MEDIA_TYPES = {
     "tsv": "text/tab-separated-values; charset=utf-8",
     "csv": "text/csv; charset=utf-8",
 }
+_AGGREGATIONS = frozenset({"mean", "sum", "min", "max", "coverage", "std"})
+_TRACK_MISSING = frozenset({"nan", "zero", "fill"})
+_INTERPOLATIONS = frozenset({"none", "linear", "ffill", "bfill"})
+_LEGACY_NORMALIZATIONS = frozenset(
+    {"none", "minmax", "zscore", "center", "maxabs", "rescale"}
+)
+_SCALING_MODES = frozenset({"none", "multiplier", "interval", "center", "zscore", "maxabs"})
+_SIGNAL_TRANSFORMS = frozenset({"keep", "invert"})
+_PLAIN_MISSING = frozenset({"error", "zero", "interpolate", "ignore"})
+_CHROMOSOME_SCOPES = frozenset({"single", "all"})
+_ALL_CHROMOSOME_FORMATS = frozenset({"tsv", "csv", "npz"})
 _MAX_CONVERTED_BYTES = 128 * 1024 * 1024
+_MAX_TRACK_BINS = 1_000_000
+_MAX_SMOOTH_WINDOW = 100_001
+_TRACK_ESTIMATED_BYTES_PER_BIN = 96
 
 
 @dataclass(frozen=True, slots=True)
@@ -42,32 +80,71 @@ class TrackRegion:
     chromosome: str
     start: int
     end: int
+    interval_count: int | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class _TrackSlice:
+    chromosome: str
+    start: int
+    end: int
+    bins: int
 
 
 @dataclass(frozen=True, slots=True)
 class TrackInspection:
-    """Chromosome metadata read by :func:`dnascape.inspect_genomic_track`."""
+    """Small genomic-track metadata suitable for populating controls."""
 
     source_format: str
     regions: tuple[TrackRegion, ...]
+    value_columns: tuple[str, ...] = ("value",)
+    size_bytes: int = 0
+    backend: str | None = None
+    metadata: tuple[tuple[str, str], ...] = ()
+
+
+@dataclass(frozen=True, slots=True)
+class DataValueArray:
+    """One selectable numeric array discovered in an uploaded source."""
+
+    key: str
+    label: str
+    data_form: str
+    shape: tuple[int, ...]
+
+
+@dataclass(frozen=True, slots=True)
+class DataSourceInspection:
+    """Unified, immutable metadata for table, NumPy and genomic-track inputs."""
+
+    name: str
+    source_format: str
+    inferred_form: str
+    shape: tuple[int, ...]
+    values: tuple[DataValueArray, ...]
+    columns: tuple[str, ...]
+    chromosomes: tuple[TrackRegion, ...]
+    missing_count: int
+    warnings: tuple[str, ...]
+    metadata: tuple[tuple[str, str], ...]
 
 
 @dataclass(frozen=True, slots=True)
 class DataConversionRequest:
-    """A fully resolved Data Manager conversion request."""
+    """A fully resolved, local Data Manager conversion request."""
 
     inspection: UploadInspection
     input_form: str
-    output_form: str
-    target_format: str
+    target_format: str = DEFAULT_TARGET_FORMAT
     output_name: str = "dnascape_data"
-    gzip_output: bool = True
+    gzip_output: bool = False
     value_column: str | None = None
     array_key: str | None = None
-    missing_policy: str = "error"
+    missing_policy: str = "ignore"
     decimal_places: int | None = None
     value_name: str = "value"
     chromosome: str | None = None
+    chromosome_scope: str = "single"
     start: int | None = None
     end: int | None = None
     bin_size: int = 1_000
@@ -76,7 +153,71 @@ class DataConversionRequest:
     fill_value: float = 0.0
     interpolation: str = "none"
     smooth_window: int = 1
+    scaling_mode: str | None = None
+    # ``normalize``, ``offset`` and ``signal_transform`` remain accepted for
+    # requests created by older callers. New callers should use exactly one
+    # ``scaling_mode`` and, where relevant, ``scale`` or the target interval.
     normalize: str = "none"
+    rescale_min: float = 0.0
+    rescale_max: float = 1.0
+    rescale_invert: bool = False
+    threshold_enabled: bool = False
+    threshold_min: float | None = None
+    threshold_max: float | None = None
+    signal_transform: str = "keep"
+    scale: float = 1.0
+    offset: float = 0.0
+    genome_build: str | None = None
+    units: str | None = None
+    source_url: str | None = None
+    biological_role: str | None = None
+    semantic_note: str | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class PreparedData:
+    """A bounded DNAscape-ready value array with coordinate metadata."""
+
+    values: np.ndarray = field(repr=False, compare=False)
+    source_format: str
+    data_form: str
+    labels: tuple[str, ...]
+    coordinates: Mapping[str, np.ndarray] = field(
+        default_factory=lambda: MappingProxyType({}),
+        repr=False,
+        compare=False,
+    )
+    profile_values: Mapping[str, np.ndarray] = field(
+        default_factory=lambda: MappingProxyType({}),
+        repr=False,
+        compare=False,
+    )
+    profile_coordinates: Mapping[str, np.ndarray] = field(
+        default_factory=lambda: MappingProxyType({}),
+        repr=False,
+        compare=False,
+    )
+    metadata: tuple[tuple[str, str], ...] = ()
+
+    @property
+    def shape(self) -> tuple[int, ...]:
+        return tuple(int(value) for value in self.values.shape)
+
+
+@dataclass(frozen=True, slots=True)
+class DataPreview:
+    """At most 500 evenly sampled points and full-series summary statistics."""
+
+    x: np.ndarray = field(repr=False, compare=False)
+    values: np.ndarray = field(repr=False, compare=False)
+    x_label: str
+    value_label: str
+    source_shape: tuple[int, ...]
+    total_count: int
+    finite_count: int
+    missing_count: int
+    minimum: float | None
+    maximum: float | None
 
 
 @dataclass(frozen=True, slots=True)
@@ -89,46 +230,1129 @@ class DataConversionResult:
     data_form: str
     shape: tuple[int, ...]
     labels: tuple[str, ...]
+    metadata: tuple[tuple[str, str], ...] = ()
+    preview: DataPreview | None = field(default=None, repr=False, compare=False)
 
 
-def _safe_source_name(name: str) -> str:
-    safe_name = PurePath(str(name or "upload").replace("\\", "/")).name
-    return safe_name or "upload"
+def _safe_source_name(name: str, source_format: str, compressed: bool) -> str:
+    safe_name = PurePath(str(name or "upload").replace("\\", "/")).name or "upload"
+    if compressed and safe_name.casefold().endswith(".gz"):
+        safe_name = safe_name[:-3]
+    suffixes = {
+        "bigwig": ".bw",
+        "bedgraph": ".bedgraph",
+        "csv": ".csv",
+        "tsv": ".tsv",
+        "txt": ".txt",
+        "npy": ".npy",
+        "npv": ".npv",
+        "npz": ".npz",
+    }
+    expected = suffixes.get(source_format)
+    if expected and not PurePath(safe_name).suffix:
+        safe_name += expected
+    return safe_name
+
+
+def _source_payload(inspection: UploadInspection) -> bytes:
+    if not inspection.compressed:
+        if len(inspection.content) > MAX_DECOMPRESSED_BYTES:
+            raise ValueError("The uploaded source exceeds the local conversion limit.")
+        return inspection.content
+
+    chunks: list[bytes] = []
+    total = 0
+    try:
+        with gzip.GzipFile(fileobj=io.BytesIO(inspection.content)) as source:
+            while True:
+                chunk = source.read(min(1024 * 1024, MAX_DECOMPRESSED_BYTES - total + 1))
+                if not chunk:
+                    break
+                total += len(chunk)
+                if total > MAX_DECOMPRESSED_BYTES:
+                    raise ValueError("The compressed source expands beyond the 64 MB limit.")
+                chunks.append(chunk)
+    except ValueError:
+        raise
+    except (EOFError, OSError) as exc:
+        raise ValueError("The compressed upload is incomplete or invalid.") from exc
+    return b"".join(chunks)
 
 
 def _write_source(directory: Path, inspection: UploadInspection) -> Path:
     source_directory = directory / "source"
     source_directory.mkdir(exist_ok=True)
-    source_path = source_directory / _safe_source_name(inspection.name)
-    source_path.write_bytes(inspection.content)
+    source_path = source_directory / _safe_source_name(
+        inspection.name,
+        inspection.source_format,
+        inspection.compressed,
+    )
+    source_path.write_bytes(_source_payload(inspection))
     return source_path
 
 
+def _integer(value: Any, name: str, *, minimum: int | None = None) -> int:
+    if isinstance(value, bool):
+        raise ValueError(f"{name} must be a whole number.")
+    try:
+        numeric = float(value)
+    except (TypeError, ValueError) as exc:
+        raise ValueError(f"{name} must be a whole number.") from exc
+    if not np.isfinite(numeric) or not numeric.is_integer():
+        raise ValueError(f"{name} must be a whole number.")
+    result = int(numeric)
+    if minimum is not None and result < minimum:
+        raise ValueError(f"{name} must be at least {minimum}.")
+    return result
+
+
+def _boolean(value: Any, name: str) -> bool:
+    if isinstance(value, (bool, np.bool_)):
+        return bool(value)
+    raise ValueError(f"{name} must be true or false.")
+
+
+def _optional_finite_number(value: Any, name: str) -> float | None:
+    if value in (None, ""):
+        return None
+    try:
+        numeric = float(value)
+    except (TypeError, ValueError) as exc:
+        raise ValueError(f"{name} must be a finite number.") from exc
+    if not np.isfinite(numeric):
+        raise ValueError(f"{name} must be a finite number.")
+    return numeric
+
+
+def _choice(value: Any, name: str, allowed: frozenset[str]) -> str:
+    normalized = str(value).strip().casefold().replace("-", "_").replace(" ", "_")
+    if normalized not in allowed:
+        raise ValueError(f"Unsupported {name} {value!r}.")
+    return normalized
+
+
+def _optional_label(value: Any, name: str, *, maximum: int) -> str | None:
+    if value in (None, ""):
+        return None
+    text = str(value).strip()
+    if not text:
+        return None
+    if len(text) > maximum or any(ord(character) < 32 for character in text):
+        raise ValueError(f"{name} must be a short, printable value.")
+    return text
+
+
+def _public_provenance_url(value: Any) -> str | None:
+    text = _optional_label(value, "Source URL", maximum=2_048)
+    if text is None:
+        return None
+    parsed = urlsplit(text)
+    if parsed.scheme not in {"http", "https"} or not parsed.hostname:
+        raise ValueError("Source URL must be an absolute HTTP or HTTPS URL.")
+    if parsed.username or parsed.password:
+        raise ValueError("Source URL cannot contain a username or password.")
+    # Queries often contain temporary access tokens. Provenance records the
+    # public resource location without retaining credentials or fragments.
+    return urlunsplit((parsed.scheme, parsed.netloc, parsed.path, "", ""))
+
+
+def _polishing_active(
+    *,
+    smooth_window: int,
+    scaling_mode: str,
+    threshold_enabled: bool,
+    signal_transform: str,
+    scale: float,
+    offset: float,
+) -> bool:
+    return (
+        smooth_window != 1
+        or scaling_mode != "none"
+        or threshold_enabled
+        or signal_transform != "keep"
+        or scale != 1.0
+        or offset != 0.0
+    )
+
+
 def _normalized_request(request: DataConversionRequest) -> DataConversionRequest:
-    input_form = str(request.input_form).strip().casefold()
-    output_form = str(request.output_form).strip().casefold().replace("-", "")
-    output_form = "spacetime" if output_form in {"xt", "spacetime"} else output_form
-    output_form = {"x": "space", "t": "time"}.get(output_form, output_form)
+    input_form = _choice(request.input_form, "input dependence", _INPUT_FORMS)
+    chromosome_scope = _choice(
+        request.chromosome_scope,
+        "chromosome scope",
+        _CHROMOSOME_SCOPES,
+    )
     target_format = str(request.target_format).strip().casefold().lstrip(".")
-    if input_form not in _INPUT_FORMS:
-        raise ValueError(f"Unsupported input dependence {request.input_form!r}.")
-    if output_form not in _OUTPUT_FORMS:
-        raise ValueError(f"Unsupported output dependence {request.output_form!r}.")
     if target_format not in _TARGET_FORMATS:
         raise ValueError(f"Unsupported output format {request.target_format!r}.")
-    if request.decimal_places is not None and int(request.decimal_places) < 0:
-        raise ValueError("Decimal places must be zero or greater.")
-    if not str(request.value_name or "").strip():
-        raise ValueError("Value name cannot be empty.")
+    missing_policy = _choice(request.missing_policy, "missing-value policy", _PLAIN_MISSING)
+    aggregation = _choice(request.aggregation, "track aggregation", _AGGREGATIONS)
+    track_missing = _choice(request.track_missing, "track missing-value policy", _TRACK_MISSING)
+    interpolation = _choice(request.interpolation, "interpolation", _INTERPOLATIONS)
+    legacy_normalize = _choice(
+        request.normalize,
+        "normalization",
+        _LEGACY_NORMALIZATIONS,
+    )
+    decimal_places = (
+        None
+        if request.decimal_places is None
+        else _integer(request.decimal_places, "Decimal places", minimum=0)
+    )
+    if decimal_places is not None and decimal_places > 15:
+        raise ValueError("Decimal places cannot exceed 15.")
+    bin_size = _integer(request.bin_size, "Bin size", minimum=1)
+    smooth_window = _integer(request.smooth_window, "Smoothing window", minimum=1)
+    if smooth_window > _MAX_SMOOTH_WINDOW:
+        raise ValueError(f"Smoothing window cannot exceed {_MAX_SMOOTH_WINDOW:,} bins.")
+    threshold_enabled = _boolean(request.threshold_enabled, "Threshold filtering")
+    if threshold_enabled:
+        threshold_min = _optional_finite_number(request.threshold_min, "Lower threshold")
+        threshold_max = _optional_finite_number(request.threshold_max, "Upper threshold")
+        if threshold_min is None and threshold_max is None:
+            raise ValueError("Threshold filtering requires a lower or upper threshold.")
+        if (
+            threshold_min is not None
+            and threshold_max is not None
+            and threshold_min > threshold_max
+        ):
+            raise ValueError("Lower threshold cannot exceed upper threshold.")
+    else:
+        # Hidden UI fields can retain stale text while the operation is off.
+        # Disabled thresholds are deliberately inert and omitted from provenance.
+        threshold_min = None
+        threshold_max = None
+    legacy_scaling = request.scaling_mode in (None, "")
+    if legacy_scaling:
+        signal_transform = _choice(
+            request.signal_transform,
+            "signal transform",
+            _SIGNAL_TRANSFORMS,
+        )
+        scaling_mode = {
+            "none": "multiplier" if request.scale != 1.0 or request.offset != 0.0 else "none",
+            "minmax": "interval",
+            "rescale": "interval",
+            "center": "center",
+            "zscore": "zscore",
+            "maxabs": "maxabs",
+        }[legacy_normalize]
+    else:
+        # Explicit value scaling is intentionally self-contained. Legacy signal
+        # inversion is inert; target-interval inversion is the sole current UI
+        # mechanism for reversing a scale.
+        signal_transform = "keep"
+        scaling_mode = _choice(request.scaling_mode, "value scaling", _SCALING_MODES)
+        if legacy_normalize != "none":
+            raise ValueError(
+                "Choose value scaling with scaling_mode; it cannot be combined with normalize."
+            )
+
+    if legacy_scaling and legacy_normalize == "minmax":
+        # Preserve the historical fixed 0..1 min-max operation; target-range
+        # fields were inactive for this legacy mode.
+        rescale_min = 0.0
+        rescale_max = 1.0
+        rescale_invert = False
+    elif scaling_mode == "interval":
+        rescale_invert = _boolean(request.rescale_invert, "Range inversion")
+        rescale_min = _optional_finite_number(request.rescale_min, "Target minimum")
+        rescale_max = _optional_finite_number(request.rescale_max, "Target maximum")
+        if rescale_min is None or rescale_max is None:
+            raise ValueError("Target-interval scaling requires a minimum and maximum.")
+        if rescale_max <= rescale_min:
+            raise ValueError("Target maximum must be greater than target minimum.")
+    else:
+        # Hidden controls are inert when target-interval scaling is not selected.
+        rescale_min = 0.0
+        rescale_max = 1.0
+        rescale_invert = False
+    fill_value = float(request.fill_value)
+    if not np.isfinite(fill_value):
+        raise ValueError("Missing-value fill must be finite.")
+    if scaling_mode == "multiplier" or legacy_scaling:
+        scale = float(request.scale)
+        if not np.isfinite(scale) or abs(scale) > 1e12:
+            raise ValueError("Multiplier must be finite and no larger than 1e12 in magnitude.")
+    else:
+        scale = 1.0
+    if legacy_scaling:
+        offset = float(request.offset)
+        if not np.isfinite(offset) or abs(offset) > 1e12:
+            raise ValueError("Legacy offset must be finite and no larger than 1e12 in magnitude.")
+    else:
+        # Offset is deliberately not part of the current scaling API. Reset a
+        # stale value when an explicit mode is supplied rather than activating it.
+        offset = 0.0
+    value_name = str(request.value_name or "").strip()
+    if not value_name or len(value_name) > 80 or any(ord(char) < 32 for char in value_name):
+        raise ValueError("Value name must be a short, printable label.")
+    if input_form == "track" and request.inspection.source_format not in {"bigwig", "bedgraph"}:
+        raise ValueError("Track conversion requires a BigWig or bedGraph upload.")
+    if input_form != "track" and request.inspection.source_format in {"bigwig", "bedgraph"}:
+        raise ValueError("BigWig and bedGraph uploads must use track conversion.")
+    if input_form in {"scalar", "table"} and _polishing_active(
+        smooth_window=smooth_window,
+        scaling_mode=scaling_mode,
+        threshold_enabled=threshold_enabled,
+        signal_transform=signal_transform,
+        scale=scale,
+        offset=offset,
+    ):
+        raise ValueError(
+            "Data polishing is available for space, time, space-time, and genomic-track "
+            "profiles; scalar and full-table conversions are preserved unchanged."
+        )
+    if input_form != "track" and chromosome_scope != "single":
+        raise ValueError("All-chromosome scope is available only for genomic tracks.")
+    if input_form == "track" and chromosome_scope == "all":
+        if request.chromosome not in (None, "", "all", "*"):
+            raise ValueError("All-chromosome scope cannot also select one chromosome.")
+        if request.start is not None or request.end is not None:
+            raise ValueError(
+                "All-chromosome scope uses each chromosome's full range; clear Start and End."
+            )
+        if target_format not in _ALL_CHROMOSOME_FORMATS:
+            allowed = ", ".join(format_name.upper() for format_name in ("tsv", "csv", "npz"))
+            raise ValueError(f"All-chromosome export requires a labelled format: {allowed}.")
+    genome_build = _optional_label(request.genome_build, "Genome build", maximum=80)
+    units = _optional_label(request.units, "Units", maximum=80)
+    biological_role = _optional_label(
+        request.biological_role,
+        "Biological role",
+        maximum=120,
+    )
+    semantic_note = _optional_label(request.semantic_note, "Semantic note", maximum=500)
+    source_url = _public_provenance_url(request.source_url)
     return replace(
         request,
         input_form=input_form,
-        output_form=output_form,
+        chromosome_scope=chromosome_scope,
         target_format=target_format,
-        decimal_places=(
-            None if request.decimal_places is None else int(request.decimal_places)
+        missing_policy=missing_policy,
+        decimal_places=decimal_places,
+        value_name=value_name,
+        bin_size=bin_size,
+        aggregation=aggregation,
+        track_missing=track_missing,
+        fill_value=fill_value,
+        interpolation=interpolation,
+        smooth_window=smooth_window,
+        scaling_mode=scaling_mode,
+        normalize="none",
+        rescale_min=rescale_min,
+        rescale_max=rescale_max,
+        rescale_invert=rescale_invert,
+        threshold_enabled=threshold_enabled,
+        threshold_min=threshold_min,
+        threshold_max=threshold_max,
+        signal_transform=signal_transform,
+        scale=scale,
+        offset=offset,
+        genome_build=genome_build,
+        units=units,
+        source_url=source_url,
+        biological_role=biological_role,
+        semantic_note=semantic_note,
+    )
+
+
+def _readonly(values: Any) -> np.ndarray:
+    array = np.asarray(values)
+    if array.size > MAX_ARRAY_ELEMENTS or array.nbytes > MAX_DECOMPRESSED_BYTES:
+        raise ValueError(
+            f"Prepared data exceed the local limit of {MAX_ARRAY_ELEMENTS:,} values / "
+            f"{MAX_DECOMPRESSED_BYTES / 1024**2:.0f} MB."
+        )
+    if np.issubdtype(array.dtype, np.number) and np.any(np.isinf(array)):
+        raise ValueError("Prepared data contain infinite values.")
+    array.setflags(write=False)
+    return array
+
+
+def _readonly_coordinates(values: Mapping[str, Any]) -> Mapping[str, np.ndarray]:
+    result: dict[str, np.ndarray] = {}
+    for key, raw in values.items():
+        array = np.asarray(raw)
+        array.setflags(write=False)
+        result[str(key)] = array
+    return MappingProxyType(result)
+
+
+def _readonly_profiles(values: Mapping[str, Any]) -> Mapping[str, np.ndarray]:
+    result: dict[str, np.ndarray] = {}
+    total_values = 0
+    total_bytes = 0
+    for key, raw in values.items():
+        array = np.asarray(raw, dtype=float).reshape(-1)
+        if np.any(np.isinf(array)):
+            raise ValueError(f"Prepared chromosome {key!r} contains infinite values.")
+        array.setflags(write=False)
+        result[str(key)] = array
+        total_values += int(array.size)
+        total_bytes += int(array.nbytes)
+    if total_values > MAX_ARRAY_ELEMENTS or total_bytes > MAX_DECOMPRESSED_BYTES:
+        raise ValueError(
+            f"Prepared chromosome profiles exceed {MAX_ARRAY_ELEMENTS:,} values / "
+            f"{MAX_DECOMPRESSED_BYTES / 1024**2:.0f} MB. Increase the bin size."
+        )
+    return MappingProxyType(result)
+
+
+def _preview(
+    values: Any,
+    *,
+    labels: tuple[str, ...] = (),
+    coordinates: Mapping[str, np.ndarray] | None = None,
+    table: Any = None,
+    max_points: int = 500,
+) -> DataPreview | None:
+    """Build a bounded display series without retaining prepared full arrays."""
+
+    value_label = labels[0] if labels else "value"
+    x_values: np.ndarray | None = None
+    x_label = "Index"
+    if isinstance(table, pd.DataFrame):
+        numeric = table.select_dtypes(include=["number"])
+        coordinate_names = {
+            "bin",
+            "end",
+            "end_bp",
+            "index",
+            "position",
+            "position_bp",
+            "position_kb",
+            "start",
+            "start_bp",
+            "time",
+            "time_min",
+            "x",
+        }
+        signal_columns = [
+            column
+            for column in numeric.columns
+            if str(column).strip().casefold() not in coordinate_names
+        ]
+        if signal_columns:
+            value_label = str(signal_columns[0])
+            values = numeric[signal_columns[0]].to_numpy(dtype=float)
+            for coordinate in ("position_kb", "position_bp", "position", "time_min", "time"):
+                if coordinate in numeric and len(numeric[coordinate]) == len(values):
+                    x_values = numeric[coordinate].to_numpy(dtype=float)
+                    x_label = coordinate.replace("_", " ").title()
+                    break
+    try:
+        array = np.asarray(values, dtype=float)
+    except (TypeError, ValueError):
+        return None
+    if array.ndim == 0:
+        series = array.reshape(1)
+    elif array.ndim == 1:
+        series = array
+    elif array.ndim == 2 and array.shape[0] == 1:
+        series = array[0]
+    elif array.ndim == 2 and array.shape[1] >= 1:
+        series = array[:, 0]
+    else:
+        return None
+    series = np.asarray(series, dtype=float).reshape(-1)
+    if not series.size:
+        return None
+
+    if coordinates:
+        for name in ("position_kb", "position_bp", "time_min", "time"):
+            candidate = coordinates.get(name)
+            if candidate is not None and np.asarray(candidate).size == series.size:
+                x_values = np.asarray(candidate, dtype=float).reshape(-1)
+                x_label = name.replace("_", " ").title()
+                break
+    if x_values is None:
+        x_values = np.arange(series.size, dtype=float)
+
+    finite_mask = np.isfinite(series)
+    finite = series[finite_mask]
+    sample_count = min(max(1, int(max_points)), series.size)
+    indices = np.linspace(0, series.size - 1, sample_count, dtype=np.int64)
+    sampled_x = np.array(x_values[indices], dtype=float, copy=True)
+    sampled_values = np.array(series[indices], dtype=float, copy=True)
+    sampled_x.setflags(write=False)
+    sampled_values.setflags(write=False)
+    return DataPreview(
+        x=sampled_x,
+        values=sampled_values,
+        x_label=x_label,
+        value_label=value_label,
+        source_shape=tuple(int(size) for size in array.shape),
+        total_count=int(series.size),
+        finite_count=int(finite.size),
+        missing_count=int(series.size - finite.size),
+        minimum=float(finite.min()) if finite.size else None,
+        maximum=float(finite.max()) if finite.size else None,
+    )
+
+
+def _infer_form(values: Any) -> str:
+    array = np.asarray(values)
+    if array.ndim == 0 or array.size == 1:
+        return "scalar"
+    if array.ndim == 1:
+        return "x"
+    if array.ndim == 2 and array.shape[0] == 1:
+        return "t"
+    if array.ndim == 2:
+        return "xt"
+    return "unknown"
+
+
+def extract_values(
+    inspection: UploadInspection,
+    *,
+    data_form: str = "auto",
+    value_column: str | None = None,
+    array_key: str | None = None,
+    missing_policy: str = "ignore",
+) -> np.ndarray:
+    """Materialize one bounded numeric selection as a read-only array."""
+
+    if inspection.source_format in {"bigwig", "bedgraph"}:
+        raise ValueError("Use prepare_data with genomic region settings for track values.")
+    form = str(data_form).strip().casefold()
+    if form != "auto" and form not in _INPUT_FORMS - {"track", "table"}:
+        raise ValueError(f"Unsupported data dependence {data_form!r}.")
+    policy = _choice(missing_policy, "missing-value policy", _PLAIN_MISSING)
+    values = materialize_upload(
+        replace(inspection, expected_form=form),
+        column=value_column,
+        array_key=array_key,
+        missing_policy=policy,
+    )
+    return _readonly(values)
+
+
+def _bedgraph_value_column(
+    inspection: UploadInspection,
+    selected: str | None,
+) -> str | int | None:
+    """Translate an inspector label to rtrack's headerless column index."""
+
+    column = selected or inspection.default_column
+    if column in inspection.columns:
+        return inspection.columns.index(column)
+    return column
+
+
+def inspect_track(inspection: UploadInspection) -> TrackInspection:
+    """Read bounded chromosome metadata from one retained genomic track."""
+
+    if inspection.source_format not in {"bigwig", "bedgraph"}:
+        raise ValueError("Chromosome inspection requires a BigWig or bedGraph source.")
+    with tempfile.TemporaryDirectory(prefix="dnascape-track-") as temporary:
+        source_path = _write_source(Path(temporary), inspection)
+        if inspection.source_format == "bigwig":
+            summary = inspect_bigwig(source_path)
+            regions = tuple(
+                TrackRegion(chromosome=name, start=0, end=size)
+                for name, size in summary.chromosomes
+            )
+            backend = summary.backend
+            metadata = summary.file_info
+        else:
+            raw = inspect_genomic_track(
+                source_path,
+                source_format="bedgraph",
+                value_column=_bedgraph_value_column(inspection, None),
+            )
+            interval_counts = {
+                str(row.chrom): int(row.intervals)
+                for row in raw["table"][["chrom", "intervals"]].itertuples(index=False)
+            }
+            regions = tuple(
+                TrackRegion(
+                    chromosome=str(chromosome),
+                    # DNAscape-ready vectors have an implicit origin, so tracks
+                    # always expose the full chromosome-aligned range from bp 0.
+                    start=0,
+                    end=int(raw["chromosomes"][chromosome]),
+                    interval_count=interval_counts.get(str(chromosome)),
+                )
+                for chromosome in raw["chromosome_names"]
+            )
+            backend = "pandas"
+            metadata = ()
+    if not regions:
+        raise ValueError("The genomic track contains no chromosomes.")
+    return TrackInspection(
+        source_format=inspection.source_format,
+        regions=regions,
+        value_columns=tuple(inspection.numeric_columns) or ("value",),
+        size_bytes=len(inspection.content),
+        backend=backend,
+        metadata=metadata,
+    )
+
+
+def inspect_data_source(inspection: UploadInspection) -> DataSourceInspection:
+    """Return a single auto-detected view of a supported local upload."""
+
+    track = (
+        inspect_track(inspection) if inspection.source_format in {"bigwig", "bedgraph"} else None
+    )
+    selections: list[DataValueArray] = []
+    if track is not None:
+        selections.extend(
+            DataValueArray(column, column, "track", tuple(inspection.shape or ()))
+            for column in track.value_columns
+        )
+    elif inspection.array_keys:
+        for key in inspection.array_keys:
+            values = extract_values(inspection, array_key=key)
+            selections.append(DataValueArray(key, key, _infer_form(values), values.shape))
+    elif inspection.numeric_columns:
+        row_count = int(inspection.shape[0]) if inspection.shape else 0
+        selections.extend(
+            DataValueArray(column, column, "x", (row_count,))
+            for column in inspection.numeric_columns
+        )
+        if len(inspection.numeric_columns) > 1:
+            selections.insert(
+                0,
+                DataValueArray(
+                    "__matrix__",
+                    "All numeric profiles",
+                    "xt",
+                    (row_count, len(inspection.numeric_columns)),
+                ),
+            )
+    else:
+        selections.append(
+            DataValueArray("values", "Values", inspection.inferred_form, inspection.shape or ())
+        )
+
+    metadata = [
+        ("compressed", str(bool(inspection.compressed)).lower()),
+        ("size_bytes", str(len(inspection.content))),
+    ]
+    if inspection.semantic_form:
+        metadata.append(("semantic_form", inspection.semantic_form))
+    if inspection.region_names:
+        metadata.append(("regions", str(len(inspection.region_names))))
+    if track is not None:
+        metadata.append(("backend", track.backend or "unknown"))
+        metadata.extend(track.metadata)
+    return DataSourceInspection(
+        name=inspection.name,
+        source_format=inspection.source_format,
+        inferred_form="track" if track is not None else inspection.inferred_form,
+        shape=tuple(inspection.shape or ()),
+        values=tuple(selections),
+        columns=tuple(inspection.columns),
+        chromosomes=track.regions if track is not None else (),
+        missing_count=int(inspection.missing_count),
+        warnings=tuple(inspection.warnings),
+        metadata=tuple(metadata),
+    )
+
+
+def _resolved_track_request(
+    request: DataConversionRequest,
+) -> tuple[DataConversionRequest, TrackInspection, tuple[_TrackSlice, ...]]:
+    summary = inspect_track(request.inspection)
+    regions = {region.chromosome: region for region in summary.regions}
+    if request.chromosome_scope == "all":
+        slices = tuple(
+            _TrackSlice(
+                chromosome=region.chromosome,
+                start=0,
+                end=region.end,
+                bins=math.ceil(region.end / request.bin_size),
+            )
+            for region in summary.regions
+        )
+        resolved = request
+    else:
+        chromosome = str(request.chromosome or summary.regions[0].chromosome)
+        if chromosome not in regions:
+            raise KeyError(f"Chromosome {chromosome!r} was not found in the genomic track.")
+        region = regions[chromosome]
+        # A coordinate-free DNAscape profile is aligned to chromosome position
+        # zero unless the caller explicitly requests a cropped region.
+        start = 0 if request.start is None else _integer(request.start, "Start", minimum=0)
+        end = region.end if request.end is None else _integer(request.end, "End", minimum=1)
+        if end <= start:
+            raise ValueError("End must be greater than start for the genomic region.")
+        if end > region.end:
+            raise ValueError(f"End exceeds {chromosome}'s available bound of {region.end:,} bp.")
+        slices = (
+            _TrackSlice(
+                chromosome=chromosome,
+                start=start,
+                end=end,
+                bins=math.ceil((end - start) / request.bin_size),
+            ),
+        )
+        resolved = replace(request, chromosome=chromosome, start=start, end=end)
+
+    largest = max(item.bins for item in slices)
+    if largest > _MAX_TRACK_BINS:
+        raise ValueError(
+            f"The selected region creates {largest:,} bins; the local limit is "
+            f"{_MAX_TRACK_BINS:,}. Increase the bin size or choose a smaller region."
+        )
+    total_bins = sum(item.bins for item in slices)
+    if total_bins > MAX_ARRAY_ELEMENTS:
+        raise ValueError(
+            f"The selected chromosomes create {total_bins:,} bins; increase the bin size "
+            f"to stay below {MAX_ARRAY_ELEMENTS:,} values."
+        )
+    padded_cells = largest * len(slices)
+    if request.chromosome_scope == "all" and padded_cells > MAX_ARRAY_ELEMENTS:
+        raise ValueError(
+            f"The wide chromosome view would contain {padded_cells:,} padded cells; "
+            "increase the bin size or export fewer chromosomes."
+        )
+    if request.chromosome_scope == "all" and request.target_format == "npz":
+        max_profiles = MAX_ARCHIVE_MEMBERS - 3
+        if len(slices) > max_profiles:
+            raise ValueError(
+                f"The track contains {len(slices):,} sequences; labelled NPZ export supports "
+                f"at most {max_profiles:,}. Export TSV/CSV or reduce the sequence set."
+            )
+    estimated_bytes = total_bins * _TRACK_ESTIMATED_BYTES_PER_BIN
+    if request.chromosome_scope == "all":
+        estimated_bytes += padded_cells * np.dtype(float).itemsize
+    if estimated_bytes > MAX_DECOMPRESSED_BYTES:
+        raise ValueError(
+            f"Preparing {total_bins:,} chromosome bins would require about "
+            f"{estimated_bytes / 1024**2:.0f} MB; increase the bin size or choose a "
+            "smaller region."
+        )
+    return resolved, summary, slices
+
+
+def _transform_signal(series: pd.Series, request: DataConversionRequest) -> pd.Series:
+    """Apply legacy direction/affine transforms without changing the sample grid."""
+
+    if request.signal_transform == "invert":
+        numeric = series.to_numpy(dtype=float)
+        finite_values = numeric[np.isfinite(numeric)]
+        if finite_values.size:
+            # Reflect around the finite range midpoint. This reverses relative
+            # signal direction while preserving the original units and range.
+            series = float(finite_values.min() + finite_values.max()) - series
+    # Older requests could combine an affine transform with normalization.
+    # Preserve that behavior only when legacy fields survived normalization;
+    # explicit scaling modes reset ``offset`` and use ``scale`` below.
+    if request.scaling_mode != "multiplier" and (
+        request.scale != 1.0 or request.offset != 0.0
+    ):
+        series = series * request.scale + request.offset
+    return series
+
+
+def _polish_series(series: pd.Series, request: DataConversionRequest) -> pd.Series:
+    """Threshold, smooth and scale one ordered profile without dropping samples."""
+
+    series = pd.Series(series, index=series.index, dtype=float, copy=True)
+    if request.threshold_enabled:
+        outside = pd.Series(False, index=series.index, dtype=bool)
+        if request.threshold_min is not None:
+            outside |= series < request.threshold_min
+        if request.threshold_max is not None:
+            outside |= series > request.threshold_max
+        series = series.mask(outside)
+
+    # Rolling means ignore missing neighbours, but an explicitly missing sample
+    # must remain missing unless the caller selected interpolation/filling. This
+    # also ensures threshold filtering never shifts or silently restores a bin.
+    missing = series.isna()
+    if request.smooth_window > 1:
+        smoothed = series.rolling(
+            window=request.smooth_window,
+            center=True,
+            min_periods=1,
+        ).mean()
+        series = pd.Series(smoothed, index=series.index, dtype=float)
+        series = series.mask(missing)
+
+    numeric = series.to_numpy(dtype=float)
+    finite_values = numeric[np.isfinite(numeric)]
+    if request.scaling_mode == "none" or not finite_values.size:
+        return series
+    if request.scaling_mode == "multiplier":
+        return series * request.scale + request.offset
+    if request.scaling_mode == "center":
+        return series - float(finite_values.mean())
+    if request.scaling_mode == "zscore":
+        divisor = float(finite_values.std(ddof=0))
+        return series * 0.0 if divisor == 0 else (series - float(finite_values.mean())) / divisor
+    if request.scaling_mode == "maxabs":
+        divisor = float(np.max(np.abs(finite_values)))
+        return series * 0.0 if divisor == 0 else series / divisor
+    if request.scaling_mode == "interval":
+        source_minimum = float(finite_values.min())
+        source_maximum = float(finite_values.max())
+        target_minimum = float(request.rescale_min)
+        target_maximum = float(request.rescale_max)
+        source_span = source_maximum - source_minimum
+        if source_span == 0:
+            return series * 0.0 + (target_minimum + target_maximum) / 2.0
+        fraction = (series - source_minimum) / source_span
+        if request.rescale_invert:
+            fraction = 1.0 - fraction
+        return target_minimum + fraction * (target_maximum - target_minimum)
+    raise AssertionError(f"Unhandled value scaling {request.scaling_mode!r}.")
+
+
+def _postprocess_profile_values(values: Any, request: DataConversionRequest) -> np.ndarray:
+    """Polish an x/t/xt DNAscape profile while preserving its exact shape."""
+
+    if not _polishing_active(
+        smooth_window=request.smooth_window,
+        scaling_mode=str(request.scaling_mode),
+        threshold_enabled=request.threshold_enabled,
+        signal_transform=request.signal_transform,
+        scale=request.scale,
+        offset=request.offset,
+    ):
+        return _readonly(values)
+    array = np.array(values, dtype=float, copy=True)
+    if request.input_form == "x":
+        series = pd.Series(array.reshape(-1), dtype=float)
+        result = _polish_series(_transform_signal(series, request), request).to_numpy(dtype=float)
+        return _readonly(result.reshape(array.shape))
+    if request.input_form == "t":
+        series = pd.Series(array.reshape(-1), dtype=float)
+        result = _polish_series(_transform_signal(series, request), request).to_numpy(dtype=float)
+        return _readonly(result.reshape(array.shape))
+    if request.input_form == "xt":
+        if array.ndim != 2:
+            raise ValueError("Space-time polishing requires a two-dimensional profile.")
+        result = np.empty_like(array, dtype=float)
+        # Each column is one spatial profile/time slice, matching DNAscape's
+        # documented (space, time) matrix orientation.
+        for column in range(array.shape[1]):
+            series = pd.Series(array[:, column], dtype=float)
+            result[:, column] = _polish_series(
+                _transform_signal(series, request),
+                request,
+            ).to_numpy(dtype=float)
+        return _readonly(result)
+    return _readonly(array)
+
+
+def _postprocess_track_table(table: pd.DataFrame, request: DataConversionRequest) -> pd.DataFrame:
+    result = table.copy()
+    series = pd.Series(
+        pd.to_numeric(result[request.value_name], errors="coerce"),
+        index=result.index,
+        dtype=float,
+    )
+    series = _transform_signal(series, request)
+    if request.interpolation == "linear":
+        series = series.interpolate(method="linear", limit_direction="both")
+    elif request.interpolation == "ffill":
+        series = series.ffill()
+    elif request.interpolation == "bfill":
+        series = series.bfill()
+    if request.track_missing == "zero":
+        series = series.fillna(0.0)
+    elif request.track_missing == "fill":
+        series = series.fillna(request.fill_value)
+    result[request.value_name] = _polish_series(series, request)
+    return result
+
+
+def _provenance_metadata(request: DataConversionRequest) -> tuple[tuple[str, str], ...]:
+    values = (
+        ("genome_build", request.genome_build),
+        ("units", request.units),
+        ("source_url", request.source_url),
+        ("biological_role", request.biological_role),
+        ("semantic_note", request.semantic_note),
+    )
+    return tuple((name, value) for name, value in values if value is not None)
+
+
+def _polishing_metadata(request: DataConversionRequest) -> tuple[tuple[str, str], ...]:
+    metadata: list[tuple[str, str]] = [
+        ("smooth_window", str(request.smooth_window)),
+        ("value_scaling", str(request.scaling_mode)),
+        ("threshold_enabled", str(request.threshold_enabled).lower()),
+    ]
+    if request.scaling_mode == "multiplier":
+        metadata.append(("scale_multiplier", str(request.scale)))
+    if request.signal_transform != "keep":
+        metadata.append(("legacy_signal_transform", request.signal_transform))
+    if request.scaling_mode != "multiplier" and request.scale != 1.0:
+        metadata.append(("legacy_scale_multiplier", str(request.scale)))
+    if request.offset != 0.0:
+        metadata.append(("legacy_offset", str(request.offset)))
+    if request.threshold_enabled:
+        metadata.extend(
+            (
+                ("threshold_min", "none" if request.threshold_min is None else str(request.threshold_min)),
+                ("threshold_max", "none" if request.threshold_max is None else str(request.threshold_max)),
+                ("threshold_action", "mask"),
+            )
+        )
+    if request.scaling_mode == "interval":
+        metadata.extend(
+            (
+                ("target_minimum", str(request.rescale_min)),
+                ("target_maximum", str(request.rescale_max)),
+                ("interval_inverted", str(request.rescale_invert).lower()),
+            )
+        )
+    return tuple(metadata)
+
+
+def _profile_metadata(request: DataConversionRequest) -> tuple[tuple[str, str], ...]:
+    return (
+        (
+            ("source_name", request.inspection.name),
+            ("source_format", request.inspection.source_format),
+            ("missing", request.missing_policy),
+        )
+        + _polishing_metadata(request)
+        + _provenance_metadata(request)
+    )
+
+
+def _track_metadata(
+    request: DataConversionRequest,
+    slices: tuple[_TrackSlice, ...],
+) -> tuple[tuple[str, str], ...]:
+    scope_metadata: tuple[tuple[str, str], ...]
+    if request.chromosome_scope == "single":
+        item = slices[0]
+        scope_metadata = (
+            ("chromosome", item.chromosome),
+            ("start", str(item.start)),
+            ("end", str(item.end)),
+        )
+    else:
+        scope_metadata = (
+            ("chromosome_count", str(len(slices))),
+            ("chromosomes", ",".join(item.chromosome for item in slices)),
+            ("bounds", ",".join(f"{item.chromosome}:0-{item.end}" for item in slices)),
+        )
+    return (
+        (
+            ("source_name", request.inspection.name),
+            ("source_format", request.inspection.source_format),
+            ("chromosome_scope", request.chromosome_scope),
+            ("bin_size", str(request.bin_size)),
+            ("aggregation", request.aggregation),
+            ("missing", request.track_missing),
+            ("interpolation", request.interpolation),
+        )
+        + _polishing_metadata(request)
+        + scope_metadata
+        + _provenance_metadata(request)
+    )
+
+
+def _slice_coordinates(item: _TrackSlice, bin_size: int) -> np.ndarray:
+    starts = np.arange(item.start, item.end, bin_size, dtype=np.int64)
+    ends = np.minimum(starts + bin_size, item.end).astype(np.int64)
+    return (starts + ends) / 2_000.0
+
+
+def _processed_profile(
+    raw_values: Any,
+    item: _TrackSlice,
+    request: DataConversionRequest,
+) -> tuple[np.ndarray, np.ndarray]:
+    values = np.asarray(raw_values, dtype=float).reshape(-1)
+    if values.size != item.bins:
+        raise RuntimeError(
+            f"Track preparation returned {values.size:,} bins for {item.chromosome}, "
+            f"but {item.bins:,} were expected."
+        )
+    table = pd.DataFrame({request.value_name: values})
+    table = _postprocess_track_table(
+        table,
+        replace(
+            request,
+            chromosome=item.chromosome,
+            chromosome_scope="single",
+            start=item.start,
+            end=item.end,
         ),
-        value_name=str(request.value_name).strip(),
+    )
+    return (
+        np.asarray(table[request.value_name], dtype=float),
+        _slice_coordinates(item, request.bin_size),
+    )
+
+
+def _combine_track_profiles(
+    request: DataConversionRequest,
+    slices: tuple[_TrackSlice, ...],
+    profile_values: Mapping[str, Any],
+    profile_coordinates: Mapping[str, Any],
+) -> PreparedData:
+    labels = tuple(item.chromosome for item in slices)
+    profiles = _readonly_profiles(profile_values)
+    profile_x = _readonly_profiles(profile_coordinates)
+    if request.chromosome_scope == "single":
+        values = profiles[labels[0]]
+        data_form = "space"
+    else:
+        rows = max(profile.size for profile in profiles.values())
+        matrix = np.full((rows, len(labels)), np.nan, dtype=float)
+        for column, label in enumerate(labels):
+            profile = profiles[label]
+            matrix[: profile.size, column] = profile
+        values = _readonly(matrix)
+        data_form = "table"
+    first_label = labels[0]
+    return PreparedData(
+        values=values,
+        source_format=request.inspection.source_format,
+        data_form=data_form,
+        labels=labels,
+        coordinates=_readonly_coordinates({"position_kb": profile_x[first_label]}),
+        profile_values=profiles,
+        profile_coordinates=profile_x,
+        metadata=_track_metadata(request, slices),
+    )
+
+
+def _prepare_bigwig(
+    request: DataConversionRequest,
+    slices: tuple[_TrackSlice, ...],
+    *,
+    progress: Callable[[float], None] | None = None,
+) -> PreparedData:
+    profiles: dict[str, np.ndarray] = {}
+    coordinates: dict[str, np.ndarray] = {}
+    total_bins = sum(item.bins for item in slices)
+    completed_bins = 0
+    with tempfile.TemporaryDirectory(prefix="dnascape-bigwig-") as temporary:
+        source_path = _write_source(Path(temporary), request.inspection)
+        for item in slices:
+            raw_values = read_bigwig_bins(
+                source_path,
+                chromosome=item.chromosome,
+                start=item.start,
+                end=item.end,
+                bin_size=request.bin_size,
+                aggregation=request.aggregation,
+                progress=(
+                    None
+                    if progress is None
+                    else lambda fraction, done=completed_bins, count=item.bins: progress(
+                        (done + count * fraction) / total_bins
+                    )
+                ),
+            )
+            profiles[item.chromosome], coordinates[item.chromosome] = _processed_profile(
+                raw_values,
+                item,
+                request,
+            )
+            completed_bins += item.bins
+            if progress is not None:
+                progress(completed_bins / total_bins)
+    return _combine_track_profiles(request, slices, profiles, coordinates)
+
+
+def _prepare_bedgraph(
+    request: DataConversionRequest,
+    slices: tuple[_TrackSlice, ...],
+    *,
+    progress: Callable[[float], None] | None = None,
+) -> PreparedData:
+    profiles: dict[str, np.ndarray] = {}
+    coordinates: dict[str, np.ndarray] = {}
+    with tempfile.TemporaryDirectory(prefix="dnascape-bedgraph-") as temporary:
+        source_path = _write_source(Path(temporary), request.inspection)
+        raw = rtrack(
+            source_path,
+            source_format="bedgraph",
+            chromosome=("all" if request.chromosome_scope == "all" else slices[0].chromosome),
+            start=(0 if request.chromosome_scope == "all" else slices[0].start),
+            end=(None if request.chromosome_scope == "all" else slices[0].end),
+            bin_size=request.bin_size,
+            aggregation=request.aggregation,
+            value_column=_bedgraph_value_column(request.inspection, request.value_column),
+            missing="nan",
+            interpolation="none",
+            smooth_window=1,
+            normalize="none",
+            data_form="space",
+            as_table=True,
+            return_metadata=True,
+            value_name=request.value_name,
+        )
+    if not isinstance(raw, Mapping):
+        raise RuntimeError("Track preparation stopped before returning metadata.")
+    table = raw.get("table")
+    if not isinstance(table, pd.DataFrame):
+        raise RuntimeError("Track preparation did not return a coordinate table.")
+    if progress is not None:
+        progress(0.6)
+    for index, item in enumerate(slices):
+        selected = table.loc[table["chrom"].astype(str) == item.chromosome]
+        profiles[item.chromosome], coordinates[item.chromosome] = _processed_profile(
+            selected[request.value_name].to_numpy(dtype=float),
+            item,
+            request,
+        )
+        if progress is not None:
+            progress(0.6 + 0.4 * (index + 1) / len(slices))
+    return _combine_track_profiles(request, slices, profiles, coordinates)
+
+
+def _prepare_track(
+    request: DataConversionRequest,
+    slices: tuple[_TrackSlice, ...],
+    progress: Callable[[float], None] | None = None,
+) -> PreparedData:
+    return (
+        _prepare_bigwig(request, slices, progress=progress)
+        if request.inspection.source_format == "bigwig"
+        else _prepare_bedgraph(request, slices, progress=progress)
+    )
+
+
+def prepare_data(request: DataConversionRequest) -> PreparedData:
+    """Prepare values for preview/mapping without writing a download file."""
+
+    request = _normalized_request(request)
+    if request.input_form == "track":
+        request, _summary, slices = _resolved_track_request(request)
+        return _prepare_track(request, slices)
+
+    if request.input_form == "table" and request.value_column is None:
+        raise ValueError("Choose a numeric value column before preparing a full table preview.")
+    values = extract_values(
+        request.inspection,
+        data_form="x" if request.input_form == "table" else request.input_form,
+        value_column=request.value_column,
+        array_key=request.array_key,
+        missing_policy=request.missing_policy,
+    )
+    if request.input_form in {"x", "t", "xt"}:
+        values = _postprocess_profile_values(values, request)
+    labels: tuple[str, ...] = ()
+    if request.value_column:
+        labels = (request.value_column,)
+    elif request.array_key:
+        labels = (request.array_key,)
+    elif request.input_form == "xt" and len(request.inspection.numeric_columns) == values.shape[1]:
+        labels = tuple(request.inspection.numeric_columns)
+    return PreparedData(
+        values=values,
+        source_format=request.inspection.source_format,
+        data_form=_FORM_TO_RDATA[request.input_form],
+        labels=labels,
+        metadata=(
+            _profile_metadata(request)
+            if request.input_form in {"x", "t", "xt"}
+            else _provenance_metadata(request)
+        ),
     )
 
 
@@ -138,35 +1362,171 @@ def _source_labels(request: DataConversionRequest, values: np.ndarray) -> list[s
         return [request.value_column]
     if request.input_form == "xt":
         columns = list(inspection.numeric_columns)
-        if len(columns) == values.shape[1]:
+        if values.ndim == 2 and len(columns) == values.shape[1]:
             return columns
-        if inspection.columns and len(inspection.columns) == values.shape[1]:
+        if values.ndim == 2 and inspection.columns and len(inspection.columns) == values.shape[1]:
             return list(inspection.columns)
-    if request.array_key and request.output_form == "space":
+    if request.array_key and _FORM_TO_RDATA[request.input_form] == "space":
         return [request.array_key]
     return None
 
 
 def _plain_source(request: DataConversionRequest) -> tuple[Any, list[str] | None]:
-    expected_form = request.input_form
-    values = np.asarray(
-        materialize_upload(
-            replace(request.inspection, expected_form=expected_form),
-            column=request.value_column,
-            array_key=request.array_key,
-            missing_policy=request.missing_policy,
-        )
+    values = extract_values(
+        request.inspection,
+        data_form=request.input_form,
+        value_column=request.value_column,
+        array_key=request.array_key,
+        missing_policy=request.missing_policy,
     )
-    return values, _source_labels(request, values)
+    labels = _source_labels(request, values)
+    return _postprocess_profile_values(values, request), labels
 
 
-def convert_data(request: DataConversionRequest) -> DataConversionResult:
-    """Run one bounded conversion through the public :func:`dnascape.rdata`."""
+def _read_output(path: Path) -> bytes:
+    try:
+        size = path.stat().st_size
+    except OSError as exc:
+        raise RuntimeError("rdata did not create the requested output file.") from exc
+    if size <= 0:
+        raise RuntimeError("rdata created an empty output file.")
+    if size > _MAX_CONVERTED_BYTES:
+        raise ValueError("The converted file exceeds the 128 MB download limit.")
+    return path.read_bytes()
+
+
+def _progress_callback(
+    progress: Callable[[dict[str, Any]], None] | bool,
+) -> Callable[[dict[str, Any]], None] | None:
+    if progress in (None, False):
+        return None
+    if callable(progress):
+        return progress
+    if progress is True:
+        return lambda event: print(
+            f"rdata {event['route']}: {event['stage']} {event['status']} "
+            f"({int(100 * event['progress'])}%)"
+        )
+    raise TypeError("progress must be False, True, or a callable.")
+
+
+def _emit_track_progress(
+    callback: Callable[[dict[str, Any]], None] | None,
+    request: DataConversionRequest,
+    stage: str,
+    status: str,
+    value: float,
+    output_path: Path | None = None,
+) -> None:
+    if callback is None:
+        return
+    event: dict[str, Any] = {
+        "route": f"{request.inspection.source_format}->{request.target_format}",
+        "source_format": request.inspection.source_format,
+        "target_format": request.target_format,
+        "stage": stage,
+        "status": status,
+        "progress": value,
+        "elapsed": 0.0,
+        "eta": None,
+    }
+    if output_path is not None:
+        event["output_path"] = str(output_path)
+    callback(event)
+
+
+def _write_all_chromosome_npz(prepared: PreparedData, output_path: Path) -> None:
+    reserved = {"data_form", "semantic_form", "region_names"}
+    archive: dict[str, np.ndarray] = {
+        "data_form": np.asarray("space"),
+        "semantic_form": np.asarray("chromosome_profiles"),
+        "region_names": np.asarray(prepared.labels),
+    }
+    for label in prepared.labels:
+        if (
+            not label
+            or label in reserved
+            or not all(
+                character.isascii() and (character.isalnum() or character in "._-")
+                for character in label
+            )
+            or label.startswith(".")
+        ):
+            raise ValueError(
+                f"Chromosome name {label!r} cannot be used safely as an NPZ array key. "
+                "Export TSV or CSV instead."
+            )
+        archive[label] = prepared.profile_values[label]
+    stream = io.BytesIO()
+    savez: Any = np.savez
+    savez(stream, **archive)
+    payload = stream.getvalue()
+    if output_path.suffix.casefold() == ".gz":
+        payload = gzip.compress(payload)
+    output_path.write_bytes(payload)
+
+
+def _convert_track(
+    request: DataConversionRequest,
+    slices: tuple[_TrackSlice, ...],
+    output_path: Path,
+    progress: Callable[[dict[str, Any]], None] | bool,
+) -> tuple[PreparedData, bytes]:
+    callback = _progress_callback(progress)
+    _emit_track_progress(callback, request, "load", "start", 0.0)
+    prepared = _prepare_track(
+        request,
+        slices,
+        progress=lambda fraction: _emit_track_progress(
+            callback,
+            request,
+            "load",
+            "running",
+            0.4 * fraction,
+        ),
+    )
+    _emit_track_progress(callback, request, "load", "done", 0.4)
+    _emit_track_progress(callback, request, "prepare", "start", 0.4)
+    source: Any
+    form: str
+    labels: list[str] | None
+    if request.target_format in {"csv", "tsv"}:
+        source = pd.DataFrame(prepared.values, columns=prepared.labels)
+        form, labels = "table", None
+    else:
+        source, form, labels = prepared.values, "space", list(prepared.labels)
+    _emit_track_progress(callback, request, "prepare", "done", 0.5, output_path)
+    _emit_track_progress(callback, request, "write", "start", 0.5, output_path)
+    if request.chromosome_scope == "all" and request.target_format == "npz":
+        _write_all_chromosome_npz(prepared, output_path)
+    else:
+        rsave(
+            source,
+            output_path,
+            target_format=request.target_format,
+            data_form=form,
+            labels=labels,
+            decimal_places=request.decimal_places,
+            value_name=request.value_name,
+        )
+    _emit_track_progress(callback, request, "write", "done", 1.0, output_path)
+    _emit_track_progress(callback, request, "complete", "done", 1.0, output_path)
+    return prepared, _read_output(output_path)
+
+
+def convert_data(
+    request: DataConversionRequest,
+    progress: Callable[[dict[str, Any]], None] | bool = False,
+) -> DataConversionResult:
+    """Run one bounded local conversion and return a downloadable artifact."""
 
     request = _normalized_request(request)
-    inspection = request.inspection
-    if len(inspection.content) > MAX_DECOMPRESSED_BYTES:
+    if len(request.inspection.content) > MAX_DECOMPRESSED_BYTES:
         raise ValueError("The uploaded source exceeds the local conversion limit.")
+    track_summary: TrackInspection | None = None
+    track_slices: tuple[_TrackSlice, ...] = ()
+    if request.input_form == "track":
+        request, track_summary, track_slices = _resolved_track_request(request)
 
     filename = safe_export_filename(
         request.output_name,
@@ -179,97 +1539,95 @@ def convert_data(request: DataConversionRequest) -> DataConversionResult:
         output_path = directory / filename
         labels: list[str] | None = None
 
-        if request.input_form in {"track", "table"}:
-            source: Any = _write_source(directory, inspection)
-            source_format = inspection.source_format
-        else:
-            source, labels = _plain_source(request)
-            source_format = "auto"
-
-        kwargs: dict[str, Any] = {
-            "source_format": source_format,
-            "data_form": request.output_form,
-            "labels": labels,
-            "decimal_places": request.decimal_places,
-            "value_name": request.value_name,
-            "return_data": True,
-        }
         if request.input_form == "track":
-            kwargs.update(
-                {
-                    "chromosome": request.chromosome,
-                    "value_column": request.value_column,
-                    "start": request.start,
-                    "end": request.end,
-                    "bin_size": request.bin_size,
-                    "aggregation": request.aggregation,
-                    "missing": request.track_missing,
-                    "fill_value": request.fill_value,
-                    "interpolation": request.interpolation,
-                    "smooth_window": request.smooth_window,
-                    "normalize": request.normalize,
-                }
+            prepared, artifact_bytes = _convert_track(
+                request,
+                track_slices,
+                output_path,
+                progress,
+            )
+            data_form = prepared.data_form
+            shape = prepared.shape
+            result_labels = prepared.labels
+            source_format = prepared.source_format
+            result_metadata = prepared.metadata
+            preview_label = prepared.labels[0]
+            preview = _preview(
+                prepared.profile_values[preview_label],
+                labels=(request.value_name,),
+                coordinates={"position_kb": prepared.profile_coordinates[preview_label]},
+            )
+        else:
+            if request.input_form == "table":
+                source: Any = _write_source(directory, request.inspection)
+                source_format = request.inspection.source_format
+            else:
+                source, labels = _plain_source(request)
+                source_format = "auto"
+
+            kwargs: dict[str, Any] = {
+                "source_format": source_format,
+                "data_form": _FORM_TO_RDATA[request.input_form],
+                "labels": labels,
+                "decimal_places": request.decimal_places,
+                "value_name": request.value_name,
+                "return_data": True,
+                "progress": progress,
+            }
+            raw_result = rdata(
+                source,
+                target=request.target_format,
+                output_path=output_path,
+                **kwargs,
+            )
+            if not isinstance(raw_result, Mapping):
+                raise RuntimeError("rdata stopped before returning conversion metadata.")
+            artifact_bytes = _read_output(output_path)
+            raw_values = _readonly(np.asarray(raw_result["values"]))
+            data_form = str(raw_result["data_form"])
+            shape = tuple(int(value) for value in raw_values.shape)
+            result_labels = tuple(str(value) for value in (raw_result.get("labels") or ()))
+            source_format = str(raw_result.get("source_format") or request.inspection.source_format)
+            result_metadata = (
+                _profile_metadata(request)
+                if request.input_form in {"x", "t", "xt"}
+                else _provenance_metadata(request)
+            )
+            preview = _preview(
+                raw_result["values"],
+                labels=result_labels,
+                table=raw_result.get("table"),
             )
 
-        raw_result = rdata(
-            source,
-            target=request.target_format,
-            output_path=output_path,
-            **kwargs,
-        )
-        if not isinstance(raw_result, dict):
-            raise RuntimeError("rdata stopped before returning conversion metadata.")
-        artifact_bytes = output_path.read_bytes()
-
-    if not artifact_bytes:
-        raise RuntimeError("rdata created an empty output file.")
-    if len(artifact_bytes) > _MAX_CONVERTED_BYTES:
-        raise ValueError("The converted file exceeds the 128 MB download limit.")
-
-    raw_values = np.asarray(raw_result["values"])
+    media_type = "application/gzip" if request.gzip_output else _MEDIA_TYPES[request.target_format]
+    if track_summary is not None and track_summary.backend:
+        result_metadata += (("backend", track_summary.backend),)
     return DataConversionResult(
-        artifact=ExportArtifact(
-            data=artifact_bytes,
-            filename=filename,
-            media_type=(
-                "application/gzip"
-                if request.gzip_output
-                else _MEDIA_TYPES[request.target_format]
-            ),
-        ),
-        source_format=str(raw_result.get("source_format") or inspection.source_format),
+        artifact=ExportArtifact(data=artifact_bytes, filename=filename, media_type=media_type),
+        source_format=source_format,
         target_format=request.target_format,
-        data_form=str(raw_result["data_form"]),
-        shape=tuple(int(value) for value in raw_values.shape),
-        labels=tuple(str(value) for value in (raw_result.get("labels") or ())),
+        data_form=data_form,
+        shape=shape,
+        labels=result_labels,
+        metadata=result_metadata,
+        preview=preview,
     )
 
 
-def inspect_track(inspection: UploadInspection) -> TrackInspection:
-    """Read chromosome bounds from one retained BigWig or bedGraph upload."""
-
-    if inspection.source_format not in {"bigwig", "bedgraph"}:
-        raise ValueError("Chromosome inspection requires a BigWig or bedGraph source.")
-    with tempfile.TemporaryDirectory(prefix="dnascape-track-") as temporary:
-        source_path = _write_source(Path(temporary), inspection)
-        summary = inspect_genomic_track(
-            source_path,
-            source_format=inspection.source_format,
-            value_column=inspection.default_column if inspection.has_header else None,
-        )
-    table = summary["table"]
-    starts = {
-        str(row.chrom): int(row.start)
-        for row in table[["chrom", "start"]].itertuples(index=False)
-    }
-    regions = tuple(
-        TrackRegion(
-            chromosome=str(chromosome),
-            start=starts.get(str(chromosome), 0),
-            end=int(summary["chromosomes"][chromosome]),
-        )
-        for chromosome in summary["chromosome_names"]
-    )
-    if not regions:
-        raise ValueError("The genomic track contains no chromosomes.")
-    return TrackInspection(source_format=str(summary["format"]), regions=regions)
+__all__ = [
+    "DATA_EXPORT_FORMATS",
+    "DEFAULT_TARGET_FORMAT",
+    "DataConversionRequest",
+    "DataConversionResult",
+    "DataPreview",
+    "DataSourceInspection",
+    "DataValueArray",
+    "PreparedData",
+    "TrackInspection",
+    "TrackRegion",
+    "convert_data",
+    "extract_values",
+    "inspect_data_source",
+    "inspect_track",
+    "prepare_data",
+]

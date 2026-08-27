@@ -16,7 +16,7 @@ from .mapping import (
     map_firing_timing,
     map_replicated_fraction_xt,
 )
-from .simulation import rsim
+from .simulation import _resolve_stall_probability, rsim
 from .utils import check_cancelled, etaferr, mean_squared_error, smoothf
 
 
@@ -184,14 +184,24 @@ def map_timing_firing(
     print_every=1,
     perQ=False,
     chr_number=1,
-    save_errQ=False
+    save_errQ=False,
+    stall_rate_per_kb=None,
+    refine_edge_kb=1000,
 ):
     """Infer a spatial firing-rate profile from replication timing.
 
     ``fork_speed`` is the canonical argument name. ``fork_speeds`` is accepted
-    as an older compatibility alias.
+    as an older compatibility alias. For a non-periodic fitted sub-interval,
+    ``refine_edge_kb`` sets the maximum reflected context used to stabilize a
+    narrow endpoint update taper. Every bin remains refinable; pass zero when
+    the supplied endpoints are true chromosome ends.
     """
     resolution = _normalise_resolution_x(resolution, resolution_x=resolution_x)
+    stall_rate = _resolve_stall_probability(
+        stall_rate,
+        stall_rate_per_kb,
+        resolution,
+    )
     if space_fit_step is not None:
         fit_step = space_fit_step
     if space_maxiter is not None:
@@ -201,6 +211,12 @@ def map_timing_firing(
     mse_list = []
 
     T = np.asarray(observed_timing, dtype=float)
+    if T.ndim != 1:
+        raise ValueError("observed_timing must be a one-dimensional array.")
+    if T.size == 0:
+        raise ValueError("observed_timing must contain at least one value.")
+    if np.any(~np.isfinite(T)) or np.any(T <= 0):
+        raise ValueError("observed_timing must contain finite positive values.")
     n = len(T)
 
     if fork_speeds is not None:
@@ -221,19 +237,32 @@ def map_timing_firing(
     x0 = (math.pi / (4.0 * fork_speed_per_bin)) * np.maximum(T, 1e-80) ** (-2)
     x = x0
 
-    lm = int(1000 / resolution)
-    if perQ:
-        crop = slice(None)
-    else:
-        crop = slice(lm, -lm) if 2 * lm < n else slice(None)
+    fit_mask, update_weights, edge_bins, taper_bins = _spatial_firing_edge_controls(
+        n,
+        resolution,
+        observed_timing=T,
+        fork_speed=fork_speed_initial,
+        neighbourhood_range=neighbourhood_range,
+        perQ=perQ,
+        refine_edge_kb=refine_edge_kb,
+    )
     floor = 10.0 ** (-err_threshold)
 
     def update_firing_rate(observed, predicted, current):
         t_safe = np.maximum(observed, 1e-80)
         p_safe = np.maximum(predicted, 1e-80)
-        ratio  = p_safe / t_safe
+        ratio = p_safe / t_safe
 
-        updated = current * (ratio ** fit_step)
+        # Missing flanking origins make a finite sub-interval's endpoint
+        # updates less certain.  Bound each single update and taper only the
+        # narrowest endpoint bins instead of freezing a broad edge band at the
+        # smooth analytical seed.  Every position therefore remains
+        # refinable, while repeated boundary error cannot become a terminal
+        # rate spike.
+        if edge_bins:
+            edge = ~fit_mask
+            ratio[edge] = np.clip(ratio[edge], 0.5, 2.0)
+        updated = current * ratio ** (fit_step * update_weights)
         updated = np.maximum(updated, floor)
 
         if deviation_threshold is not None:
@@ -244,14 +273,15 @@ def map_timing_firing(
         return updated
 
     # initial prediction
-    y = map_firing_timing(
+    y = _map_spatial_firing_timing_with_context(
         x,
         fork_speed=fork_speed_initial,
         resolution=resolution,
         neighbourhood_range=neighbourhood_range,
         perQ=perQ,
+        edge_bins=edge_bins,
     )
-    mse = mean_squared_error(T[crop], y[crop])
+    mse = mean_squared_error(T[fit_mask], y[fit_mask])
     best_x = np.asarray(x, dtype=float).copy()
     best_mse = mse
     best_timing_fit = np.asarray(y, dtype=float).copy()
@@ -267,14 +297,15 @@ def map_timing_firing(
     for it in range(1, maxiter0 + 1):
         check_cancelled()
         x = update_firing_rate(T, y, x)
-        y = map_firing_timing(
+        y = _map_spatial_firing_timing_with_context(
             x,
             fork_speed=fork_speed_initial,
             resolution=resolution,
             neighbourhood_range=neighbourhood_range,
-            perQ=perQ
+            perQ=perQ,
+            edge_bins=edge_bins,
         )
-        mse = mean_squared_error(T[crop], y[crop])
+        mse = mean_squared_error(T[fit_mask], y[fit_mask])
         if mse < best_mse:
             best_mse = mse
             best_x = np.asarray(x, dtype=float).copy()
@@ -303,7 +334,7 @@ def map_timing_firing(
         #rates = (math.pi / (4.0 * 10 * fork_speed_per_bin)) * np.maximum(T, 1e-80) ** (-2)
         
         if rate_max is None:
-            pos = rates[rates > 0]
+            pos = rates[fit_mask & (rates > 0)]
             rate_max = (10.0 * np.median(pos)) if pos.size else 1.0
     
         hist_mse = []
@@ -314,20 +345,36 @@ def map_timing_firing(
     
         for k in range(iterations):
             check_cancelled()
+            simulation_rates, simulation_speed, prediction_slice = (
+                _pad_spatial_firing_inputs(rates, fork_speed, edge_bins=edge_bins)
+            )
             simres = rsim(
-                firing_rate=rates,
+                firing_rate=simulation_rates,
                 sim_number=sim_number,
-                fork_speed=fork_speed,
+                fork_speed=simulation_speed,
                 stall_rate=stall_rate,
                 tau=tau,
                 resolution_space=resolution,
                 verbose=False,
-                perQ=perQ
+                perQ=perQ,
+                retain_rep_times_per_sim=False,
+                retain_inter_origin_distances=False,
             )
-            T_pred = simres['replication_timing']
+            T_pred = np.asarray(simres['replication_timing'], dtype=float)[prediction_slice]
     
-            mse = T_pred - T_target
-            mse = float(np.mean(mse**2))
+            valid = (
+                np.isfinite(T_pred)
+                & np.isfinite(T_target)
+                & (T_pred > 0)
+                & (T_target > 0)
+            )
+            if not np.any(valid):
+                break
+            score_valid = valid & fit_mask
+            if not np.any(score_valid):
+                score_valid = valid
+            residual = T_pred[score_valid] - T_target[score_valid]
+            mse = float(np.mean(residual**2))
             hist_mse.append(mse)
             if mse < best_mse:
                 best_mse = mse
@@ -335,8 +382,15 @@ def map_timing_firing(
                 best_timing_fit = np.asarray(T_pred, dtype=float).copy()
 
             eps = 1e-12
-            ratio = (T_pred + eps) / (T_target + eps)
-            rates *= np.power(ratio, alpha)
+            ratio = np.ones_like(rates)
+            ratio[valid] = (T_pred[valid] + eps) / (T_target[valid] + eps)
+            if edge_bins:
+                edge = ~fit_mask
+                ratio[edge & valid] = np.clip(ratio[edge & valid], 0.5, 2.0)
+            rates[valid] *= np.power(
+                ratio[valid],
+                alpha * update_weights[valid],
+            )
             np.clip(rates, rate_min, rate_max, out=rates)
     
             done = (k + 1) == iterations or _error_reached(mse, error)
@@ -357,7 +411,15 @@ def map_timing_firing(
         
     return _RmapInfoArray(
         x,
-        {"replication_timing_fit": best_timing_fit},
+        {
+            "replication_timing_fit": best_timing_fit,
+            "fit_mse": None if not np.isfinite(best_mse) else float(best_mse),
+            "fit_mse_description": (
+                "Mean squared timing error over the refinement-supported region."
+            ),
+            "fit_edge_bins": edge_bins,
+            "fit_taper_bins": taper_bins,
+        },
     )
 
 
@@ -481,6 +543,7 @@ def _temporal_profile_from_spatial_fit(
 _SPATIAL_FIRING_FIT_OPTIONS = {
     "fork_speeds",
     "stall_rate",
+    "stall_rate_per_kb",
     "tau",
     "neighbourhood_range",
     "fit_step",
@@ -494,6 +557,7 @@ _SPATIAL_FIRING_FIT_OPTIONS = {
     "verbose",
     "print_every",
     "perQ",
+    "refine_edge_kb",
     "chr_number",
     "save_errQ",
 }
@@ -525,6 +589,157 @@ def _refinement_crop_mask(n, resolution, perQ=False, refine_edge_kb=1000):
         mask[:edge_bins] = False
         mask[-edge_bins:] = False
     return mask
+
+
+def _spatial_firing_edge_controls(
+    n,
+    resolution,
+    *,
+    observed_timing,
+    fork_speed,
+    neighbourhood_range,
+    perQ=False,
+    refine_edge_kb=1000,
+):
+    """Build scoring and update controls for uncertain linear endpoints.
+
+    ``refine_edge_kb`` is an upper bound on the amount of endpoint context to
+    protect, rather than a band whose rates are held fixed.  The effective
+    context is also bounded by the forward-map neighbourhood, an estimate of
+    two characteristic fork-travel distances, and ten percent of the supplied
+    profile.  This keeps the safeguard local on short mapping intervals.
+
+    All bins retain a positive update weight.  Only the innermost 2.5 percent
+    at either endpoint receives a raised-cosine taper, and the rest of the
+    context band is updated normally.  The context band is omitted from the
+    reported fit score because its flanking source data remain inferred.
+    """
+    n = int(n)
+    if n <= 0:
+        raise ValueError("n must be a positive integer.")
+    resolution = float(resolution)
+    if not np.isfinite(resolution) or resolution <= 0:
+        raise ValueError("resolution must be a finite positive value.")
+
+    mask = np.ones(n, dtype=bool)
+    weights = np.ones(n, dtype=float)
+    if perQ or refine_edge_kb is None:
+        return mask, weights, 0, 0
+    edge_kb = float(refine_edge_kb)
+    if not np.isfinite(edge_kb) or edge_kb < 0:
+        raise ValueError("refine_edge_kb must be None or a finite value >= 0.")
+    requested_bins = int(edge_kb / resolution)
+    if requested_bins <= 0 or n < 4:
+        return mask, weights, 0, 0
+
+    timing = np.asarray(observed_timing, dtype=float)
+    positive_timing = timing[np.isfinite(timing) & (timing > 0)]
+    characteristic_time = (
+        float(np.nanpercentile(positive_timing, 90))
+        if positive_timing.size
+        else resolution / float(fork_speed)
+    )
+    travel_bins = max(
+        1,
+        int(np.ceil(2.0 * float(fork_speed) * characteristic_time / resolution)),
+    )
+    neighbourhood_bins = max(1, int(float(neighbourhood_range) / resolution))
+    short_profile_cap = max(1, int(np.ceil(0.1 * n)))
+    edge_bins = min(
+        requested_bins,
+        travel_bins,
+        neighbourhood_bins,
+        short_profile_cap,
+    )
+    mask[:edge_bins] = False
+    mask[-edge_bins:] = False
+
+    taper_bins = min(edge_bins, max(1, int(np.ceil(0.025 * n))))
+    if taper_bins == 1:
+        taper = np.asarray([0.25], dtype=float)
+    else:
+        phase = np.linspace(0.0, 1.0, taper_bins)
+        taper = 0.25 + 0.75 * np.sin(0.5 * math.pi * phase) ** 2
+    weights[:taper_bins] = taper
+    weights[-taper_bins:] = taper[::-1]
+    return mask, weights, edge_bins, taper_bins
+
+
+def _pad_spatial_firing_inputs(firing_rate, fork_speed, *, edge_bins):
+    """Reflect spatial axes while preserving every public ``rsim`` field form."""
+    rates = np.asarray(firing_rate, dtype=float).reshape(-1)
+    edge_bins = int(edge_bins)
+    if edge_bins <= 0:
+        return rates, fork_speed, slice(None)
+
+    pad_mode = "reflect" if rates.size > 1 else "edge"
+    padded_rates = np.pad(rates, (edge_bins, edge_bins), mode=pad_mode)
+
+    speed = np.asarray(fork_speed, dtype=float)
+    if speed.size == 1:
+        padded_speed = float(speed.reshape(-1)[0])
+    elif speed.ndim == 1:
+        if speed.size != rates.size:
+            raise ValueError("fork_speed must match the length of firing_rate.")
+        speed_pad_mode = "reflect" if speed.size > 1 else "edge"
+        padded_speed = np.pad(
+            speed,
+            (edge_bins, edge_bins),
+            mode=speed_pad_mode,
+        )
+    elif speed.ndim == 2 and speed.shape[0] == 1 and speed.shape[1] > 1:
+        # Public (1, T) fields are time-only; the firing-rate profile supplies
+        # the padded spatial length to rsim, so no speed padding is needed.
+        padded_speed = speed
+    elif speed.ndim == 2 and speed.shape[0] == rates.size:
+        # Public spatial columns (n, 1) and space-time fields (n, T) both keep
+        # space on axis zero.  Reflect only that axis and leave time untouched.
+        speed_pad_mode = "reflect" if speed.shape[0] > 1 else "edge"
+        padded_speed = np.pad(
+            speed,
+            ((edge_bins, edge_bins), (0, 0)),
+            mode=speed_pad_mode,
+        )
+    else:
+        raise ValueError(
+            "fork_speed must be scalar, (n,), (1,T), (n,1), or (n,T), "
+            "with spatial length matching firing_rate."
+        )
+    return padded_rates, padded_speed, slice(edge_bins, edge_bins + rates.size)
+
+
+def _map_spatial_firing_timing_with_context(
+    firing_rate,
+    *,
+    fork_speed,
+    resolution,
+    neighbourhood_range,
+    perQ,
+    edge_bins,
+):
+    """Forward-map a fit candidate with reflected context when appropriate."""
+    if perQ or not edge_bins:
+        return map_firing_timing(
+            firing_rate,
+            fork_speed=fork_speed,
+            resolution=resolution,
+            neighbourhood_range=neighbourhood_range,
+            perQ=perQ,
+        )
+
+    padded_rates, padded_speed, output_slice = _pad_spatial_firing_inputs(
+        firing_rate,
+        fork_speed,
+        edge_bins=edge_bins,
+    )
+    prediction = map_firing_timing(
+        padded_rates,
+        fork_speed=padded_speed,
+        resolution=resolution,
+        neighbourhood_range=neighbourhood_range,
+        perQ=False,
+    )
+    return np.asarray(prediction, dtype=float)[output_slice]
 
 
 def _mean_ratio_by_bin(ratio, bins, n_time, mask):
@@ -1308,6 +1523,9 @@ def _refine_temporal_firing(
     perQ=False,
     floor=0.0,
     error=None,
+    stall_rate=0.0,
+    stall_rate_per_kb=None,
+    tau=np.inf,
 ):
     rates = np.asarray(firing_rate_time, dtype=float).reshape(1, -1).copy()
     error = _normalise_error_threshold(error)
@@ -1342,8 +1560,13 @@ def _refine_temporal_firing(
             resolution_time=resolution_time,
             n_bins=n,
             perQ=perQ,
+            stall_rate=stall_rate,
+            stall_rate_per_kb=stall_rate_per_kb,
+            tau=tau,
             seed=seed,
             verbose=False,
+            retain_rep_times_per_sim=False,
+            retain_inter_origin_distances=False,
         )["replication_timing"]
         valid = crop & np.isfinite(T) & np.isfinite(T_pred) & (T > 0) & (T_pred > 0)
         if not np.any(valid):
@@ -1388,6 +1611,9 @@ def _refine_spacetime_firing(
     perQ=False,
     floor=0.0,
     error=None,
+    stall_rate=0.0,
+    stall_rate_per_kb=None,
+    tau=np.inf,
 ):
     rates = np.asarray(firing_rate_spacetime, dtype=float).copy()
     error = _normalise_error_threshold(error)
@@ -1430,8 +1656,13 @@ def _refine_spacetime_firing(
             resolution_time=resolution_time,
             n_bins=n,
             perQ=perQ,
+            stall_rate=stall_rate,
+            stall_rate_per_kb=stall_rate_per_kb,
+            tau=tau,
             seed=seed,
             verbose=False,
+            retain_rep_times_per_sim=False,
+            retain_inter_origin_distances=False,
         )["replication_timing"]
         valid = crop & np.isfinite(T) & np.isfinite(T_pred) & (T > 0) & (T_pred > 0)
         if not np.any(valid):
@@ -1500,14 +1731,31 @@ def map_timing_firing_time(
     projects that fit onto the timing coordinate. The returned row vector has
     shape ``(1, n_time)`` so it is interpreted as ``I(t)`` by ``rsim``.
     """
+    resolved_resolution = _normalise_resolution_x(
+        resolution,
+        resolution_x=resolution_x,
+    )
+    stall_rate = kwargs.get("stall_rate", 0.0)
+    stall_rate_per_kb = kwargs.get("stall_rate_per_kb")
+    tau = kwargs.get("tau", np.inf)
+    effective_stall_probability = _resolve_stall_probability(
+        stall_rate,
+        stall_rate_per_kb,
+        resolved_resolution,
+    )
     target_shape = _canonical_target_shape(target_shape)
     if target_shape == "weibull":
+        if effective_stall_probability > 0.0:
+            raise ValueError(
+                "Stalling is not supported with target_shape='weibull'; "
+                "use target_shape='free'."
+            )
         if refine_verbose is None:
             refine_verbose = bool(kwargs.get("verbose", False))
         return _fit_weibull_survival_firing(
             observed_timing,
             fork_speed=fork_speed,
-            resolution=_normalise_resolution_x(resolution, resolution_x=resolution_x),
+            resolution=resolved_resolution,
             resolution_time=resolution_time,
             time_grid=time_grid,
             T0=T0,
@@ -1526,6 +1774,7 @@ def map_timing_firing_time(
         )
 
     fit_kwargs = _spatial_firing_fit_kwargs(kwargs)
+    fit_kwargs["refine_edge_kb"] = refine_edge_kb
     if space_fit_step is not None:
         fit_kwargs["fit_step"] = space_fit_step
     if space_maxiter is not None:
@@ -1557,7 +1806,7 @@ def map_timing_firing_time(
         temporal.reshape(1, -1),
         observed_timing,
         fork_speed=fork_speed,
-        resolution=_normalise_resolution_x(resolution, resolution_x=resolution_x),
+        resolution=resolved_resolution,
         resolution_time=resolution_time,
         T0=T0,
         temporal_fit_step=temporal_fit_step,
@@ -1570,6 +1819,9 @@ def map_timing_firing_time(
         perQ=fit_kwargs.get("perQ", False),
         floor=floor,
         error=error,
+        stall_rate=stall_rate,
+        stall_rate_per_kb=stall_rate_per_kb,
+        tau=tau,
     )
 
 
@@ -1614,8 +1866,25 @@ def map_timing_firing_spacetime(
     projection, and refines the x and t components in ``spacetime_order``.
     ``spacetime_update='mixed'`` refines local x,t corrections directly.
     """
+    resolved_resolution = _normalise_resolution_x(
+        resolution,
+        resolution_x=resolution_x,
+    )
+    stall_rate = kwargs.get("stall_rate", 0.0)
+    stall_rate_per_kb = kwargs.get("stall_rate_per_kb")
+    tau = kwargs.get("tau", np.inf)
+    effective_stall_probability = _resolve_stall_probability(
+        stall_rate,
+        stall_rate_per_kb,
+        resolved_resolution,
+    )
     target_shape = _canonical_target_shape(target_shape)
     if target_shape == "weibull":
+        if effective_stall_probability > 0.0:
+            raise ValueError(
+                "Stalling is not supported with target_shape='weibull'; "
+                "use target_shape='free'."
+            )
         global_maxiter = kwargs.get("maxiter", None)
         if global_maxiter is not None:
             space_maxiter = global_maxiter
@@ -1629,7 +1898,7 @@ def map_timing_firing_spacetime(
         return _fit_weibull_survival_firing(
             observed_timing,
             fork_speed=fork_speed,
-            resolution=_normalise_resolution_x(resolution, resolution_x=resolution_x),
+            resolution=resolved_resolution,
             resolution_time=resolution_time,
             time_grid=time_grid,
             T0=T0,
@@ -1650,6 +1919,7 @@ def map_timing_firing_spacetime(
     update_mode = _canonical_spacetime_update(spacetime_update)
     order = _canonical_spacetime_order(spacetime_order)
     fit_kwargs = _spatial_firing_fit_kwargs(kwargs)
+    fit_kwargs["refine_edge_kb"] = refine_edge_kb
     global_fit_step = fit_kwargs.pop("fit_step", None)
     global_maxiter = fit_kwargs.pop("maxiter", None)
     global_sim_number = fit_kwargs.pop("sim_number", None)
@@ -1727,7 +1997,7 @@ def map_timing_firing_spacetime(
                 field,
                 observed_timing,
                 fork_speed=fork_speed,
-                resolution=_normalise_resolution_x(resolution, resolution_x=resolution_x),
+                resolution=resolved_resolution,
                 resolution_time=resolution_time,
                 T0=T0,
                 spacetime_fit_step=phase_step,
@@ -1744,6 +2014,9 @@ def map_timing_firing_spacetime(
                 perQ=fit_kwargs.get("perQ", False),
                 floor=floor,
                 error=error,
+                stall_rate=stall_rate,
+                stall_rate_per_kb=stall_rate_per_kb,
+                tau=tau,
             )
 
         if order == "time_then_space":
@@ -1759,7 +2032,7 @@ def map_timing_firing_spacetime(
         firing_rate_spacetime,
         observed_timing,
         fork_speed=fork_speed,
-        resolution=_normalise_resolution_x(resolution, resolution_x=resolution_x),
+        resolution=resolved_resolution,
         resolution_time=resolution_time,
         T0=T0,
         spacetime_fit_step=spacetime_fit_step,
@@ -1776,6 +2049,9 @@ def map_timing_firing_spacetime(
         perQ=fit_kwargs.get("perQ", False),
         floor=floor,
         error=error,
+        stall_rate=stall_rate,
+        stall_rate_per_kb=stall_rate_per_kb,
+        tau=tau,
     ).T
 
 
@@ -1871,6 +2147,8 @@ def map_timing_constant_firing(
                 perQ=perQ,
                 seed=seed,
                 verbose=False,
+                retain_rep_times_per_sim=False,
+                retain_inter_origin_distances=False,
             )["replication_timing"]
         else:
             predicted_full = map_firing_timing(
@@ -4629,6 +4907,8 @@ def _refine_temporal_speed(
             perQ=perQ,
             seed=seed,
             verbose=False,
+            retain_rep_times_per_sim=False,
+            retain_inter_origin_distances=False,
         )["replication_timing"]
         valid = crop & np.isfinite(T) & np.isfinite(T_pred) & (T > 0) & (T_pred > 0)
         if not np.any(valid):
@@ -4718,6 +4998,8 @@ def _refine_spacetime_speed(
             perQ=perQ,
             seed=seed,
             verbose=False,
+            retain_rep_times_per_sim=False,
+            retain_inter_origin_distances=False,
         )["replication_timing"]
         valid = crop & np.isfinite(T) & np.isfinite(T_pred) & (T > 0) & (T_pred > 0)
         if not np.any(valid):
@@ -5794,6 +6076,8 @@ def map_timing_firing_constant_speed_simulated(
             perQ=perQ,
             seed=seed,
             verbose=False,
+            retain_rep_times_per_sim=False,
+            retain_inter_origin_distances=False,
         )["replication_timing"]
         observed = T[crop]
         predicted = predicted[crop]
@@ -5906,6 +6190,8 @@ def map_timing_firing_spatial_speed_simulated(
             perQ=perQ,
             seed=seed,
             verbose=False,
+            retain_rep_times_per_sim=False,
+            retain_inter_origin_distances=False,
         )["replication_timing"]
         observed = T[crop]
         predicted_crop = predicted[crop]
@@ -6626,6 +6912,8 @@ def map_timing_joint_spacetime_kinetics(
             perQ=perQ,
             seed=seed,
             verbose=False,
+            retain_rep_times_per_sim=False,
+            retain_inter_origin_distances=False,
         )["replication_timing"]
         valid = crop & np.isfinite(T) & np.isfinite(T_pred) & (T > 0) & (T_pred > 0)
         if not np.any(valid):

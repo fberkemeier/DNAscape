@@ -148,6 +148,22 @@ def test_xt_table_uses_all_non_coordinate_columns_by_default() -> None:
         materialize_upload(inspection, column="position")
 
 
+def test_bp_coordinate_headers_are_not_offered_as_signal_profiles() -> None:
+    inspection = inspect_upload(
+        "legacy_profile.tsv",
+        (
+            b"chrom\tstart_bp\tend_bp\tposition_bp\treplication_timing\n"
+            b"chr1\t0\t10\t5\t1.0\n"
+            b"chr1\t10\t20\t15\t2.0\n"
+        ),
+        expected_form="x",
+    )
+
+    assert inspection.numeric_columns == ("replication_timing",)
+    assert inspection.default_column == "replication_timing"
+    np.testing.assert_array_equal(materialize_upload(inspection), [1.0, 2.0])
+
+
 def test_missing_value_policies_preserve_vector_rows_and_matrix_shape() -> None:
     vector = inspect_upload(
         "profile.csv",
@@ -311,7 +327,12 @@ def test_auto_upload_replacement_and_cross_remove_clear_retained_bytes() -> None
     removed: list[str] = []
 
     async def receive(event: Any) -> bool:
-        retained[event.file.name] = await inspect_upload_event(event, expected_form="x")
+        try:
+            inspection = await inspect_upload_event(event, expected_form="x")
+        except (OSError, TypeError, ValueError):
+            return False
+        retained.clear()
+        retained[event.file.name] = inspection
         return True
 
     def clear(event: UploadClearEventArguments) -> None:
@@ -351,6 +372,25 @@ def test_auto_upload_replacement_and_cross_remove_clear_retained_bytes() -> None
             await user.should_not_see("0 B")
             await user.should_not_see("100%")
             assert uploader.visible is False
+            await user.should_see(marker="test-upload-file")
+            completed_row = next(iter(user.find(marker="test-upload-file").elements))
+            assert completed_row._props["data-upload-drop-target"] == "true"
+            drop_listener = next(
+                listener
+                for listener in completed_row._event_listeners.values()
+                if listener.type == "drop"
+            )
+            assert drop_listener.js_handler is not None
+            assert "q.reset()" in drop_listener.js_handler
+            assert "q.addFiles(files.slice(0, 1))" in drop_listener.js_handler
+            assert "new DataTransfer()" not in drop_listener.js_handler
+            finish_listener = next(
+                listener
+                for listener in uploader._event_listeners.values()
+                if listener.type == "finish"
+            )
+            assert finish_listener.js_handler is not None
+            assert "'reset'" in finish_listener.js_handler
 
             await uploader.handle_uploads(
                 [Upload.SmallFileUpload("same.csv", "text/csv", b"chr1\n8\n9\n")]
@@ -360,15 +400,23 @@ def test_auto_upload_replacement_and_cross_remove_clear_retained_bytes() -> None
                     retained.get("same.csv") and retained["same.csv"].content.endswith(b"8\n9\n")
                 )
             )
-            assert removed == ["same.csv"]
+            assert removed == []
             await user.should_see("same.csv")
             await user.should_not_see("Inspecting…")
             assert len(user.find(marker="test-upload-file").elements) == 1
 
+            await uploader.handle_uploads(
+                [Upload.SmallFileUpload("bad.csv", "text/csv", b"label\nnot-a-number\n")]
+            )
+            await asyncio.sleep(0.05)
+            assert retained["same.csv"].content.endswith(b"8\n9\n")
+            await user.should_see("same.csv")
+            await user.should_not_see("bad.csv")
+
             user.find(marker="test-upload-remove").click()
             await user.should_not_see("same.csv")
             await wait_for(lambda: not retained)
-            assert removed == ["same.csv", "same.csv"]
+            assert removed == ["same.csv"]
             assert uploader.visible is True
 
     asyncio.run(scenario())

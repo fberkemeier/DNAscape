@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import threading
 import time
+from dataclasses import replace
 from typing import Any, cast
 
 import numpy as np
@@ -173,10 +174,7 @@ def test_mapping_plot_settings_redraw_the_completed_preview(
                 Input,
                 next(iter(user.find(marker="mapping-preview-title").elements)),
             )
-            series_label = cast(
-                Input,
-                next(iter(user.find(marker="mapping-series-label").elements)),
-            )
+            await user.should_not_see("Series label")
             x_label = cast(
                 Input,
                 next(iter(user.find(marker="mapping-preview-x-label").elements)),
@@ -192,7 +190,6 @@ def test_mapping_plot_settings_redraw_the_completed_preview(
             assert user.client is not None
             with user.client:
                 title.set_value("Updated mapping")
-                series_label.set_value("Fitted rate")
                 x_label.set_value("Genomic position")
                 y_label.set_value("Rate")
                 color.set_value("#c43b22")
@@ -200,12 +197,27 @@ def test_mapping_plot_settings_redraw_the_completed_preview(
             await asyncio.sleep(0)
             updated = chart()
             assert updated.options["title"]["text"] == "Updated mapping"
-            assert updated.options["series"][0]["name"] == "Fitted rate"
             assert updated.options["series"][0]["lineStyle"]["color"] == "#c43b22"
             assert updated.options["xAxis"]["name"] == "Genomic position"
             assert updated.options["yAxis"]["name"] == "Rate"
 
-            invert = cast(Checkbox, next(iter(user.find("Invert Y").elements)))
+            line_width = cast(
+                Number,
+                next(iter(user.find(marker="mapping-line-width").elements)),
+            )
+            with user.client:
+                line_width.set_value(None)
+            await asyncio.sleep(0)
+            assert chart().options["title"]["text"] == "Updated mapping"
+            await user.should_not_see("Output unavailable")
+            with user.client:
+                line_width.set_value(1.8)
+            await asyncio.sleep(0)
+
+            invert = cast(
+                Checkbox,
+                next(iter(user.find(marker="mapping-invert-y").elements)),
+            )
             with user.client:
                 invert.set_value(True)
             await asyncio.sleep(0)
@@ -220,6 +232,10 @@ def test_mapping_plot_settings_redraw_the_completed_preview(
                 Number,
                 next(iter(user.find(marker="mapping-y-maximum").elements)),
             )
+            assert float(y_minimum.value) == pytest.approx(0.176)
+            assert float(y_maximum.value) == pytest.approx(0.824)
+            assert chart().options["yAxis"]["min"] == pytest.approx(0.176)
+            assert chart().options["yAxis"]["max"] == pytest.approx(0.824)
             with user.client:
                 y_maximum.set_value(1.0)
                 y_minimum.set_value(0.0)
@@ -236,12 +252,36 @@ def test_mapping_plot_settings_redraw_the_completed_preview(
                 view.set_value("Histogram")
             await asyncio.sleep(0)
             await asyncio.sleep(0)
-            assert chart().options["series"][0]["type"] == "bar"
+            assert chart().options["series"][0]["type"] == "custom"
             await user.should_see(marker="mapping-histogram-bins")
+
+            touching = cast(
+                Checkbox,
+                next(iter(user.find(marker="mapping-histogram-touching").elements)),
+            )
+            boundary = cast(
+                Select,
+                next(iter(user.find(marker="mapping-histogram-boundary").elements)),
+            )
+            assert touching.value is True
+            assert boundary.value == "left"
+            assert "* 0" in chart().options["series"][0][":renderItem"]
+            with user.client:
+                touching.set_value(False)
+            await asyncio.sleep(0)
+            assert "* 0.14" in chart().options["series"][0][":renderItem"]
+            with user.client:
+                boundary.set_value("right")
+            await asyncio.sleep(0)
+            assert boundary.value == "right"
 
             bins = cast(
                 Number,
                 next(iter(user.find(marker="mapping-histogram-bins").elements)),
+            )
+            bin_size = cast(
+                Number,
+                next(iter(user.find(marker="mapping-histogram-bin-size").elements)),
             )
             density = cast(
                 Checkbox,
@@ -249,12 +289,168 @@ def test_mapping_plot_settings_redraw_the_completed_preview(
             )
             with user.client:
                 bins.set_value(2)
-                density.set_value(True)
             await asyncio.sleep(0)
             await asyncio.sleep(0)
             histogram = chart()
             assert len(histogram.options["series"][0]["data"]) == 2
+            assert bin_size.value == pytest.approx(0.3)
+
+            with user.client:
+                bin_size.set_value(0.2)
+            await asyncio.sleep(0)
+            await asyncio.sleep(0)
+            assert bins.value == 3
+            assert len(chart().options["series"][0]["data"]) == 3
+
+            with user.client:
+                bin_size.set_value(None)
+            await asyncio.sleep(0)
+            assert len(chart().options["series"][0]["data"]) == 3
+            await user.should_not_see("Output unavailable")
+
+            with user.client:
+                bin_size.set_value(0.3)
+                density.set_value(True)
+            await asyncio.sleep(0)
+            await asyncio.sleep(0)
+            histogram = chart()
+            assert bins.value == 2
+            assert len(histogram.options["series"][0]["data"]) == 2
             assert histogram.options["yAxis"]["name"] == "Density"
+
+            x_minimum = cast(
+                Number,
+                next(iter(user.find(marker="mapping-histogram-x-minimum").elements)),
+            )
+            x_maximum = cast(
+                Number,
+                next(iter(user.find(marker="mapping-histogram-x-maximum").elements)),
+            )
+            with user.client:
+                bin_size.set_value(0.125)
+                x_minimum.set_value(0.3)
+                x_maximum.set_value(0.7)
+            await asyncio.sleep(0)
+            await asyncio.sleep(0)
+            assert bin_size.value == pytest.approx(0.125)
+            assert bins.value == 4
+            histogram = chart()
+            assert len(histogram.options["series"][0]["data"]) == 4
+            assert histogram.options["xAxis"]["min"] == pytest.approx(0.3)
+            assert histogram.options["xAxis"]["max"] == pytest.approx(0.7)
+            assert "Mean       0.5" in histogram.options["graphic"][0]["style"]["text"]
+
+            user.find(marker="mapping-reset-histogram-x-limits").click()
+            await asyncio.sleep(0)
+            await asyncio.sleep(0)
+            assert x_minimum.value is not None
+            assert x_maximum.value is not None
+            assert float(x_minimum.value) == pytest.approx(0.2)
+            assert float(x_maximum.value) == pytest.approx(0.8)
+            assert bins.value == 5
+
+            statistics = cast(
+                Checkbox,
+                next(iter(user.find(marker="mapping-show-histogram-statistics").elements)),
+            )
+            with user.client:
+                statistics.set_value(True)
+            await asyncio.sleep(0)
+            statistics_position = cast(
+                Select,
+                next(iter(user.find(marker="mapping-histogram-statistics-position").elements)),
+            )
+            with user.client:
+                statistics_position.set_value("Bottom right")
+            await asyncio.sleep(0)
+            await asyncio.sleep(0)
+            summary = chart().options["graphic"][0]
+            assert summary["right"] == 28
+            assert summary["bottom"] == 8
+            assert chart().options["grid"]["bottom"] >= 100
+            assert "Mean" in summary["style"]["text"]
+            assert "Median" in summary["style"]["text"]
+            assert "Std dev" in summary["style"]["text"]
+
+    asyncio.run(scenario())
+
+
+def test_mapping_reports_mse_and_orders_residual_before_mse_output(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from app.pages import mapping as mapping_page
+
+    def fake_run(request: MappingRequest, report: Any, _cancel: Any) -> MappingResult:
+        report(0.8, "Preparing mapped preview...")
+        result = _mapped_result(request, np.asarray([0.2, 0.4, 0.6]))
+        return replace(
+            result,
+            outputs={
+                "firing_rate": np.asarray([0.2, 0.4, 0.6]),
+                "residual": np.asarray([0.1, -0.2, 0.05]),
+                "fit_history": np.asarray([0.4, 0.2, 0.0525]),
+            },
+            output_forms={
+                "firing_rate": "x",
+                "residual": "x",
+                "fit_history": "supplied",
+            },
+            fit_mse=0.0525,
+        )
+
+    monkeypatch.setattr(mapping_page, "run_mapping", fake_run)
+
+    async def scenario() -> None:
+        async with user_simulation(index) as user:
+            await user.open("/")
+            user.find(marker="nav-mapping").click()
+            await user.should_see(marker="source-replication-timing-upload", retries=60)
+            uploader = cast(
+                Upload,
+                next(iter(user.find(marker="source-replication-timing-upload").elements)),
+            )
+            await uploader.handle_uploads(
+                [Upload.SmallFileUpload("timing.csv", "text/csv", b"timing\n8\n7\n9\n")]
+            )
+            await user.should_see("timing.csv", retries=20)
+            user.find(marker="action-map").click()
+            await user.should_see("MSE 0.0525", retries=30)
+
+            output = cast(
+                Select,
+                next(iter(user.find(marker="mapping-preview-output").elements)),
+            )
+            assert tuple(output.options)[-2:] == ("residual", "fit_history")
+            assert output.options["residual"] == "Residual"
+            assert output.options["fit_history"] == "MSE"
+            assert user.client is not None
+            with user.client:
+                output.set_value("fit_history")
+            await asyncio.sleep(0)
+            raw_name = cast(
+                Input,
+                next(iter(user.find(marker="mapping-raw-filename").elements)),
+            )
+            x_label = cast(
+                Input,
+                next(iter(user.find(marker="mapping-preview-x-label").elements)),
+            )
+            y_label = cast(
+                Input,
+                next(iter(user.find(marker="mapping-preview-y-label").elements)),
+            )
+            assert x_label.value == "Iteration"
+            assert y_label.value == "MSE"
+            assert raw_name.value == "dnascape_mapping_mse"
+            chart = cast(
+                EChart,
+                next(iter(user.find(marker="mapping-result-plot").elements)),
+            )
+            assert chart.options["series"][0]["data"] == [
+                [1.0, 0.4],
+                [2.0, 0.2],
+                [3.0, 0.0525],
+            ]
 
     asyncio.run(scenario())
 
@@ -574,17 +770,134 @@ def test_temporal_mapping_preview_spans_position_x_and_time_y() -> None:
     assert options["yAxis"]["name"] == "Time (min)"
     assert options["xAxis"]["type"] == "value"
     assert options["yAxis"]["type"] == "value"
-    assert options["xAxis"]["min"] == pytest.approx(10.0)
-    assert options["xAxis"]["max"] == pytest.approx(12.0)
+    assert options["xAxis"]["min"] == pytest.approx(9.96)
+    assert options["xAxis"]["max"] == pytest.approx(11.04)
     assert options["yAxis"]["min"] == pytest.approx(0.0)
     assert options["yAxis"]["max"] == pytest.approx(10.0)
+    assert options["xAxis"]["axisLabel"]["customValues"] == pytest.approx(
+        [10.0, 10.2, 10.4, 10.6, 10.8, 11.0]
+    )
+    assert options["xAxis"]["splitLine"]["showMinLine"] is True
+    assert options["xAxis"]["splitLine"]["showMaxLine"] is True
     assert options["series"][0]["data"] == [
-        [10.0, 0.0, 12.0, 15.0],
+        [10.0, 0.0, 11.0, 10.0],
     ]
     assert "data:image/png;base64," in options["series"][0][":renderItem"]
     assert options["series"][0]["silent"] is True
     assert options["tooltip"]["show"] is False
-    assert options["visualMap"]["text"] == ["Replicated fraction", ""]
+    assert options["visualMap"]["text"] == ["1", "0"]
+    assert options["graphic"][0]["style"]["text"] == "Replicated fraction"
+    assert options["title"]["show"] is False
+
+
+@pytest.mark.parametrize(
+    ("output_key", "values", "expected"),
+    (
+        ("fork_directionality", [-0.45, 0.0, 0.6], (-1.0, 1.0)),
+        ("origin_efficiency", [0.2, 0.7, 0.4], (0.0, 1.0)),
+        ("replicated_fraction", [0.1, 0.5, 0.9], (0.0, 1.0)),
+    ),
+)
+def test_mapping_line_defaults_preserve_fixed_scientific_domains(
+    output_key: str,
+    values: list[float],
+    expected: tuple[float, float],
+) -> None:
+    from app.pages.mapping import _mapping_automatic_y_limits, _mapping_plot_options
+
+    profile = np.asarray(values, dtype=float)
+    result = MappingResult(
+        target=output_key,
+        target_key=output_key,
+        target_label=output_key.replace("_", " ").title(),
+        method="test",
+        output_form="x",
+        output_dependence="space",
+        primary_output=output_key,
+        outputs={output_key: profile},
+        output_forms={output_key: "x"},
+        x_axis=np.arange(profile.size, dtype=float),
+        time_axis=np.asarray([], dtype=float),
+        region_labels=(),
+        elapsed_seconds=0.01,
+        assumptions={},
+    )
+
+    limits = _mapping_automatic_y_limits(
+        result,
+        output_key=output_key,
+        plot_type="Line",
+        histogram_bins=20,
+        density=False,
+        log_y=False,
+    )
+    assert limits == expected
+    histogram_limits = _mapping_automatic_y_limits(
+        result,
+        output_key=output_key,
+        plot_type="Histogram",
+        histogram_bins=3,
+        density=False,
+        log_y=False,
+    )
+    assert histogram_limits[0] == 0.0
+    assert histogram_limits[1] > 0.0
+    assert histogram_limits != expected
+
+    options = _mapping_plot_options(
+        result,
+        output_key=output_key,
+        plot_type="Line",
+        normalization="None",
+        title=result.target_label,
+        x_label="Position (kb)",
+        y_label=result.target_label,
+        color="#2c7f77",
+        palette="viridis",
+        histogram_bins=20,
+        line_width=1.8,
+        show_markers=False,
+        show_colorbar=False,
+        log_y=False,
+        invert_y=False,
+        y_limits=limits,
+    )
+    assert options["yAxis"]["min"] == expected[0]
+    assert options["yAxis"]["max"] == expected[1]
+    assert options["yAxis"]["axisLabel"]["showMinLabel"] is True
+    assert options["yAxis"]["axisLabel"]["showMaxLabel"] is True
+
+
+def test_mapping_dynamic_line_limits_follow_data_not_convenient_ticks_or_zero() -> None:
+    from app.pages.mapping import _mapping_automatic_y_limits
+
+    values = np.asarray([6.4, 7.3, 10.2])
+    result = MappingResult(
+        target="replication_timing",
+        target_key="replication_timing",
+        target_label="Replication timing",
+        method="test",
+        output_form="x",
+        output_dependence="space",
+        primary_output="replication_timing",
+        outputs={"replication_timing": values},
+        output_forms={"replication_timing": "x"},
+        x_axis=np.arange(values.size, dtype=float),
+        time_axis=np.asarray([], dtype=float),
+        region_labels=(),
+        elapsed_seconds=0.01,
+        assumptions={},
+    )
+
+    limits = _mapping_automatic_y_limits(
+        result,
+        output_key="replication_timing",
+        plot_type="Line",
+        histogram_bins=20,
+        density=False,
+        log_y=False,
+    )
+    assert limits == pytest.approx((6.248, 10.352))
 
 
 def test_square_space_time_heatmap_uses_position_x_and_time_y() -> None:
@@ -630,7 +943,7 @@ def test_square_space_time_heatmap_uses_position_x_and_time_y() -> None:
     assert options["xAxis"]["type"] == "value"
     assert options["yAxis"]["type"] == "value"
     assert options["series"][0]["data"] == [
-        [10.0, 0.0, 12.0, 10.0],
+        [10.0, 0.0, 11.0, 5.0],
     ]
     assert options["series"][0]["silent"] is True
     assert options["tooltip"]["show"] is False
@@ -664,8 +977,108 @@ def test_log_z_uses_logarithmic_colours_and_masks_nonpositive_values() -> None:
     assert "data:image/png;base64," in options["series"][0][":renderItem"]
     assert options["visualMap"]["min"] == pytest.approx(0.0)
     assert options["visualMap"]["max"] == pytest.approx(2.0)
-    assert options["visualMap"]["text"] == ["Firing rate\n(log scale)", ""]
+    assert options["visualMap"]["text"] == ["100", "1"]
+    assert options["graphic"][0]["style"]["text"] == "Firing rate (log scale)"
     assert ":formatter" in options["visualMap"]
+
+
+def test_heatmap_frame_ends_at_the_last_time_without_clipping_labels() -> None:
+    from app.preview_plotting import build_preview_plot_options
+
+    time_axis = np.arange(0.0, 1_380.0, 5.0)
+    options = build_preview_plot_options(
+        plot_type="Heatmap",
+        title="Firing rate",
+        x_label="Chromosome position (kb)",
+        y_label="Time (min)",
+        color="#2c7f77",
+        palette="viridis",
+        histogram_bins=60,
+        density=False,
+        show_legend=False,
+        show_colorbar=True,
+        log_y=False,
+        invert_y=False,
+        y_limits=None,
+        series_label="Firing rate",
+        values=np.ones((time_axis.size, 10)),
+        x_axis=np.arange(10, dtype=float),
+        y_axis=time_axis,
+    )
+
+    assert options["yAxis"]["min"] == pytest.approx(time_axis[0])
+    assert options["yAxis"]["max"] == pytest.approx(time_axis[-1] * 1.04)
+    assert options["series"][0]["data"][0][3] == pytest.approx(time_axis[-1])
+    assert options["yAxis"]["axisLabel"]["showMinLabel"] is True
+    assert options["yAxis"]["axisLabel"]["showMaxLabel"] is True
+    assert options["yAxis"]["splitLine"]["showMinLine"] is True
+    assert options["yAxis"]["splitLine"]["showMaxLine"] is True
+    assert options["xAxis"]["axisTick"]["show"] is True
+    assert options["yAxis"]["axisTick"]["show"] is True
+    assert options["grid"]["bottom"] >= 40
+    assert options["grid"]["left"] >= options["yAxis"]["nameGap"]
+    assert options["grid"]["containLabel"] is False
+    assert options["grid"]["right"] == 86
+    assert options["visualMap"]["right"] == 24
+    assert options["visualMap"]["textStyle"]["align"] == "center"
+    assert options["graphic"][0]["right"] == 2
+    assert options["graphic"][0]["rotation"] == pytest.approx(np.pi / 2)
+
+
+def test_axis_log_and_inversion_options_apply_to_each_numeric_dimension() -> None:
+    from app.preview_plotting import build_preview_plot_options
+
+    line = build_preview_plot_options(
+        plot_type="Line",
+        title="Profile",
+        x_label="Position",
+        y_label="Value",
+        color="#2c7f77",
+        palette="viridis",
+        histogram_bins=60,
+        density=False,
+        show_legend=False,
+        show_colorbar=True,
+        log_y=True,
+        invert_y=True,
+        y_limits=None,
+        series_label="Profile",
+        values=np.asarray([0.0, 10.0, 100.0]),
+        x_axis=np.asarray([0.0, 1.0, 10.0]),
+        log_x=True,
+        invert_x=True,
+    )
+    assert line["xAxis"]["type"] == "log"
+    assert line["xAxis"]["min"] < 1.0
+    assert line["xAxis"]["max"] > 10.0
+    assert line["xAxis"]["inverse"] is True
+    assert line["yAxis"]["type"] == "log"
+    assert line["yAxis"]["inverse"] is True
+
+    heatmap = build_preview_plot_options(
+        plot_type="Heatmap",
+        title="Field",
+        x_label="Position",
+        y_label="Time",
+        color="#2c7f77",
+        palette="viridis",
+        histogram_bins=60,
+        density=False,
+        show_legend=False,
+        show_colorbar=True,
+        log_y=False,
+        invert_y=False,
+        y_limits=None,
+        series_label="Field",
+        values=np.asarray([[1.0, 2.0], [3.0, 4.0]]),
+        x_axis=np.asarray([1.0, 10.0]),
+        y_axis=np.asarray([1.0, 10.0]),
+        invert_z=True,
+    )
+    assert heatmap["visualMap"]["inRange"]["color"] == list(
+        reversed(heatmap_palette := ["#440154", "#31688e", "#35b779", "#fde725"])
+    )
+    assert heatmap_palette[0] == "#440154"
 
 
 def test_large_heatmap_is_block_averaged_to_a_bounded_static_raster() -> None:
@@ -696,6 +1109,7 @@ def test_large_heatmap_is_block_averaged_to_a_bounded_static_raster() -> None:
         values=values,
         x_axis=np.arange(values.shape[1], dtype=float),
         y_axis=np.arange(values.shape[0], dtype=float),
+        interactive=False,
     )
 
     _, _, raster, _, _ = _sample_heatmap(
@@ -713,7 +1127,7 @@ def test_large_heatmap_is_block_averaged_to_a_bounded_static_raster() -> None:
     assert options["tooltip"]["show"] is False
 
 
-def test_numeric_plot_axes_use_rounded_limits_and_compact_tick_formatters() -> None:
+def test_numeric_plot_axes_use_exact_padded_limits_and_compact_tick_formatters() -> None:
     from app.preview_plotting import build_preview_plot_options
 
     options = build_preview_plot_options(
@@ -735,12 +1149,18 @@ def test_numeric_plot_axes_use_rounded_limits_and_compact_tick_formatters() -> N
         x_axis=np.asarray([0.13, 0.47, 0.81]),
     )
 
-    assert options["xAxis"]["min"] == pytest.approx(0.0)
-    assert options["xAxis"]["max"] == pytest.approx(1.0)
-    assert options["xAxis"]["interval"] == pytest.approx(0.2)
-    assert options["yAxis"]["min"] == pytest.approx(0.15)
-    assert options["yAxis"]["max"] == pytest.approx(0.4)
-    assert options["yAxis"]["interval"] == pytest.approx(0.05)
+    assert options["xAxis"]["min"] == pytest.approx(0.1028)
+    assert options["xAxis"]["max"] == pytest.approx(0.8372)
+    assert options["xAxis"]["interval"] is None
+    assert options["yAxis"]["min"] == pytest.approx(0.1832)
+    assert options["yAxis"]["max"] == pytest.approx(0.3668)
+    assert options["yAxis"]["interval"] is None
+    assert options["xAxis"]["axisLabel"]["customValues"] == pytest.approx([0.2, 0.4, 0.6, 0.8])
+    assert options["yAxis"]["axisLabel"]["customValues"] == pytest.approx([0.2, 0.25, 0.3, 0.35])
+    assert options["xAxis"]["axisLabel"]["showMinLabel"] is True
+    assert options["xAxis"]["axisLabel"]["showMaxLabel"] is True
+    assert options["yAxis"]["axisLabel"]["showMinLabel"] is True
+    assert options["yAxis"]["axisLabel"]["showMaxLabel"] is True
     assert ":formatter" in options["xAxis"]["axisLabel"]
     assert ":formatter" in options["yAxis"]["axisLabel"]
 

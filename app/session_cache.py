@@ -7,7 +7,7 @@ import hashlib
 import time
 import uuid
 from collections import OrderedDict
-from collections.abc import Mapping, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, field, replace
 from pathlib import PurePath
 from typing import Any, Literal
@@ -26,6 +26,9 @@ CACHE_CATEGORIES: tuple[CacheCategory, ...] = (
     "uploads",
     "datasets",
     "workflows",
+)
+DEFAULT_TRACKED_CATEGORIES: frozenset[CacheCategory] = frozenset(
+    {"generated", "datasets", "workflows"}
 )
 DEFAULT_MAX_ITEMS = 30
 DEFAULT_MAX_TOTAL_ITEMS = 80
@@ -97,6 +100,7 @@ class CacheEntry:
     created_at: float
     size_bytes: int
     detail: str = ""
+    keep: bool = True
     artifact: ExportArtifact | None = None
     payload: Any = field(default=None, repr=False, compare=False)
     navigate_to: str | None = None
@@ -123,11 +127,45 @@ class SessionCache:
     max_total_bytes: int = DEFAULT_MAX_TOTAL_BYTES
     _entries: OrderedDict[str, CacheEntry] = field(default_factory=OrderedDict)
     _active_entries: dict[str, str] = field(default_factory=dict)
+    _output_clearers: dict[str, Callable[[], None]] = field(default_factory=dict)
+    _page_refreshers: dict[str, Callable[[], None]] = field(default_factory=dict)
+    _tracked_categories: set[CacheCategory] = field(
+        default_factory=lambda: set(DEFAULT_TRACKED_CATEGORIES)
+    )
 
     def __post_init__(self) -> None:
         self.max_items = max(1, min(MAX_ITEMS, int(self.max_items)))
         self.max_total_items = max(1, min(MAX_TOTAL_ITEMS, int(self.max_total_items)))
         self.max_total_bytes = max(1, min(MAX_TOTAL_BYTES, int(self.max_total_bytes)))
+        self._tracked_categories = {
+            category for category in self._tracked_categories if category in CACHE_CATEGORIES
+        }
+
+    def is_tracking(self, category: CacheCategory) -> bool:
+        """Return whether future items in ``category`` should be retained automatically."""
+
+        if category not in CACHE_CATEGORIES:
+            raise ValueError(f"Unknown cache category {category!r}.")
+        return category in self._tracked_categories
+
+    def set_tracking(self, category: CacheCategory, enabled: bool) -> None:
+        """Enable or disable future automatic retention for one category.
+
+        Existing entries intentionally remain untouched; the preference only
+        controls items produced after it changes.
+        """
+
+        if category not in CACHE_CATEGORIES:
+            raise ValueError(f"Unknown cache category {category!r}.")
+        if enabled:
+            self._tracked_categories.add(category)
+        else:
+            self._tracked_categories.discard(category)
+
+    def tracked_categories(self) -> tuple[CacheCategory, ...]:
+        """Return enabled categories in the same stable order as the inventory tabs."""
+
+        return tuple(category for category in CACHE_CATEGORIES if self.is_tracking(category))
 
     def add_artifact(
         self,
@@ -139,6 +177,7 @@ class SessionCache:
         detail: str = "",
         payload: Any = None,
         navigate_to: str | None = None,
+        keep: bool | None = None,
     ) -> CacheEntry:
         """Insert an artifact, refreshing rather than duplicating identical bytes."""
 
@@ -163,13 +202,19 @@ class SessionCache:
         now = time.time()
         retained_size = estimate_retained_bytes((normalized, payload))
         if existing is not None:
+            retained_artifact = ExportArtifact(
+                data=normalized.data,
+                filename=existing.name,
+                media_type=normalized.media_type,
+            )
             entry = replace(
                 existing,
                 source=source,
                 kind=kind,
                 created_at=now,
                 detail=detail,
-                artifact=normalized,
+                keep=existing.keep if keep is None else bool(keep),
+                artifact=retained_artifact,
                 payload=payload,
                 navigate_to=navigate_to,
                 size_bytes=retained_size,
@@ -179,15 +224,22 @@ class SessionCache:
             self._enforce_limits(category)
             return entry
 
+        unique_name = self._unique_name(normalized.filename)
+        normalized = ExportArtifact(
+            data=normalized.data,
+            filename=unique_name,
+            media_type=normalized.media_type,
+        )
         entry = CacheEntry(
             id=uuid.uuid4().hex,
             category=category,
-            name=normalized.filename,
+            name=unique_name,
             source=str(source).strip() or "DNAscape",
             kind=kind,
             created_at=now,
             size_bytes=retained_size,
             detail=str(detail).strip(),
+            keep=category != "uploads" if keep is None else bool(keep),
             artifact=normalized,
             payload=payload,
             navigate_to=navigate_to,
@@ -206,13 +258,14 @@ class SessionCache:
         payload: Any,
         navigate_to: str,
         size_bytes: int | None = None,
+        keep: bool = True,
     ) -> CacheEntry:
         """Retain a completed workflow result for reopening in its source page."""
 
         entry = CacheEntry(
             id=uuid.uuid4().hex,
             category="workflows",
-            name=str(name).strip() or "Workflow result",
+            name=self._unique_name(str(name).strip() or "Workflow result"),
             source=str(source).strip() or "DNAscape",
             kind="workflow",
             created_at=time.time(),
@@ -222,6 +275,7 @@ class SessionCache:
                 else estimate_retained_bytes(payload)
             ),
             detail=str(detail).strip(),
+            keep=bool(keep),
             payload=payload,
             navigate_to=navigate_to,
         )
@@ -245,15 +299,69 @@ class SessionCache:
         }
         return True
 
+    def set_keep(self, entry_id: str, value: bool) -> CacheEntry:
+        """Set whether automatic eviction should protect one retained item."""
+
+        entry = self._entries.get(entry_id)
+        if entry is None:
+            raise ValueError("This cached item is no longer available.")
+        updated = replace(entry, keep=bool(value))
+        self._entries[entry_id] = updated
+        return updated
+
     def clear(self, category: CacheCategory) -> int:
         """Clear one inventory group and report how many entries were removed."""
 
-        identifiers = [
-            entry.id for entry in self._entries.values() if entry.category == category
-        ]
+        identifiers = [entry.id for entry in self._entries.values() if entry.category == category]
         for identifier in identifiers:
             self.remove(identifier)
         return len(identifiers)
+
+    def clear_all(self) -> int:
+        """Clear every cached entry while leaving mounted page controls untouched."""
+
+        identifiers = tuple(self._entries)
+        for identifier in identifiers:
+            self.remove(identifier)
+        return len(identifiers)
+
+    def reset(self) -> int:
+        """Clear retained state and restore cache preferences to their defaults."""
+
+        removed = self.clear_all()
+        self._active_entries.clear()
+        self.max_items = DEFAULT_MAX_ITEMS
+        self.max_total_items = DEFAULT_MAX_TOTAL_ITEMS
+        self.max_total_bytes = DEFAULT_MAX_TOTAL_BYTES
+        self._tracked_categories = set(DEFAULT_TRACKED_CATEGORIES)
+        return removed
+
+    def register_output_clearer(self, slug: str, callback: Callable[[], None]) -> None:
+        """Register one mounted page's result-only reset callback."""
+
+        self._output_clearers[str(slug)] = callback
+
+    def unregister_output_clearer(self, slug: str) -> None:
+        self._output_clearers.pop(str(slug), None)
+
+    def clear_page_outputs(self) -> None:
+        """Release mounted workflow outputs without resetting page controls."""
+
+        for callback in tuple(self._output_clearers.values()):
+            callback()
+
+    def register_page_refresher(self, slug: str, callback: Callable[[], None]) -> None:
+        """Register work that should run whenever a mounted page is revealed."""
+
+        self._page_refreshers[str(slug)] = callback
+
+    def unregister_page_refresher(self, slug: str) -> None:
+        self._page_refreshers.pop(str(slug), None)
+
+    def refresh_page(self, slug: str) -> None:
+        callback = self._page_refreshers.get(str(slug))
+        if callback is not None:
+            callback()
 
     def set_max_items(self, value: int) -> None:
         normalized = max(1, min(MAX_ITEMS, int(value)))
@@ -327,16 +435,26 @@ class SessionCache:
         identifier = self._active_entries.pop(slug, None)
         return self._entries.get(identifier) if identifier is not None else None
 
+    def has_active(self, slug: str) -> bool:
+        """Return whether a workflow page has a pending cached-result restore."""
+
+        return str(slug) in self._active_entries
+
     def _trim(self, category: CacheCategory) -> None:
-        identifiers = [
-            entry.id for entry in self._entries.values() if entry.category == category
-        ]
-        for identifier in identifiers[: max(0, len(identifiers) - self.max_items)]:
+        identifiers = [entry.id for entry in self._entries.values() if entry.category == category]
+        overflow = max(0, len(identifiers) - self.max_items)
+        eviction_order = [
+            identifier for identifier in identifiers if not self._entries[identifier].keep
+        ] + [identifier for identifier in identifiers if self._entries[identifier].keep]
+        for identifier in eviction_order[:overflow]:
             self.remove(identifier)
 
     def _trim_global(self) -> None:
         while self.count() > self.max_total_items or self.size() > self.max_total_bytes:
-            identifier = next(iter(self._entries), None)
+            identifier = next(
+                (entry.id for entry in self._entries.values() if not entry.keep),
+                next(iter(self._entries), None),
+            )
             if identifier is None:
                 return
             self.remove(identifier)
@@ -344,6 +462,23 @@ class SessionCache:
     def _enforce_limits(self, category: CacheCategory) -> None:
         self._trim(category)
         self._trim_global()
+
+    def _unique_name(self, requested: str) -> str:
+        """Return a case-insensitively unique cache name with compound suffixes intact."""
+
+        name = _safe_filename(requested)
+        existing = {entry.name.casefold() for entry in self._entries.values()}
+        if name.casefold() not in existing:
+            return name
+        suffix = "".join(PurePath(name).suffixes)
+        stem = name[: -len(suffix)] if suffix else name
+        stem = stem or "file"
+        index = 2
+        while True:
+            candidate = f"{stem} ({index}){suffix}"
+            if candidate.casefold() not in existing:
+                return candidate
+            index += 1
 
 
 _SESSION_CACHES: OrderedDict[str, SessionCache] = OrderedDict()
@@ -371,8 +506,11 @@ def cache_artifact(
     kind: Literal["plot", "raw"],
     detail: str = "",
     navigate_to: str | None = None,
-) -> CacheEntry:
-    return current_session_cache().add_artifact(
+) -> CacheEntry | None:
+    cache = current_session_cache()
+    if not cache.is_tracking("generated"):
+        return None
+    return cache.add_artifact(
         artifact,
         source=source,
         kind=kind,
@@ -386,7 +524,10 @@ def cache_upload(
     *,
     source: str,
     navigate_to: str,
-) -> CacheEntry:
+) -> CacheEntry | None:
+    cache = current_session_cache()
+    if not cache.is_tracking("uploads"):
+        return None
     shape = _shape_text(getattr(inspection, "shape", ()))
     dependence = str(getattr(inspection, "inferred_form", "unknown")).replace("_", " ").title()
     detail_parts = [str(getattr(inspection, "source_format", "file")).upper(), dependence]
@@ -397,7 +538,7 @@ def cache_upload(
         filename=_safe_filename(str(inspection.name)),
         media_type=str(getattr(inspection, "content_type", "") or "application/octet-stream"),
     )
-    return current_session_cache().add_artifact(
+    return cache.add_artifact(
         artifact,
         category="uploads",
         source=source,
@@ -408,11 +549,14 @@ def cache_upload(
     )
 
 
-def cache_dataset(result: Any, *, source: str = "Data Manager") -> CacheEntry:
+def cache_dataset(result: Any, *, source: str = "Data Manager") -> CacheEntry | None:
+    cache = current_session_cache()
+    if not cache.is_tracking("datasets"):
+        return None
     shape = _shape_text(getattr(result, "shape", ()))
     form = str(getattr(result, "data_form", "data")).replace("_", " ").title()
     detail = " | ".join(part for part in (form, shape) if part)
-    return current_session_cache().add_artifact(
+    return cache.add_artifact(
         result.artifact,
         category="datasets",
         source=source,
@@ -430,8 +574,11 @@ def cache_workflow(
     source: str,
     detail: str,
     navigate_to: Literal["mapping", "simulation"],
-) -> CacheEntry:
-    return current_session_cache().add_reference(
+) -> CacheEntry | None:
+    cache = current_session_cache()
+    if not cache.is_tracking("workflows"):
+        return None
+    return cache.add_reference(
         name=name,
         source=source,
         detail=detail,

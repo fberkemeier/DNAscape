@@ -97,6 +97,7 @@ Canonical feature names include:
 * ``coalescence_events`` / ``coalescence_events_xt``
 * ``origin_efficiency``
 * ``inter_origin_distance``
+* ``s_phase_duration``
 * ``completion_time``
 * ``num_origins``
 

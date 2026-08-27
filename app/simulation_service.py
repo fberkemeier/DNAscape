@@ -19,31 +19,37 @@ import numpy as np
 ProgressReporter = Callable[[float, str], None]
 CancelChecker = Callable[[], None]
 
-# These limits protect a local browser session from accidental multi-million
-# replicate jobs while still leaving ample room for useful interactive runs.
+# These limits protect genuine in-memory allocations. Large ensembles remain
+# cancellable and are bounded separately by ``MAX_REPLICATES``.
 MAX_SPATIAL_BINS = 1_000_000
 MAX_TIME_POINTS = 100_000
-MAX_BIN_REPLICATES = 20_000_000
-MAX_REPLICATES = 5_000
+MAX_REPLICATES = 50_000
 
 # ``rsim`` allocates five float32 (time, position) accumulators when detailed
-# space-time statistics are requested.  Keep their combined preallocation
-# below 64 MiB and independently cap the replicate-scaled work.
+# space-time statistics are requested. Keep their combined preallocation below
+# 64 MiB; ensemble size itself is independently capped and cancellable.
 DETAILED_XT_ARRAY_COUNT = 5
 DETAILED_XT_ITEM_BYTES = np.dtype(np.float32).itemsize
 MAX_DETAILED_XT_BYTES = 64 * 1024 * 1024
 MAX_DETAILED_XT_CELLS = MAX_DETAILED_XT_BYTES // (DETAILED_XT_ARRAY_COUNT * DETAILED_XT_ITEM_BYTES)
-MAX_DETAILED_WORK_CELLS = 50_000_000
+MAX_RETAINED_REPLICATION_PROFILES = 50
+MAX_RETAINED_REPLICATION_PROFILE_BYTES = 64 * 1024 * 1024
+# ``rsim`` retains an exact prefix of neighbouring-origin distances and reports
+# both the total count and whether that prefix was truncated.
+MAX_INTER_ORIGIN_SAMPLES = 2_000_000
 
 CORE_OUTPUT_KEYS = (
     "replication_timing",
     "origin_efficiency",
     "fork_directionality",
 )
-DISTRIBUTION_OUTPUT_KEYS = (
+REPLICATE_OUTPUT_KEYS = (
+    "s_phase_duration",
     "completion_time",
     "num_origins",
 )
+POOLED_DISTRIBUTION_OUTPUT_KEYS = ("inter_origin_distances",)
+DISTRIBUTION_OUTPUT_KEYS = REPLICATE_OUTPUT_KEYS + POOLED_DISTRIBUTION_OUTPUT_KEYS
 TIME_OUTPUT_KEYS = (
     "replicated_fraction",
     "total_forks",
@@ -87,7 +93,9 @@ class ConstantSimulationRequest:
     firing_factors: float | None = None
     firing_factor_recycle: float = 0.0
     firing_factor_fork_coupling: bool = False
+    track_time_outputs: bool = False
     track_detailed_outputs: bool = False
+    stall_rate_per_kb: float | None = None
 
 
 @dataclass(frozen=True)
@@ -101,7 +109,12 @@ class ConstantSimulationResult:
     geometry: str
     time_grid: np.ndarray
     outputs: Mapping[str, np.ndarray]
+    time_outputs: bool = False
     detailed_outputs: bool = False
+    replication_time_profiles: np.ndarray | None = None
+    replication_timing_std: np.ndarray | None = None
+    inter_origin_distance_count: int = 0
+    inter_origin_distances_truncated: bool = False
 
 
 @dataclass(frozen=True)
@@ -110,6 +123,7 @@ class _ValidatedRequest:
     n_bins: int
     time_points: int
     time_grid: np.ndarray
+    retained_profile_count: int
 
 
 def _finite(value: float, label: str, *, positive: bool = False) -> float:
@@ -181,8 +195,10 @@ def _kinetic_field(
 def validate_constant_simulation(request: ConstantSimulationRequest) -> _ValidatedRequest:
     """Validate user-controlled values before allocating arrays or starting work."""
 
+    if not isinstance(request.track_time_outputs, bool):
+        raise ValueError("Time-output tracking must be true or false.")
     if not isinstance(request.track_detailed_outputs, bool):
-        raise ValueError("Detailed-output tracking must be true or false.")
+        raise ValueError("Space-time-output tracking must be true or false.")
 
     resolution_x = _finite(request.resolution_x, "Spatial resolution", positive=True)
     resolution_t = _finite(request.resolution_t, "Time step", positive=True)
@@ -227,13 +243,12 @@ def validate_constant_simulation(request: ConstantSimulationRequest) -> _Validat
             f"Replicates exceed the local app limit of {MAX_REPLICATES:,}. "
             "Use a smaller interactive ensemble."
         )
-    if n_bins * replicates > MAX_BIN_REPLICATES:
-        raise ValueError(
-            "This ensemble is too large for an interactive run "
-            f"({n_bins:,} bins x {replicates:,} replicates). Reduce the region, "
-            "coarsen the resolution, or use fewer replicates."
-        )
-
+    retained_profile_count = min(
+        replicates,
+        MAX_RETAINED_REPLICATION_PROFILES,
+        MAX_RETAINED_REPLICATION_PROFILE_BYTES
+        // (n_bins * np.dtype(float).itemsize),
+    )
     geometry = str(request.geometry).strip().lower()
     if geometry not in {"linear", "periodic"}:
         raise ValueError("Geometry must be 'linear' or 'periodic'.")
@@ -247,42 +262,60 @@ def validate_constant_simulation(request: ConstantSimulationRequest) -> _Validat
         "Maximum replication time",
         positive=True,
     )
-    if time_window < resolution_t:
-        raise ValueError("Time window must be at least one time step.")
-    steps = int(math.floor(time_window / resolution_t))
-    time_points = steps + 1
-    last = steps * resolution_t
-    if last < time_window and not np.isclose(last, time_window):
-        time_points += 1
-    if time_points > MAX_TIME_POINTS:
-        raise ValueError(
-            f"The time grid contains {time_points:,} points; increase the time step "
-            "or shorten the time window."
-        )
-    if request.track_detailed_outputs:
-        xt_cells = n_bins * time_points
-        if xt_cells > MAX_DETAILED_XT_CELLS:
-            estimated_mib = xt_cells * DETAILED_XT_ARRAY_COUNT * DETAILED_XT_ITEM_BYTES / 1024**2
+    tracks_time = request.track_time_outputs or request.track_detailed_outputs
+    if tracks_time:
+        if time_window < resolution_t:
+            raise ValueError("Time window must be at least one time step.")
+        time_ratio = time_window / resolution_t
+        if not np.isfinite(time_ratio):
+            raise ValueError("The requested time grid is not finite.")
+        steps = int(math.floor(time_ratio))
+        time_points = steps + 1
+        last = steps * resolution_t
+        if last < time_window and not np.isclose(last, time_window):
+            time_points += 1
+        if time_points > MAX_TIME_POINTS:
             raise ValueError(
-                "Detailed space-time outputs would preallocate "
-                f"approximately {estimated_mib:.1f} MiB across five matrices; "
-                f"the local limit is {MAX_DETAILED_XT_BYTES / 1024**2:.0f} MiB. "
-                "Increase the spatial or time resolution, or narrow the requested windows."
+                f"The time grid contains {time_points:,} points; increase the time step "
+                "or shorten the time window."
             )
-        if xt_cells * replicates > MAX_DETAILED_WORK_CELLS:
-            raise ValueError(
-                "The requested detailed space-time workload is too large for an "
-                "interactive run. Reduce the region, time window, or replicates."
-            )
+        if request.track_detailed_outputs:
+            xt_cells = n_bins * time_points
+            if xt_cells > MAX_DETAILED_XT_CELLS:
+                estimated_mib = (
+                    xt_cells
+                    * DETAILED_XT_ARRAY_COUNT
+                    * DETAILED_XT_ITEM_BYTES
+                    / 1024**2
+                )
+                raise ValueError(
+                    "Detailed space-time outputs would preallocate "
+                    f"approximately {estimated_mib:.1f} MiB across five matrices; "
+                    f"the local limit is {MAX_DETAILED_XT_BYTES / 1024**2:.0f} MiB. "
+                    "Increase the spatial or time resolution, or narrow the requested windows."
+                )
         time_grid = np.arange(steps + 1, dtype=float) * resolution_t
         if time_points > time_grid.size:
             time_grid = np.append(time_grid, time_window)
     else:
+        time_points = 0
         time_grid = np.empty(0, dtype=float)
 
     stall_rate = _finite(request.stall_rate, "Stall rate")
     if not 0 <= stall_rate <= 1:
-        raise ValueError("Stall rate must lie between zero and one.")
+        raise ValueError("Legacy stall probability must lie between zero and one.")
+    if request.stall_rate_per_kb is not None:
+        stall_rate_per_kb = _finite(
+            request.stall_rate_per_kb,
+            "Stall rate (stalls/kb)",
+        )
+        if stall_rate_per_kb < 0:
+            raise ValueError("Stall rate (stalls/kb) must be non-negative.")
+        if stall_rate != 0.0:
+            raise ValueError(
+                "A legacy per-bin stall probability cannot be combined with "
+                "a stall rate in stalls/kb."
+            )
     stall_duration = float(request.stall_duration)
     if not (stall_duration == math.inf or np.isfinite(stall_duration) and stall_duration > 0):
         raise ValueError("Stall duration must be positive or infinite.")
@@ -301,6 +334,7 @@ def validate_constant_simulation(request: ConstantSimulationRequest) -> _Validat
         n_bins=n_bins,
         time_points=time_points,
         time_grid=time_grid,
+        retained_profile_count=retained_profile_count,
     )
 
 
@@ -317,7 +351,7 @@ def _collect_outputs(
         "fork_directionality": (validated.n_bins,),
     }
     required_keys: list[str] = list(CORE_OUTPUT_KEYS)
-    if request.track_detailed_outputs:
+    if request.track_time_outputs:
         expected_shapes.update(
             {
                 name: (validated.time_points,)
@@ -325,10 +359,11 @@ def _collect_outputs(
                 if name != "firing_factors"
             }
         )
+        required_keys.extend(name for name in TIME_OUTPUT_KEYS if name != "firing_factors")
+    if request.track_detailed_outputs:
         expected_shapes.update(
             {name: (validated.n_bins, validated.time_points) for name in XT_OUTPUT_KEYS}
         )
-        required_keys.extend(name for name in TIME_OUTPUT_KEYS if name != "firing_factors")
         required_keys.extend(XT_OUTPUT_KEYS)
 
     outputs: dict[str, np.ndarray] = {}
@@ -347,7 +382,7 @@ def _collect_outputs(
         array.setflags(write=False)
         outputs[name] = array
 
-    if request.track_detailed_outputs and raw.get("firing_factors") is not None:
+    if request.track_time_outputs and raw.get("firing_factors") is not None:
         firing_factors = np.asarray(raw["firing_factors"], dtype=float)
         expected = (validated.time_points,)
         if firing_factors.shape != expected:
@@ -357,20 +392,91 @@ def _collect_outputs(
             )
         firing_factors.setflags(write=False)
         outputs["firing_factors"] = firing_factors
-    if request.track_detailed_outputs:
-        for name in DISTRIBUTION_OUTPUT_KEYS:
-            value = raw.get(name)
-            if value is None:
-                continue
-            distribution = np.asarray(value, dtype=float).reshape(-1)
-            if distribution.size != int(request.replicates):
-                raise RuntimeError(
-                    f"DNAscape returned {name!r} with {distribution.size} values; "
-                    f"expected {int(request.replicates)}."
-                )
-            distribution.setflags(write=False)
-            outputs[name] = distribution
+    for name in REPLICATE_OUTPUT_KEYS:
+        value = raw.get(name)
+        if value is None:
+            raise RuntimeError(f"DNAscape did not return the requested {name!r} output.")
+        distribution = np.asarray(value, dtype=float).reshape(-1)
+        if distribution.size != int(request.replicates):
+            raise RuntimeError(
+                f"DNAscape returned {name!r} with {distribution.size} values; "
+                f"expected {int(request.replicates)}."
+            )
+        distribution.setflags(write=False)
+        outputs[name] = distribution
+    for name in POOLED_DISTRIBUTION_OUTPUT_KEYS:
+        value = raw.get(name)
+        if value is None:
+            # ``rsim`` exposes both spellings. Keep the plural name as the app
+            # contract while accepting results from an older engine.
+            value = raw.get("inter_origin_distance")
+        if value is None:
+            raise RuntimeError(
+                "DNAscape did not return the requested inter-origin distances."
+            )
+        distribution = np.asarray(value, dtype=float).reshape(-1)
+        if np.any(~np.isfinite(distribution)) or np.any(distribution <= 0):
+            raise RuntimeError(
+                "DNAscape returned invalid inter-origin distances; expected "
+                "finite values greater than zero."
+            )
+        distribution.setflags(write=False)
+        outputs[name] = distribution
     return outputs
+
+
+def _collect_replication_profile_statistics(
+    raw: Mapping[str, Any],
+    validated: _ValidatedRequest,
+) -> tuple[np.ndarray | None, np.ndarray | None]:
+    """Validate immutable ensemble-profile data kept outside selectable outputs."""
+
+    std_value = raw.get("replication_timing_std")
+    if std_value is None:
+        raise RuntimeError(
+            "DNAscape did not return the requested 'replication_timing_std' output."
+        )
+    else:
+        replication_timing_std = np.asarray(std_value, dtype=float)
+        expected_std_shape = (validated.n_bins,)
+        if replication_timing_std.shape != expected_std_shape:
+            raise RuntimeError(
+                "DNAscape returned 'replication_timing_std' with shape "
+                f"{replication_timing_std.shape}; expected {expected_std_shape}."
+            )
+        invalid_std = (~np.isnan(replication_timing_std)) & (
+            (~np.isfinite(replication_timing_std)) | (replication_timing_std < 0)
+        )
+        if np.any(invalid_std):
+            raise RuntimeError(
+                "DNAscape returned invalid replication-time standard deviations; "
+                "expected finite non-negative values or NaN where no replicate finished."
+            )
+        replication_timing_std.setflags(write=False)
+
+    profiles_value = raw.get("rep_times_per_sim")
+    if validated.retained_profile_count == 0:
+        if profiles_value is not None and np.asarray(profiles_value).size:
+            raise RuntimeError(
+                "DNAscape retained per-simulation profiles despite a zero retention limit."
+            )
+        return None, replication_timing_std
+    if profiles_value is None:
+        raise RuntimeError(
+            "DNAscape did not return the requested per-simulation replication-time profiles."
+        )
+    replication_time_profiles = np.asarray(profiles_value, dtype=float)
+    expected_profiles_shape = (
+        validated.retained_profile_count,
+        validated.n_bins,
+    )
+    if replication_time_profiles.shape != expected_profiles_shape:
+        raise RuntimeError(
+            "DNAscape returned per-simulation replication-time profiles with shape "
+            f"{replication_time_profiles.shape}; expected {expected_profiles_shape}."
+        )
+    replication_time_profiles.setflags(write=False)
+    return replication_time_profiles, replication_timing_std
 
 
 def run_constant_simulation(
@@ -395,28 +501,40 @@ def run_constant_simulation(
         validated = validate_constant_simulation(request)
         request = validated.request
         cancel()
+        time_outputs = bool(request.track_time_outputs)
         detailed = bool(request.track_detailed_outputs)
+        progress_interval = max(1, math.ceil(int(request.replicates) / 500))
         assumptions = {
             "sim_number": int(request.replicates),
             "resolution_x": float(request.resolution_x),
             "resolution_t": float(request.resolution_t),
             "geometry": str(request.geometry).strip().lower(),
-            "stall_rate": float(request.stall_rate),
             "tau": float(request.stall_duration),
             "ffiring_nr": request.firing_factors,
             "ffiring_recycle": float(request.firing_factor_recycle),
             "ffiring_forkQ": bool(request.firing_factor_fork_coupling),
-            "time_statsQ": detailed,
+            "time_statsQ": time_outputs,
             "time_stats_xtQ": detailed,
             "max_rep_time": float(request.max_replication_time),
             "seed": None if request.seed is None else int(request.seed),
             "verbose": True,
-            "print_every": 1,
+            # Keep progress smooth without forwarding tens of thousands of
+            # cross-thread updates for very large ensembles.
+            "print_every": progress_interval,
             "interval_kb": (float(request.region_start_kb), float(request.region_end_kb)),
-            "retain_rep_times_per_sim": False,
-            "retain_inter_origin_distances": False,
+            # These ensemble summaries do not depend on time or space-time
+            # tracking. Retain a memory-bounded number of profiles for the
+            # preview and a bounded prefix of the pooled IOD distribution.
+            "retain_rep_times_per_sim": validated.retained_profile_count > 0,
+            "retain_rep_times_limit": validated.retained_profile_count,
+            "retain_inter_origin_distances": True,
+            "retain_inter_origin_distances_limit": MAX_INTER_ORIGIN_SAMPLES,
         }
-        if detailed:
+        if request.stall_rate_per_kb is None:
+            assumptions["stall_rate"] = float(request.stall_rate)
+        else:
+            assumptions["stall_rate_per_kb"] = float(request.stall_rate_per_kb)
+        if time_outputs or detailed:
             assumptions["time_grid"] = validated.time_grid
         with progress_context(report=report, cancel=cancel, suppress_output=True):
             raw = simulate(
@@ -430,6 +548,25 @@ def run_constant_simulation(
         report(0.98, "Preparing preview...")
 
         outputs = _collect_outputs(raw, validated)
+        replication_time_profiles, replication_timing_std = (
+            _collect_replication_profile_statistics(raw, validated)
+        )
+        retained_iods = outputs["inter_origin_distances"]
+        raw_iod_count = raw.get("inter_origin_distance_count", retained_iods.size)
+        try:
+            inter_origin_distance_count = int(raw_iod_count)
+        except (TypeError, ValueError) as exc:
+            raise RuntimeError(
+                "DNAscape returned an invalid inter-origin distance count."
+            ) from exc
+        if inter_origin_distance_count < retained_iods.size:
+            raise RuntimeError(
+                "DNAscape returned fewer total inter-origin distances than retained values."
+            )
+        inter_origin_distances_truncated = (
+            bool(raw.get("inter_origin_distances_truncated", False))
+            or inter_origin_distance_count > retained_iods.size
+        )
         cancel()
         replication_timing = outputs["replication_timing"]
         position_kb = float(request.region_start_kb) + np.arange(
@@ -446,7 +583,12 @@ def run_constant_simulation(
             geometry=str(request.geometry).strip().lower(),
             time_grid=validated.time_grid,
             outputs=outputs,
+            time_outputs=time_outputs,
             detailed_outputs=detailed,
+            replication_time_profiles=replication_time_profiles,
+            replication_timing_std=replication_timing_std,
+            inter_origin_distance_count=inter_origin_distance_count,
+            inter_origin_distances_truncated=inter_origin_distances_truncated,
         )
     finally:
         _RUN_LOCK.release()

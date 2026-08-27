@@ -7,7 +7,9 @@ import gzip
 import io
 import lzma
 import zipfile
+from dataclasses import replace
 from pathlib import Path
+from xml.etree import ElementTree
 
 import numpy as np
 import pytest
@@ -39,6 +41,9 @@ def _result() -> ConstantSimulationResult:
             "replicated_fraction": np.array([0.0, 0.75]),
             "total_forks": np.array([4.0, 7.0]),
             "completion_time": np.array([18.0, 21.0]),
+            "s_phase_duration": np.array([16.0, 19.0]),
+            # Pooled neighbouring-origin intervals are not one value per replicate.
+            "inter_origin_distances": np.array([12.0, 8.0, 16.0, 10.0, 14.0]),
             # DNAscape's canonical detailed shape is (position, time).
             "replicated_fraction_xt": np.array(
                 [
@@ -62,35 +67,117 @@ def _png_data_uri() -> tuple[str, bytes]:
     return f"data:image/png;base64,{base64.b64encode(payload).decode('ascii')}", payload
 
 
-@pytest.mark.parametrize(
-    ("file_format", "signature", "media_type"),
-    (
-        ("png", b"\x89PNG\r\n\x1a\n", "image/png"),
-        ("svg", b"<?xml", "image/svg+xml"),
-        ("pdf", b"%PDF", "application/pdf"),
-    ),
-)
-def test_chart_capture_exports_package_the_exact_preview_image(
-    file_format: str,
-    signature: bytes,
-    media_type: str,
-) -> None:
+def _svg_data_uri() -> tuple[str, bytes]:
+    payload = (
+        '<?xml version="1.0" encoding="UTF-8"?>'
+        '<svg xmlns="http://www.w3.org/2000/svg" width="320" height="180" '
+        'viewBox="0 0 320 180">'
+        '<rect x="0" y="0" width="320" height="180" fill="#ffffff"/>'
+        '<path d="M20 140 L90 90 L170 110 L290 25" fill="none" '
+        'stroke="#2c7f77" stroke-width="3"/>'
+        '<text x="160" y="168" text-anchor="middle" font-size="12">Position (kb)</text>'
+        "</svg>"
+    ).encode("utf-8")
+    encoded = base64.b64encode(payload).decode("ascii")
+    return f"data:image/svg+xml;charset=UTF-8;base64,{encoded}", payload
+
+
+def test_png_chart_capture_is_the_exact_preview_bitmap() -> None:
     data_uri, png_payload = _png_data_uri()
     artifact = build_chart_capture_export(
         data_uri,
-        file_format,
+        "png",
         filename="visible preview",
         dpi=150,
     )
 
-    assert artifact.data.startswith(signature)
-    assert artifact.filename == f"visible_preview.{file_format}"
-    assert artifact.media_type == media_type
-    if file_format == "png":
-        assert artifact.data == png_payload
-    elif file_format == "svg":
-        assert base64.b64encode(png_payload) in artifact.data
-        assert b'width="3" height="2"' in artifact.data
+    assert artifact.data == png_payload
+    assert artifact.filename == "visible_preview.png"
+    assert artifact.media_type == "image/png"
+
+
+def test_svg_chart_capture_preserves_vector_paths_and_text() -> None:
+    data_uri, svg_payload = _svg_data_uri()
+    artifact = build_chart_capture_export(data_uri, "svg", filename="visible preview")
+
+    assert artifact.data == svg_payload
+    assert artifact.filename == "visible_preview.svg"
+    assert artifact.media_type == "image/svg+xml"
+    assert b"<path " in artifact.data
+    assert b"<text " in artifact.data
+    assert b"<image " not in artifact.data
+    assert b"data:image/" not in artifact.data
+
+
+def test_pdf_chart_capture_preserves_vectors_without_image_objects() -> None:
+    data_uri, _ = _svg_data_uri()
+    artifact = build_chart_capture_export(data_uri, "pdf", filename="visible preview")
+
+    assert artifact.data.startswith(b"%PDF")
+    assert artifact.filename == "visible_preview.pdf"
+    assert artifact.media_type == "application/pdf"
+    assert b"/Subtype /Image" not in artifact.data
+
+
+def test_pdf_compactor_combines_safe_echarts_datum_paths() -> None:
+    svg = (
+        '<svg xmlns="http://www.w3.org/2000/svg" width="100" height="40">'
+        '<path d="M0 0l10 0l0 10l-10 0Z" fill="#a00" ecmeta_series_index="0" '
+        'ecmeta_data_index="0" ecmeta_ssr_type="chart"/>'
+        '<path d="M10 0l10 0l0 10l-10 0Z" fill="#00a" ecmeta_series_index="0" '
+        'ecmeta_data_index="1" ecmeta_ssr_type="chart"/>'
+        '<path d="M20 0l10 0l0 10l-10 0Z" fill="#a00" ecmeta_series_index="0" '
+        'ecmeta_data_index="2" ecmeta_ssr_type="chart"/>'
+        '<path d="M30 0l10 0l0 10l-10 0Z" fill="#a00" opacity="0.5" '
+        'ecmeta_series_index="0" ecmeta_data_index="3" ecmeta_ssr_type="chart"/>'
+        "</svg>"
+    ).encode()
+
+    compacted = simulation_exports._compacted_echarts_svg_for_pdf(svg)
+    root = ElementTree.fromstring(compacted)
+    paths = [element for element in root.iter() if element.tag.endswith("path")]
+
+    assert len(paths) == 3
+    assert paths[0].attrib["d"] == ("M0 0l10 0l0 10l-10 0Z M20 0l10 0l0 10l-10 0Z")
+    assert paths[1].attrib["fill"] == "#00a"
+    assert paths[2].attrib["opacity"] == "0.5"
+    assert all(not key.startswith("ecmeta_") for element in root.iter() for key in element.attrib)
+
+
+def test_pdf_compactor_handles_browser_svg_without_ssr_metadata() -> None:
+    paths = "".join(
+        f'<path d="M{index} 0l1 0l0 1l-1 0Z" fill="{"#a00" if index % 2 == 0 else "#00a"}"/>'
+        for index in range(32)
+    )
+    svg = (
+        f'<svg xmlns="http://www.w3.org/2000/svg" width="100" height="40">{paths}</svg>'
+    ).encode()
+
+    compacted = simulation_exports._compacted_echarts_svg_for_pdf(svg)
+    root = ElementTree.fromstring(compacted)
+    paths = [element for element in root.iter() if element.tag.endswith("path")]
+
+    assert len(paths) == 2
+    assert paths[0].attrib["d"].endswith("M30 0l1 0l0 1l-1 0Z")
+
+
+@pytest.mark.parametrize("file_format", ("svg", "pdf"))
+def test_vector_exports_reject_canvas_png_captures(file_format: str) -> None:
+    data_uri, _ = _png_data_uri()
+    with pytest.raises(ValueError, match="requires a vector SVG capture"):
+        build_chart_capture_export(data_uri, file_format)
+
+
+@pytest.mark.parametrize("file_format", ("svg", "pdf"))
+def test_vector_exports_reject_embedded_raster_images(file_format: str) -> None:
+    raster_svg = (
+        '<svg xmlns="http://www.w3.org/2000/svg" width="3" height="2">'
+        '<image href="data:image/png;base64,AAAA" width="3" height="2"/>'
+        "</svg>"
+    ).encode("utf-8")
+    data_uri = "data:image/svg+xml;base64," + base64.b64encode(raster_svg).decode("ascii")
+    with pytest.raises(ValueError, match="embedded raster"):
+        build_chart_capture_export(data_uri, file_format)
 
 
 def test_output_selection_infers_space_time_replicate_and_xt_axes() -> None:
@@ -107,6 +194,18 @@ def test_output_selection_infers_space_time_replicate_and_xt_axes() -> None:
     replicate = select_result_output(result, "completion_time")
     assert replicate.axis_kind == "replicate"
     np.testing.assert_array_equal(replicate.x, [1.0, 2.0])
+
+    duration = select_result_output(result, "s_phase_duration")
+    assert duration.axis_kind == "replicate"
+    assert duration.label == "S-phase duration"
+    assert duration.y_label == "Duration (min)"
+
+    sample = select_result_output(result, "inter_origin_distances")
+    assert sample.axis_kind == "sample"
+    assert sample.label == "Inter-origin distance"
+    assert sample.x_label == "Interval"
+    assert sample.y_label == "Distance (kb)"
+    np.testing.assert_array_equal(sample.x, [1.0, 2.0, 3.0, 4.0, 5.0])
 
     space_time = select_result_output(result, "replicated_fraction_xt")
     assert space_time.axis_kind == "xt"
@@ -201,7 +300,9 @@ def test_output_defaults_use_scientific_domains_and_clean_dynamic_ticks() -> Non
     )
     assert 0.0 < automatic_limits[0] < float(np.min(result.replication_timing))
     assert automatic_limits[1] > float(np.max(result.replication_timing))
-    assert all(float(value).is_integer() for value in automatic_limits)
+    # Automatic bounds follow the exact data span with a small scale-relative
+    # margin; readable ticks must not enlarge the visible scientific domain.
+    assert automatic_limits == pytest.approx((13.76, 20.24))
 
     automatic_options = _result_plot_options(
         result,
@@ -285,7 +386,83 @@ def test_fixed_quantity_domains_do_not_leak_into_histogram_log_or_xt_axes() -> N
         log_y=False,
     )
     assert xt_limits[0] <= float(np.min(result.time_grid))
-    assert xt_limits[1] >= float(np.max(result.time_grid))
+    assert xt_limits[1] == pytest.approx(float(np.max(result.time_grid)))
+
+
+@pytest.mark.parametrize(
+    "output_label",
+    (
+        "Replicated fraction (space-time)",
+        "Initiation events (space-time)",
+        "Coalescence events (space-time)",
+        "Right fork density (space-time)",
+        "Left fork density (space-time)",
+    ),
+)
+def test_all_space_time_outputs_end_at_the_latest_mean_replication_time(
+    output_label: str,
+) -> None:
+    from app.pages.simulation import _OUTPUT_SPECS, _automatic_y_limits
+
+    base = _result()
+    time_grid = np.arange(0.0, 35.0, 5.0)
+    outputs = dict(base.outputs)
+    for label in (
+        "Replicated fraction (space-time)",
+        "Initiation events (space-time)",
+        "Coalescence events (space-time)",
+        "Right fork density (space-time)",
+        "Left fork density (space-time)",
+    ):
+        outputs[_OUTPUT_SPECS[label].key] = np.ones((base.position_kb.size, time_grid.size))
+    result = replace(
+        base,
+        replication_timing=np.asarray([18.0, np.inf, 20.0]),
+        time_grid=time_grid,
+        outputs=outputs,
+    )
+
+    limits = _automatic_y_limits(
+        result,
+        output_label=output_label,
+        view_mode="Default",
+        histogram_bins=60,
+        density=False,
+        log_y=False,
+    )
+
+    assert limits == pytest.approx((0.0, 20.0))
+
+
+def test_space_time_mean_replication_cutoff_has_safe_fallbacks() -> None:
+    from app.pages.simulation import _automatic_y_limits
+
+    base = _result()
+    unavailable = replace(
+        base,
+        replication_timing=np.full(base.replication_timing.shape, np.inf),
+    )
+    unavailable_limits = _automatic_y_limits(
+        unavailable,
+        output_label="Replicated fraction (space-time)",
+        view_mode="Default",
+        histogram_bins=60,
+        density=False,
+        log_y=False,
+    )
+    assert unavailable_limits == pytest.approx((0.0, 5.2))
+
+    # An inconsistent or deliberately truncated result cannot display times
+    # beyond its retained field, so it ends exactly at the last tracked time.
+    truncated_limits = _automatic_y_limits(
+        base,
+        output_label="Replicated fraction (space-time)",
+        view_mode="Default",
+        histogram_bins=60,
+        density=False,
+        log_y=False,
+    )
+    assert truncated_limits == pytest.approx((0.0, 5.0))
 
 
 def test_nonnegative_count_outputs_auto_floor_at_zero_except_on_log_axes() -> None:
@@ -318,7 +495,7 @@ def test_nonnegative_count_outputs_auto_floor_at_zero_except_on_log_axes() -> No
     ("output_label", "view_mode", "series_type"),
     (
         ("Replication timing", "Default", "line"),
-        ("S-phase duration", "Default", "bar"),
+        ("S-phase duration", "Default", "custom"),
         ("Replicated fraction (space-time)", "Default", "custom"),
     ),
 )
@@ -356,6 +533,121 @@ def test_default_view_resolves_by_output_and_inversion_keeps_x_axis_at_bottom(
         assert options["yAxis"]["name"] == "Time (min)"
         assert options["series"][0]["silent"] is True
         assert options["tooltip"]["show"] is False
+
+
+def test_replication_timing_line_can_group_individual_profiles_and_full_ensemble_sd() -> None:
+    from app.pages.simulation import _automatic_y_limits, _result_plot_options
+
+    base = _result()
+    profiles = np.asarray(
+        [
+            [10.0, 14.0, 18.0],
+            [14.0, 18.0, 22.0],
+            [18.0, 22.0, 26.0],
+        ]
+    )
+    mean = np.mean(profiles, axis=0)
+    deviation = np.std(profiles, axis=0)
+    result = replace(
+        base,
+        replication_timing=mean,
+        replicates=3,
+        outputs={**base.outputs, "replication_timing": mean},
+        replication_time_profiles=profiles,
+        replication_timing_std=deviation,
+    )
+
+    options = _result_plot_options(
+        result,
+        output_label="Replication timing",
+        title="Replication timing",
+        series_label="Mean",
+        x_axis_label="Position (kb)",
+        y_axis_label="Replication timing",
+        color="#2c7f77",
+        palette="viridis",
+        view_mode="Default",
+        histogram_bins=8,
+        density=False,
+        show_legend=True,
+        show_colorbar=False,
+        log_y=False,
+        invert_y=False,
+        y_limits=None,
+        show_individual_profiles=True,
+        individual_profile_count=2,
+        show_standard_deviation=True,
+    )
+
+    assert [series["type"] for series in options["series"]] == [
+        "custom",
+        "line",
+        "line",
+        "line",
+    ]
+    assert [series["name"] for series in options["series"]] == [
+        "Mean ± SD",
+        "Individual simulations",
+        "Individual simulations",
+        "Mean",
+    ]
+    assert options["legend"]["data"] == [
+        "Individual simulations",
+        "Mean",
+        "Mean ± SD",
+    ]
+    assert options["tooltip"]["show"] is False
+    assert options["series"][1]["lineStyle"]["opacity"] == pytest.approx(0.22)
+
+    limits = _automatic_y_limits(
+        result,
+        output_label="Replication timing",
+        view_mode="Default",
+        histogram_bins=8,
+        density=False,
+        log_y=False,
+        show_individual_profiles=True,
+        individual_profile_count=2,
+        show_standard_deviation=True,
+    )
+    assert limits[0] < float(np.min(mean - deviation))
+    assert limits[1] > float(np.max(mean + deviation))
+
+
+def test_empty_inter_origin_distribution_has_a_specific_actionable_message() -> None:
+    from app.pages.simulation import _result_plot_options
+
+    base = _result()
+    result = ConstantSimulationResult(
+        position_kb=base.position_kb,
+        replication_timing=base.replication_timing,
+        elapsed_seconds=base.elapsed_seconds,
+        replicates=base.replicates,
+        geometry=base.geometry,
+        time_grid=base.time_grid,
+        outputs={**base.outputs, "inter_origin_distances": np.array([], dtype=float)},
+        detailed_outputs=True,
+    )
+
+    with pytest.raises(ValueError, match="At least two origins must fire"):
+        _result_plot_options(
+            result,
+            output_label="Inter-origin distance",
+            title="Inter-origin distance",
+            series_label="Inter-origin distance",
+            x_axis_label="",
+            y_axis_label="",
+            color="#2c7f77",
+            palette="viridis",
+            view_mode="Default",
+            histogram_bins=8,
+            density=False,
+            show_legend=True,
+            show_colorbar=True,
+            log_y=False,
+            invert_y=False,
+            y_limits=None,
+        )
 
 
 def test_time_profiles_are_static_and_keep_rounded_numeric_axes() -> None:
@@ -541,6 +833,18 @@ def test_histogram_mode_and_distribution_outputs_use_histogram_controls(
     )
     assert calls == [(5, False)]
 
+    calls.clear()
+    build_plot_export(
+        _result(),
+        "inter_origin_distances",
+        "svg",
+        view_mode="Default",
+        histogram_bins=9,
+        figure_size=(4.0, 3.0),
+        dpi=100,
+    )
+    assert calls == [(9, False)]
+
 
 def test_matplotlib_objects_are_not_imported_into_module_namespace() -> None:
     assert "matplotlib" not in simulation_exports.__dict__
@@ -581,6 +885,27 @@ def test_txt_raw_export_is_headerless_numeric_rdata_payload() -> None:
         np.loadtxt(io.BytesIO(artifact.data)),
         _result().replication_timing,
     )
+
+
+def test_inter_origin_distance_raw_exports_preserve_all_pooled_samples() -> None:
+    result = _result()
+    artifact = build_raw_export(result, "inter_origin_distances", "tsv")
+    assert artifact.data.decode("utf-8").splitlines() == [
+        "inter_origin_distances",
+        "12",
+        "8",
+        "16",
+        "10",
+        "14",
+    ]
+
+    npz = build_raw_export(result, "inter_origin_distances", "npz")
+    with np.load(io.BytesIO(npz.data), allow_pickle=False) as archive:
+        np.testing.assert_array_equal(
+            archive["values"],
+            result.outputs["inter_origin_distances"],
+        )
+        np.testing.assert_array_equal(archive["sample"], [1.0, 2.0, 3.0, 4.0, 5.0])
 
 
 def test_xt_text_export_uses_rdata_space_by_time_layout() -> None:

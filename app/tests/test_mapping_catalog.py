@@ -29,9 +29,9 @@ from app.mapping_catalog import (
 )
 from dnascape import rmap
 
-EXPECTED_PUBLIC_TARGET_COUNT = 23
-EXPECTED_IMPLEMENTED_METHOD_COUNT = 79
-EXPECTED_FRIENDLY_TARGET_COUNT = 18
+EXPECTED_PUBLIC_TARGET_COUNT = 24
+EXPECTED_IMPLEMENTED_METHOD_COUNT = 81
+EXPECTED_FRIENDLY_TARGET_COUNT = 19
 
 
 def _records(table: Any) -> tuple[dict[str, Any], ...]:
@@ -150,7 +150,7 @@ def test_route_families_are_factor_only_and_partition_all_exact_methods() -> Non
     )
 
     assert catalog.route_family_count > 0
-    assert catalog.route_family_count == 64
+    assert catalog.route_family_count == 66
     assert len(represented_methods) == EXPECTED_IMPLEMENTED_METHOD_COUNT
     assert len(represented_methods) == len(set(represented_methods))
     assert set(represented_methods) == set(catalog.methods)
@@ -495,7 +495,7 @@ def test_route_settings_are_exact_assumptions_for_each_scientific_family() -> No
 
     representatives = {
         "firing_and_speed_to_timing_simulation": {
-            "present": {"sim_number", "stall_rate", "seed", "geometry"},
+            "present": {"sim_number", "stall_rate_per_kb", "seed", "geometry"},
             "absent": {"fit_step", "maxiter", "cfl", "region_names"},
         },
         "timing_and_speed_to_firing_rate": {
@@ -533,11 +533,12 @@ def test_route_settings_are_exact_assumptions_for_each_scientific_family() -> No
     simulation = mapping_route("firing_and_speed_to_timing_simulation")
     assert {item.key for item in simulation.settings_for("simulation")} >= {
         "sim_number",
-        "stall_rate",
+        "stall_rate_per_kb",
         "seed",
     }
     assert simulation.setting("geometry").location == "region"
     assert simulation.setting("geometry").allowed_values == ("linear", "periodic")
+    assert simulation.setting("sim_number").max_value == 50_000
 
     deterministic = mapping_route("firing_and_speed_to_timing_deterministic")
     assert deterministic.setting("perQ").label == "Periodic"
@@ -545,6 +546,7 @@ def test_route_settings_are_exact_assumptions_for_each_scientific_family() -> No
     fit = mapping_route("timing_and_speed_to_firing_rate")
     assert fit.setting("maxiter").category == "fitting"
     assert fit.setting("neighbourhood_range").category == "numerics"
+    assert fit.setting("maxiter").max_value is None
 
     lightcone = mapping_route("firing_and_speed_to_replicated_fraction_xt_lightcone")
     assert all(setting.location in {"region", "derived"} for setting in lightcone.settings)

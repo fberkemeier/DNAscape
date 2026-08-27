@@ -7,10 +7,15 @@ from collections.abc import Callable
 from datetime import datetime
 from typing import Any, Literal, cast
 
-from nicegui import ui
+from nicegui import run, ui
 
+from app.export_settings import get_export_settings
+from app.mapping_exports import build_mapping_raw_export
+from app.mapping_service import MappingResult
 from app.pages.common import page_intro, panel, panel_title, stat_strip
 from app.session_cache import CacheCategory, CacheEntry, CacheSort, current_session_cache
+from app.simulation_exports import ExportArtifact, build_raw_export
+from app.simulation_service import ConstantSimulationResult
 
 CacheView = Literal["all", "generated", "uploads", "datasets", "workflows"]
 
@@ -42,6 +47,12 @@ _SORT_OPTIONS: dict[CacheSort, str] = {
     "smallest": "Smallest first",
     "name": "Name",
 }
+_TRACKING_LABELS: dict[CacheCategory, str] = {
+    "generated": "Generated files",
+    "uploads": "Uploads",
+    "datasets": "Prepared datasets",
+    "workflows": "Workflow results",
+}
 
 
 def _size_text(size: int) -> str:
@@ -63,14 +74,55 @@ def _created_text(timestamp: float) -> str:
     return created.strftime("%d %b %Y")
 
 
+def _download_artifact(entry: CacheEntry) -> ExportArtifact:
+    """Build a cached workflow download using the current application preferences."""
+
+    if entry.artifact is not None:
+        return entry.artifact
+    settings = get_export_settings()
+    if isinstance(entry.payload, MappingResult):
+        return build_mapping_raw_export(
+            entry.payload,
+            entry.payload.primary_output,
+            settings.cached_file_format,
+            filename=entry.name,
+            compression=settings.cached_compression,
+        )
+    if isinstance(entry.payload, ConstantSimulationResult):
+        output_key = (
+            "replication_timing"
+            if "replication_timing" in entry.payload.outputs
+            else next(iter(entry.payload.outputs), "replication_timing")
+        )
+        return build_raw_export(
+            entry.payload,
+            output_key,
+            settings.cached_file_format,
+            filename=entry.name,
+            compression=settings.cached_compression,
+        )
+    raise ValueError("This cached item does not contain downloadable numeric output.")
+
+
 def _entry_row(
     entry: CacheEntry,
     *,
-    download: Callable[[str], None],
+    download: Callable[[str], Any],
     open_entry: Callable[[str], None],
     remove: Callable[[str], None],
+    set_keep: Callable[[str, bool], None],
 ) -> None:
     with ui.element("div").classes("dn-cache-item").mark(f"cache-entry-{entry.id}"):
+        keep_control = (
+            ui.checkbox(value=entry.keep)
+            .props('dense aria-label="Keep cached item"')
+            .classes("dn-cache-keep")
+            .mark(f"cache-keep-{entry.id}")
+        )
+        keep_control.tooltip("Keep in cache")
+        keep_control.on_value_change(
+            lambda event, entry_id=entry.id: set_keep(entry_id, bool(event.value))
+        )
         with ui.element("div").classes("dn-cache-kind-icon"):
             ui.icon(_KIND_ICONS[entry.kind])
         with ui.element("div").classes("dn-cache-identity"):
@@ -87,7 +139,7 @@ def _entry_row(
             ui.label("Format").classes("dn-cache-meta-label")
             ui.label(entry.format_label).classes("dn-cache-meta-value")
         with ui.row().classes("dn-cache-actions"):
-            if entry.artifact is not None:
+            if entry.artifact is not None or entry.kind == "workflow":
                 with (
                     ui.button(
                         icon="download",
@@ -98,7 +150,7 @@ def _entry_row(
                     .mark(f"cache-download-{entry.id}")
                 ):
                     ui.tooltip(f"Download {entry.name}")
-            elif entry.navigate_to is not None:
+            if entry.navigate_to is not None and entry.payload is not None:
                 with (
                     ui.button(
                         icon="open_in_new",
@@ -149,10 +201,18 @@ def render(navigate: Callable[[str], None]) -> None:
         with ui.row().classes("dn-cache-panel-head"):
             panel_title("Inventory")
             ui.space()
-            ui.icon("memory").classes("dn-cache-memory-note").tooltip(
-                f"Automatically retains up to {cache.max_total_items} recent items and "
-                f"{_size_text(cache.max_total_bytes)} in this browser tab."
-            )
+            with ui.row().classes("dn-cache-panel-actions"):
+                ui.icon("memory").classes("dn-cache-memory-note").mark("cache-memory-note").tooltip(
+                    f"Automatically retains up to {cache.max_total_items} recent items and "
+                    f"{_size_text(cache.max_total_bytes)} in this browser tab."
+                )
+                with (
+                    ui.button(icon="settings")
+                    .props('flat round dense aria-label="Open cache settings"')
+                    .classes("dn-cache-settings-button")
+                    .mark("cache-settings-button")
+                ) as cache_settings_button:
+                    ui.tooltip("Cache settings")
 
         @ui.refreshable
         def render_summary() -> None:
@@ -194,10 +254,15 @@ def render(navigate: Callable[[str], None]) -> None:
                 .mark("cache-sort")
             )
             clear_button = (
-                ui.button("Clear generated", icon="delete_sweep")
+                ui.button("Clear all", icon="delete_sweep")
                 .props("flat no-caps")
                 .classes("dn-action-secondary dn-cache-clear")
-                .mark("clear-generated-cache", "action-clear-generated-cache")
+                .mark(
+                    "clear-all-cache",
+                    "action-clear-all-cache",
+                    "clear-generated-cache",
+                    "action-clear-generated-cache",
+                )
             )
 
         with ui.tabs().classes("dn-tabs dn-cache-tabs") as tabs:
@@ -208,15 +273,22 @@ def render(navigate: Callable[[str], None]) -> None:
 
         def refresh_all() -> None:
             render_summary.refresh()
-            render_inventory.refresh()
+            render_inventory()
 
-        def download_entry(entry_id: str) -> None:
+        async def download_entry(entry_id: str) -> None:
             entry = cache.get(entry_id)
-            if entry is None or entry.artifact is None:
+            if entry is None:
                 ui.notify("This cached file is no longer available.", type="warning")
                 refresh_all()
                 return
-            artifact = entry.artifact
+            try:
+                artifact = await run.io_bound(_download_artifact, entry)
+            except (OSError, RuntimeError, TypeError, ValueError) as exc:
+                ui.notify(str(exc), type="negative")
+                return
+            if artifact is None:
+                ui.notify("The cached download could not be prepared.", type="negative")
+                return
             ui.download(artifact.data, artifact.filename, artifact.media_type)
 
         def open_entry(entry_id: str) -> None:
@@ -237,13 +309,20 @@ def render(navigate: Callable[[str], None]) -> None:
             ui.notify(f"Removed {entry.name}.", type="positive")
             refresh_all()
 
+        def keep_entry(entry_id: str, value: bool) -> None:
+            try:
+                cache.set_keep(entry_id, value)
+            except ValueError as exc:
+                ui.notify(str(exc), type="warning")
+            refresh_all()
+
         def set_page(category: CacheView, value: Any, maximum: int) -> None:
             try:
                 numeric = int(value)
             except (TypeError, ValueError):
                 numeric = 1
             pages[category] = max(1, min(maximum, numeric))
-            render_inventory.refresh()
+            render_inventory()
 
         def render_empty(category: CacheView, *, filtered: bool) -> None:
             with ui.column().classes("dn-cache-empty"):
@@ -288,6 +367,7 @@ def render(navigate: Callable[[str], None]) -> None:
                         download=download_entry,
                         open_entry=open_entry,
                         remove=remove_entry,
+                        set_keep=keep_entry,
                     )
             with ui.element("div").classes("dn-cache-pagination"):
                 rows_control = (
@@ -341,7 +421,7 @@ def render(navigate: Callable[[str], None]) -> None:
                     filters["rows"] = int(rows_control.value or 10)
                     for key in pages:
                         pages[key] = 1
-                    render_inventory.refresh()
+                    render_inventory()
 
                 rows_control.on_value_change(rows_changed)
                 page_control.on_value_change(
@@ -352,45 +432,83 @@ def render(navigate: Callable[[str], None]) -> None:
                     )
                 )
 
+        panel_slots: dict[CacheView, Any] = {}
         with ui.tab_panels(tabs, value=tab_objects["all"], animated=False).classes(
             "dn-tab-panels dn-cache-tab-panels"
         ):
+            # Quasar requires QTabPanel elements to be direct QTabPanels children.
+            # Refresh only their inner slots so the inventory remains visible.
+            for category, tab in tab_objects.items():
+                with (
+                    ui.tab_panel(tab).classes("dn-cache-tab-panel").mark(f"cache-panel-{category}")
+                ):
+                    panel_slots[category] = ui.element("div").classes("dn-cache-panel-content")
 
-            @ui.refreshable
-            def render_inventory() -> None:
-                for category, tab in tab_objects.items():
-                    with ui.tab_panel(tab).classes("dn-cache-tab-panel"):
-                        render_group(category)
+        def render_inventory() -> None:
+            for category, slot in panel_slots.items():
+                slot.clear()
+                with slot:
+                    render_group(category)
 
-            render_inventory()
+        render_inventory()
 
-        with ui.dialog() as clear_dialog, ui.card().classes(
-            "dn-settings-dialog dn-cache-dialog"
+        with (
+            ui.dialog().mark("cache-settings-dialog") as cache_settings_dialog,
+            ui.card().classes("dn-settings-dialog dn-cache-settings-dialog"),
         ):
             with ui.row().classes("dn-settings-dialog-head"):
-                ui.label("Clear generated files?").classes("dn-panel-title")
+                ui.label("Cache settings").classes("dn-panel-title")
+                ui.space()
+                (
+                    ui.button(icon="close", on_click=cache_settings_dialog.close)
+                    .props('flat round dense aria-label="Close cache settings"')
+                    .mark("cache-settings-close")
+                )
+            with ui.column().classes("dn-cache-settings-section").mark("cache-tracking-settings"):
+                ui.label("Track automatically").classes("dn-cache-tracking-title")
+                ui.label(
+                    "Choose what is added from now on. Existing cached items are unchanged."
+                ).classes("dn-cache-tracking-help")
+                with ui.element("div").classes("dn-cache-tracking-options"):
+                    for category, label in _TRACKING_LABELS.items():
+                        control = (
+                            ui.checkbox(label, value=cache.is_tracking(category))
+                            .props("dense keep-color")
+                            .classes("dn-cache-tracking-option")
+                            .mark(f"cache-track-{category}")
+                        )
+                        control.on_value_change(
+                            lambda event, category=category: cache.set_tracking(
+                                category, bool(event.value)
+                            )
+                        )
+
+        with ui.dialog() as clear_dialog, ui.card().classes("dn-settings-dialog dn-cache-dialog"):
+            with ui.row().classes("dn-settings-dialog-head"):
+                ui.label("Clear all cached files?").classes("dn-panel-title")
                 ui.space()
                 ui.button(icon="close", on_click=clear_dialog.close).props(
                     'flat round dense aria-label="Close clear cache dialog"'
                 )
             ui.label(
-                "Plots and raw-data exports will be released from session memory. "
-                "Uploads and retained results will stay available."
+                "Cached files and workflow outputs will be released from session memory. "
+                "Page controls and their current values will stay in place."
             ).classes("dn-about-copy")
             with ui.row().classes("dn-cache-dialog-actions"):
                 ui.button("Cancel", on_click=clear_dialog.close).props("flat no-caps")
 
                 def confirm_clear() -> None:
-                    removed = cache.clear("generated")
+                    removed = cache.clear_all()
+                    cache.clear_page_outputs()
                     clear_dialog.close()
-                    ui.notify(f"Cleared {removed:,} generated files.", type="positive")
+                    ui.notify(f"Cleared {removed:,} cached items.", type="positive")
                     refresh_all()
 
                 (
                     ui.button("Clear", icon="delete_sweep", on_click=confirm_clear)
                     .props("no-caps")
                     .classes("dn-action-primary")
-                    .mark("confirm-clear-generated-cache")
+                    .mark("confirm-clear-all-cache", "confirm-clear-generated-cache")
                 )
 
         def filters_changed() -> None:
@@ -401,9 +519,11 @@ def render(navigate: Callable[[str], None]) -> None:
             )
             for category in pages:
                 pages[category] = 1
-            render_inventory.refresh()
+            render_inventory()
 
         search.on_value_change(filters_changed)
         generated_kind.on_value_change(filters_changed)
         sort_control.on_value_change(filters_changed)
+        cache_settings_button.on_click(cache_settings_dialog.open)
         clear_button.on_click(clear_dialog.open)
+        cache.register_page_refresher("cached-files", refresh_all)

@@ -12,6 +12,15 @@ COMPRESSION_OPTIONS = {
     "none": "None",
 }
 
+CACHE_FILE_FORMAT_OPTIONS = {
+    "tsv": "TSV",
+    "csv": "CSV",
+    "npz": "NPZ",
+    "npy": "NPY",
+    "npv": "NPV",
+    "txt": "TXT",
+}
+
 
 @dataclass(slots=True)
 class ExportSettings:
@@ -19,6 +28,9 @@ class ExportSettings:
 
     plot_dpi: int = 150
     raw_compression: str = "gzip"
+    cached_file_format: str = "tsv"
+    cached_compression: str = "gzip"
+    preserve_page_state: bool = True
 
 
 _EXPORT_SETTINGS = ExportSettings()
@@ -27,6 +39,18 @@ _EXPORT_SETTINGS = ExportSettings()
 def get_export_settings() -> ExportSettings:
     """Return the process-local export preferences."""
 
+    return _EXPORT_SETTINGS
+
+
+def reset_export_settings() -> ExportSettings:
+    """Restore every application-wide export preference to its default."""
+
+    defaults = ExportSettings()
+    _EXPORT_SETTINGS.plot_dpi = defaults.plot_dpi
+    _EXPORT_SETTINGS.raw_compression = defaults.raw_compression
+    _EXPORT_SETTINGS.cached_file_format = defaults.cached_file_format
+    _EXPORT_SETTINGS.cached_compression = defaults.cached_compression
+    _EXPORT_SETTINGS.preserve_page_state = defaults.preserve_page_state
     return _EXPORT_SETTINGS
 
 
@@ -55,8 +79,10 @@ def normalize_compression(value: str | None) -> str:
 
 
 __all__ = [
+    "CACHE_FILE_FORMAT_OPTIONS",
     "COMPRESSION_OPTIONS",
     "ExportSettings",
     "get_export_settings",
     "normalize_compression",
+    "reset_export_settings",
 ]

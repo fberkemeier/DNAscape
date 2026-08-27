@@ -46,8 +46,8 @@ MAX_OUTPUT_BYTES = 192 * 1024 * 1024
 MAX_SPATIAL_POINTS = 1_000_000
 MAX_TIME_POINTS = 100_000
 MAX_GRID_CELLS = 12_000_000
-MAX_MAPPING_ITERATIONS = 1_000
-MAX_MAPPING_SIMULATIONS = 5_000
+MAX_MAPPING_SIMULATIONS = 50_000
+MAX_MAPPING_IOD_SAMPLES = 2_000_000
 MAX_TRACK_UPLOAD_BYTES = 32 * 1024 * 1024
 MAX_TRACK_PAYLOAD_BYTES = 64 * 1024 * 1024
 MAX_TRACK_FILES = 128
@@ -130,6 +130,9 @@ class MappingResult:
     elapsed_seconds: float
     assumptions: Mapping[str, Any]
     comparisons: Mapping[str, MappingComparison] = field(default_factory=dict)
+    inter_origin_distance_count: int | None = None
+    inter_origin_distances_truncated: bool = False
+    fit_mse: float | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -705,11 +708,6 @@ def _normalise_setting(route: MappingRoute, key: str, value: Any) -> Any:
             raise ValueError(f"{setting.label} must be at least {setting.min_value}.")
         if setting.max_value is not None and normalized > setting.max_value:
             raise ValueError(f"{setting.label} must be at most {setting.max_value}.")
-        if "maxiter" in key and normalized > MAX_MAPPING_ITERATIONS:
-            raise ValueError(
-                f"{setting.label} exceeds the interactive limit of "
-                f"{MAX_MAPPING_ITERATIONS:,} iterations."
-            )
         if "sim_number" in key and normalized > MAX_MAPPING_SIMULATIONS:
             raise ValueError(
                 f"{setting.label} exceeds the interactive limit of "
@@ -999,6 +997,19 @@ def validate_mapping_request(
             )
         assumptions["target_form"] = target_form
 
+    # IODs are a one-dimensional pooled ensemble distribution, not a detailed
+    # space-time output.  Retain them for the IOD target, but bound the local
+    # app payload before it reaches browser/export memory.  Direct Python rmap
+    # calls remain unrestricted unless callers provide this optional setting.
+    if (
+        route.target == "inter_origin_distance"
+        and "retain_inter_origin_distances_limit" in accepted_assumptions
+    ):
+        assumptions.setdefault(
+            "retain_inter_origin_distances_limit",
+            MAX_MAPPING_IOD_SAMPLES,
+        )
+
     if spatial_selection is not None and input_spatial_points:
         selected_end = spatial_selection.start_kb + input_spatial_points * _request_resolution_x(
             request, route
@@ -1077,6 +1088,32 @@ def _result_array(value: Any, label: str) -> np.ndarray | None:
     return _readonly(array)
 
 
+def _fit_history_array(value: Any) -> np.ndarray | None:
+    """Normalize numeric and structured optimizer histories to one MSE array."""
+
+    if (
+        isinstance(value, (list, tuple))
+        and value
+        and all(isinstance(item, Mapping) for item in value)
+    ):
+        history: list[float] = []
+        for item in value:
+            raw_mse = item.get("mse")
+            if raw_mse is None:
+                history.append(math.nan)
+                continue
+            try:
+                numeric = float(raw_mse)
+            except (TypeError, ValueError):
+                history.append(math.nan)
+                continue
+            history.append(numeric if math.isfinite(numeric) and numeric >= 0 else math.nan)
+        if history and any(math.isfinite(item) for item in history):
+            return _readonly(np.asarray(history, dtype=float))
+        return None
+    return _result_array(value, "fit_history")
+
+
 def _region_labels(values: Any) -> tuple[str, ...]:
     if not isinstance(values, Mapping) or "names" not in values:
         return ()
@@ -1104,7 +1141,11 @@ def _collect_result_outputs(
                 if key in {"time_grid", "time_axis"} and axis is not None:
                     time_grid = axis.reshape(-1)
                 continue
-            array = _result_array(raw_value, key)
+            array = (
+                _fit_history_array(raw_value)
+                if key == "fit_history"
+                else _result_array(raw_value, key)
+            )
             if array is not None:
                 outputs[key] = array
         if route.target == "origin_efficiency" and "efficiency" in outputs:
@@ -1121,7 +1162,9 @@ def _collect_result_outputs(
     for key in supplemental_keys:
         if key in outputs:
             continue
-        array = _result_array(info[key], key)
+        array = (
+            _fit_history_array(info[key]) if key == "fit_history" else _result_array(info[key], key)
+        )
         if array is not None:
             outputs[key] = array
     if "time_grid" in info and time_grid is None:
@@ -1260,6 +1303,51 @@ def _fit_comparisons(
             fitted=fitted,
         )
     return comparisons
+
+
+def _fit_mse(
+    info: Mapping[str, Any],
+    outputs: Mapping[str, np.ndarray],
+    comparisons: Mapping[str, MappingComparison],
+) -> float | None:
+    """Return the final finite fit MSE without rerunning scientific work.
+
+    Most fitting routes expose the final deterministic value as ``fit_mse``.
+    Joint optimizers instead expose an MSE history, while older routes may
+    only return an observed/fitted comparison.  These fallbacks preserve the
+    same meaning and make the UI diagnostic available consistently.
+    """
+
+    raw_mse = info.get("fit_mse")
+    try:
+        numeric_mse = float(raw_mse)
+    except (TypeError, ValueError):
+        numeric_mse = math.nan
+    if math.isfinite(numeric_mse) and numeric_mse >= 0:
+        return numeric_mse
+
+    history = outputs.get("fit_history")
+    if history is not None:
+        finite_history = np.asarray(history, dtype=float).reshape(-1)
+        finite_history = finite_history[np.isfinite(finite_history)]
+        if finite_history.size and np.any(finite_history >= 0):
+            # Optimizers return the best retained profile, which need not be
+            # the final attempted step when a later proposal was rejected.
+            return float(np.min(finite_history[finite_history >= 0]))
+
+    if comparisons:
+        comparison = next(iter(comparisons.values()))
+        residual = np.asarray(comparison.fitted, dtype=float) - np.asarray(
+            comparison.observed,
+            dtype=float,
+        )
+    else:
+        residual = np.asarray(outputs.get("residual", []), dtype=float)
+    finite_residual = residual.reshape(-1)
+    finite_residual = finite_residual[np.isfinite(finite_residual)]
+    if finite_residual.size:
+        return float(np.mean(np.square(finite_residual)))
+    return None
 
 
 def _build_axes(
@@ -1462,6 +1550,7 @@ def run_mapping(
         prepared = validate_mapping_request(request, cancel=cancel)
         cancel()
         last_progress = 0.02
+        reported_fit_history: list[float] = []
 
         def monotonic_report(value: float, message: str) -> None:
             nonlocal last_progress
@@ -1472,11 +1561,24 @@ def run_mapping(
                 text = f"Mapping{text[4:]}"
             report(numeric, text)
 
+        def retain_fit_mse(
+            _label: str,
+            _iteration: int,
+            _total: int,
+            value: float,
+        ) -> None:
+            """Retain the exact optimizer metric behind the formatted progress text."""
+
+            numeric = float(value)
+            if math.isfinite(numeric) and numeric >= 0:
+                reported_fit_history.append(numeric)
+
         mapper = cast(Callable[..., Mapping[str, Any]], rmap)
         with progress_context(
             report=monotonic_report,
             cancel=cancel,
             suppress_output=True,
+            metric_report=retain_fit_mse,
         ):
             info = mapper(
                 source=prepared.source,
@@ -1492,6 +1594,33 @@ def run_mapping(
             info,
             prepared.input_forms,
         )
+        if "fit_history" not in outputs and reported_fit_history:
+            outputs["fit_history"] = _readonly(np.asarray(reported_fit_history, dtype=float))
+            forms["fit_history"] = "supplied"
+        inter_origin_distance_count: int | None = None
+        inter_origin_distances_truncated = False
+        if prepared.route.target == "inter_origin_distance":
+            retained_count = int(np.asarray(outputs[primary]).size)
+            raw_count = info.get("inter_origin_distance_count", retained_count)
+            try:
+                numeric_count = float(raw_count)
+            except (TypeError, ValueError) as exc:
+                raise RuntimeError(
+                    "DNAscape returned an invalid inter-origin distance count."
+                ) from exc
+            if (
+                not np.isfinite(numeric_count)
+                or not numeric_count.is_integer()
+                or numeric_count < retained_count
+            ):
+                raise RuntimeError("DNAscape returned an invalid inter-origin distance count.")
+            inter_origin_distance_count = int(numeric_count)
+            inter_origin_distances_truncated = bool(
+                info.get(
+                    "inter_origin_distances_truncated",
+                    inter_origin_distance_count > retained_count,
+                )
+            )
         cancel()
         comparisons = _fit_comparisons(prepared, outputs, forms)
         if comparisons:
@@ -1505,6 +1634,13 @@ def run_mapping(
                 )
             if np.asarray(outputs["residual"]).size == comparison.observed.size:
                 forms["residual"] = comparison.form
+        fit_mse = _fit_mse(info, outputs, comparisons)
+        if "fit_history" not in outputs and fit_mse is not None:
+            # Some deterministic routes return only their final MSE and do not
+            # report optimizer iterations. Preserve it as a one-value array so
+            # the Mapping preview and every raw export format remain available.
+            outputs["fit_history"] = _readonly(np.asarray([fit_mse], dtype=float))
+            forms["fit_history"] = "supplied"
         x_axis, time_axis = _build_axes(
             prepared,
             outputs,
@@ -1528,6 +1664,9 @@ def run_mapping(
             elapsed_seconds=float(time.perf_counter() - started),
             assumptions=MappingProxyType(dict(prepared.assumptions)),
             comparisons=MappingProxyType(comparisons),
+            inter_origin_distance_count=inter_origin_distance_count,
+            inter_origin_distances_truncated=inter_origin_distances_truncated,
+            fit_mse=fit_mse,
         )
     finally:
         _RUN_LOCK.release()
@@ -1537,7 +1676,7 @@ __all__ = [
     "MAX_GRID_CELLS",
     "MAX_INPUT_BYTES",
     "MAX_INPUT_VALUES",
-    "MAX_MAPPING_ITERATIONS",
+    "MAX_MAPPING_IOD_SAMPLES",
     "MAX_MAPPING_SIMULATIONS",
     "MAX_OUTPUT_BYTES",
     "MAX_OUTPUT_VALUES",

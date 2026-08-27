@@ -56,6 +56,55 @@ class _DataUploadState:
 _DATA_UPLOAD_STATES: weakref.WeakKeyDictionary[Any, _DataUploadState] = weakref.WeakKeyDictionary()
 
 
+def _make_upload_row_drop_target(row: Any, uploader: Any, *, multiple: bool) -> None:
+    """Forward files dropped on a completed row to its hidden uploader.
+
+    Single-file workflow controls hide Quasar's empty upload surface after a
+    successful inspection.  Keeping the completed filename row as a native
+    drop target lets users replace that file directly without first clearing
+    it.  Quasar still owns acceptance, size checks, and auto-upload; this
+    client-side bridge forwards the browser ``FileList`` through Quasar's
+    native validation and auto-upload path.
+    """
+
+    action = "add files" if multiple else "replace this file"
+    row.classes("dn-upload-file-drop-target").props(
+        f'title="Drop another file here to {action}" data-upload-drop-target="true"'
+    )
+    row.on(
+        "dragenter",
+        js_handler=(
+            "event => { "
+            "if (!Array.from(event.dataTransfer?.types || []).includes('Files')) return; "
+            "event.preventDefault(); "
+            "}"
+        ),
+    )
+    row.on(
+        "dragover",
+        js_handler=(
+            "event => { "
+            "if (!Array.from(event.dataTransfer?.types || []).includes('Files')) return; "
+            "event.preventDefault(); "
+            "event.dataTransfer.dropEffect = 'copy'; "
+            "}"
+        ),
+    )
+    row.on(
+        "drop",
+        js_handler=(
+            "event => { "
+            "event.preventDefault(); event.stopPropagation(); "
+            "const files = Array.from(event.dataTransfer?.files || []); "
+            f"const q = getElement({uploader.id})?.$refs?.qRef; "
+            "if (!q || q.disable || files.length === 0) return; "
+            f"{'q.removeUploadedFiles(); ' if multiple else 'q.reset(); '}"
+            f"{'q.addFiles(files); ' if multiple else 'q.addFiles(files.slice(0, 1)); '}"
+            "}"
+        ),
+    )
+
+
 def page_intro(kicker: str, title: str, body: str) -> None:
     """Render the heading shared by every workflow page."""
 
@@ -97,7 +146,7 @@ def expansion(
     section = (
         ui.expansion(title, value=expanded, icon=None if custom_data_icon else icon)
         .classes(classes)
-        .props("dense expand-separator")
+        .props("dense")
     )
     if custom_data_icon:
         with section.add_slot("header"):
@@ -229,8 +278,9 @@ def data_upload(
 
     Quasar's completed queue exposes byte counts and a passive status glyph.
     DNAscape replaces it with a compact filename row and an explicit remove
-    button. ``on_clear`` is also the authoritative hook for dropping any
-    server-side parsed data associated with that filename.
+    button. ``on_clear`` is the authoritative hook for an explicit removal;
+    accepted replacements are committed by ``on_upload`` without briefly
+    clearing the previous page state.
     """
 
     uploaded_names: list[str] = list(dict.fromkeys(str(name) for name in initial_names))
@@ -278,6 +328,14 @@ def data_upload(
             uploader.mark(marker)
         upload_state = _DataUploadState(locked=False, remove_controls=[])
         _DATA_UPLOAD_STATES[uploader] = upload_state
+        # Quasar does not finish its XHR entry until after the Python upload
+        # callback and HTTP response complete. Resetting the finished queue
+        # here (rather than inside that callback) also clears failed entries
+        # and keeps max_files=1 uploaders ready for the next click or drop.
+        uploader.on(
+            "finish",
+            js_handler=(f"() => runMethod({uploader.id}, 'reset', [])"),
+        )
         uploader.on(
             "click",
             js_handler=(
@@ -292,21 +350,6 @@ def data_upload(
                 "event.preventDefault(); "
                 "event.currentTarget.querySelector('input[type=file]')?.click(); }"
             ),
-        )
-        uploader.on(
-            "dragenter",
-            js_handler="event => event.currentTarget.classList.add('dn-upload-dragging')",
-        )
-        uploader.on(
-            "dragleave",
-            js_handler=(
-                "event => { if (!event.currentTarget.contains(event.relatedTarget)) "
-                "event.currentTarget.classList.remove('dn-upload-dragging'); }"
-            ),
-        )
-        uploader.on(
-            "drop",
-            js_handler="event => event.currentTarget.classList.remove('dn-upload-dragging')",
         )
         with ui.element("div").classes("dn-upload-files"):
 
@@ -337,6 +380,7 @@ def data_upload(
                     with ui.element("div").classes("dn-upload-file") as row:
                         if row_marker:
                             row.mark(row_marker)
+                        _make_upload_row_drop_target(row, uploader, multiple=multiple)
                         ui.icon("description").classes("dn-upload-file-icon")
                         ui.label(name).classes("dn-upload-file-name")
                         remove = (
@@ -364,7 +408,6 @@ def data_upload(
                     return
                 uploaded_names.remove(name)
                 uploader.run_method("removeUploadedFiles")
-                uploaded_file_rows.refresh()
                 await invoke_callback(
                     on_clear,
                     UploadClearEventArguments(
@@ -373,6 +416,8 @@ def data_upload(
                         name=name,
                     ),
                 )
+                if not uploader.is_deleted:
+                    uploaded_file_rows.refresh()
 
             uploaded_file_rows()
 
@@ -382,42 +427,33 @@ def data_upload(
             # through inspection, state storage, and eventual XT stacking.
             async with upload_lock:
                 allow_multiple = bool(uploader._props.get("multiple", multiple))
-                displaced = (
-                    tuple(name for name in uploaded_names if name == event.file.name)
-                    if allow_multiple
-                    else tuple(uploaded_names)
-                )
-                for old_name in displaced:
-                    uploaded_names.remove(old_name)
-                    await invoke_callback(
-                        on_clear,
-                        UploadClearEventArguments(
-                            sender=uploader,
-                            client=uploader.client,
-                            name=old_name,
-                        ),
-                    )
-                uploaded_file_rows.refresh()
-                # Remove Quasar's completed file object immediately.  Only the
-                # custom filename row and state retained by ``on_upload`` remain.
-                # ``removeUploadedFiles`` does not cancel queued or in-flight
-                # siblings in a multiple-file auto-upload batch (``reset`` does).
-                uploader.run_method("removeUploadedFiles")
+                # Keep the existing completed row and page state in place while
+                # the candidate is inspected. A rejected replacement therefore
+                # leaves the last valid source untouched.
                 inspecting_names.append(event.file.name)
                 uploaded_file_rows.refresh()
                 try:
                     accepted = await invoke_callback(on_upload, event)
                 except Exception:
                     inspecting_names.remove(event.file.name)
-                    uploaded_file_rows.refresh()
+                    if not uploader.is_deleted:
+                        uploaded_file_rows.refresh()
                     raise
                 inspecting_names.remove(event.file.name)
+                if uploader.is_deleted:
+                    return
                 # A callback can explicitly reject a file after inspecting its
                 # contents.  Exceptions likewise stop here, so an invalid file can
                 # never acquire the completed/check presentation.
                 if accepted is False:
                     uploaded_file_rows.refresh()
                     return
+                if allow_multiple:
+                    uploaded_names[:] = [
+                        name for name in uploaded_names if name != event.file.name
+                    ]
+                else:
+                    uploaded_names.clear()
                 uploaded_names.append(event.file.name)
                 uploaded_file_rows.refresh()
 
@@ -528,32 +564,39 @@ def raw_output_controls(
         icon=DATA_ICON,
         extra_classes="dn-output-section",
     ):
-        with ui.element("div").classes("dn-raw-output-row").mark("raw-output-row"):
-            file_name_control = (
-                ui.input(label="File name", value=file_name)
-                .classes("dn-field dn-raw-output-name")
-                .props("dense")
-            )
-            file_type_control = (
-                ui.select(
-                    list(RAW_DATA_FORMATS),
-                    value=default_type,
-                    label="File type",
+        with (
+            ui.element("div")
+            .classes("dn-download-file-row dn-raw-output-row")
+            .mark("raw-output-row")
+        ):
+            ui.icon("description").classes("dn-download-file-icon")
+            with ui.element("div").classes("dn-raw-output-fields"):
+                file_name_control = (
+                    ui.input(label="File name", value=file_name)
+                    .classes("dn-field dn-raw-output-name")
+                    .props("dense")
                 )
-                .classes("dn-field dn-raw-output-type")
-                .props("dense options-dense")
-            )
+                file_type_control = (
+                    ui.select(
+                        list(RAW_DATA_FORMATS),
+                        value=default_type,
+                        label="File type",
+                    )
+                    .classes("dn-field dn-raw-output-type")
+                    .props("dense options-dense")
+                )
             compress_control = (
                 ui.checkbox("Compress", value=True)
                 .classes("dn-raw-output-compress")
                 .mark("raw-output-compression")
             )
             download_button = (
-                ui.button("Download", icon="download")
-                .props("no-caps")
-                .classes("dn-action-primary dn-action-compact dn-raw-output-download")
+                ui.button(icon="download")
+                .props('flat round dense aria-label="Download raw data"')
+                .classes("dn-download-file-action dn-raw-output-download")
                 .mark("action-download-raw-data")
             )
+            download_button.tooltip("Download")
         controls = RawOutputControls(
             file_name=file_name_control,
             file_type=file_type_control,

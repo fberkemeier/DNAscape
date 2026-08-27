@@ -77,6 +77,7 @@ _PUBLIC_BY_MODULE = {
     "simulation": (
         "simulate_replication",
         "rsim",
+        "stall_probability_per_bin",
     ),
     "fitting": (
         "select_profile_region",

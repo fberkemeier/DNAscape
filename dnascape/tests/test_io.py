@@ -280,6 +280,19 @@ class IOTests(unittest.TestCase):
             self.assertEqual(values.shape, (2,))
             np.testing.assert_allclose(values, np.array([1.0, 2.0]))
 
+    def test_rload_preserves_missing_bins_in_a_selected_chromosome(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            input_path = Path(tmpdir) / "timing.csv"
+            input_path.write_text("chr1,chr2\n1,3\n,4\n2,5\n,6\n", encoding="utf-8")
+
+            values = rload(input_path, chromosome="chr1")
+
+            # The internal gap remains a genomic bin; only the structural
+            # blank used to pad the shorter chromosome at the tail is removed.
+            self.assertEqual(values.shape, (3,))
+            self.assertTrue(np.isnan(values[1]))
+            np.testing.assert_allclose(values[[0, 2]], np.array([1.0, 2.0]))
+
     def test_rload_can_enforce_time_row_array(self):
         with tempfile.TemporaryDirectory() as tmpdir:
             input_path = Path(tmpdir) / "time.txt"

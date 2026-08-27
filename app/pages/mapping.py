@@ -59,10 +59,13 @@ from app.pages.common import (
 )
 from app.preview_plotting import (
     FIXED_QUANTITY_Y_LIMITS,
+    HistogramBinSynchronizer,
     PreviewLine,
     automatic_y_limits,
     build_preview_plot_options,
     finite_values,
+    histogram_x_limits_from_controls,
+    plotting_settings_ready,
     preview_settings_controls,
     render_preview_chart,
     sync_preview_settings_visibility,
@@ -72,6 +75,7 @@ from app.session_cache import (
     cache_upload,
     cache_workflow,
     consume_cached_workflow,
+    current_session_cache,
 )
 from app.simulation_exports import build_chart_capture_export
 
@@ -144,7 +148,7 @@ _OUTPUT_LABELS = {
     "fork_speed": "Fork speed",
     "replication_timing": "Replication timing",
     "replication_timing_fit": "Replication timing fit",
-    "fit_history": "Fit history",
+    "fit_history": "MSE",
     "residual": "Residual",
     "replicated_fraction": "Replicated fraction",
     "replicated_fraction_xt": "Replicated fraction (space-time)",
@@ -171,9 +175,11 @@ _BUNDLE_OUTPUTS = {
 
 _COMPARISON_PREFIX = "comparison:"
 _FIT_DIAGNOSTIC_KEY = "fit_diagnostic"
+_MSE_DIAGNOSTIC_KEY = "mse_diagnostic"
 _PLOT_TYPES = ["Line", "Heatmap", "Histogram", "Boxplot"]
 
 _WEIBULL_ONLY_SETTINGS = {"weibull_shape", "weibull_delay", "fit_weibull_shape"}
+_FREE_FIRING_ONLY_SETTINGS = {"stall_rate_per_kb", "tau"}
 
 
 class _ProgressState:
@@ -376,7 +382,8 @@ def _preview_outputs(route: MappingRoute) -> dict[str, str]:
         outputs[f"{_COMPARISON_PREFIX}replication_timing_fit"] = (
             "Replication timing: observed vs fitted"
         )
-    outputs[_FIT_DIAGNOSTIC_KEY] = "Residual / misfit error"
+    outputs[_FIT_DIAGNOSTIC_KEY] = "Residual"
+    outputs[_MSE_DIAGNOSTIC_KEY] = "MSE"
     return outputs
 
 
@@ -385,8 +392,7 @@ def _result_preview_outputs(result: MappingResult) -> dict[str, str]:
 
     outputs = {
         key: (
-            f"{_OUTPUT_LABELS.get(key, key.removesuffix('_xt').replace('_', ' ').title())} "
-            "(target)"
+            f"{_OUTPUT_LABELS.get(key, key.removesuffix('_xt').replace('_', ' ').title())} (target)"
             if key == result.target
             else _OUTPUT_LABELS.get(
                 key,
@@ -396,38 +402,31 @@ def _result_preview_outputs(result: MappingResult) -> dict[str, str]:
         for key in result.outputs
         if key not in {"fit_history", "residual"}
     }
-    if "residual" in result.outputs or "fit_history" in result.outputs:
-        outputs[_FIT_DIAGNOSTIC_KEY] = "Residual / misfit error"
     for fitted_key, comparison in result.comparisons.items():
         source_label = _OUTPUT_LABELS.get(
             comparison.source_key,
             comparison.source_key.replace("_", " ").title(),
         )
         outputs[f"{_COMPARISON_PREFIX}{fitted_key}"] = f"{source_label}: observed vs fitted"
+    # Keep fit diagnostics together at the end of the selector: the residual
+    # profile first and the optimizer's MSE trace after it.
+    if "residual" in result.outputs:
+        outputs["residual"] = "Residual"
+    if "fit_history" in result.outputs:
+        outputs["fit_history"] = "MSE"
     return outputs
-
-
-def _diagnostic_output_key(result: Any) -> str:
-    """Resolve the route-specific residual or optimizer-error output."""
-
-    outputs = getattr(result, "outputs", {})
-    if "residual" in outputs:
-        return "residual"
-    if "fit_history" in outputs:
-        return "fit_history"
-    raise ValueError("This mapping route did not return residuals or a fit-error history.")
 
 
 def _resolved_output_key(result: Any, output_key: str) -> str:
     """Resolve a virtual diagnostic key without failing UI synchronization."""
 
+    if output_key == _MSE_DIAGNOSTIC_KEY:
+        outputs = getattr(result, "outputs", {})
+        return "fit_history" if "fit_history" in outputs else output_key
     if output_key != _FIT_DIAGNOSTIC_KEY:
         return output_key
     outputs = getattr(result, "outputs", {})
-    return next(
-        (candidate for candidate in ("residual", "fit_history") if candidate in outputs),
-        output_key,
-    )
+    return "residual" if "residual" in outputs else output_key
 
 
 def _result_axis(result: Any, *, kind: str, length: int) -> np.ndarray:
@@ -500,11 +499,19 @@ def _mapping_plot_options(
     show_grid: bool = True,
     y_limits: tuple[float, float] | None = None,
     secondary_color: str = "#b03412",
+    log_x: bool = False,
+    invert_x: bool = False,
+    invert_z: bool = False,
+    show_histogram_statistics: bool = False,
+    histogram_statistics_position: str = "Top right",
+    histogram_bin_size: float | None = None,
+    histogram_x_limits: tuple[float, float] | None = None,
+    histogram_touching: bool = True,
+    histogram_boundary: str = "left",
 ) -> dict[str, Any]:
     """Build a bounded ECharts view for scalar, X, T, XT, and bundle outputs."""
 
-    if output_key == _FIT_DIAGNOSTIC_KEY:
-        output_key = _diagnostic_output_key(result)
+    output_key = _resolved_output_key(result, output_key)
 
     if output_key.startswith(_COMPARISON_PREFIX):
         fitted_key = output_key.removeprefix(_COMPARISON_PREFIX)
@@ -569,6 +576,8 @@ def _mapping_plot_options(
             legend_position=legend_position,
             show_grid=show_grid,
             interactive=comparison.form != "t",
+            log_x=log_x,
+            invert_x=invert_x,
         )
 
     outputs = getattr(result, "outputs", {})
@@ -643,6 +652,9 @@ def _mapping_plot_options(
             y_axis=time_axis,
             show_grid=show_grid,
             interactive=False,
+            log_x=log_x,
+            invert_x=invert_x,
+            invert_z=invert_z,
         )
 
     flattened = values.reshape(-1)
@@ -665,6 +677,14 @@ def _mapping_plot_options(
             values=flattened,
             legend_position=legend_position,
             show_grid=show_grid,
+            log_x=log_x,
+            invert_x=invert_x,
+            show_histogram_statistics=show_histogram_statistics,
+            histogram_statistics_position=histogram_statistics_position,
+            histogram_bin_size=histogram_bin_size,
+            histogram_x_limits=histogram_x_limits,
+            histogram_touching=histogram_touching,
+            histogram_boundary=histogram_boundary,
         )
 
     if plot_type == "Boxplot":
@@ -686,6 +706,7 @@ def _mapping_plot_options(
             values=flattened,
             legend_position=legend_position,
             show_grid=show_grid,
+            invert_x=invert_x,
         )
 
     if values.ndim > 1 and 1 not in values.shape:
@@ -693,7 +714,9 @@ def _mapping_plot_options(
     dependence = str(getattr(result, "output_dependence", "space"))
     output_form = str(getattr(result, "output_forms", {}).get(output_key, ""))
     axis_kind = "time" if output_form == "t" or dependence == "time" else "space"
-    if output_key == "fit_history" or dependence in {"ensemble", "regions", "constant"}:
+    if output_key == "fit_history":
+        axis = np.arange(1, flattened.size + 1, dtype=float)
+    elif dependence in {"ensemble", "regions", "constant"}:
         axis = np.arange(flattened.size, dtype=float)
     else:
         axis = _result_axis(result, kind=axis_kind, length=flattened.size)
@@ -717,10 +740,12 @@ def _mapping_plot_options(
         values=flattened,
         x_axis=axis,
         line_width=line_width,
-        show_markers=show_markers,
+        show_markers=show_markers or (output_key == "fit_history" and flattened.size == 1),
         legend_position=legend_position,
         show_grid=show_grid,
         interactive=output_form != "t" and dependence != "time",
+        log_x=log_x,
+        invert_x=invert_x,
     )
 
 
@@ -732,11 +757,14 @@ def _mapping_automatic_y_limits(
     histogram_bins: int,
     density: bool,
     log_y: bool,
+    log_x: bool = False,
+    histogram_bin_size: float | None = None,
+    histogram_x_limits: tuple[float, float] | None = None,
+    histogram_boundary: str = "left",
 ) -> tuple[float, float]:
     """Return editable, data-derived bounds for the active mapping plot."""
 
-    if output_key == _FIT_DIAGNOSTIC_KEY:
-        output_key = _diagnostic_output_key(result)
+    output_key = _resolved_output_key(result, output_key)
 
     if output_key.startswith(_COMPARISON_PREFIX):
         comparison = getattr(result, "comparisons", {}).get(
@@ -767,16 +795,24 @@ def _mapping_automatic_y_limits(
         )
         quantity_key = output_key.removesuffix("_xt")
         fixed_limits = FIXED_QUANTITY_Y_LIMITS.get(quantity_key)
-    nonnegative = quantity_key not in {"fork_directionality", "residual"}
     return automatic_y_limits(
         values,
         plot_type=plot_type,
         histogram_bins=histogram_bins,
         density=density,
         log_y=log_y,
+        log_x=log_x,
+        histogram_bin_size=histogram_bin_size,
+        histogram_x_limits=histogram_x_limits,
+        histogram_boundary=histogram_boundary,
         y_axis=y_axis,
         fixed_limits=fixed_limits,
-        floor_at_zero=nonnegative,
+        # A nonnegative physical quantity does not imply that zero belongs in
+        # every preview.  Keep ordinary mapping profiles centred on their
+        # observed extrema; genuinely bounded quantities above use their
+        # explicit scientific domains, and histograms anchor their own count
+        # baseline inside ``automatic_y_limits``.
+        floor_at_zero=False,
     )
 
 
@@ -806,6 +842,15 @@ def _render_mapping_result(
     y_limits: tuple[float, float] | None,
     on_download: Callable[[str], Any],
     show_grid: bool = True,
+    log_x: bool = False,
+    invert_x: bool = False,
+    invert_z: bool = False,
+    show_histogram_statistics: bool = False,
+    histogram_statistics_position: str = "Top right",
+    histogram_bin_size: float | None = None,
+    histogram_x_limits: tuple[float, float] | None = None,
+    histogram_touching: bool = True,
+    histogram_boundary: str = "left",
 ) -> Any:
     options = _mapping_plot_options(
         result,
@@ -831,6 +876,15 @@ def _render_mapping_result(
         legend_position=legend_position,
         show_grid=show_grid,
         y_limits=y_limits,
+        log_x=log_x,
+        invert_x=invert_x,
+        invert_z=invert_z,
+        show_histogram_statistics=show_histogram_statistics,
+        histogram_statistics_position=histogram_statistics_position,
+        histogram_bin_size=histogram_bin_size,
+        histogram_x_limits=histogram_x_limits,
+        histogram_touching=histogram_touching,
+        histogram_boundary=histogram_boundary,
     )
     return render_preview_chart(
         options,
@@ -966,7 +1020,8 @@ def _render_route_setting_groups(
     settings = tuple(
         setting
         for setting in route.settings_for(location=location)
-        if target_shape == "weibull" or setting.key not in _WEIBULL_ONLY_SETTINGS
+        if (target_shape == "weibull" or setting.key not in _WEIBULL_ONLY_SETTINGS)
+        and not (target_shape == "weibull" and setting.key in _FREE_FIRING_ONLY_SETTINGS)
     )
     if not settings:
         ui.label("No additional controls are needed for this route.").classes(
@@ -991,12 +1046,16 @@ def _render_route_setting_groups(
             )
             with (
                 ui.column()
-                .classes("dn-setting-group dn-mapping-settings-theme")
+                .classes(
+                    "dn-setting-group dn-mapping-settings-theme"
+                    + (" dn-mapping-settings-theme-untitled" if category == "domain" else "")
+                )
                 .mark(f"mapping-settings-{category}")
             ):
-                ui.label(_SETTING_CATEGORY_LABELS.get(category, category.title())).classes(
-                    "dn-setting-group-title"
-                )
+                if category != "domain":
+                    ui.label(_SETTING_CATEGORY_LABELS.get(category, category.title())).classes(
+                        "dn-setting-group-title"
+                    )
                 for setting in category_settings:
                     controls[setting.key] = _render_setting(setting, on_change)
     return controls
@@ -1217,20 +1276,93 @@ def _render_upload_input(
                         )
                         ui.label(f"Array size: {shape}").classes("dn-mapping-detected-summary")
 
+        @ui.refreshable
+        def render_selection() -> None:
+            """Render file-specific array choices directly under the uploaded profile."""
+
+            selector_controls.clear()
+            if not inspections:
+                return
+            with ui.element("div").classes("dn-mapping-upload-selectors"):
+                for inspection in inspections:
+                    selected = selection_values.setdefault(inspection.name, {})
+                    column_control = None
+                    if inspection.numeric_columns:
+                        column_options: Any = list(inspection.numeric_columns)
+                        if _detected_profile_form(inspections) == "xt" and len(inspections) == 1:
+                            column_options = {
+                                "__all__": "All signal columns",
+                                **{column: column for column in inspection.numeric_columns},
+                            }
+                        column_control = (
+                            ui.select(
+                                column_options,
+                                value=selected.get("column"),
+                                label="Value column",
+                            )
+                            .props("dense options-dense")
+                            .classes("dn-field dn-mapping-column-select")
+                            .mark(f"mapping-input-{marker}-value-column")
+                        )
+                        column_control._props["data-upload-name"] = inspection.name
+                        if (
+                            len(inspection.numeric_columns) == 1
+                            and _detected_profile_form(inspections) != "xt"
+                        ):
+                            column_control.disable()
+
+                        def store_column(
+                            control: Any = column_control,
+                            values: dict[str, str | None] = selected,
+                        ) -> None:
+                            values["column"] = None if control.value is None else str(control.value)
+                            materialized_cache.update(key=None, value=None)
+                            on_change()
+
+                        column_control.on_value_change(store_column)
+                    array_control = None
+                    if inspection.array_keys:
+                        array_control = (
+                            ui.select(
+                                list(inspection.array_keys),
+                                value=selected.get("array_key"),
+                                label="Array",
+                            )
+                            .props("dense options-dense")
+                            .classes("dn-field dn-mapping-column-select")
+                            .mark(f"mapping-input-{marker}-array-key")
+                        )
+                        array_control._props["data-upload-name"] = inspection.name
+                        if len(inspection.array_keys) == 1:
+                            array_control.disable()
+
+                        def store_array(
+                            control: Any = array_control,
+                            values: dict[str, str | None] = selected,
+                        ) -> None:
+                            values["array_key"] = (
+                                None if control.value is None else str(control.value)
+                            )
+                            materialized_cache.update(key=None, value=None)
+                            on_change()
+
+                        array_control.on_value_change(store_array)
+                    selector_controls[inspection.name] = (
+                        column_control,
+                        array_control,
+                    )
+
         async def uploaded(event: Any) -> bool:
             try:
                 inspection = await inspect_upload_event(event, expected_form="auto")
             except (OSError, TypeError, ValueError) as exc:
                 on_error(str(exc))
                 return False
-            materialized_cache.update(key=None, value=None)
-            if not allow_multiple:
-                inspections.clear()
-            inspections[:] = [item for item in inspections if item.name != inspection.name]
-            inspections.append(inspection)
-            detected_form = _detected_profile_form(inspections)
+            candidates = list(inspections) if allow_multiple else []
+            candidates[:] = [item for item in candidates if item.name != inspection.name]
+            candidates.append(inspection)
+            detected_form = _detected_profile_form(candidates)
             if detected_form not in profile_forms:
-                inspections[:] = [item for item in inspections if item.name != inspection.name]
                 expected = ", ".join(_FORM_LABELS[item] for item in profile_forms)
                 message = (
                     f"{input_spec.label} was detected as "
@@ -1239,6 +1371,8 @@ def _render_upload_input(
                 )
                 on_error(message)
                 return False
+            materialized_cache.update(key=None, value=None)
+            inspections[:] = candidates
             sync_selection_values()
             surface.update(
                 inspections=inspections,
@@ -1247,6 +1381,7 @@ def _render_upload_input(
                 source=source,
             )
             render_inspection.refresh()
+            render_selection.refresh()
             sync_track_options_visibility()
             assert detected_form is not None
             on_detected_form(detected_form)
@@ -1263,6 +1398,7 @@ def _render_upload_input(
                 inspections.clear()
             sync_selection_values()
             render_inspection.refresh()
+            render_selection.refresh()
             sync_track_options_visibility()
             on_change()
 
@@ -1301,6 +1437,7 @@ def _render_upload_input(
             initial_names=tuple(item.name for item in inspections),
         )
         render_inspection()
+        render_selection()
         surface.update(
             inspections=inspections,
             selector_controls=selector_controls,
@@ -1888,7 +2025,6 @@ def render(_navigate: Callable[[str], None]) -> None:
     mapping_upload_states: dict[str, _MappingUploadState] = {}
     region_setting_controls: dict[str, _SettingControl] = {}
     mapping_setting_controls: dict[str, _SettingControl] = {}
-    region_selector_refresh: dict[str, Callable[[], Any]] = {"call": lambda: None}
 
     page_intro(
         "Mapping",
@@ -2037,12 +2173,10 @@ def render(_navigate: Callable[[str], None]) -> None:
                         sync_target_shape(route)
                         render_region_settings.refresh()
                         render_mapping_settings.refresh()
-                        region_selector_refresh["call"]()
                         sync_preview_selection(route)
 
                     def scientific_input_changed() -> None:
                         invalidate_mapping_result()
-                        region_selector_refresh["call"]()
 
                     @ui.refreshable
                     def render_required_inputs() -> None:
@@ -2239,119 +2373,12 @@ def render(_navigate: Callable[[str], None]) -> None:
                     target_shape_control.on_value_change(target_shape_changed)
 
                 with expansion("Region", icon="straighten"):
-
-                    @ui.refreshable
-                    def render_region_upload_selectors() -> None:
-                        """Place uploaded table/array choices beside the region scope."""
-
-                        for live in mapping_input_controls.values():
-                            inspections = cast(
-                                list[UploadInspection],
-                                live.surface.get("inspections", []),
-                            )
-                            selection_values = cast(
-                                dict[str, dict[str, str | None]],
-                                live.surface.get("selection_values", {}),
-                            )
-                            selector_controls = cast(
-                                dict[str, tuple[Any | None, Any | None]],
-                                live.surface.setdefault("selector_controls", {}),
-                            )
-                            selector_controls.clear()
-                            for inspection in inspections:
-                                selected = selection_values.setdefault(inspection.name, {})
-                                column_control = None
-                                if inspection.numeric_columns:
-                                    column_options: Any = list(inspection.numeric_columns)
-                                    if str(live.form.value) == "xt" and len(inspections) == 1:
-                                        column_options = {
-                                            "__all__": "All signal columns",
-                                            **{
-                                                column: column
-                                                for column in inspection.numeric_columns
-                                            },
-                                        }
-                                    column_control = (
-                                        ui.select(
-                                            column_options,
-                                            value=selected.get("column"),
-                                            label="Value column",
-                                        )
-                                        .props("dense options-dense")
-                                        .classes("dn-field dn-mapping-column-select")
-                                        .mark(f"mapping-input-{_slug(live.spec.key)}-value-column")
-                                    )
-                                    column_control._props["data-upload-name"] = inspection.name
-                                    if (
-                                        len(inspection.numeric_columns) == 1
-                                        and str(live.form.value) != "xt"
-                                    ):
-                                        column_control.disable()
-
-                                    def store_column(
-                                        control: Any = column_control,
-                                        values: dict[str, str | None] = selected,
-                                        surface: dict[str, Any] = live.surface,
-                                    ) -> None:
-                                        values["column"] = (
-                                            None if control.value is None else str(control.value)
-                                        )
-                                        surface["materialized_cache"].update(
-                                            key=None,
-                                            value=None,
-                                        )
-                                        invalidate_mapping_result()
-
-                                    column_control.on_value_change(store_column)
-                                array_control = None
-                                if inspection.array_keys:
-                                    array_control = (
-                                        ui.select(
-                                            list(inspection.array_keys),
-                                            value=selected.get("array_key"),
-                                            label="Array",
-                                        )
-                                        .props("dense options-dense")
-                                        .classes("dn-field dn-mapping-column-select")
-                                        .mark(f"mapping-input-{_slug(live.spec.key)}-array-key")
-                                    )
-                                    array_control._props["data-upload-name"] = inspection.name
-                                    if len(inspection.array_keys) == 1:
-                                        array_control.disable()
-
-                                    def store_array(
-                                        control: Any = array_control,
-                                        values: dict[str, str | None] = selected,
-                                        surface: dict[str, Any] = live.surface,
-                                    ) -> None:
-                                        values["array_key"] = (
-                                            None if control.value is None else str(control.value)
-                                        )
-                                        surface["materialized_cache"].update(
-                                            key=None,
-                                            value=None,
-                                        )
-                                        invalidate_mapping_result()
-
-                                    array_control.on_value_change(store_array)
-                                selector_controls[inspection.name] = (
-                                    column_control,
-                                    array_control,
-                                )
-
-                    with ui.element("div").classes("dn-mapping-region-choice-grid"):
-                        with (
-                            ui.element("div")
-                            .classes("dn-mapping-region-selectors")
-                            .mark("mapping-region-value-selectors")
-                        ):
-                            render_region_upload_selectors()
+                    with ui.element("div").classes("dn-mapping-region-scope"):
                         whole_region = (
                             ui.checkbox("Whole region", value=False)
                             .classes("dn-mapping-whole-region")
                             .mark("mapping-whole-region")
                         )
-                    region_selector_refresh["call"] = render_region_upload_selectors.refresh
                     with (
                         ui.element("div")
                         .classes("dn-mapping-window-grid")
@@ -2365,7 +2392,7 @@ def render(_navigate: Callable[[str], None]) -> None:
                         )
                         region_end = (
                             ui.number(
-                                label="End (kb, exclusive)",
+                                label="End boundary (kb, exclusive)",
                                 value=1000.0,
                                 min=0.000001,
                                 step=1.0,
@@ -2458,8 +2485,7 @@ def render(_navigate: Callable[[str], None]) -> None:
                 )
                 initial_output_key = (
                     latest_result.primary_output
-                    if latest_result is not None
-                    and latest_result.primary_output in initial_outputs
+                    if latest_result is not None and latest_result.primary_output in initial_outputs
                     else next(iter(initial_outputs))
                 )
                 initial_output_label = _OUTPUT_LABELS.get(
@@ -2517,7 +2543,6 @@ def render(_navigate: Callable[[str], None]) -> None:
                     )
                 plot_settings = preview_settings_controls(
                     initial_title=initial_output_label,
-                    initial_series_label="Mapped",
                     initial_x_label="Position (kb)",
                     initial_y_label=initial_output_label,
                     on_reset_y_limits=lambda: populate_automatic_y_limits(),
@@ -2525,7 +2550,6 @@ def render(_navigate: Callable[[str], None]) -> None:
                         "container": "mapping-preview-settings",
                         "view": "mapping-view",
                         "title": "mapping-preview-title",
-                        "series_label": "mapping-series-label",
                         "x_axis_label": "mapping-preview-x-label",
                         "y_axis_label": "mapping-preview-y-label",
                         "primary_color": "mapping-line-or-bar-color",
@@ -2534,8 +2558,21 @@ def render(_navigate: Callable[[str], None]) -> None:
                         "legend_position": "mapping-legend-position",
                         "show_grid": "mapping-show-grid",
                         "heatmap_palette": "mapping-heatmap-palette",
+                        "log_x": "mapping-log-x",
+                        "invert_x": "mapping-invert-x",
+                        "log_y": "mapping-log-y",
+                        "invert_y": "mapping-invert-y",
                         "log_z": "mapping-log-z",
+                        "invert_z": "mapping-invert-z",
                         "histogram_bins": "mapping-histogram-bins",
+                        "histogram_bin_size": "mapping-histogram-bin-size",
+                        "histogram_touching": "mapping-histogram-touching",
+                        "histogram_boundary": "mapping-histogram-boundary",
+                        "histogram_x_minimum": "mapping-histogram-x-minimum",
+                        "histogram_x_maximum": "mapping-histogram-x-maximum",
+                        "reset_histogram_x_limits": "mapping-reset-histogram-x-limits",
+                        "show_histogram_statistics": "mapping-show-histogram-statistics",
+                        "histogram_statistics_position": ("mapping-histogram-statistics-position"),
                         "density": "mapping-density",
                         "colorbar": "mapping-colorbar",
                         "y_minimum": "mapping-y-minimum",
@@ -2545,15 +2582,21 @@ def render(_navigate: Callable[[str], None]) -> None:
                 )
                 view = plot_settings.view
                 preview_title = plot_settings.title
-                series_label = plot_settings.series_label
                 preview_x_label = plot_settings.x_axis_label
                 preview_y_label = plot_settings.y_axis_label
                 line_or_bar_color = plot_settings.primary_color
                 second_curve_color = plot_settings.secondary_color
                 heatmap_palette = plot_settings.heatmap_palette
+                log_x = plot_settings.log_x
+                invert_x = plot_settings.invert_x
                 log_z = plot_settings.log_z
+                invert_z = plot_settings.invert_z
                 line_width = plot_settings.line_width
                 histogram_bins = plot_settings.histogram_bins
+                histogram_touching = plot_settings.histogram_touching
+                histogram_boundary = plot_settings.histogram_boundary
+                show_histogram_statistics = plot_settings.show_histogram_statistics
+                histogram_statistics_position = plot_settings.histogram_statistics_position
                 show_legend = plot_settings.show_legend
                 legend_position = plot_settings.legend_position
                 show_grid = plot_settings.show_grid
@@ -2640,7 +2683,11 @@ def render(_navigate: Callable[[str], None]) -> None:
                         plot_settings,
                         plot_type=plot_type,
                         multiple_curves=multiple_curves,
-                        allow_histogram=output_form not in {"t", "xt"} and not multiple_curves,
+                        allow_histogram=(
+                            output_form not in {"t", "xt"}
+                            and actual_output_key != "fit_history"
+                            and not multiple_curves
+                        ),
                         allow_boxplot=dependence == "ensemble" and not multiple_curves,
                     )
 
@@ -2662,6 +2709,12 @@ def render(_navigate: Callable[[str], None]) -> None:
                     y_limits_automatic = True
                     if latest_result is None:
                         return
+                    if not plotting_settings_ready(
+                        plot_settings,
+                        plot_type=resolved_plot_type(),
+                        allow_empty_y_limits=y_limits_automatic,
+                    ):
+                        return
                     try:
                         limits = _mapping_automatic_y_limits(
                             latest_result,
@@ -2670,6 +2723,17 @@ def render(_navigate: Callable[[str], None]) -> None:
                             histogram_bins=int(_read_number(histogram_bins, "Histogram bins")),
                             density=bool(density.value),
                             log_y=bool(log_y.value),
+                            log_x=bool(log_x.value),
+                            histogram_bin_size=(
+                                float(plot_settings.histogram_bin_size.value)
+                                if plot_settings.histogram_bin_size.value is not None
+                                else None
+                            ),
+                            histogram_x_limits=histogram_x_limits_from_controls(
+                                plot_settings,
+                                log_x=bool(log_x.value),
+                            ),
+                            histogram_boundary=str(histogram_boundary.value or "left"),
                         )
                     except ValueError:
                         limits = None
@@ -2775,17 +2839,24 @@ def render(_navigate: Callable[[str], None]) -> None:
                     try:
                         normalized_dpi = int(get_export_settings().plot_dpi)
                         pixel_ratio = max(1.0, min(4.0, normalized_dpi / 96.0))
+                        capture_format = "png" if str(file_format).casefold() == "png" else "svg"
+                        capture_options: dict[str, Any] = {
+                            "type": capture_format,
+                            "backgroundColor": "#ffffff",
+                        }
+                        if capture_format == "png":
+                            capture_options["pixelRatio"] = pixel_ratio
                         data_uri = await result_chart.run_chart_method(
                             "getDataURL",
-                            {
-                                "type": "png",
-                                "pixelRatio": pixel_ratio,
-                                "backgroundColor": "#ffffff",
-                            },
+                            capture_options,
                             timeout=10,
                         )
                         output_key = str(preview_output.value or latest_result.primary_output)
-                        output_stem = output_key.replace(":", "_")
+                        output_stem = (
+                            "mse"
+                            if _resolved_output_key(latest_result, output_key) == "fit_history"
+                            else output_key.replace(":", "_")
+                        )
                         artifact = await run.io_bound(
                             build_chart_capture_export,
                             data_uri,
@@ -2831,10 +2902,9 @@ def render(_navigate: Callable[[str], None]) -> None:
                                 ),
                             )
                         else:
-                            exported_output_key = (
-                                _diagnostic_output_key(latest_result)
-                                if output_key == _FIT_DIAGNOSTIC_KEY
-                                else output_key
+                            exported_output_key = _resolved_output_key(
+                                latest_result,
+                                output_key,
                             )
                             artifact = await run.io_bound(
                                 build_mapping_raw_export,
@@ -2869,6 +2939,12 @@ def render(_navigate: Callable[[str], None]) -> None:
                     nonlocal result_chart
                     if latest_result is None:
                         return
+                    if not plotting_settings_ready(
+                        plot_settings,
+                        plot_type=resolved_plot_type(),
+                        allow_empty_y_limits=y_limits_automatic,
+                    ):
+                        return
                     result_chart = None
                     result_slot.clear()
                     with result_slot:
@@ -2881,7 +2957,14 @@ def render(_navigate: Callable[[str], None]) -> None:
                                 plot_type=resolved_plot_type(),
                                 normalization="None",
                                 title=str(preview_title.value or ""),
-                                series_label=str(series_label.value or ""),
+                                series_label=dict(preview_output.options)
+                                .get(
+                                    str(preview_output.value),
+                                    str(preview_output.value or "Mapped output")
+                                    .replace("_", " ")
+                                    .title(),
+                                )
+                                .removesuffix(" (target)"),
                                 x_label=str(preview_x_label.value or ""),
                                 y_label=str(preview_y_label.value or ""),
                                 color=str(line_or_bar_color.value or "#2c7f77"),
@@ -2894,9 +2977,27 @@ def render(_navigate: Callable[[str], None]) -> None:
                                 log_y=bool(log_y.value),
                                 log_z=bool(log_z.value),
                                 invert_y=bool(invert_y.value),
+                                log_x=bool(log_x.value),
+                                invert_x=bool(invert_x.value),
+                                invert_z=bool(invert_z.value),
                                 density=bool(density.value),
                                 show_legend=bool(show_legend.value),
                                 legend_position=str(legend_position.value or "Top right"),
+                                show_histogram_statistics=bool(show_histogram_statistics.value),
+                                histogram_statistics_position=str(
+                                    histogram_statistics_position.value or "Top right"
+                                ),
+                                histogram_bin_size=(
+                                    float(plot_settings.histogram_bin_size.value)
+                                    if plot_settings.histogram_bin_size.value is not None
+                                    else None
+                                ),
+                                histogram_x_limits=histogram_x_limits_from_controls(
+                                    plot_settings,
+                                    log_x=bool(log_x.value),
+                                ),
+                                histogram_touching=bool(histogram_touching.value),
+                                histogram_boundary=str(histogram_boundary.value or "left"),
                                 show_grid=bool(show_grid.value),
                                 y_limits=current_y_limits(),
                                 on_download=download_plot,
@@ -3063,6 +3164,23 @@ def render(_navigate: Callable[[str], None]) -> None:
                         stats_container.visible = True
                         progress.value = 1.0
                         status.text = f"Complete in {result.elapsed_seconds:.2f} s"
+                        if result.fit_mse is not None:
+                            status.text += f" · MSE {result.fit_mse:.4g}"
+                        if result.inter_origin_distances_truncated:
+                            total = result.inter_origin_distance_count
+                            retained = int(primary.size)
+                            count_text = f" of {total:,}" if total is not None else ""
+                            status.text += (
+                                f" · showing the first {retained:,}{count_text} distances"
+                            )
+                            ui.notify(
+                                "The inter-origin-distance distribution exceeded the "
+                                f"local retained-data limit; showing the first {retained:,} "
+                                "values. Narrow the region or reduce the ensemble for a "
+                                "complete distribution.",
+                                type="warning",
+                            )
+                        histogram_bin_sync.sync_to_data(redraw=False)
                         populate_automatic_y_limits(redraw=False)
                         render_latest_result()
                         cache_workflow(
@@ -3178,7 +3296,7 @@ def render(_navigate: Callable[[str], None]) -> None:
                         view.enable()
                     if actual_output_key == "fit_history":
                         preview_x_label.value = "Iteration"
-                        preview_y_label.value = "Fit error"
+                        preview_y_label.value = "MSE"
                     elif comparison_source_key is None and output_form in {"t", "xt"}:
                         preview_x_label.value = "Chromosome position (kb)"
                         preview_y_label.value = "Time (min)"
@@ -3199,7 +3317,7 @@ def render(_navigate: Callable[[str], None]) -> None:
                     raw_controls.file_name.value = (
                         f"dnascape_mapping_{comparison_source_key}_comparison"
                         if comparison_source_key is not None
-                        else f"dnascape_mapping_{actual_output_key}"
+                        else f"dnascape_mapping_{'mse' if actual_output_key == 'fit_history' else actual_output_key}"
                     )
                     for control in (
                         preview_title,
@@ -3240,35 +3358,63 @@ def render(_navigate: Callable[[str], None]) -> None:
                         preview_y_label.value = output_label
                     preview_x_label.update()
                     preview_y_label.update()
+                    histogram_bin_sync.sync_to_data(redraw=False)
                     refresh_axis_range()
 
                 def refresh_preview_output() -> None:
                     apply_preview_output()
+                    histogram_bin_sync.sync_to_data(redraw=False)
                     populate_automatic_y_limits(redraw=False)
+                    render_latest_result()
+
+                def histogram_values() -> Any | None:
+                    if latest_result is None:
+                        return None
+                    output_key = str(preview_output.value or latest_result.primary_output)
+                    if output_key.startswith(_COMPARISON_PREFIX):
+                        return None
+                    actual_output_key = _resolved_output_key(latest_result, output_key)
+                    return latest_result.outputs.get(actual_output_key)
+
+                histogram_bin_sync = HistogramBinSynchronizer(
+                    plot_settings,
+                    values=histogram_values,
+                    on_valid_change=refresh_axis_range,
+                    log_x=lambda: bool(log_x.value),
+                )
+
+                def log_x_changed() -> None:
+                    histogram_bin_sync.sync_to_data(redraw=False)
                     render_latest_result()
 
                 preview_output.on_value_change(refresh_preview_output)
                 for plot_control in (
                     preview_title,
-                    series_label,
                     preview_x_label,
                     preview_y_label,
                     line_or_bar_color,
                     second_curve_color,
                     line_width,
                     heatmap_palette,
+                    invert_x,
                     log_z,
+                    invert_z,
+                    show_histogram_statistics,
+                    histogram_statistics_position,
                     show_legend,
                     legend_position,
                     show_grid,
                     colorbar,
                     invert_y,
+                    histogram_touching,
                 ):
                     plot_control.on_value_change(render_latest_result)
+                histogram_boundary.on_value_change(refresh_axis_range)
+                show_histogram_statistics.on_value_change(sync_plot_controls)
                 show_legend.on_value_change(sync_plot_controls)
                 view.on_value_change(sync_view_axis_labels)
                 density.on_value_change(sync_view_axis_labels)
-                histogram_bins.on_value_change(refresh_axis_range)
+                log_x.on_value_change(log_x_changed)
                 log_y.on_value_change(refresh_axis_range)
                 y_minimum.on_value_change(use_custom_y_limits)
                 y_maximum.on_value_change(use_custom_y_limits)
@@ -3291,6 +3437,7 @@ def render(_navigate: Callable[[str], None]) -> None:
                 whole_region.on_value_change(sync_whole_region)
 
                 if latest_result is not None:
+                    histogram_bin_sync.sync_to_data(redraw=False)
                     restored_primary = np.asarray(
                         latest_result.outputs[latest_result.primary_output]
                     )
@@ -3299,9 +3446,7 @@ def render(_navigate: Callable[[str], None]) -> None:
                         latest_result.output_dependence.replace("_", " ").title(),
                     )
                     mapping_stats["Points"].text = f"{restored_primary.size:,}"
-                    mapping_stats["Method"].text = latest_result.method.replace(
-                        "_", " "
-                    ).title()
+                    mapping_stats["Method"].text = latest_result.method.replace("_", " ").title()
                     for value in mapping_stats.values():
                         value.update()
                     stats_container.visible = True
@@ -3309,3 +3454,19 @@ def render(_navigate: Callable[[str], None]) -> None:
                     apply_preview_output()
                     populate_automatic_y_limits(redraw=False)
                     render_latest_result()
+
+                def clear_mapping_output() -> None:
+                    nonlocal latest_result, result_chart
+                    latest_result = None
+                    result_chart = None
+                    progress.visible = False
+                    stats_container.visible = False
+                    status.text = "Ready"
+                    result_slot.clear()
+                    with result_slot:
+                        preview_plot("No result yet", kind="mapping")
+
+                current_session_cache().register_output_clearer(
+                    "mapping",
+                    clear_mapping_output,
+                )

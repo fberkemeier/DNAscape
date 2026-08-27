@@ -672,6 +672,7 @@ _FEATURE_LABELS = {
     "left_fork_density_xt": "Left-moving fork density",
     "origin_efficiency": "Origin efficiency",
     "inter_origin_distance": "Inter-origin distance",
+    "s_phase_duration": "S-phase duration",
     "completion_time": "Completion time",
     "num_origins": "Number of origins",
     "initiation_events": "Initiation events",
@@ -705,6 +706,9 @@ _FEATURE_DESCRIPTIONS = {
     "initiation_pdf_xt": "Position-by-time initiation probability-density field.",
     "coalescence_events_xt": "Position-by-time fork-coalescence event field.",
     "coalescence_pdf_xt": "Position-by-time coalescence probability-density field.",
+    "s_phase_duration": (
+        "Elapsed time from the first realised initiation to replication completion."
+    ),
     "regions": "One (start, end) pair, a list of pairs, or a name-to-pair mapping.",
 }
 
@@ -778,10 +782,18 @@ _SETTING_DESCRIPTIONS = {
     "smoothw": "Spatial smoothing window for fitted profiles.",
     "spatial_smoothw": "Spatial smoothing window used in joint kinetic fitting.",
     "refine_ratio_bounds": "Lower and upper bounds for timing-ratio refinement updates.",
-    "refine_edge_kb": "Non-periodic chromosome edge width ignored during refinement.",
+    "refine_edge_kb": (
+        "Maximum non-periodic endpoint context used to stabilize the forward fit. "
+        "DNAscape caps this adaptively and tapers only the very last bins; set it "
+        "to zero when the supplied endpoints are true chromosome ends."
+    ),
     "refine_seed": "Random-seed offset for simulation-refined fitting.",
     "refine_verbose": "Show progress from refinement sub-loops.",
-    "stall_rate": "Fork-stalling rate used by stochastic simulation.",
+    "stall_rate": "Legacy probability of a stall while crossing one spatial bin.",
+    "stall_rate_per_kb": (
+        "Physical stall density. DNAscape converts it with the selected spatial "
+        "resolution using p = 1 - exp(-rate x resolution)."
+    ),
     "tau": "Fork-stall lifetime; infinity disables recovery.",
     "cfl": "Maximum Courant factor used for mean-field integration substeps.",
     "seed": "Optional random seed for reproducible simulation routes.",
@@ -802,6 +814,8 @@ _SETTING_LABELS = {
     "ffiring_nr": "Firing-factor pool",
     "ffiring_recycle": "Firing-factor recycling",
     "ffiring_forkQ": "Fork-limited firing factors",
+    "stall_rate_per_kb": "Stall rate",
+    "refine_edge_kb": "Maximum edge context",
 }
 
 _SETTING_CATEGORIES: dict[str, SettingCategory] = {
@@ -827,7 +841,7 @@ _SETTING_CATEGORIES: dict[str, SettingCategory] = {
         for name in (
             "sim_number",
             "seed",
-            "stall_rate",
+            "stall_rate_per_kb",
             "tau",
             "ffiring_nr",
             "ffiring_recycle",
@@ -935,6 +949,7 @@ _NONNEGATIVE_SETTINGS = {
     "refine_edge_kb",
     "refine_seed",
     "stall_rate",
+    "stall_rate_per_kb",
     "ffiring_recycle",
     "initial_firing_rate",
 }
@@ -950,6 +965,7 @@ _SETTING_UNITS = {
     "initial_fork_speed": "kb/min",
     "refine_edge_kb": "kb",
     "weibull_delay": "min",
+    "stall_rate_per_kb": "stalls/kb",
 }
 
 # These are accepted by broad wrappers but are either function-call plumbing,
@@ -968,7 +984,10 @@ _HIDDEN_ASSUMPTIONS = {
     "time_stats_xtQ",
     "time_stats_densQ",
     "retain_rep_times_per_sim",
+    "retain_rep_times_limit",
     "retain_inter_origin_distances",
+    "retain_inter_origin_distances_limit",
+    "stall_rate",
 }
 
 _SIGNATURE_ALIASES = {
@@ -999,6 +1018,7 @@ _SETTING_FALLBACK_DEFAULTS: dict[str, Any] = {
     "space_init_sim_number": 100,
     "joint_maxiter": 10,
     "joint_sim_number": 100,
+    "stall_rate_per_kb": 0.0,
 }
 
 _FIXED_OUTPUTS: dict[str, tuple[DataForm, str]] = {
@@ -1020,6 +1040,7 @@ _FIXED_OUTPUTS: dict[str, tuple[DataForm, str]] = {
     "coalescence_pdf": ("x", "space"),
     "coalescence_pdf_xt": ("xt", "spacetime"),
     "inter_origin_distance": ("supplied", "ensemble"),
+    "s_phase_duration": ("supplied", "ensemble"),
     "completion_time": ("supplied", "ensemble"),
     "num_origins": ("supplied", "ensemble"),
 }
@@ -1363,9 +1384,15 @@ def _setting_limits(
         if name == "ffiring_nr":
             return 2, None, 1
         minimum = 0 if name in {"seed", "refine_seed"} else 1
-        return minimum, None, 1
+        # Every stochastic fit/forward-route ensemble is exposed consistently.
+        # The scientific package itself remains uncapped; 50,000 is the local
+        # interactive application's upper bound.
+        maximum = 50_000 if "sim_number" in name else None
+        return minimum, maximum, 1
     if name == "cfl":
         return 1e-6, 1.0, 0.05
+    if name == "stall_rate_per_kb":
+        return 0.0, None, 0.001
     if name in _POSITIVE_SETTINGS:
         return 1e-12, None, 0.1
     if name in _NONNEGATIVE_SETTINGS:
@@ -1389,6 +1416,12 @@ def _route_settings(spec: Any, inputs: tuple[MappingInput, ...]) -> tuple[Mappin
         minimum, maximum, step = _setting_limits(name, kind)
         has_default = name in defaults
         default = defaults.get(name)
+        # The package uses None to distinguish the new physical rate from the
+        # legacy per-bin probability. The app exposes only physical units, so
+        # zero is the clear, always-visible no-stalling default.
+        if name == "stall_rate_per_kb" and default is None:
+            default = 0.0
+            has_default = True
         # rsim's low-level signature contains its fully expanded 0..1500
         # fallback grid.  The application derives a compact grid from Region
         # controls, so serialising all 1,501 values into each client is both

@@ -25,13 +25,14 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Literal
 from urllib.parse import unquote_to_bytes
+from xml.etree import ElementTree
 
 import numpy as np
 
 from app.export_settings import normalize_compression
 from app.simulation_service import ConstantSimulationResult
 
-AxisKind = Literal["space", "time", "replicate", "xt"]
+AxisKind = Literal["space", "time", "replicate", "sample", "xt"]
 
 PLOT_FORMATS = frozenset({"png", "svg", "pdf"})
 RAW_FORMATS = frozenset({"csv", "tsv", "txt", "npy", "npv", "npz"})
@@ -57,7 +58,9 @@ _TIME_OUTPUTS = {
     "stalled_forks",
     "firing_factors",
 }
-_REPLICATE_OUTPUTS = {"completion_time", "num_origins"}
+_REPLICATE_OUTPUTS = {"completion_time", "s_phase_duration", "num_origins"}
+_SAMPLE_OUTPUTS = {"inter_origin_distances"}
+_DISTRIBUTION_OUTPUTS = _REPLICATE_OUTPUTS | _SAMPLE_OUTPUTS
 _XT_OUTPUTS = {
     "replicated_fraction_xt",
     "initiation_events_xt",
@@ -68,7 +71,9 @@ _XT_OUTPUTS = {
 _OUTPUT_LABELS = {
     "replication_timing": "Replication timing",
     "completion_time": "Completion time",
+    "s_phase_duration": "S-phase duration",
     "num_origins": "Origins per replicate",
+    "inter_origin_distances": "Inter-origin distance",
     "origin_efficiency": "Origin efficiency",
     "fork_directionality": "Fork directionality",
     "replicated_fraction": "Replicated fraction",
@@ -85,7 +90,9 @@ _OUTPUT_LABELS = {
 _Y_LABELS = {
     "replication_timing": "Time (min)",
     "completion_time": "Completion time (min)",
+    "s_phase_duration": "Duration (min)",
     "num_origins": "Origins",
+    "inter_origin_distances": "Distance (kb)",
     "origin_efficiency": "Probability",
     "fork_directionality": "Right - left fraction",
     "replicated_fraction": "Fraction",
@@ -102,6 +109,8 @@ _WINDOWS_RESERVED_STEMS = {
     *(f"COM{number}" for number in range(1, 10)),
     *(f"LPT{number}" for number in range(1, 10)),
 }
+_SVG_PATH_TOKEN_RE = re.compile(r"[A-Za-z]|[-+]?(?:\d+(?:\.\d*)?|\.\d+)(?:[eE][-+]?\d+)?")
+_MIN_METADATA_FREE_RECTANGLES_TO_COMPACT = 32
 
 
 @dataclass(frozen=True)
@@ -138,11 +147,11 @@ def build_chart_capture_export(
     filename: str | None = "dnascape_simulation_plot",
     dpi: int = 150,
 ) -> ExportArtifact:
-    """Package an ECharts ``getDataURL`` capture for browser download.
+    """Package an exact ECharts preview capture without rasterizing vectors.
 
-    PNG is the exact canvas rendered by the preview chart. ECharts cannot emit
-    SVG from its canvas renderer or PDF directly, so those formats embed that
-    exact capture without redrawing the scientific data in another plotter.
+    PNG is captured from the visible canvas renderer. SVG and PDF must arrive
+    from the preview's export-only SVG renderer; raster captures are rejected
+    for those formats so a bitmap can never be hidden inside a vector wrapper.
     """
 
     normalized_format = normalize_export_format(file_format, allowed=PLOT_FORMATS)
@@ -154,23 +163,19 @@ def build_chart_capture_export(
         )
 
     if normalized_format == "pdf":
-        if mime_type != "image/png":
-            raise ValueError("PDF export requires a PNG capture of the preview chart.")
-        payload = _png_capture_to_pdf(payload, dpi=dpi)
+        if mime_type != "image/svg+xml":
+            raise ValueError("PDF export requires a vector SVG capture of the preview chart.")
+        payload = _svg_capture_to_pdf(payload)
         media_type = "application/pdf"
-    elif normalized_format == "svg" and mime_type == "image/png":
-        payload = _png_capture_to_svg(payload)
+    elif normalized_format == "svg":
+        if mime_type != "image/svg+xml":
+            raise ValueError("SVG export requires a vector SVG capture of the preview chart.")
+        payload = _validated_vector_svg(payload)
         media_type = "image/svg+xml"
     else:
-        expected_mime = {
-            "png": "image/png",
-            "svg": "image/svg+xml",
-        }[normalized_format]
-        if mime_type != expected_mime:
-            raise ValueError(
-                f"The preview returned {mime_type!r}, but {expected_mime!r} was expected."
-            )
-        media_type = expected_mime
+        if mime_type != "image/png":
+            raise ValueError(f"The preview returned {mime_type!r}, but 'image/png' was expected.")
+        media_type = "image/png"
 
     return ExportArtifact(
         data=payload,
@@ -385,6 +390,12 @@ def select_result_output(
     elif inferred_kind == "replicate":
         axis = np.arange(1, int(result.replicates) + 1, dtype=float)
         x_label = "Replicate"
+    elif inferred_kind == "sample":
+        # Inter-origin distances are pooled over realizations, so their count
+        # generally differs from the ensemble size. Give each measured interval
+        # a stable one-based index for line views and self-describing exports.
+        axis = np.arange(1, values.size + 1, dtype=float)
+        x_label = "Interval"
     else:  # defensive guard for future AxisKind extensions
         raise ValueError(f"Unsupported axis kind: {inferred_kind!r}.")
     if values.size != axis.size:
@@ -437,7 +448,7 @@ def build_plot_export(
     if normalized_view not in {"default", "histogram", "time array"}:
         raise ValueError("View mode must be Default, Histogram, or Time array.")
     use_histogram = selected.axis_kind != "xt" and (
-        selected.key in _REPLICATE_OUTPUTS or normalized_view == "histogram"
+        selected.key in _DISTRIBUTION_OUTPUTS or normalized_view == "histogram"
     )
     normalized_bins = _validated_histogram_bins(histogram_bins)
     if not np.any(np.isfinite(selected.values)):
@@ -597,56 +608,238 @@ def _decode_chart_data_uri(data_uri: str) -> tuple[str, bytes]:
     return mime_type, payload
 
 
-def _png_capture_to_pdf(png_data: bytes, *, dpi: int) -> bytes:
-    """Embed a captured PNG in a one-page PDF without replotting its data."""
+def _validated_vector_svg_root(svg_data: bytes) -> ElementTree.Element:
+    """Parse a vector-only SVG capture and return its document root."""
 
     try:
-        normalized_dpi = int(dpi)
-    except (TypeError, ValueError) as exc:
-        raise ValueError("DPI must be a whole number between 72 and 600.") from exc
-    if normalized_dpi != dpi or not 72 <= normalized_dpi <= 600:
-        raise ValueError("DPI must be a whole number between 72 and 600.")
+        root = ElementTree.fromstring(svg_data)
+    except ElementTree.ParseError as exc:
+        raise ValueError("The preview returned an invalid SVG capture.") from exc
+    if root.tag.rsplit("}", 1)[-1].casefold() != "svg":
+        raise ValueError("The preview capture is not an SVG document.")
+    raster_elements = {"canvas", "foreignobject", "image", "video"}
+    for element in root.iter():
+        if element.tag.rsplit("}", 1)[-1].casefold() in raster_elements:
+            raise ValueError("The SVG preview contains an embedded raster surface.")
+        if any("data:image/" in str(value).casefold() for value in element.attrib.values()):
+            raise ValueError("The SVG preview contains embedded raster image data.")
+    return root
 
-    # Pillow is loaded only for the PDF conversion path. It is already a
-    # NiceGUI runtime dependency, while PNG/SVG downloads need no image stack.
-    from PIL import Image, UnidentifiedImageError
 
-    output = io.BytesIO()
+def _validated_vector_svg(svg_data: bytes) -> bytes:
+    """Validate that an SVG capture contains vector primitives only."""
+
+    _validated_vector_svg_root(svg_data)
+    return svg_data
+
+
+def _is_axis_aligned_rectangle_path(path_data: str) -> bool:
+    """Recognize the compact rectangle paths emitted by ECharts/ZRender."""
+
+    tokens = _SVG_PATH_TOKEN_RE.findall(path_data)
+    if len(tokens) != 13 or tokens[0].casefold() != "m" or tokens[-1].casefold() != "z":
+        return False
+    commands = tuple(tokens[index] for index in (3, 6, 9))
+    if any(command.casefold() != "l" for command in commands):
+        return False
     try:
-        with Image.open(io.BytesIO(png_data)) as source:
-            source.load()
-            if source.width * source.height > MAX_PLOT_PIXELS:
-                raise ValueError("Captured preview exceeds the local PDF pixel limit.")
-            if source.mode in {"RGBA", "LA"} or "transparency" in source.info:
-                rgba = source.convert("RGBA")
-                image = Image.new("RGB", rgba.size, "white")
-                image.paste(rgba, mask=rgba.getchannel("A"))
-            else:
-                image = source.convert("RGB")
-            image.save(output, format="PDF", resolution=normalized_dpi)
-    except UnidentifiedImageError as exc:
-        raise ValueError("The preview returned an invalid PNG capture.") from exc
-    return output.getvalue()
+        values = tuple(float(tokens[index]) for index in (1, 2, 4, 5, 7, 8, 10, 11))
+    except ValueError:
+        return False
+    if not all(math.isfinite(value) for value in values):
+        return False
 
+    x0, y0, first_x, first_y, second_x, second_y, third_x, third_y = values
 
-def _png_capture_to_svg(png_data: bytes) -> bytes:
-    """Wrap an exact canvas capture in a standards-compliant SVG document."""
+    def close(left: float, right: float) -> bool:
+        return math.isclose(left, right, rel_tol=1e-9, abs_tol=1e-9)
 
-    if len(png_data) < 24 or not png_data.startswith(b"\x89PNG\r\n\x1a\n"):
-        raise ValueError("The preview returned an invalid PNG capture.")
-    width = int.from_bytes(png_data[16:20], "big")
-    height = int.from_bytes(png_data[20:24], "big")
-    if width <= 0 or height <= 0 or width * height > MAX_PLOT_PIXELS:
-        raise ValueError("Captured preview has invalid or excessive dimensions.")
-    encoded = base64.b64encode(png_data).decode("ascii")
-    markup = (
-        '<?xml version="1.0" encoding="UTF-8"?>\n'
-        f'<svg xmlns="http://www.w3.org/2000/svg" width="{width}" height="{height}" '
-        f'viewBox="0 0 {width} {height}">'
-        f'<image width="{width}" height="{height}" href="data:image/png;base64,{encoded}"/>'
-        "</svg>"
+    if commands[0].islower():
+        horizontal_first = (
+            not close(first_x, 0.0)
+            and close(first_y, 0.0)
+            and close(second_x, 0.0)
+            and not close(second_y, 0.0)
+            and close(third_x, -first_x)
+            and close(third_y, 0.0)
+        )
+        vertical_first = (
+            close(first_x, 0.0)
+            and not close(first_y, 0.0)
+            and not close(second_x, 0.0)
+            and close(second_y, 0.0)
+            and close(third_x, 0.0)
+            and close(third_y, -first_y)
+        )
+        return horizontal_first or vertical_first
+
+    horizontal_first = (
+        not close(first_x, x0)
+        and close(first_y, y0)
+        and close(second_x, first_x)
+        and not close(second_y, first_y)
+        and close(third_x, x0)
+        and close(third_y, second_y)
     )
-    return markup.encode("utf-8")
+    vertical_first = (
+        close(first_x, x0)
+        and not close(first_y, y0)
+        and not close(second_x, first_x)
+        and close(second_y, first_y)
+        and close(third_x, second_x)
+        and close(third_y, y0)
+    )
+    return horizontal_first or vertical_first
+
+
+def _compacted_echarts_svg_for_pdf(svg_data: bytes) -> bytes:
+    """Remove interaction metadata and combine safe per-datum vector paths.
+
+    ECharts emits histograms and other custom series as one SVG ``path`` per
+    datum.  Thousands of otherwise identical rectangles make ``svglib`` spend
+    most of the export time repeatedly parsing attributes.  PDF has no hover
+    interaction, so its ``ecmeta_*`` attributes can be removed. Opaque
+    histogram and heatmap rectangles with the same appearance can then share
+    one compound path; other paths are combined only when adjacent. Their
+    geometry, colour, and vector nature stay unchanged. Transparent paths are
+    deliberately left separate because combining overlapping translucent
+    shapes could change their appearance.
+    """
+
+    root = _validated_vector_svg_root(svg_data)
+    changed = False
+    for parent in root.iter():
+        children = list(parent)
+        metadata_free_rectangles = sum(
+            child.tag.rsplit("}", 1)[-1].casefold() == "path"
+            and not any(key.casefold().startswith("ecmeta_") for key in child.attrib)
+            and _is_axis_aligned_rectangle_path(str(child.attrib.get("d", "")))
+            for child in children
+        )
+        compact_metadata_free_rectangles = (
+            metadata_free_rectangles >= _MIN_METADATA_FREE_RECTANGLES_TO_COMPACT
+        )
+        previous: ElementTree.Element | None = None
+        previous_signature: tuple[object, ...] | None = None
+        rectangle_paths: dict[tuple[object, ...], ElementTree.Element] = {}
+        for child in children:
+            attributes = child.attrib
+            metadata = {
+                key: value
+                for key, value in attributes.items()
+                if key.rsplit("}", 1)[-1].casefold().startswith("ecmeta_")
+            }
+            series_index = metadata.get("ecmeta_series_index")
+            is_path = child.tag.rsplit("}", 1)[-1].casefold() == "path"
+            rectangle_path = is_path and _is_axis_aligned_rectangle_path(
+                str(attributes.get("d", ""))
+            )
+            is_datum_path = (
+                is_path
+                and "ecmeta_data_index" in metadata
+                and series_index is not None
+                and bool(attributes.get("d"))
+            )
+            rectangle_path = rectangle_path and (is_datum_path or compact_metadata_free_rectangles)
+            for key in metadata:
+                del attributes[key]
+                changed = True
+
+            style = str(attributes.get("style", "")).casefold()
+            paint = " ".join(
+                str(attributes.get(name, "")).casefold() for name in ("fill", "stroke")
+            )
+            has_effects = any(
+                name in attributes
+                for name in (
+                    "id",
+                    "filter",
+                    "mask",
+                    "marker-start",
+                    "marker-mid",
+                    "marker-end",
+                    "opacity",
+                    "fill-opacity",
+                    "stroke-opacity",
+                )
+            )
+            opaque_fill = (
+                str(attributes.get("fill", "")).casefold() not in {"", "none"}
+                and "rgba(" not in paint
+                and "opacity" not in style
+                and not has_effects
+            )
+            if (not is_datum_path and not rectangle_path) or not opaque_fill:
+                previous = None
+                previous_signature = None
+                continue
+
+            signature: tuple[object, ...] = (
+                series_index,
+                tuple(sorted((key, value) for key, value in attributes.items() if key != "d")),
+            )
+            rectangle_target = rectangle_paths.get(signature) if rectangle_path else None
+            if rectangle_target is not None:
+                rectangle_target.set(
+                    "d",
+                    f"{rectangle_target.get('d', '')} {attributes['d']}",
+                )
+                parent.remove(child)
+                changed = True
+                previous = None
+                previous_signature = None
+            elif rectangle_path:
+                # Histogram bars and heatmap cells do not overlap within a
+                # series. Group equal-colour rectangles even when neighbouring
+                # values use another colour; this removes the worst svglib
+                # parsing cost on continuous heatmaps.
+                rectangle_paths[signature] = child
+                previous = None
+                previous_signature = None
+            elif previous is not None and signature == previous_signature:
+                previous.set("d", f"{previous.get('d', '')} {attributes['d']}")
+                parent.remove(child)
+                changed = True
+            else:
+                previous = child
+                previous_signature = signature
+
+    if not changed:
+        return svg_data
+    return ElementTree.tostring(root, encoding="utf-8", xml_declaration=True)
+
+
+def _svg_capture_to_pdf(svg_data: bytes) -> bytes:
+    """Convert an ECharts SVG capture to a PDF made of paths and text."""
+
+    vector_svg = _compacted_echarts_svg_for_pdf(svg_data)
+    try:
+        from reportlab.graphics import renderPDF
+        from svglib.svglib import svg2rlg
+    except ImportError as exc:
+        raise RuntimeError(
+            "Vector PDF export requires the DNAscape app export dependencies. "
+            "Install them with `pip install -e .[app]`."
+        ) from exc
+
+    try:
+        drawing = svg2rlg(io.BytesIO(vector_svg))
+        if drawing is None:
+            raise ValueError("The preview SVG could not be converted to PDF.")
+        # SVG/CSS pixels are defined as 1/96 inch; ReportLab coordinates are
+        # points (1/72 inch). Preserve the browser chart's physical dimensions.
+        scale = 72.0 / 96.0
+        drawing.scale(scale, scale)
+        drawing.width *= scale
+        drawing.height *= scale
+        pdf_data = bytes(renderPDF.drawToString(drawing))
+    except (OSError, TypeError, ValueError) as exc:
+        raise ValueError("The vector preview could not be converted to PDF.") from exc
+    if not pdf_data.startswith(b"%PDF"):
+        raise ValueError("The vector PDF renderer returned an invalid document.")
+    if b"/Subtype /Image" in pdf_data:
+        raise ValueError("The PDF renderer rasterized part of the preview unexpectedly.")
+    return pdf_data
 
 
 def _infer_axis_kind(
@@ -665,6 +858,8 @@ def _infer_axis_kind(
         return "time"
     if key in _REPLICATE_OUTPUTS:
         return "replicate"
+    if key in _SAMPLE_OUTPUTS:
+        return "sample"
     if values.ndim == 2:
         if time_size and set(values.shape) == {position_size, time_size}:
             return "xt"
@@ -815,6 +1010,13 @@ def _binary_bytes(selected: SelectedOutput, file_format: str) -> bytes:
             data_form=data_form_array,
             columns=np.asarray(columns),
             time_min=selected.x,
+        )
+    elif selected.axis_kind == "sample":
+        np.savez(
+            stream,
+            values=values,
+            data_form=data_form_array,
+            sample=selected.x,
         )
     else:
         np.savez(

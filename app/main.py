@@ -11,9 +11,15 @@ from nicegui.elements.button import Button
 from nicegui.elements.tooltip import Tooltip
 
 from app import __version__
-from app.export_settings import COMPRESSION_OPTIONS, get_export_settings
+from app.export_settings import (
+    CACHE_FILE_FORMAT_OPTIONS,
+    COMPRESSION_OPTIONS,
+    get_export_settings,
+    reset_export_settings,
+)
 from app.icons import OUTLINE_ICON_SVGS, PLOT_ICON_SVG
 from app.pages import PAGE_RENDERERS
+from app.session_cache import current_session_cache
 
 APP_DIR = Path(__file__).resolve().parent
 ROOT_DIR = APP_DIR.parent
@@ -106,15 +112,53 @@ def index() -> None:
     )
     ui.colors(primary="#b03412")
     ui.query("body").classes("dn-body")
-    dark_mode = ui.dark_mode()
+    # ``None`` is NiceGUI's native automatic mode.  Quasar keeps its media
+    # query listener alive, so the interface follows a system-theme change
+    # without a reload while still allowing explicit light and dark choices.
+    dark_mode = ui.dark_mode(None)
     page_state = {"active": "overview"}
+    page_hosts: dict[str, object] = {}
+    built_pages: set[str] = set()
+    export_settings = get_export_settings()
+
+    def discard_page(slug: str) -> None:
+        host = page_hosts.get(slug)
+        if host is None:
+            return
+        cache = current_session_cache()
+        cache.unregister_output_clearer(slug)
+        cache.unregister_page_refresher(slug)
+        host.clear()  # type: ignore[attr-defined]
+        built_pages.discard(slug)
+
+    def build_page(slug: str) -> None:
+        if slug in built_pages:
+            return
+        host = page_hosts[slug]
+        with host:  # type: ignore[attr-defined]
+            PAGE_RENDERERS[slug](navigate)
+        built_pages.add(slug)
+
+    def show_page(slug: str) -> None:
+        if not export_settings.preserve_page_state:
+            discard_page(slug)
+        build_page(slug)
+        for candidate, host in page_hosts.items():
+            host.set_visibility(candidate == slug)  # type: ignore[attr-defined]
+        current_session_cache().refresh_page(slug)
 
     def navigate(slug: str) -> None:
         if slug not in PAGE_RENDERERS or slug == page_state["active"]:
             return
+        previous = page_state["active"]
+        restore_requested = current_session_cache().has_active(slug)
+        if not export_settings.preserve_page_state:
+            discard_page(previous)
+        if restore_requested:
+            discard_page(slug)
         page_state["active"] = slug
         render_navigation.refresh()
-        render_active_page.refresh()
+        show_page(slug)
 
     drawer_collapse_button: Button
     drawer_collapse_tooltip: Tooltip
@@ -232,8 +276,15 @@ def index() -> None:
     drawer.on_value_change(lambda: sync_drawer_controls())
     sync_drawer_controls()
 
-    def toggle_theme() -> None:
-        dark_mode.toggle()
+    def cycle_theme() -> None:
+        """Cycle System -> Light -> Dark without losing automatic mode."""
+
+        if dark_mode.value is None:
+            dark_mode.disable()
+        elif dark_mode.value is False:
+            dark_mode.enable()
+        else:
+            dark_mode.auto()
 
     def open_external(target: str) -> None:
         ui.navigate.to(target, new_tab=True)
@@ -260,7 +311,6 @@ def index() -> None:
             with ui.item_section():
                 ui.label(label)
 
-    export_settings = get_export_settings()
     with (
         ui.dialog().props("persistent") as settings_dialog,
         ui.card().classes("dn-settings-dialog"),
@@ -294,6 +344,34 @@ def index() -> None:
                 .classes("dn-field")
                 .mark("settings-raw-compression")
             )
+            cached_format_setting = (
+                ui.select(
+                    CACHE_FILE_FORMAT_OPTIONS,
+                    value=export_settings.cached_file_format,
+                    label="Cached result file type",
+                )
+                .props("dense options-dense")
+                .classes("dn-field")
+                .mark("settings-cached-file-format")
+            )
+            cached_compression_setting = (
+                ui.select(
+                    COMPRESSION_OPTIONS,
+                    value=export_settings.cached_compression,
+                    label="Cached result compression",
+                )
+                .props("dense options-dense")
+                .classes("dn-field")
+                .mark("settings-cached-compression")
+            )
+            preserve_page_setting = (
+                ui.checkbox(
+                    "Keep page controls and outputs",
+                    value=export_settings.preserve_page_state,
+                )
+                .classes("dn-settings-wide-control")
+                .mark("settings-preserve-page-state")
+            )
 
         def update_plot_dpi() -> None:
             value = int(plot_dpi_setting.value or 150)
@@ -302,8 +380,25 @@ def index() -> None:
         def update_compression() -> None:
             export_settings.raw_compression = str(compression_setting.value or "gzip")
 
+        def update_cached_format() -> None:
+            export_settings.cached_file_format = str(cached_format_setting.value or "tsv")
+
+        def update_cached_compression() -> None:
+            export_settings.cached_compression = str(cached_compression_setting.value or "gzip")
+
+        def update_page_preservation() -> None:
+            export_settings.preserve_page_state = bool(preserve_page_setting.value)
+            if export_settings.preserve_page_state:
+                return
+            for slug in tuple(built_pages):
+                if slug != page_state["active"]:
+                    discard_page(slug)
+
         plot_dpi_setting.on_value_change(update_plot_dpi)
         compression_setting.on_value_change(update_compression)
+        cached_format_setting.on_value_change(update_cached_format)
+        cached_compression_setting.on_value_change(update_cached_compression)
+        preserve_page_setting.on_value_change(update_page_preservation)
 
     with (
         ui.dialog() as about_dialog,
@@ -318,10 +413,7 @@ def index() -> None:
         with ui.element("div").classes("dn-about-identity"):
             (
                 ui.element("img")
-                .props(
-                    'src="/dnascape-assets/dnascape_logo.svg" '
-                    'alt="DNAscape" draggable=false'
-                )
+                .props('src="/dnascape-assets/dnascape_logo.svg" alt="DNAscape" draggable=false')
                 .classes("dn-about-logo")
                 .mark("about-logo")
             )
@@ -349,9 +441,9 @@ def index() -> None:
             ui.label("Created and maintained by Francisco Berkemeier").classes(
                 "dn-about-author-name"
             )
-            ui.link("fp409@cam.ac.uk", "mailto:fp409@cam.ac.uk").classes(
-                "dn-about-email"
-            ).mark("about-email")
+            ui.link("fp409@cam.ac.uk", "mailto:fp409@cam.ac.uk").classes("dn-about-email").mark(
+                "about-email"
+            )
         with ui.row().classes("dn-about-links"):
             with (
                 ui.link(target=DOCS_URL, new_tab=True)
@@ -371,11 +463,67 @@ def index() -> None:
             "dn-about-copyright"
         )
 
+    def reset_everything() -> None:
+        """Return the client-local workspace and shared preferences to defaults."""
+
+        cache = current_session_cache()
+        removed = cache.reset()
+        for slug in tuple(built_pages):
+            discard_page(slug)
+
+        defaults = reset_export_settings()
+        plot_dpi_setting.value = defaults.plot_dpi
+        compression_setting.value = defaults.raw_compression
+        cached_format_setting.value = defaults.cached_file_format
+        cached_compression_setting.value = defaults.cached_compression
+        preserve_page_setting.value = defaults.preserve_page_state
+        for control in (
+            plot_dpi_setting,
+            compression_setting,
+            cached_format_setting,
+            cached_compression_setting,
+            preserve_page_setting,
+        ):
+            control.update()
+
+        dark_mode.auto()
+        drawer.show()
+        sync_drawer_controls()
+        page_state["active"] = "overview"
+        render_navigation.refresh()
+        show_page("overview")
+        reset_dialog.close()
+        ui.notify(
+            f"Defaults restored; cleared {removed} cached item"
+            f"{'s' if removed != 1 else ''}.",
+            type="positive",
+        )
+
+    with (
+        ui.dialog().props("persistent") as reset_dialog,
+        ui.card().classes("dn-settings-dialog dn-reset-dialog").mark("reset-dialog"),
+    ):
+        with ui.row().classes("dn-settings-dialog-head"):
+            ui.label("Reset DNAscape?").classes("dn-panel-title")
+        ui.label(
+            "This clears uploaded data, generated results, cached files, and page controls, "
+            "then restores application and theme settings."
+        ).classes("dn-about-copy")
+        with ui.row().classes("dn-dialog-actions"):
+            ui.button("Cancel", on_click=reset_dialog.close).props("flat no-caps").mark(
+                "cancel-reset-everything"
+            )
+            ui.button("Reset everything", icon="restart_alt", on_click=reset_everything).props(
+                "no-caps"
+            ).classes("dn-action-primary").mark("confirm-reset-everything")
+
     @ui.refreshable
     def render_app_menu_items() -> None:
-        use_light_theme = bool(dark_mode.value)
-        theme_label = "Light theme" if use_light_theme else "Dark theme"
-        theme_icon = "light_mode" if use_light_theme else "dark_mode"
+        theme_label, theme_icon, next_theme = {
+            None: ("System theme", "brightness_auto", "light"),
+            False: ("Light theme", "light_mode", "dark"),
+            True: ("Dark theme", "dark_mode", "system"),
+        }[dark_mode.value]
         with (
             ui.menu_item(on_click=settings_dialog.open)
             .props('aria-label="Open settings"')
@@ -397,8 +545,21 @@ def index() -> None:
             with ui.item_section():
                 ui.label("About")
         with (
-            ui.menu_item(on_click=toggle_theme)
-            .props(f'aria-label="Switch to {theme_label.lower()}"')
+            ui.menu_item(on_click=reset_dialog.open)
+            .props('aria-label="Reset everything to default"')
+            .classes("dn-app-menu-item")
+            .mark("menu-reset")
+        ):
+            with ui.item_section().props("avatar"):
+                ui.icon("restart_alt").classes("dn-app-menu-icon")
+            with ui.item_section():
+                ui.label("Reset to defaults")
+        with (
+            ui.menu_item(on_click=cycle_theme)
+            .props(
+                f'aria-label="{theme_label}; switch to {next_theme} theme" '
+                f'title="{theme_label}; switch to {next_theme} theme"'
+            )
             .classes("dn-app-menu-item")
             .mark("menu-theme")
         ):
@@ -441,13 +602,11 @@ def index() -> None:
                 render_app_menu_items()
 
     with ui.column().classes("dn-page-host"):
-
-        @ui.refreshable
-        def render_active_page() -> None:
-            renderer = PAGE_RENDERERS.get(page_state["active"], PAGE_RENDERERS["overview"])
-            renderer(navigate)
-
-        render_active_page()
+        for slug in PAGE_RENDERERS:
+            host = ui.element("div").classes("dn-page-view").mark(f"page-host-{slug}")
+            host.set_visibility(False)
+            page_hosts[slug] = host
+        show_page(page_state["active"])
 
 
 def _port() -> int:

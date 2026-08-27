@@ -62,7 +62,10 @@ Quantities
    Realized initiation and fork-coalescence events.
 
 ``completion_time``
-   Simulated S-phase finish time.
+   Absolute simulated replication-finish time on the simulation clock.
+
+``s_phase_duration``
+   Time from the first realised origin initiation to replication completion.
 
 rmap And rsim
 -------------

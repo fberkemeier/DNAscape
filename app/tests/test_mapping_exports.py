@@ -256,6 +256,28 @@ def test_bundle_member_selection_and_dynamic_filename() -> None:
     np.testing.assert_array_equal(np.load(io.BytesIO(artifact.data), allow_pickle=False), speed)
 
 
+def test_mse_history_exports_as_an_ordinary_numeric_array() -> None:
+    result = _result(
+        np.asarray([0.4, 0.2, 0.0525]),
+        "supplied",
+        key="fit_history",
+    )
+
+    text = build_mapping_raw_export(result, "fit_history", "tsv")
+    assert text.filename == "dnascape_mapping_mse.tsv"
+    assert text.data.decode().splitlines() == ["mse", "0.4", "0.2", "0.0525"]
+    binary = build_mapping_raw_export(result, "fit_history", "npy")
+    np.testing.assert_array_equal(
+        np.load(io.BytesIO(binary.data), allow_pickle=False),
+        [0.4, 0.2, 0.0525],
+    )
+    archive_artifact = build_mapping_raw_export(result, "fit_history", "npz")
+    with np.load(io.BytesIO(archive_artifact.data), allow_pickle=False) as archive:
+        np.testing.assert_array_equal(archive["values"], [0.4, 0.2, 0.0525])
+        np.testing.assert_array_equal(archive["iteration"], [1, 2, 3])
+        assert "position_kb" not in archive
+
+
 def test_gzip_format_and_export_limits(monkeypatch: pytest.MonkeyPatch) -> None:
     result = _result(
         np.asarray([1.0, 2.0]),

@@ -38,6 +38,11 @@ _ASSUMPTION_ALIASES = {
     "time_stats": "time_statsQ",
     "time_stats_xt": "time_stats_xtQ",
     "time_stats_dens": "time_stats_densQ",
+    "stall_density": "stall_rate_per_kb",
+    "stall_density_per_kb": "stall_rate_per_kb",
+    "stalls_per_kb": "stall_rate_per_kb",
+    "stall_probability": "stall_rate",
+    "stall_probability_per_bin": "stall_rate",
 }
 
 # Keep the legacy default grid immutable. ``rsim`` converts it to an ndarray
@@ -255,6 +260,66 @@ def _validated_positive_integer(value, name):
     return int(numeric)
 
 
+def _validated_nonnegative_integer(value, name):
+    """Return a non-negative integer without silently truncating fractions."""
+    try:
+        numeric = float(value)
+    except (TypeError, ValueError) as exc:
+        raise ValueError(f"{name} must be a non-negative integer.") from exc
+    if not np.isfinite(numeric) or numeric < 0 or not numeric.is_integer():
+        raise ValueError(f"{name} must be a non-negative integer.")
+    return int(numeric)
+
+
+def stall_probability_per_bin(stall_rate_per_kb, resolution_space):
+    """Convert a physical stall density into a per-bin encounter probability.
+
+    Stalls are treated as a Poisson process along genomic distance. The chance
+    of at least one encounter while crossing a bin of width
+    ``resolution_space`` is ``1 - exp(-rate * width)``. The stochastic engine
+    represents that encounter with one Bernoulli draw per bin and direction.
+    """
+
+    try:
+        rate = float(stall_rate_per_kb)
+    except (TypeError, ValueError) as exc:
+        raise ValueError(
+            "stall_rate_per_kb must be a finite non-negative rate."
+        ) from exc
+    if not np.isfinite(rate) or rate < 0.0:
+        raise ValueError("stall_rate_per_kb must be a finite non-negative rate.")
+    try:
+        resolution = float(resolution_space)
+    except (TypeError, ValueError) as exc:
+        raise ValueError("resolution_x must be a finite positive number.") from exc
+    if not np.isfinite(resolution) or resolution <= 0.0:
+        raise ValueError("resolution_x must be a finite positive number.")
+    with np.errstate(over="ignore"):
+        exposure = rate * resolution
+    return float(-np.expm1(-exposure))
+
+
+def _resolve_stall_probability(stall_rate, stall_rate_per_kb, resolution_space):
+    """Resolve legacy per-bin and physical per-kb stalling inputs."""
+
+    try:
+        probability = 0.0 if stall_rate is None else float(stall_rate)
+    except (TypeError, ValueError) as exc:
+        raise ValueError(
+            "stall_rate must be a finite probability between 0 and 1."
+        ) from exc
+    if not np.isfinite(probability) or not 0.0 <= probability <= 1.0:
+        raise ValueError("stall_rate must be a finite probability between 0 and 1.")
+    if stall_rate_per_kb is None:
+        return probability
+    if probability != 0.0:
+        raise ValueError(
+            "A non-zero stall_rate (probability per bin) cannot be combined "
+            "with stall_rate_per_kb (stalls/kb)."
+        )
+    return stall_probability_per_bin(stall_rate_per_kb, resolution_space)
+
+
 def _close_and_unlink_memmap(mapping, path):
     """Close a memmap handle before unlinking its temporary backing file."""
     try:
@@ -265,6 +330,32 @@ def _close_and_unlink_memmap(mapping, path):
         os.unlink(path)
     except FileNotFoundError:
         pass
+
+
+def _phase_timing_summary(fired_times_min, replication_time_min):
+    """Return absolute completion time and elapsed S-phase duration.
+
+    The simulation clock starts at zero, before the first stochastic origin
+    firing. ``completion_time`` therefore remains an absolute timestamp,
+    while the biological S-phase duration starts at the first *realised*
+    initiation and ends when replication completes. A realization without a
+    fired origin never starts or completes S phase, so both values are NaN.
+    """
+
+    fired = np.asarray(fired_times_min, dtype=float).reshape(-1)
+    realised = fired[np.isfinite(fired)]
+    replication = np.asarray(replication_time_min, dtype=float).reshape(-1)
+    if realised.size == 0 or replication.size == 0 or np.isnan(replication).any():
+        return np.nan, np.nan
+
+    completion = float(np.max(replication))
+    first_initiation = float(np.min(realised))
+    duration = completion - first_initiation
+    if np.isnan(duration) or duration < 0.0:
+        # A negative interval can only arise from a censored/inconsistent
+        # realization (for example, a cap preceding the first initiation).
+        return np.nan, np.nan
+    return completion, duration
 
 
 def simulate_replication(
@@ -294,13 +385,17 @@ def simulate_replication(
     _firing_cumulative_hazard=None,
     _prepared_firing_field=None,
     _prepared_inverse_speed_field=None,
+    stall_rate_per_kb=None,
+    _compute_inter_origin_distances=True,
 ):
     """Run one stochastic replication simulation.
 
     ``firing_rate`` and ``fork_speed`` may be scalar, spatial ``(n,)``,
     time-only ``(1, T)``, or space-time ``(n, T)`` fields. If neither input
     contains a spatial axis, pass ``n_bins``, ``genome_length``, or
-    ``interval_kb``.
+    ``interval_kb``. ``stall_rate_per_kb`` is a physical stall density and is
+    converted to a per-bin probability after resolving the spatial resolution.
+    ``stall_rate`` remains the legacy probability-per-bin input.
     """
     rng = np.random.default_rng() if rng is None else rng
     if resolution_x is not None:
@@ -316,9 +411,11 @@ def simulate_replication(
     if not np.isfinite(resolution_time) or resolution_time <= 0:
         raise ValueError("resolution_t must be a finite positive number.")
 
-    stall_rate = float(stall_rate)
-    if not np.isfinite(stall_rate) or not 0.0 <= stall_rate <= 1.0:
-        raise ValueError("stall_rate must be a finite probability between 0 and 1.")
+    stall_rate = _resolve_stall_probability(
+        stall_rate,
+        stall_rate_per_kb,
+        resolution_space,
+    )
     tau = float(tau)
     if np.isnan(tau) or tau <= 0:
         raise ValueError("tau must be positive or np.inf.")
@@ -739,13 +836,15 @@ def simulate_replication(
     fired_times_min = t[fired_idx]
     fired_pos_kb = fired_idx.astype(float) * resolution_space
 
-    if fired_idx.size >= 2:
-        fired_sorted = np.sort(fired_idx)
-        diffs = np.diff(fired_sorted)
+    if _compute_inter_origin_distances and fired_idx.size >= 2:
+        # ``flatnonzero`` already returns monotonically increasing indices, so
+        # there is no need to sort every realization before taking neighbour
+        # differences.
+        diffs = np.diff(fired_idx)
         if perQ:
-            wrap = n - fired_sorted[-1] + fired_sorted[0]
+            wrap = n - fired_idx[-1] + fired_idx[0]
             interorigin_dist_kb = np.concatenate([diffs, [wrap]]).astype(float) * resolution_space
-            if interorigin_dist_kb.size != fired_sorted.size:
+            if interorigin_dist_kb.size != fired_idx.size:
                 raise RuntimeError("perQ=True: expected len(IODs) == number of fired origins.")
         else:
             interorigin_dist_kb = diffs.astype(float) * resolution_space
@@ -905,6 +1004,9 @@ def rsim(
     assumptions=None,
     retain_rep_times_per_sim=True,
     retain_inter_origin_distances=True,
+    retain_rep_times_limit=None,
+    stall_rate_per_kb=None,
+    retain_inter_origin_distances_limit=None,
 ):
     """Run replicate stochastic simulations and return averaged features.
 
@@ -916,7 +1018,12 @@ def rsim(
 
     For consistency with ``rmap``, kinetic inputs can also be supplied as
     ``source={"firing_rate": ..., "fork_speed": ...}``, while simulation
-    settings can be supplied through ``assumptions={...}``.
+    settings can be supplied through ``assumptions={...}``. Prefer
+    ``stall_rate_per_kb`` for resolution-independent physical inputs;
+    ``stall_rate`` is retained as the legacy probability per spatial bin.
+    Per-simulation profiles, pooled inter-origin distances, one-dimensional
+    time courses, and space-time fields have independent retention/statistics
+    controls; inter-origin distances do not require either time-statistics flag.
     """
     params = {
         "firing_rate": firing_rate,
@@ -928,6 +1035,7 @@ def rsim(
         "resolution_t": resolution_t,
         "perQ": perQ,
         "stall_rate": stall_rate,
+        "stall_rate_per_kb": stall_rate_per_kb,
         "tau": tau,
         "ffiring_nr": ffiring_nr,
         "ffiring_recycle": ffiring_recycle,
@@ -951,6 +1059,8 @@ def rsim(
         "resolution": resolution,
         "retain_rep_times_per_sim": retain_rep_times_per_sim,
         "retain_inter_origin_distances": retain_inter_origin_distances,
+        "retain_rep_times_limit": retain_rep_times_limit,
+        "retain_inter_origin_distances_limit": retain_inter_origin_distances_limit,
     }
 
     if source is not None:
@@ -1000,6 +1110,7 @@ def rsim(
     resolution_t = params["resolution_t"]
     perQ = params["perQ"]
     stall_rate = params["stall_rate"]
+    stall_rate_per_kb = params["stall_rate_per_kb"]
     tau = params["tau"]
     ffiring_nr = params["ffiring_nr"]
     ffiring_recycle = params["ffiring_recycle"]
@@ -1023,6 +1134,10 @@ def rsim(
     resolution = params["resolution"]
     retain_rep_times_per_sim = bool(params["retain_rep_times_per_sim"])
     retain_inter_origin_distances = bool(params["retain_inter_origin_distances"])
+    retain_rep_times_limit = params["retain_rep_times_limit"]
+    retain_inter_origin_distances_limit = params[
+        "retain_inter_origin_distances_limit"
+    ]
 
     if time_stats_densQ is not None:
         time_stats_xtQ = bool(time_stats_densQ)
@@ -1046,9 +1161,11 @@ def rsim(
     resolution_time = float(resolution_time)
     if not np.isfinite(resolution_time) or resolution_time <= 0:
         raise ValueError("resolution_t must be a finite positive number.")
-    stall_rate = float(stall_rate)
-    if not np.isfinite(stall_rate) or not 0.0 <= stall_rate <= 1.0:
-        raise ValueError("stall_rate must be a finite probability between 0 and 1.")
+    stall_rate = _resolve_stall_probability(
+        stall_rate,
+        stall_rate_per_kb,
+        resolution_space,
+    )
     tau = float(tau)
     if np.isnan(tau) or tau <= 0:
         raise ValueError("tau must be positive or np.inf.")
@@ -1086,22 +1203,49 @@ def rsim(
 
     sim_number = _validated_positive_integer(sim_number, "sim_number")
     print_every = _validated_positive_integer(print_every, "print_every")
+    if retain_rep_times_per_sim:
+        retained_rep_times = (
+            sim_number
+            if retain_rep_times_limit is None
+            else min(
+                sim_number,
+                _validated_nonnegative_integer(
+                    retain_rep_times_limit,
+                    "retain_rep_times_limit",
+                ),
+            )
+        )
+    else:
+        # A limit has no effect unless profile retention itself is enabled.
+        retained_rep_times = 0
+
+    if retain_inter_origin_distances and retain_inter_origin_distances_limit is not None:
+        retained_iod_limit = _validated_nonnegative_integer(
+            retain_inter_origin_distances_limit,
+            "retain_inter_origin_distances_limit",
+        )
+    else:
+        retained_iod_limit = None
 
     ss = np.random.SeedSequence(seed) if seed is not None else np.random.SeedSequence()
-    generators = [np.random.default_rng(s) for s in ss.spawn(sim_number)]
 
     sum_rep_time = np.zeros(n, dtype=float)
     count_rep_time = np.zeros(n, dtype=np.int64)
+    running_mean_rep_time = np.zeros(n, dtype=float)
+    m2_rep_time = np.zeros(n, dtype=float)
 
     rep_times_per_sim = (
-        np.empty((sim_number, n), dtype=float)
+        np.empty((retained_rep_times, n), dtype=float)
         if retain_rep_times_per_sim
         else None
     )
     s_phase_durations_min = np.empty(sim_number, dtype=float)
+    completion_times_min = np.empty(sim_number, dtype=float)
     nr_oris = np.empty(sim_number, dtype=np.int64)
 
     all_iods = [] if retain_inter_origin_distances else None
+    retained_iod_count = 0
+    total_iod_count = 0
     fire_counts = np.zeros(n, dtype=np.int64)
 
     sum_fdir = np.zeros(n, dtype=float)
@@ -1205,12 +1349,30 @@ def rsim(
     else:
         firing_cumulative_hazard = None
 
-    for i, g in enumerate(generators, start=1):
+    for i in range(1, sim_number + 1):
         # Cancellation is independent of console/progress verbosity. Mapping
         # fits intentionally silence nested ensembles, but Stop must still be
         # observed between individual simulations.
         check_cancelled()
-        fired_idx, _, _, rep_time, iod, time_stats, fdir, t_fire, src, prev = simulate_replication(
+        # Spawn lazily so large ensembles do not retain tens of thousands of
+        # Generator and SeedSequence objects at once. Repeated spawn(1) calls
+        # produce the same child sequence as one eager spawn(sim_number).
+        g = np.random.default_rng(ss.spawn(1)[0])
+        retain_this_iod = all_iods is not None and (
+            retained_iod_limit is None or retained_iod_count < retained_iod_limit
+        )
+        (
+            fired_idx,
+            _,
+            fired_times,
+            rep_time,
+            iod,
+            time_stats,
+            fdir,
+            t_fire,
+            src,
+            prev,
+        ) = simulate_replication(
             firing_rate=firing_rate,
             fork_speed=fork_speed,
             resolution_space=resolution_space,
@@ -1235,19 +1397,53 @@ def rsim(
             _firing_cumulative_hazard=firing_cumulative_hazard,
             _prepared_firing_field=prepared_firing_field,
             _prepared_inverse_speed_field=prepared_inverse_speed_field,
+            _compute_inter_origin_distances=retain_this_iod,
         )
 
-        if rep_times_per_sim is not None:
+        if rep_times_per_sim is not None and i <= retained_rep_times:
             rep_times_per_sim[i - 1, :] = rep_time
-        s_phase_durations_min[i - 1] = np.max(rep_time)
+        completion_time, s_phase_duration = _phase_timing_summary(
+            fired_times,
+            rep_time,
+        )
+        completion_times_min[i - 1] = completion_time
+        s_phase_durations_min[i - 1] = s_phase_duration
         nr_oris[i - 1] = int(fired_idx.size)
 
         finite_mask = np.isfinite(rep_time)
+        next_counts = count_rep_time[finite_mask] + 1
+        delta = rep_time[finite_mask] - running_mean_rep_time[finite_mask]
+        next_means = running_mean_rep_time[finite_mask] + delta / next_counts
+        m2_rep_time[finite_mask] += delta * (
+            rep_time[finite_mask] - next_means
+        )
+        running_mean_rep_time[finite_mask] = next_means
         sum_rep_time[finite_mask] += rep_time[finite_mask]
-        count_rep_time[finite_mask] += 1
+        count_rep_time[finite_mask] = next_counts
 
-        if all_iods is not None and iod.size:
-            all_iods.append(iod)
+        fired_count = int(fired_idx.size)
+        realization_iod_count = (
+            fired_count
+            if perQ and fired_count >= 2
+            else max(0, fired_count - 1)
+        )
+        total_iod_count += realization_iod_count
+        if retain_this_iod:
+            if int(iod.size) != realization_iod_count:
+                raise RuntimeError(
+                    "simulate_replication returned an unexpected number of "
+                    "inter-origin distances."
+                )
+            if iod.size:
+                remaining = (
+                    int(iod.size)
+                    if retained_iod_limit is None
+                    else max(0, retained_iod_limit - retained_iod_count)
+                )
+                if remaining:
+                    retained = np.asarray(iod[:remaining], dtype=float).copy()
+                    all_iods.append(retained)
+                    retained_iod_count += int(retained.size)
         if fired_idx.size:
             fire_counts[fired_idx] += 1
 
@@ -1371,6 +1567,13 @@ def rsim(
     avg_rep_time_min = np.full(n, np.inf, dtype=float)
     nonzero = count_rep_time > 0
     avg_rep_time_min[nonzero] = sum_rep_time[nonzero] / count_rep_time[nonzero].astype(float)
+    replication_timing_std = np.full(n, np.nan, dtype=float)
+    replication_timing_std[nonzero] = np.sqrt(
+        np.maximum(
+            m2_rep_time[nonzero] / count_rep_time[nonzero].astype(float),
+            0.0,
+        )
+    )
 
     fork_directionality = np.full(n, np.nan, float)
     fd_ok = count_fdir > 0
@@ -1441,13 +1644,18 @@ def rsim(
     nr_oris_list = nr_oris.tolist()
     return dict(
         replication_timing=avg_rep_time_min,
+        replication_timing_std=replication_timing_std,
         rep_times_per_sim=rep_times_per_sim,
         s_phase_duration=s_phase_durations_min,
-        completion_time=s_phase_durations_min,
+        completion_time=completion_times_min,
         num_oris=nr_oris_list,
         num_origins=nr_oris_list,
         inter_origin_distances=all_iods_kb,
         inter_origin_distance=all_iods_kb,
+        inter_origin_distance_count=total_iod_count,
+        inter_origin_distances_truncated=(
+            all_iods_kb is not None and retained_iod_count < total_iod_count
+        ),
         efficiency=efficiencies,
         origin_efficiency=efficiencies,
         fork_directionality=fork_directionality,
@@ -1483,7 +1691,13 @@ _RSIM_INPUT_DESCRIPTIONS = {
     "resolution_x": "Alias for resolution_space, matching the rmap notation.",
     "resolution_t": "Alias for resolution_time.",
     "perQ": "Use periodic/circular geometry instead of linear geometry.",
-    "stall_rate": "Rate at which moving forks enter transient stalling.",
+    "stall_rate": (
+        "Legacy probability that a moving fork encounters a stall in one spatial bin."
+    ),
+    "stall_rate_per_kb": (
+        "Physical stall density in stalls/kb. Converted to the per-bin probability "
+        "1 - exp(-stall_rate_per_kb * resolution_space)."
+    ),
     "tau": "Mean stall duration. np.inf represents non-recovering stalls.",
     "ffiring_nr": "Finite firing-factor pool size. None disables finite-factor limitation.",
     "ffiring_recycle": "Rate at which used firing factors recycle into the available pool.",
@@ -1511,12 +1725,22 @@ _RSIM_INPUT_DESCRIPTIONS = {
     ),
     "dens_memmap_dir": "Directory for temporary memmap files used by space-time fields.",
     "retain_rep_times_per_sim": (
-        "Retain the full (sim_number, n) replication-time matrix. Disable to "
-        "reduce memory when only ensemble summaries are needed."
+        "Retain per-simulation replication-time profiles. By default this is "
+        "the full (sim_number, n) matrix; retain_rep_times_limit can bound it."
+    ),
+    "retain_rep_times_limit": (
+        "Maximum number of per-simulation replication-time profiles to retain. "
+        "None retains all profiles; the setting is ignored when "
+        "retain_rep_times_per_sim=False."
     ),
     "retain_inter_origin_distances": (
         "Retain pooled per-realization inter-origin distances. Disable to "
         "avoid storing the pooled distribution."
+    ),
+    "retain_inter_origin_distances_limit": (
+        "Maximum number of pooled inter-origin distances to retain. None "
+        "retains the complete distribution. The full event count is still "
+        "reported when retention is bounded or disabled."
     ),
     "n_bins": "Number of genomic bins when no spatial kinetic input is supplied.",
     "genome_length": "Genome length in kb, used with the spatial resolution to infer n_bins.",
@@ -1547,22 +1771,40 @@ _RSIM_OUTPUT_RECORDS = [
         "description": "Mean replication time of each genomic bin across the ensemble.",
     },
     {
+        "output": "replication_timing_std",
+        "shape/type": "(n,) array",
+        "returned when": "always",
+        "description": (
+            "Population standard deviation of finite replication times at each "
+            "genomic bin across the full ensemble."
+        ),
+    },
+    {
         "output": "rep_times_per_sim",
-        "shape/type": "(sim_number, n) array or None",
+        "shape/type": "(retained simulations, n) array or None",
         "returned when": "retain_rep_times_per_sim=True",
-        "description": "Full replication-time profile for every simulated S phase.",
+        "description": (
+            "Replication-time profiles for the first simulations retained, bounded "
+            "by retain_rep_times_limit when provided."
+        ),
     },
     {
         "output": "s_phase_duration",
         "shape/type": "(sim_number,) array",
         "returned when": "always",
-        "description": "Per-simulation S-phase duration; alias of completion_time.",
+        "description": (
+            "Elapsed time from the first realised origin initiation to "
+            "replication completion in each simulation."
+        ),
     },
     {
         "output": "completion_time",
         "shape/type": "(sim_number,) array",
         "returned when": "always",
-        "description": "Time at which each simulated S phase completed.",
+        "description": (
+            "Absolute simulation-clock time at which replication completed "
+            "in each simulation."
+        ),
     },
     {
         "output": "num_oris",
@@ -1581,7 +1823,8 @@ _RSIM_OUTPUT_RECORDS = [
         "shape/type": "1D array or None",
         "returned when": "retain_inter_origin_distances=True",
         "description": (
-            "Pooled distances between neighboring fired origins; alias of "
+            "Pooled distances between neighboring fired origins, optionally "
+            "bounded by retain_inter_origin_distances_limit; alias of "
             "inter_origin_distance."
         ),
     },
@@ -1589,7 +1832,28 @@ _RSIM_OUTPUT_RECORDS = [
         "output": "inter_origin_distance",
         "shape/type": "1D array or None",
         "returned when": "retain_inter_origin_distances=True",
-        "description": "Pooled distances between neighboring fired origins.",
+        "description": (
+            "Pooled distances between neighboring fired origins, optionally "
+            "bounded; alias of inter_origin_distances."
+        ),
+    },
+    {
+        "output": "inter_origin_distance_count",
+        "shape/type": "integer",
+        "returned when": "always",
+        "description": (
+            "Total number of inter-origin distances produced before any "
+            "retention limit; computed without retaining the distribution."
+        ),
+    },
+    {
+        "output": "inter_origin_distances_truncated",
+        "shape/type": "boolean",
+        "returned when": "always",
+        "description": (
+            "True when distance retention was enabled but its limit retained "
+            "fewer values than were produced."
+        ),
     },
     {
         "output": "efficiency",
@@ -1630,7 +1894,7 @@ _RSIM_OUTPUT_RECORDS = [
     {
         "output": "replicated_fraction",
         "shape/type": "(m,) array or None",
-        "returned when": "time statistics",
+        "returned when": "time_statsQ=True or time_stats_xtQ=True",
         "description": "Fraction of the simulated region replicated at each time point.",
     },
     {

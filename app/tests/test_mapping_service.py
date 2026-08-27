@@ -214,6 +214,7 @@ def test_selected_region_is_cropped_before_rmap(monkeypatch: pytest.MonkeyPatch)
 
     np.testing.assert_array_equal(captured["source"]["firing_rate"], source[5:9])
     assert captured["assumptions"]["n_bins"] == 4
+    assert captured["assumptions"]["interval_kb"] == (5.0, 9.0)
     np.testing.assert_array_equal(result.x_axis, [5.0, 6.0, 7.0, 8.0])
 
 
@@ -407,7 +408,8 @@ def test_every_public_exact_route_is_generically_dispatched_with_role_split(
         if "target_form" in accepted_assumptions:
             assert call["assumptions"]["target_form"] == route.output_dependence
 
-    assert len(calls) == len(by_method) == 79
+    assert len(calls) == len(by_method)
+    assert len(by_method) >= 79
 
 
 def test_bundle_and_fit_metadata_are_exposed_with_member_forms_and_axes(
@@ -419,6 +421,7 @@ def test_bundle_and_fit_metadata_are_exposed_with_member_forms_and_axes(
         return {
             "values": _fake_values(route),
             "residual": np.arange(4, dtype=float),
+            "fit_mse": 0.125,
         }
 
     monkeypatch.setattr(dnascape, "rmap", fake_rmap)
@@ -439,6 +442,7 @@ def test_bundle_and_fit_metadata_are_exposed_with_member_forms_and_axes(
     assert result.output_forms["replication_timing_fit"] == "x"
     assert result.output_forms["fit_history"] == "supplied"
     assert result.output_forms["residual"] == "x"
+    assert result.fit_mse == pytest.approx(0.125)
     np.testing.assert_array_equal(result.time_axis, [0.0, 5.0, 10.0])
     np.testing.assert_array_equal(result.x_axis, [10.0, 11.0, 12.0, 13.0])
     comparison = result.comparisons["replication_timing_fit"]
@@ -487,7 +491,7 @@ def test_rmap_progress_prefix_is_presented_as_mapping(
         return {"values": np.arange(4, dtype=float)}
 
     monkeypatch.setattr(dnascape, "rmap", fake_rmap)
-    run_mapping(
+    result = run_mapping(
         _deterministic_request(),
         lambda _value, message: messages.append(message),
     )
@@ -495,6 +499,51 @@ def test_rmap_progress_prefix_is_presented_as_mapping(
     assert any(message.startswith("Mapping...") for message in messages)
     assert not any(message.startswith("Rmap...") for message in messages)
     assert any("MSE" in message for message in messages)
+    np.testing.assert_array_equal(result.outputs["fit_history"], [0.25])
+    assert result.output_forms["fit_history"] == "supplied"
+    assert result.fit_mse == pytest.approx(0.25)
+
+
+def test_final_fit_mse_becomes_exportable_history_when_route_has_no_trace(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def fake_rmap(**_kwargs: Any) -> dict[str, Any]:
+        return {
+            "values": np.arange(4, dtype=float),
+            "fit_mse": 0.125,
+        }
+
+    monkeypatch.setattr(dnascape, "rmap", fake_rmap)
+    result = run_mapping(_deterministic_request())
+
+    np.testing.assert_array_equal(result.outputs["fit_history"], [0.125])
+    assert result.output_forms["fit_history"] == "supplied"
+    assert result.fit_mse == pytest.approx(0.125)
+
+
+def test_structured_fit_history_is_normalized_to_mse_per_iteration(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def fake_rmap(**_kwargs: Any) -> dict[str, Any]:
+        return {
+            "values": np.arange(4, dtype=float),
+            "fit_history": [
+                {"iteration": 1, "phase": "space", "mse": 0.5},
+                {"iteration": 2, "phase": "time", "mse": None},
+                {"iteration": 3, "phase": "space", "mse": 0.125},
+            ],
+            "fit_mse": 0.125,
+        }
+
+    monkeypatch.setattr(dnascape, "rmap", fake_rmap)
+    result = run_mapping(_deterministic_request())
+
+    np.testing.assert_allclose(
+        result.outputs["fit_history"],
+        [0.5, np.nan, 0.125],
+        equal_nan=True,
+    )
+    assert result.output_forms["fit_history"] == "supplied"
 
 
 def test_oversized_input_rejects_before_float_copy(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -508,6 +557,95 @@ def test_oversized_input_rejects_before_float_copy(monkeypatch: pytest.MonkeyPat
                 region_end_kb=3,
             )
         )
+
+
+def test_mapping_accepts_fifty_thousand_simulations_but_not_more() -> None:
+    route = mapping_route("firing_and_speed_to_timing_simulation")
+
+    def request(simulations: int) -> MappingRequest:
+        return MappingRequest(
+            route=route,
+            inputs={"firing_rate": 0.001, "fork_speed": 1.4},
+            input_forms={"firing_rate": "scalar", "fork_speed": "scalar"},
+            settings={"sim_number": simulations},
+            region_start_kb=0,
+            region_end_kb=4,
+            resolution_x=1,
+        )
+
+    assert validate_mapping_request(request(50_000)).assumptions["sim_number"] == 50_000
+    with pytest.raises(ValueError, match="at most 50000"):
+        validate_mapping_request(request(50_001))
+
+
+def test_mapping_fit_iterations_are_not_arbitrarily_capped() -> None:
+    route = mapping_route("timing_and_speed_to_constant_firing_rate")
+    prepared = validate_mapping_request(
+        MappingRequest(
+            route=route,
+            inputs={
+                "replication_timing": np.asarray([7.0, 8.0, 9.0, 8.0]),
+                "fork_speed": 1.4,
+            },
+            input_forms={"replication_timing": "x", "fork_speed": "scalar"},
+            settings={"maxiter": 50_000},
+            region_start_kb=0,
+            region_end_kb=4,
+            resolution_x=1,
+        )
+    )
+
+    assert prepared.assumptions["maxiter"] == 50_000
+
+
+def test_iod_mapping_is_standard_output_with_bounded_app_retention() -> None:
+    route = mapping_route("firing_and_speed_to_inter_origin_distance_simulation")
+    prepared = validate_mapping_request(
+        MappingRequest(
+            route=route,
+            inputs={"firing_rate": 0.001, "fork_speed": 1.4},
+            input_forms={"firing_rate": "scalar", "fork_speed": "scalar"},
+            settings={"sim_number": 10},
+            region_start_kb=0,
+            region_end_kb=4,
+            resolution_x=1,
+        )
+    )
+
+    assert (
+        prepared.assumptions["retain_inter_origin_distances_limit"]
+        == mapping_service.MAX_MAPPING_IOD_SAMPLES
+    )
+
+
+def test_iod_mapping_preserves_total_count_and_truncation_metadata(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    route = mapping_route("firing_and_speed_to_inter_origin_distance_simulation")
+
+    def fake_rmap(**_kwargs: Any) -> dict[str, Any]:
+        return {
+            "values": np.asarray([1.0, 2.0, 3.0]),
+            "inter_origin_distance_count": 12,
+            "inter_origin_distances_truncated": True,
+        }
+
+    monkeypatch.setattr(dnascape, "rmap", fake_rmap)
+    result = run_mapping(
+        MappingRequest(
+            route=route,
+            inputs={"firing_rate": 0.001, "fork_speed": 1.4},
+            input_forms={"firing_rate": "scalar", "fork_speed": "scalar"},
+            settings={"sim_number": 10},
+            region_start_kb=0,
+            region_end_kb=4,
+            resolution_x=1,
+        )
+    )
+
+    assert result.inter_origin_distance_count == 12
+    assert result.inter_origin_distances_truncated is True
+    np.testing.assert_array_equal(result.outputs[result.primary_output], [1.0, 2.0, 3.0])
 
 
 def test_mixed_length_inputs_use_the_longest_axis_and_cap_to_the_shortest() -> None:

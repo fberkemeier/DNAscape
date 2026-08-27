@@ -42,12 +42,14 @@ _COORDINATE_NAMES = {
     "chrom",
     "chromosome",
     "end",
+    "end bp",
     "index",
     "position",
     "position kb",
     "position bp",
     "pos",
     "start",
+    "start bp",
     "t",
     "time",
     "time min",
@@ -80,6 +82,8 @@ _NPZ_METADATA_KEYS = {
     "semantic_form",
     "time_min",
 }
+_BIGWIG_MAGICS = (b"\x26\xfc\x8f\x88", b"\x88\x8f\xfc\x26")
+_SOURCE_FORMAT_HINTS = frozenset({"auto", "bigwig", "bedgraph"})
 
 
 class UploadInspectionError(ValueError):
@@ -153,19 +157,41 @@ def _bounded_gunzip(content: bytes) -> bytes:
     return b"".join(chunks)
 
 
-def _source_payload(name: str, content: bytes) -> tuple[str, bytes, bool]:
+def _source_payload(
+    name: str,
+    content: bytes,
+    source_format: str = "auto",
+) -> tuple[str, bytes, bool]:
     lower_name = name.casefold()
     compressed = lower_name.endswith(".gz") or content.startswith(b"\x1f\x8b")
     payload = _bounded_gunzip(content) if compressed else content
     base_name = name[:-3] if lower_name.endswith(".gz") else name
     suffix = PurePath(base_name).suffix.casefold()
 
+    format_hint = str(source_format or "auto").strip().casefold().lstrip(".")
+    format_hint = {"bw": "bigwig", "bdg": "bedgraph"}.get(format_hint, format_hint)
+    if format_hint not in _SOURCE_FORMAT_HINTS:
+        raise UploadInspectionError("Manual source type must be Auto, BigWig, or bedGraph.")
+
     if payload.startswith(b"\x93NUMPY"):
+        if format_hint != "auto":
+            raise UploadInspectionError("The selected source type does not match the NPY data.")
         return "npy", payload, compressed
     if payload.startswith(b"PK\x03\x04"):
+        if format_hint != "auto":
+            raise UploadInspectionError("The selected source type does not match the NPZ data.")
         return "npz", payload, compressed
+    is_bigwig = payload.startswith(_BIGWIG_MAGICS)
+    if format_hint == "bigwig":
+        if not is_bigwig:
+            raise UploadInspectionError("The selected source is not a valid BigWig file.")
+        return "bigwig", payload, compressed
+    if format_hint == "bedgraph":
+        return "bedgraph", payload, compressed
+    if is_bigwig:
+        return "bigwig", payload, compressed
 
-    source_format = {
+    detected_format = {
         ".csv": "csv",
         ".tsv": "tsv",
         ".txt": "txt",
@@ -177,7 +203,7 @@ def _source_payload(name: str, content: bytes) -> tuple[str, bytes, bool]:
         ".bw": "bigwig",
         ".bigwig": "bigwig",
     }.get(suffix)
-    if source_format is None:
+    if detected_format is None:
         # Text pasted into an extension-less or simply ``.gz`` upload remains
         # useful.  Binary data without a recognized signature does not.
         try:
@@ -186,8 +212,8 @@ def _source_payload(name: str, content: bytes) -> tuple[str, bytes, bool]:
             raise UploadInspectionError(
                 "Unsupported file type. Use CSV, TSV, TXT, NPY, NPV, NPZ, bedGraph, or BigWig."
             ) from exc
-        source_format = "txt"
-    return source_format, payload, compressed
+        detected_format = "txt"
+    return detected_format, payload, compressed
 
 
 def _decode_text(payload: bytes) -> str:
@@ -910,13 +936,15 @@ def inspect_upload(
     *,
     content_type: str = "",
     expected_form: str = "auto",
+    source_format: str = "auto",
 ) -> UploadInspection:
     """Inspect one uploaded file without writing it to disk.
 
     ``expected_form`` uses the public ``rdata``/``rmap`` form names
     (``scalar``, ``x``, ``t``, ``xt``, ``table`` or ``regions``). It guides
     metadata and later materialization but never bypasses shape or numeric
-    validation.
+    validation. ``source_format`` is a narrow manual hint for extensionless
+    BigWig or bedGraph sources; binary signatures still have to agree.
     """
 
     safe_name = _safe_name(name)
@@ -925,7 +953,11 @@ def inspect_upload(
         raise UploadInspectionError("The selected file is empty.")
     if len(raw) > MAX_UPLOAD_BYTES:
         raise UploadTooLargeError("Files larger than 64 MB cannot be kept in this local session.")
-    source_format, payload, compressed = _source_payload(safe_name, raw)
+    source_format, payload, compressed = _source_payload(
+        safe_name,
+        raw,
+        source_format=source_format,
+    )
     if len(payload) > MAX_DECOMPRESSED_BYTES:
         raise UploadTooLargeError("The selected file exceeds the safe inspection limit.")
     common = {
@@ -956,7 +988,12 @@ def inspect_upload(
     raise AssertionError(f"Unhandled upload format {source_format!r}.")
 
 
-async def inspect_upload_event(event: Any, *, expected_form: str = "auto") -> UploadInspection:
+async def inspect_upload_event(
+    event: Any,
+    *,
+    expected_form: str = "auto",
+    source_format: str = "auto",
+) -> UploadInspection:
     """Read and inspect a NiceGUI upload event with a server-side size check."""
 
     upload = event.file
@@ -974,6 +1011,7 @@ async def inspect_upload_event(event: Any, *, expected_form: str = "auto") -> Up
         content,
         content_type=upload.content_type,
         expected_form=expected_form,
+        source_format=source_format,
     )
     if inspection is None:  # NiceGUI returns None only while its executor is shutting down.
         raise RuntimeError("Upload inspection was interrupted while the app was stopping.")

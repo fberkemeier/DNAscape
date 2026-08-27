@@ -70,7 +70,6 @@ _FEATURE_ALIASES = {
     "origin_usage": "origin_efficiency",
     "iod": "inter_origin_distance",
     "inter_origin_distances": "inter_origin_distance",
-    "s_phase_duration": "completion_time",
     "nori": "num_origins",
     "num_oris": "num_origins",
     "number_of_origins": "num_origins",
@@ -119,6 +118,7 @@ _CANONICAL_FEATURES = {
     "left_fork_density",
     "origin_efficiency",
     "inter_origin_distance",
+    "s_phase_duration",
     "completion_time",
     "num_origins",
     "initiation_events",
@@ -151,7 +151,10 @@ _FEATURE_DESCRIPTIONS = {
     "left_fork_density_xt": "Space-time left-moving fork-density field.",
     "origin_efficiency": "Expected initiation-event count or efficiency over user-defined regions.",
     "inter_origin_distance": "Distances between neighbouring fired origins.",
-    "completion_time": "Replication completion time across simulated S phases.",
+    "s_phase_duration": (
+        "Elapsed time from the first realised initiation to replication completion."
+    ),
+    "completion_time": "Absolute replication-completion time on the simulation clock.",
     "num_origins": "Number of origins fired across simulated S phases.",
     "initiation_events": "Time-integrated observed initiation-event density.",
     "coalescence_events": "Time-integrated observed fork-coalescence-event density.",
@@ -201,12 +204,22 @@ _ASSUMPTION_DESCRIPTIONS = {
     "spacetime_order": "Order of factorized x,t phases. For fork-speed v(x,t), 'crossed' alternates one accepted/rejected x step with one accepted/rejected t step; 'space_then_time' and 'time_then_space' are sequential alternatives.",
     "spacetime_kernel_t": "Temporal kernel width, in time bins, for mixed x,t corrections.",
     "refine_ratio_bounds": "Bounds applied to timing-ratio updates during simulation refinement.",
-    "refine_edge_kb": "Non-periodic chromosome edge width, in kb, ignored during refinement.",
+    "refine_edge_kb": (
+        "Maximum non-periodic endpoint context, in kb, used for reflected forward "
+        "prediction and a narrow update taper; set to zero when the supplied "
+        "endpoints are true chromosome ends."
+    ),
     "refine_seed": "Seed offset for simulation-refined fitting routes.",
     "refine_verbose": "Whether refinement sub-loops print ETA and fitting error.",
     "floor": "Lower numerical floor for fitted firing-rate fields.",
     "smoothw": "Spatial smoothing window for fitted profiles.",
-    "stall_rate": "Fork-stalling rate used when fitting with stochastic simulation.",
+    "stall_rate": (
+        "Legacy probability that a fork stalls while crossing one spatial bin."
+    ),
+    "stall_rate_per_kb": (
+        "Physical stall density in stalls/kb. Stochastic routes convert it to "
+        "1 - exp(-stall_rate_per_kb * resolution)."
+    ),
     "tau": "Fork-stall lifetime parameter used by stochastic simulation.",
     "perQ": "Whether the genome is treated as periodic/circular.",
     "cfl": "Maximum transport Courant number used for automatic mean-field integration substeps.",
@@ -292,6 +305,7 @@ _ASSUMPTION_ORDER = (
     "refine_seed",
     "refine_verbose",
     "stall_rate",
+    "stall_rate_per_kb",
     "tau",
 )
 
@@ -318,6 +332,8 @@ _ASSUMPTION_FALLBACK_DEFAULTS = {
     "space_init_sim_number": 100,
     "joint_maxiter": 10,
     "joint_sim_number": 100,
+    "refine_edge_kb": 1000,
+    "stall_rate_per_kb": 0.0,
 }
 
 _FORM_DESCRIPTIONS = {
@@ -354,6 +370,7 @@ _PUBLIC_MAPPING_TARGETS = (
     "coalescence_events",
     "coalescence_pdf",
     "inter_origin_distance",
+    "s_phase_duration",
     "completion_time",
     "num_origins",
 )
@@ -438,6 +455,11 @@ _ASSUMPTION_ALIASES = {
     "region_kb": "regions",
     "regions_kb": "regions",
     "origin_names": "region_names",
+    "stall_density": "stall_rate_per_kb",
+    "stall_density_per_kb": "stall_rate_per_kb",
+    "stalls_per_kb": "stall_rate_per_kb",
+    "stall_probability": "stall_rate",
+    "stall_probability_per_bin": "stall_rate",
 }
 
 
@@ -633,15 +655,62 @@ _RSIM_ASSUMPTION_NAMES = tuple(
 )
 
 
+class _SimulationFeatureArray(np.ndarray):
+    """Numeric rmap result carrying optional rsim provenance metadata."""
+
+    def __new__(cls, values, info=None):
+        obj = np.asarray(values).view(cls)
+        obj._rmap_info = dict(info or {})
+        return obj
+
+    def __array_finalize__(self, obj):
+        if obj is not None:
+            self._rmap_info = getattr(obj, "_rmap_info", {})
+
+
+def _simulation_feature_result(result, output_name):
+    values = result[output_name]
+    if output_name not in {"inter_origin_distance", "inter_origin_distances"}:
+        return values
+    if values is None:
+        return None
+    return _SimulationFeatureArray(
+        values,
+        {
+            "inter_origin_distance_count": result.get(
+                "inter_origin_distance_count",
+                np.asarray(values).size,
+            ),
+            "inter_origin_distances_truncated": result.get(
+                "inter_origin_distances_truncated",
+                False,
+            ),
+        },
+    )
+
+
 def _simulation_feature_mapper(output_name, default_options=None):
     def mapper(firing_rate, **kwargs):
         options = dict(default_options or {})
+        # A mapping route returns one selected feature, so retaining every
+        # per-replicate profile would be pure hidden memory overhead. Pooled
+        # inter-origin distances are needed only by the IOD routes. Keep these
+        # as defaults rather than forced values so direct Python callers can
+        # still request the auxiliary outputs explicitly.
+        options.setdefault("retain_rep_times_per_sim", False)
+        options.setdefault(
+            "retain_inter_origin_distances",
+            output_name in {"inter_origin_distance", "inter_origin_distances"},
+        )
         options.update({
             key: value
             for key, value in kwargs.items()
             if key in _RSIM_OPTION_NAMES
         })
-        return rsim(firing_rate=firing_rate, **options)[output_name]
+        return _simulation_feature_result(
+            rsim(firing_rate=firing_rate, **options),
+            output_name,
+        )
 
     mapper.__name__ = f"map_firing_to_{output_name}_simulation"
     return mapper
@@ -650,13 +719,21 @@ def _simulation_feature_mapper(output_name, default_options=None):
 def _simulation_source_feature_mapper(output_name, default_options=None):
     def mapper(source, **kwargs):
         options = dict(default_options or {})
+        options.setdefault("retain_rep_times_per_sim", False)
+        options.setdefault(
+            "retain_inter_origin_distances",
+            output_name in {"inter_origin_distance", "inter_origin_distances"},
+        )
         options.update({
             key: value
             for key, value in kwargs.items()
             if key in _RSIM_ASSUMPTION_NAMES
         })
         options["fork_speed"] = source["fork_speed"]
-        return rsim(firing_rate=source["firing_rate"], **options)[output_name]
+        return _simulation_feature_result(
+            rsim(firing_rate=source["firing_rate"], **options),
+            output_name,
+        )
 
     mapper.__name__ = f"map_firing_and_speed_to_{output_name}_simulation"
     return mapper
@@ -1069,7 +1146,9 @@ _TIMING_TO_SPATIAL_FIRING_OPTIONS = {
     "verbose",
     "print_every",
     "perQ",
+    "refine_edge_kb",
     "stall_rate",
+    "stall_rate_per_kb",
     "tau",
 }
 
@@ -2274,6 +2353,40 @@ class DataTypeMapper:
             raise KeyError(f"No mapping route registered from [{src}] to '{target}'.")
 
         kind_matches = [spec for spec in candidates if spec.accepts(source_data, assumptions)]
+        # A non-zero (or invalid, so it can be validated downstream) stalling
+        # input must not be silently discarded by an earlier deterministic
+        # route. Zero remains equivalent to no stalling and therefore keeps the
+        # existing fast automatic route selection.
+        stalling_requested = False
+        for name in ("stall_rate_per_kb", "stall_rate"):
+            if name not in assumptions or assumptions[name] is None:
+                continue
+            try:
+                value = float(assumptions[name])
+                stalling_requested = not np.isfinite(value) or value != 0.0
+            except (TypeError, ValueError):
+                stalling_requested = True
+            if stalling_requested:
+                break
+        if kind_matches and stalling_requested:
+            stall_matches = [
+                spec
+                for spec in kind_matches
+                if {"stall_rate", "stall_rate_per_kb"}
+                & set(spec.required_assumptions + spec.optional_assumptions)
+            ]
+            if stall_matches:
+                kind_matches = stall_matches
+            else:
+                route_label = (
+                    f"method '{method}'"
+                    if method != "auto"
+                    else "the requested source and target"
+                )
+                raise ValueError(
+                    f"No mapping route for {route_label} supports fork stalling; "
+                    "choose a stochastic simulation route or set the stall rate to zero."
+                )
         if kind_matches:
             spec = kind_matches[0]
             return spec, spec.assumptions_with_defaults(assumptions)
@@ -2943,7 +3056,9 @@ rmap.register(
         "verbose",
         "print_every",
         "perQ",
+        "refine_edge_kb",
         "stall_rate",
+        "stall_rate_per_kb",
         "tau",
         "target_form",
     ),
@@ -3004,7 +3119,9 @@ rmap.register(
         "verbose",
         "print_every",
         "perQ",
+        "refine_edge_kb",
         "stall_rate",
+        "stall_rate_per_kb",
         "tau",
         "target_form",
     ),
@@ -3450,6 +3567,7 @@ rmap.register(
         "print_every",
         "perQ",
         "stall_rate",
+        "stall_rate_per_kb",
         "tau",
         "target_form",
     ),
@@ -3509,6 +3627,7 @@ rmap.register(
         "print_every",
         "perQ",
         "stall_rate",
+        "stall_rate_per_kb",
         "tau",
         "target_form",
     ),
@@ -3539,6 +3658,7 @@ rmap.register(
         "print_every",
         "perQ",
         "stall_rate",
+        "stall_rate_per_kb",
         "tau",
         "target_form",
         "target_shape",
@@ -3597,6 +3717,7 @@ rmap.register(
         "print_every",
         "perQ",
         "stall_rate",
+        "stall_rate_per_kb",
         "tau",
         "target_form",
         "target_shape",
@@ -4182,6 +4303,7 @@ rmap.register(
 _SIMULATION_DERIVED_FEATURES = {
     "origin_efficiency": {},
     "inter_origin_distance": {},
+    "s_phase_duration": {},
     "completion_time": {},
     "num_origins": {},
     "fork_directionality": {},

@@ -583,7 +583,7 @@ def test_mapping_settings_refresh_to_only_assumptions_accepted_by_the_route() ->
             await user.should_not_see(marker="mapping-setting-seed")
             await _set_select(user, "mapping-input-firing-rate-form", "t")
             route = mapping_route("firing_and_speed_to_timing_simulation")
-            for key in ("sim_number", "stall_rate", "seed", "geometry"):
+            for key in ("sim_number", "stall_rate_per_kb", "seed", "geometry"):
                 await _assert_setting_present(user, route, key)
             await _assert_setting_present(user, route, "tau")
             await user.should_see("Allow stall recovery")
@@ -741,6 +741,7 @@ def test_mapping_preview_and_raw_filename_follow_the_selected_output() -> None:
                 "replication_timing_fit",
                 "comparison:replication_timing_fit",
                 "fit_diagnostic",
+                "mse_diagnostic",
             )
             assert raw_name.value == "dnascape_mapping_firing_rate"
 
@@ -779,11 +780,16 @@ def test_mapping_preview_and_raw_filename_follow_the_selected_output() -> None:
                 "replication_timing_fit",
                 "comparison:replication_timing_fit",
                 "fit_diagnostic",
+                "mse_diagnostic",
             )
             assert output.enabled is True
             await _set_select(user, "mapping-preview-output", "fit_diagnostic")
             assert raw_name.value == "dnascape_mapping_fit_diagnostic"
-            assert title.value == "Residual / misfit error"
+            assert title.value == "Residual"
             assert view.value == "Default"
+
+            await _set_select(user, "mapping-preview-output", "mse_diagnostic")
+            assert raw_name.value == "dnascape_mapping_mse_diagnostic"
+            assert title.value == "MSE"
 
     asyncio.run(scenario())

@@ -36,8 +36,13 @@ from app.pages.common import (
 )
 from app.preview_plotting import (
     FIXED_QUANTITY_Y_LIMITS,
+    HistogramBinSynchronizer,
+    PreviewBand,
+    PreviewLine,
     automatic_y_limits,
     build_preview_plot_options,
+    histogram_x_limits_from_controls,
+    plotting_settings_ready,
     preview_settings_controls,
     render_preview_chart,
     sync_preview_settings_visibility,
@@ -47,6 +52,7 @@ from app.session_cache import (
     cache_upload,
     cache_workflow,
     consume_cached_workflow,
+    current_session_cache,
 )
 from app.simulation_exports import (
     build_chart_capture_export,
@@ -54,6 +60,7 @@ from app.simulation_exports import (
     select_result_output,
 )
 from app.simulation_service import (
+    MAX_REPLICATES,
     ConstantSimulationRequest,
     ConstantSimulationResult,
     run_constant_simulation,
@@ -79,7 +86,19 @@ _BASE_OUTPUTS = {
         "fork_directionality", "Position (kb)", "Fork directionality", "space"
     ),
 }
-_DETAILED_OUTPUTS = {
+_DISTRIBUTION_OUTPUTS = {
+    "S-phase duration": _OutputSpec(
+        "s_phase_duration", "Replicate", "Duration (min)", "distribution"
+    ),
+    "Origins per replicate": _OutputSpec("num_origins", "Replicate", "Origins", "distribution"),
+    "Inter-origin distance": _OutputSpec(
+        "inter_origin_distances",
+        "Sample",
+        "Distance (kb)",
+        "distribution",
+    ),
+}
+_TIME_OUTPUTS = {
     "Replicated fraction": _OutputSpec(
         "replicated_fraction", "Time (min)", "Replicated fraction", "time"
     ),
@@ -87,10 +106,8 @@ _DETAILED_OUTPUTS = {
     "Active forks": _OutputSpec("active_forks", "Time (min)", "Active forks", "time"),
     "Stalled forks": _OutputSpec("stalled_forks", "Time (min)", "Stalled forks", "time"),
     "Firing factors": _OutputSpec("firing_factors", "Time (min)", "Available factors", "time"),
-    "S-phase duration": _OutputSpec(
-        "completion_time", "Replicate", "Duration (min)", "distribution"
-    ),
-    "Origins per replicate": _OutputSpec("num_origins", "Replicate", "Origins", "distribution"),
+}
+_SPACETIME_OUTPUTS = {
     "Replicated fraction (space-time)": _OutputSpec(
         "replicated_fraction_xt", "Position (kb)", "Time (min)", "xt"
     ),
@@ -107,7 +124,12 @@ _DETAILED_OUTPUTS = {
         "left_moving_fork_density_xt", "Position (kb)", "Time (min)", "xt"
     ),
 }
-_OUTPUT_SPECS = {**_BASE_OUTPUTS, **_DETAILED_OUTPUTS}
+_STANDARD_OUTPUTS = {**_BASE_OUTPUTS, **_DISTRIBUTION_OUTPUTS}
+_OUTPUT_SPECS = {
+    **_STANDARD_OUTPUTS,
+    **_TIME_OUTPUTS,
+    **_SPACETIME_OUTPUTS,
+}
 
 # Some simulation quantities have a meaningful physical domain which should not
 # shrink to the particular values observed in one run. Other outputs retain an
@@ -125,6 +147,8 @@ _SOURCE_DEPENDENCE = {
     "t": "Time",
     "xt": "Space-time",
 }
+
+_MAX_PREVIEW_PROFILES = 50
 
 
 @dataclass(frozen=True)
@@ -205,11 +229,7 @@ def _render_simulation_source(
                     and inspection.shape[0] == 1
                     and len(inspection.numeric_columns) > 1
                 )
-                if (
-                    str(form.value) in {"x", "t"}
-                    and inspection.numeric_columns
-                    and not row_vector
-                ):
+                if str(form.value) in {"x", "t"} and inspection.numeric_columns and not row_vector:
                     if selection["column"] not in inspection.numeric_columns:
                         selection["column"] = inspection.default_column
                 else:
@@ -304,8 +324,6 @@ def _render_simulation_source(
 
                     array_control.on_value_change(store_array)
 
-            render_selection()
-
             async def uploaded(event: Any) -> bool:
                 try:
                     inspection = await inspect_upload_event(
@@ -373,13 +391,18 @@ def _render_simulation_source(
                     pass
                 size = " x ".join(str(value) for value in shape) if shape else "1"
                 dependence = _SOURCE_DEPENDENCE.get(str(form.value), "Unknown")
-                with ui.element("div").mark(f"source-{marker}-detected-data"):
+                with (
+                    ui.element("div")
+                    .classes("dn-mapping-detected-data dn-profile-metadata")
+                    .mark(f"source-{marker}-detected-data")
+                ):
                     ui.label(f"Dependence: {dependence}").classes(
                         "dn-mapping-detected-summary dn-mapping-detected-dependence"
                     )
                     ui.label(f"Array size: {size}").classes("dn-mapping-detected-summary")
 
             render_summary()
+            render_selection()
 
         constant_fields.bind_visibility_from(
             mode,
@@ -487,6 +510,42 @@ def _integer(control: Any, label: str) -> int:
     return int(value)
 
 
+def _bounded_profile_count(value: Any, available: int) -> int | None:
+    """Return a complete profile-count edit without emitting transient errors."""
+
+    if value in (None, "") or available < 1:
+        return None
+    try:
+        numeric = float(value)
+    except (TypeError, ValueError):
+        return None
+    if not np.isfinite(numeric) or not numeric.is_integer() or numeric < 1:
+        return None
+    return min(int(numeric), min(_MAX_PREVIEW_PROFILES, int(available)))
+
+
+def _replication_profile_arrays(
+    result: ConstantSimulationResult,
+) -> tuple[np.ndarray | None, np.ndarray | None]:
+    """Return validated optional ensemble arrays from a detailed result."""
+
+    profiles = getattr(result, "replication_time_profiles", None)
+    standard_deviation = getattr(result, "replication_timing_std", None)
+    profile_array = None if profiles is None else np.asarray(profiles, dtype=float)
+    if profile_array is not None and (
+        profile_array.ndim != 2 or profile_array.shape[1] != result.position_kb.size
+    ):
+        profile_array = None
+    deviation_array = (
+        None
+        if standard_deviation is None
+        else np.asarray(standard_deviation, dtype=float).reshape(-1)
+    )
+    if deviation_array is not None and deviation_array.size != result.position_kb.size:
+        deviation_array = None
+    return profile_array, deviation_array
+
+
 def _automatic_y_limits(
     result: ConstantSimulationResult,
     *,
@@ -495,6 +554,13 @@ def _automatic_y_limits(
     histogram_bins: int,
     density: bool,
     log_y: bool,
+    log_x: bool = False,
+    histogram_bin_size: float | None = None,
+    histogram_x_limits: tuple[float, float] | None = None,
+    histogram_boundary: str = "left",
+    show_individual_profiles: bool = False,
+    individual_profile_count: int = 10,
+    show_standard_deviation: bool = False,
 ) -> tuple[float, float]:
     """Return stable, editable plot bounds derived from the selected result."""
 
@@ -509,12 +575,29 @@ def _automatic_y_limits(
         if spec.kind == "distribution" or view_mode == "Histogram"
         else "Line"
     )
-    return automatic_y_limits(
-        [selected.values],
+    plotted_values: list[Any] = [selected.values]
+    if output_label == "Replication timing" and plot_type == "Line":
+        profiles, standard_deviation = _replication_profile_arrays(result)
+        if profiles is not None and show_individual_profiles:
+            count = min(
+                max(1, int(individual_profile_count)),
+                profiles.shape[0],
+                _MAX_PREVIEW_PROFILES,
+            )
+            plotted_values.extend(profiles[:count])
+        if standard_deviation is not None and show_standard_deviation:
+            mean = np.asarray(selected.values, dtype=float).reshape(-1)
+            plotted_values.extend((mean - standard_deviation, mean + standard_deviation))
+    limits = automatic_y_limits(
+        plotted_values,
         plot_type=plot_type,
         histogram_bins=histogram_bins,
         density=density,
         log_y=log_y,
+        log_x=log_x,
+        histogram_bin_size=histogram_bin_size,
+        histogram_x_limits=histogram_x_limits,
+        histogram_boundary=histogram_boundary,
         y_axis=result.time_grid if spec.kind == "xt" else None,
         fixed_limits=_default_y_limits(
             output_label,
@@ -523,6 +606,30 @@ def _automatic_y_limits(
         ),
         floor_at_zero=output_label in _NONNEGATIVE_LINE_OUTPUTS,
     )
+    if spec.kind != "xt":
+        return limits
+
+    # Detailed fields are tracked over the requested simulation window, which
+    # can extend far beyond the biologically informative part of S phase. Use
+    # the latest finite ensemble-mean replication time as the visible cutoff
+    # for every space-time output. Never extend beyond the retained time grid:
+    # doing so would introduce an empty band in a truncated result.
+    mean_replication_times = np.asarray(result.replication_timing, dtype=float).reshape(-1)
+    mean_replication_times = mean_replication_times[np.isfinite(mean_replication_times)]
+    tracked_times = np.asarray(result.time_grid, dtype=float).reshape(-1)
+    tracked_times = tracked_times[np.isfinite(tracked_times)]
+    if log_y:
+        mean_replication_times = mean_replication_times[mean_replication_times > 0]
+        tracked_times = tracked_times[tracked_times > 0]
+    if mean_replication_times.size == 0 or tracked_times.size == 0:
+        return limits
+    y_maximum = min(
+        float(np.max(mean_replication_times)),
+        float(np.max(tracked_times)),
+    )
+    if y_maximum <= limits[0]:
+        return limits
+    return limits[0], y_maximum
 
 
 def _default_y_limits(
@@ -583,6 +690,18 @@ def _result_plot_options(
     show_markers: bool = False,
     show_grid: bool = True,
     log_z: bool = False,
+    log_x: bool = False,
+    invert_x: bool = False,
+    invert_z: bool = False,
+    show_histogram_statistics: bool = False,
+    histogram_statistics_position: str = "Top right",
+    histogram_bin_size: float | None = None,
+    histogram_x_limits: tuple[float, float] | None = None,
+    histogram_touching: bool = True,
+    histogram_boundary: str = "left",
+    show_individual_profiles: bool = False,
+    individual_profile_count: int = 10,
+    show_standard_deviation: bool = False,
 ) -> dict[str, Any]:
     """Build bounded ECharts options for any supported simulation output."""
 
@@ -591,13 +710,22 @@ def _result_plot_options(
     if values is None:
         if spec.key == "firing_factors":
             raise ValueError("Enable a finite firing-factor pool to plot firing factors.")
-        if output_label in _DETAILED_OUTPUTS:
+        if output_label in _TIME_OUTPUTS:
             raise ValueError(
-                "Run the simulation again with detailed outputs enabled to plot this result."
+                "Run the simulation again with time courses enabled to plot this result."
+            )
+        if output_label in _SPACETIME_OUTPUTS:
+            raise ValueError(
+                "Run the simulation again with space-time outputs enabled to plot this result."
             )
         raise ValueError(f"DNAscape did not return {output_label.lower()}.")
     values = np.asarray(values, dtype=float)
     if not np.isfinite(values).any():
+        if spec.key == "inter_origin_distances":
+            raise ValueError(
+                "No inter-origin distances were recorded. At least two origins must "
+                "fire in a realization."
+            )
         raise ValueError(
             "The selected output has no finite values. Try a positive firing rate or a "
             "longer replication-time cap."
@@ -613,6 +741,50 @@ def _result_plot_options(
         else "Line"
     )
     axis = result.position_kb if spec.kind == "space" else result.time_grid
+    lines: tuple[PreviewLine, ...] = ()
+    bands: tuple[PreviewBand, ...] = ()
+    ensemble_active = False
+    if output_label == "Replication timing" and plot_type == "Line":
+        profiles, standard_deviation = _replication_profile_arrays(result)
+        individual_lines: tuple[PreviewLine, ...] = ()
+        if profiles is not None and show_individual_profiles:
+            count = min(
+                max(1, int(individual_profile_count)),
+                profiles.shape[0],
+                _MAX_PREVIEW_PROFILES,
+            )
+            individual_lines = tuple(
+                PreviewLine(
+                    name="Individual simulations",
+                    x=result.position_kb,
+                    y=profile,
+                    color=color,
+                    opacity=0.22,
+                    width=max(0.55, float(line_width) * 0.55),
+                    show_in_legend=index == 0,
+                    z=2,
+                )
+                for index, profile in enumerate(profiles[:count])
+            )
+            ensemble_active = bool(individual_lines)
+        mean = np.asarray(values, dtype=float).reshape(-1)
+        if standard_deviation is not None and show_standard_deviation:
+            bands = (
+                PreviewBand(
+                    name="Mean ± SD",
+                    x=result.position_kb,
+                    lower=mean - standard_deviation,
+                    upper=mean + standard_deviation,
+                    color=color,
+                    opacity=0.16,
+                ),
+            )
+            ensemble_active = True
+        if ensemble_active:
+            lines = (
+                *individual_lines,
+                PreviewLine("Mean", result.position_kb, mean, color, z=4),
+            )
     return build_preview_plot_options(
         plot_type=plot_type,
         title=title.strip() or output_label,
@@ -645,11 +817,22 @@ def _result_plot_options(
         values=values.T if spec.kind == "xt" else values,
         x_axis=result.position_kb if spec.kind == "xt" else axis,
         y_axis=result.time_grid if spec.kind == "xt" else None,
+        lines=lines,
+        bands=bands,
         legend_position=legend_position,
         line_width=line_width,
         show_markers=show_markers,
         show_grid=show_grid,
-        interactive=spec.kind not in {"time", "xt"},
+        interactive=spec.kind not in {"time", "xt"} and not ensemble_active,
+        log_x=log_x,
+        invert_x=invert_x,
+        invert_z=invert_z,
+        show_histogram_statistics=show_histogram_statistics,
+        histogram_statistics_position=histogram_statistics_position,
+        histogram_bin_size=histogram_bin_size,
+        histogram_x_limits=histogram_x_limits,
+        histogram_touching=histogram_touching,
+        histogram_boundary=histogram_boundary,
     )
 
 
@@ -677,6 +860,18 @@ def _render_result_plot(
     line_width: float = 1.8,
     show_markers: bool = False,
     show_grid: bool = True,
+    log_x: bool = False,
+    invert_x: bool = False,
+    invert_z: bool = False,
+    show_histogram_statistics: bool = False,
+    histogram_statistics_position: str = "Top right",
+    histogram_bin_size: float | None = None,
+    histogram_x_limits: tuple[float, float] | None = None,
+    histogram_touching: bool = True,
+    histogram_boundary: str = "left",
+    show_individual_profiles: bool = False,
+    individual_profile_count: int = 10,
+    show_standard_deviation: bool = False,
 ) -> Any:
     """Render a bounded ECharts preview with shared zoom/download tools."""
 
@@ -702,6 +897,18 @@ def _render_result_plot(
         line_width=line_width,
         show_markers=show_markers,
         show_grid=show_grid,
+        log_x=log_x,
+        invert_x=invert_x,
+        invert_z=invert_z,
+        show_histogram_statistics=show_histogram_statistics,
+        histogram_statistics_position=histogram_statistics_position,
+        histogram_bin_size=histogram_bin_size,
+        histogram_x_limits=histogram_x_limits,
+        histogram_touching=histogram_touching,
+        histogram_boundary=histogram_boundary,
+        show_individual_profiles=show_individual_profiles,
+        individual_profile_count=individual_profile_count,
+        show_standard_deviation=show_standard_deviation,
     )
     return render_preview_chart(
         options,
@@ -719,9 +926,7 @@ def render(_navigate: Callable[[str], None]) -> None:
     restored_entry = consume_cached_workflow("simulation")
     restored_result = restored_entry.payload if restored_entry is not None else None
     latest_result: ConstantSimulationResult | None = (
-        restored_result
-        if isinstance(restored_result, ConstantSimulationResult)
-        else None
+        restored_result if isinstance(restored_result, ConstantSimulationResult) else None
     )
     result_chart: Any | None = None
     y_limits_automatic = True
@@ -849,7 +1054,13 @@ def render(_navigate: Callable[[str], None]) -> None:
                         with ui.column().classes("dn-setting-group"):
                             ui.label("Ensemble").classes("dn-setting-group-title")
                             replicates = (
-                                ui.number(label="Replicates", value=20, min=1, step=1)
+                                ui.number(
+                                    label="Replicates",
+                                    value=20,
+                                    min=1,
+                                    max=MAX_REPLICATES,
+                                    step=1,
+                                )
                                 .props("dense")
                                 .classes("dn-field dn-field-compact")
                                 .mark("simulation-replicates")
@@ -904,13 +1115,26 @@ def render(_navigate: Callable[[str], None]) -> None:
                                 .props("dense")
                                 .classes("dn-field dn-field-compact")
                             )
-                            track_detailed_outputs = ui.checkbox(
-                                "Track detailed outputs",
+                            track_time_outputs = ui.checkbox(
+                                "Track time courses",
                                 value=bool(
                                     latest_result is not None
-                                    and latest_result.detailed_outputs
+                                    and getattr(latest_result, "time_outputs", False)
+                                ),
+                            ).mark("simulation-track-time-outputs")
+                            track_time_outputs.tooltip(
+                                "Retain replicated fraction, fork counts, and firing-factor "
+                                "availability across time."
+                            )
+                            track_detailed_outputs = ui.checkbox(
+                                "Track space-time outputs",
+                                value=bool(
+                                    latest_result is not None and latest_result.detailed_outputs
                                 ),
                             ).mark("simulation-track-detailed-outputs")
+                            track_detailed_outputs.tooltip(
+                                "Retain position-by-time heatmaps; these require more memory."
+                            )
 
                         with ui.column().classes("dn-setting-group dn-fork-behaviour-group"):
                             ui.label("Fork behaviour").classes("dn-setting-group-title")
@@ -924,14 +1148,14 @@ def render(_navigate: Callable[[str], None]) -> None:
                                     with ui.element("div").classes("dn-setting-inline"):
                                         stall_rate = (
                                             ui.number(
-                                                label="Stall rate",
+                                                label="Stall rate (stalls/kb)",
                                                 value=0.0,
                                                 min=0.0,
-                                                max=1.0,
                                                 step=0.001,
                                             )
                                             .props("dense")
                                             .classes("dn-field dn-field-compact")
+                                            .mark("simulation-stall-rate-per-kb")
                                         )
                                         non_recovering = ui.checkbox("Non-recovering", value=True)
                                     stall_duration = (
@@ -950,6 +1174,41 @@ def render(_navigate: Callable[[str], None]) -> None:
                                         "value",
                                         backward=lambda value: not value,
                                     )
+                                    stall_probability = (
+                                        ui.label()
+                                        .classes("dn-settings-help")
+                                        .mark("simulation-stall-probability")
+                                    )
+
+                                    def sync_stall_probability() -> None:
+                                        try:
+                                            rate_value = stall_rate.value
+                                            bin_width_value = resolution_x.value
+                                            if rate_value is None or bin_width_value is None:
+                                                raise ValueError
+                                            rate = float(rate_value)
+                                            bin_width = float(bin_width_value)
+                                            if (
+                                                not math.isfinite(rate)
+                                                or rate < 0.0
+                                                or not math.isfinite(bin_width)
+                                                or bin_width <= 0.0
+                                            ):
+                                                raise ValueError
+                                        except (TypeError, ValueError):
+                                            stall_probability.text = (
+                                                "Converted automatically using the spatial resolution."
+                                            )
+                                            return
+                                        probability = -math.expm1(-(rate * bin_width))
+                                        stall_probability.text = (
+                                            f"At {bin_width:g} kb/bin: {probability:.1%} "
+                                            "probability per directed bin."
+                                        )
+
+                                    stall_rate.on_value_change(sync_stall_probability)
+                                    resolution_x.on_value_change(sync_stall_probability)
+                                    sync_stall_probability()
 
                                 with (
                                     ui.element("div")
@@ -998,12 +1257,37 @@ def render(_navigate: Callable[[str], None]) -> None:
                         raise ValueError("Y maximum must be greater than Y minimum.")
                     return limits
 
+                def active_plot_type() -> str:
+                    selected = str(output.value or "Replication timing")
+                    spec = _OUTPUT_SPECS.get(selected, _BASE_OUTPUTS["Replication timing"])
+                    requested_view = str(view.value or "Default")
+                    if spec.kind == "xt" and requested_view == "Default":
+                        return "Heatmap"
+                    if requested_view == "Boxplot":
+                        return "Boxplot"
+                    if spec.kind == "distribution" or requested_view == "Histogram":
+                        return "Histogram"
+                    return "Line"
+
                 def populate_automatic_y_limits(*, redraw: bool = True) -> None:
                     """Restore the selected output's data-derived Y range."""
 
                     nonlocal updating_y_limits, y_limits_automatic
                     y_limits_automatic = True
                     if latest_result is None:
+                        return
+                    if not plotting_settings_ready(
+                        plot_settings,
+                        plot_type=active_plot_type(),
+                        allow_empty_y_limits=y_limits_automatic,
+                    ):
+                        return
+                    profile_count = selected_profile_count()
+                    if (
+                        bool(show_individual_profiles.value)
+                        and available_profile_count() > 0
+                        and profile_count is None
+                    ):
                         return
                     try:
                         limits = _automatic_y_limits(
@@ -1013,6 +1297,26 @@ def render(_navigate: Callable[[str], None]) -> None:
                             histogram_bins=_integer(histogram_bins, "Histogram bins"),
                             density=bool(density.value),
                             log_y=bool(log_y.value),
+                            log_x=bool(log_x.value),
+                            histogram_bin_size=(
+                                float(plot_settings.histogram_bin_size.value)
+                                if plot_settings.histogram_bin_size.value is not None
+                                else None
+                            ),
+                            histogram_x_limits=histogram_x_limits_from_controls(
+                                plot_settings,
+                                log_x=bool(log_x.value),
+                            ),
+                            histogram_boundary=str(
+                                plot_settings.histogram_boundary.value or "left"
+                            ),
+                            show_individual_profiles=bool(
+                                show_individual_profiles.value
+                            ),
+                            individual_profile_count=profile_count or 1,
+                            show_standard_deviation=bool(
+                                show_standard_deviation.value
+                            ),
                         )
                     except ValueError:
                         limits = None
@@ -1049,12 +1353,15 @@ def render(_navigate: Callable[[str], None]) -> None:
                         spec = _OUTPUT_SPECS[selected_label]
                         normalized_dpi = int(get_export_settings().plot_dpi)
                         pixel_ratio = max(1.0, min(4.0, normalized_dpi / 96.0))
+                        capture_format = (
+                            "png" if str(file_format).casefold() == "png" else "svg"
+                        )
+                        capture_options: dict[str, Any] = {"type": capture_format}
+                        if capture_format == "png":
+                            capture_options["pixelRatio"] = pixel_ratio
                         data_uri = await result_chart.run_chart_method(
                             "getDataURL",
-                            {
-                                "type": "png",
-                                "pixelRatio": pixel_ratio,
-                            },
+                            capture_options,
                             timeout=10,
                         )
                         artifact = await run.io_bound(
@@ -1117,6 +1424,19 @@ def render(_navigate: Callable[[str], None]) -> None:
                     nonlocal result_chart
                     if latest_result is None:
                         return
+                    if not plotting_settings_ready(
+                        plot_settings,
+                        plot_type=active_plot_type(),
+                        allow_empty_y_limits=y_limits_automatic,
+                    ):
+                        return
+                    profile_count = selected_profile_count()
+                    if (
+                        bool(show_individual_profiles.value)
+                        and available_profile_count() > 0
+                        and profile_count is None
+                    ):
+                        return
                     result_chart = None
                     result_slot.clear()
                     with result_slot:
@@ -1125,7 +1445,7 @@ def render(_navigate: Callable[[str], None]) -> None:
                                 latest_result,
                                 output_label=str(output.value or "Replication timing"),
                                 title=str(title.value or ""),
-                                series_label=str(series_label.value or ""),
+                                series_label=str(output.value or "Replication timing"),
                                 x_axis_label=str(x_axis_label.value or ""),
                                 y_axis_label=str(y_axis_label.value or ""),
                                 color=str(line_or_bar_color.value or "#2c7f77"),
@@ -1135,6 +1455,34 @@ def render(_navigate: Callable[[str], None]) -> None:
                                 density=bool(density.value),
                                 show_legend=bool(show_legend.value),
                                 legend_position=str(legend_position.value or "Top right"),
+                                show_histogram_statistics=bool(
+                                    show_histogram_statistics.value
+                                ),
+                                histogram_statistics_position=str(
+                                    histogram_statistics_position.value or "Top right"
+                                ),
+                                histogram_bin_size=(
+                                    float(plot_settings.histogram_bin_size.value)
+                                    if plot_settings.histogram_bin_size.value is not None
+                                    else None
+                                ),
+                                histogram_x_limits=histogram_x_limits_from_controls(
+                                    plot_settings,
+                                    log_x=bool(log_x.value),
+                                ),
+                                histogram_touching=bool(
+                                    plot_settings.histogram_touching.value
+                                ),
+                                histogram_boundary=str(
+                                    plot_settings.histogram_boundary.value or "left"
+                                ),
+                                show_individual_profiles=bool(
+                                    show_individual_profiles.value
+                                ),
+                                individual_profile_count=profile_count or 1,
+                                show_standard_deviation=bool(
+                                    show_standard_deviation.value
+                                ),
                                 line_width=float(_number(line_width, "Curve thickness")),
                                 show_markers=False,
                                 show_grid=bool(show_grid.value),
@@ -1142,6 +1490,9 @@ def render(_navigate: Callable[[str], None]) -> None:
                                 log_y=bool(log_y.value),
                                 log_z=bool(log_z.value),
                                 invert_y=bool(invert_y.value),
+                                log_x=bool(log_x.value),
+                                invert_x=bool(invert_x.value),
+                                invert_z=bool(invert_z.value),
                                 # Automatic fields contain outward-rounded bounds
                                 # (or a fixed physical domain); applying the same
                                 # values keeps the editor and preview in agreement.
@@ -1151,7 +1502,18 @@ def render(_navigate: Callable[[str], None]) -> None:
                         except (RuntimeError, TypeError, ValueError) as exc:
                             result_chart = None
                             ui.notify(str(exc), type="negative")
-                            preview_plot("Output unavailable", kind="simulation")
+                            preview_plot(
+                                (
+                                    "No inter-origin distances were recorded; at least two "
+                                    "origins must fire in a realization."
+                                    if _OUTPUT_SPECS[
+                                        str(output.value or "Replication timing")
+                                    ].key
+                                    == "inter_origin_distances"
+                                    else "Output unavailable"
+                                ),
+                                kind="simulation",
+                            )
 
                 async def simulate() -> None:
                     nonlocal active_cancel, latest_result, result_chart, running
@@ -1186,6 +1548,7 @@ def render(_navigate: Callable[[str], None]) -> None:
                             seed,
                             time_window,
                             max_replication_time,
+                            track_time_outputs,
                             track_detailed_outputs,
                             stall_rate,
                             non_recovering,
@@ -1294,7 +1657,10 @@ def render(_navigate: Callable[[str], None]) -> None:
                             ),
                             missing_values=str(missing_values.value),
                             seed=_integer(seed, "Seed") if fixed_seed.value else None,
-                            stall_rate=_number(stall_rate, "Stall rate"),
+                            stall_rate_per_kb=_number(
+                                stall_rate,
+                                "Stall rate (stalls/kb)",
+                            ),
                             stall_duration=(
                                 math.inf
                                 if non_recovering.value
@@ -1313,6 +1679,7 @@ def render(_navigate: Callable[[str], None]) -> None:
                             firing_factor_fork_coupling=(
                                 bool(factor_coupling.value) if finite_pool.value else False
                             ),
+                            track_time_outputs=bool(track_time_outputs.value),
                             track_detailed_outputs=bool(track_detailed_outputs.value),
                         )
                         check_cancelled()
@@ -1337,6 +1704,7 @@ def render(_navigate: Callable[[str], None]) -> None:
                     status.text = "Preparing simulation..."
                     latest_result = None
                     result_chart = None
+                    sync_view_controls()
                     stats_container.visible = False
                     result_slot.clear()
                     with result_slot:
@@ -1375,6 +1743,17 @@ def render(_navigate: Callable[[str], None]) -> None:
                         )
                         geometry_stats.text = result.geometry.title()
                         latest_result = result
+                        sync_output_options()
+                        if result.inter_origin_distances_truncated:
+                            retained = result.outputs["inter_origin_distances"].size
+                            ui.notify(
+                                "Inter-origin distance output retained "
+                                f"{retained:,} of {result.inter_origin_distance_count:,} "
+                                "intervals for local preview and download.",
+                                type="warning",
+                            )
+                        histogram_bin_sync.sync_to_data(redraw=False)
+                        sync_view_controls()
                         populate_automatic_y_limits(redraw=False)
                         stats_container.visible = True
                         render_latest_result()
@@ -1444,9 +1823,23 @@ def render(_navigate: Callable[[str], None]) -> None:
                         output = (
                             ui.select(
                                 [
-                                    *list(_BASE_OUTPUTS),
+                                    *list(_STANDARD_OUTPUTS),
                                     *(
-                                        list(_DETAILED_OUTPUTS)
+                                        [
+                                            label
+                                            for label, spec in _TIME_OUTPUTS.items()
+                                            if spec.key in latest_result.outputs
+                                        ]
+                                        if latest_result is not None
+                                        and getattr(latest_result, "time_outputs", False)
+                                        else []
+                                    ),
+                                    *(
+                                        [
+                                            label
+                                            for label, spec in _SPACETIME_OUTPUTS.items()
+                                            if spec.key in latest_result.outputs
+                                        ]
                                         if latest_result is not None
                                         and latest_result.detailed_outputs
                                         else []
@@ -1496,7 +1889,6 @@ def render(_navigate: Callable[[str], None]) -> None:
 
                 plot_settings = preview_settings_controls(
                     initial_title="Replication timing",
-                    initial_series_label="Mean",
                     initial_x_label="Position (kb)",
                     initial_y_label="Replication timing",
                     on_reset_y_limits=lambda: populate_automatic_y_limits(),
@@ -1504,7 +1896,6 @@ def render(_navigate: Callable[[str], None]) -> None:
                         "container": "simulation-preview-settings",
                         "view": "simulation-view",
                         "title": "simulation-preview-title",
-                        "series_label": "simulation-series-label",
                         "x_axis_label": "simulation-x-axis-label",
                         "y_axis_label": "simulation-y-axis-label",
                         "primary_color": "simulation-line-or-bar-color",
@@ -1513,8 +1904,27 @@ def render(_navigate: Callable[[str], None]) -> None:
                         "legend_position": "simulation-legend-position",
                         "show_grid": "simulation-show-grid",
                         "heatmap_palette": "simulation-heatmap-palette",
+                        "log_x": "simulation-log-x",
+                        "invert_x": "simulation-invert-x",
+                        "log_y": "simulation-log-y",
+                        "invert_y": "simulation-invert-y",
                         "log_z": "simulation-log-z",
+                        "invert_z": "simulation-invert-z",
                         "histogram_bins": "simulation-histogram-bins",
+                        "histogram_bin_size": "simulation-histogram-bin-size",
+                        "histogram_touching": "simulation-histogram-touching",
+                        "histogram_boundary": "simulation-histogram-boundary",
+                        "ensemble_profile_options": "simulation-ensemble-profile-options",
+                        "show_individual_profiles": "simulation-show-individual-profiles",
+                        "individual_profile_count": "simulation-individual-profile-count",
+                        "show_standard_deviation": "simulation-show-standard-deviation",
+                        "histogram_x_minimum": "simulation-histogram-x-minimum",
+                        "histogram_x_maximum": "simulation-histogram-x-maximum",
+                        "reset_histogram_x_limits": "simulation-reset-histogram-x-limits",
+                        "show_histogram_statistics": "simulation-show-histogram-statistics",
+                        "histogram_statistics_position": (
+                            "simulation-histogram-statistics-position"
+                        ),
                         "density": "simulation-density",
                         "colorbar": "simulation-colorbar",
                         "y_minimum": "simulation-y-minimum",
@@ -1524,14 +1934,23 @@ def render(_navigate: Callable[[str], None]) -> None:
                 )
                 view = plot_settings.view
                 title = plot_settings.title
-                series_label = plot_settings.series_label
                 x_axis_label = plot_settings.x_axis_label
                 y_axis_label = plot_settings.y_axis_label
                 line_or_bar_color = plot_settings.primary_color
                 heatmap_palette = plot_settings.heatmap_palette
+                log_x = plot_settings.log_x
+                invert_x = plot_settings.invert_x
                 log_z = plot_settings.log_z
+                invert_z = plot_settings.invert_z
                 line_width = plot_settings.line_width
                 histogram_bins = plot_settings.histogram_bins
+                histogram_touching = plot_settings.histogram_touching
+                histogram_boundary = plot_settings.histogram_boundary
+                show_individual_profiles = plot_settings.show_individual_profiles
+                individual_profile_count = plot_settings.individual_profile_count
+                show_standard_deviation = plot_settings.show_standard_deviation
+                show_histogram_statistics = plot_settings.show_histogram_statistics
+                histogram_statistics_position = plot_settings.histogram_statistics_position
                 show_legend = plot_settings.show_legend
                 legend_position = plot_settings.legend_position
                 show_grid = plot_settings.show_grid
@@ -1547,6 +1966,24 @@ def render(_navigate: Callable[[str], None]) -> None:
                     on_download=download_raw,
                 )
 
+                def available_profile_count() -> int:
+                    if latest_result is None:
+                        return 0
+                    profiles, _standard_deviation = _replication_profile_arrays(latest_result)
+                    return 0 if profiles is None else int(profiles.shape[0])
+
+                def standard_deviation_available() -> bool:
+                    if latest_result is None:
+                        return False
+                    _profiles, standard_deviation = _replication_profile_arrays(latest_result)
+                    return standard_deviation is not None
+
+                def selected_profile_count() -> int | None:
+                    return _bounded_profile_count(
+                        individual_profile_count.value,
+                        available_profile_count(),
+                    )
+
                 def sync_view_controls() -> None:
                     """Show controls for the representation rendered by Default."""
 
@@ -1556,6 +1993,29 @@ def render(_navigate: Callable[[str], None]) -> None:
                         _BASE_OUTPUTS["Replication timing"],
                     )
                     requested_view = str(view.value or "Default")
+                    available_profiles = available_profile_count()
+                    allow_individual_profiles = (
+                        selected == "Replication timing"
+                        and requested_view == "Default"
+                        and available_profiles > 0
+                    )
+                    allow_standard_deviation = (
+                        selected == "Replication timing"
+                        and requested_view == "Default"
+                        and standard_deviation_available()
+                    )
+                    if allow_individual_profiles:
+                        maximum = min(_MAX_PREVIEW_PROFILES, available_profiles)
+                        individual_profile_count._props["max"] = maximum
+                        current_count = _bounded_profile_count(
+                            individual_profile_count.value,
+                            maximum,
+                        )
+                        if current_count is not None and (
+                            individual_profile_count.value != current_count
+                        ):
+                            individual_profile_count.value = current_count
+                        individual_profile_count.update()
                     if requested_view == "Default":
                         time_array = spec.kind == "xt"
                         histogram = spec.kind == "distribution"
@@ -1577,14 +2037,30 @@ def render(_navigate: Callable[[str], None]) -> None:
                         ),
                         allow_histogram=spec.kind != "xt",
                         allow_boxplot=spec.kind == "distribution",
+                        allow_individual_profiles=allow_individual_profiles,
+                        allow_standard_deviation=allow_standard_deviation,
                     )
 
                 def sync_output_options() -> None:
-                    """Expose detailed choices as soon as tracking is selected."""
+                    """Expose only outputs retained by the latest simulation."""
 
-                    labels = list(_BASE_OUTPUTS)
-                    if track_detailed_outputs.value:
-                        labels.extend(_DETAILED_OUTPUTS)
+                    labels = list(_STANDARD_OUTPUTS)
+                    if latest_result is None:
+                        if track_time_outputs.value:
+                            labels.extend(_TIME_OUTPUTS)
+                        if track_detailed_outputs.value:
+                            labels.extend(_SPACETIME_OUTPUTS)
+                    else:
+                        labels.extend(
+                            label
+                            for label, spec in _TIME_OUTPUTS.items()
+                            if spec.key in latest_result.outputs
+                        )
+                        labels.extend(
+                            label
+                            for label, spec in _SPACETIME_OUTPUTS.items()
+                            if spec.key in latest_result.outputs
+                        )
                     output.options = labels
                     selection_changed = output.value not in labels
                     if output.value not in labels:
@@ -1592,6 +2068,8 @@ def render(_navigate: Callable[[str], None]) -> None:
                     output.update()
                     if selection_changed:
                         sync_plot_labels()
+                    else:
+                        sync_view_controls()
 
                 def sync_plot_labels() -> None:
                     """Switch the existing result locally without starting a new run."""
@@ -1623,6 +2101,7 @@ def render(_navigate: Callable[[str], None]) -> None:
                     ):
                         control.update()
                     if latest_result is not None:
+                        histogram_bin_sync.sync_to_data(redraw=False)
                         populate_automatic_y_limits(redraw=False)
                         render_latest_result()
 
@@ -1640,36 +2119,74 @@ def render(_navigate: Callable[[str], None]) -> None:
                     y_axis_label.value = default_y_label
                     x_axis_label.update()
                     y_axis_label.update()
+                    histogram_bin_sync.sync_to_data(redraw=False)
                     refresh_axis_range()
 
+                def histogram_values() -> Any | None:
+                    if latest_result is None:
+                        return None
+                    selected = str(output.value or "Replication timing")
+                    spec = _OUTPUT_SPECS.get(selected, _BASE_OUTPUTS["Replication timing"])
+                    return latest_result.outputs.get(spec.key)
+
+                histogram_bin_sync = HistogramBinSynchronizer(
+                    plot_settings,
+                    values=histogram_values,
+                    on_valid_change=refresh_axis_range,
+                    log_x=lambda: bool(log_x.value),
+                )
+
+                def log_x_changed() -> None:
+                    histogram_bin_sync.sync_to_data(redraw=False)
+                    render_latest_result()
+
+                def ensemble_display_changed() -> None:
+                    sync_view_controls()
+                    refresh_axis_range()
+
+                def individual_profile_count_changed() -> None:
+                    if selected_profile_count() is not None:
+                        refresh_axis_range()
+
+                track_time_outputs.on_value_change(sync_output_options)
                 track_detailed_outputs.on_value_change(sync_output_options)
                 output.on_value_change(sync_plot_labels)
                 for plot_control in (
                     title,
-                    series_label,
                     x_axis_label,
                     y_axis_label,
                     line_or_bar_color,
                     line_width,
                     heatmap_palette,
+                    invert_x,
                     log_z,
+                    invert_z,
+                    show_histogram_statistics,
+                    histogram_statistics_position,
                     show_legend,
                     legend_position,
                     show_grid,
                     colorbar,
                     invert_y,
+                    histogram_touching,
                 ):
                     plot_control.on_value_change(render_latest_result)
+                histogram_boundary.on_value_change(refresh_axis_range)
+                show_individual_profiles.on_value_change(ensemble_display_changed)
+                show_standard_deviation.on_value_change(ensemble_display_changed)
+                individual_profile_count.on_value_change(individual_profile_count_changed)
+                show_histogram_statistics.on_value_change(sync_view_controls)
                 show_legend.on_value_change(sync_view_controls)
                 view.on_value_change(sync_view_axis_labels)
                 density.on_value_change(sync_view_axis_labels)
-                for axis_control in (histogram_bins, log_y):
-                    axis_control.on_value_change(refresh_axis_range)
+                log_x.on_value_change(log_x_changed)
+                log_y.on_value_change(refresh_axis_range)
                 y_minimum.on_value_change(use_custom_y_limits)
                 y_maximum.on_value_change(use_custom_y_limits)
                 sync_view_controls()
 
                 if latest_result is not None:
+                    histogram_bin_sync.sync_to_data(redraw=False)
                     position_steps = np.diff(latest_result.position_kb)
                     time_steps = np.diff(latest_result.time_grid)
                     position_resolution = (
@@ -1681,8 +2198,7 @@ def render(_navigate: Callable[[str], None]) -> None:
                         f"{position_resolution:g} kb/bin | {time_resolution:g} min/bin"
                     )
                     region_stats.text = (
-                        f"{latest_result.position_kb[0]:g}-"
-                        f"{latest_result.position_kb[-1]:g} kb"
+                        f"{latest_result.position_kb[0]:g}-{latest_result.position_kb[-1]:g} kb"
                     )
                     geometry_stats.text = latest_result.geometry.title()
                     for value in stats.values():
@@ -1691,3 +2207,20 @@ def render(_navigate: Callable[[str], None]) -> None:
                     status.text = "Restored from Cached Files"
                     populate_automatic_y_limits(redraw=False)
                     render_latest_result()
+
+                def clear_simulation_output() -> None:
+                    nonlocal latest_result, result_chart
+                    latest_result = None
+                    result_chart = None
+                    progress.visible = False
+                    stats_container.visible = False
+                    status.text = "Ready"
+                    sync_view_controls()
+                    result_slot.clear()
+                    with result_slot:
+                        preview_plot("No result yet", kind="simulation")
+
+                current_session_cache().register_output_clearer(
+                    "simulation",
+                    clear_simulation_output,
+                )

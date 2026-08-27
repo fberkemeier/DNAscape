@@ -1097,6 +1097,14 @@ def _read_rdata_npz(path, array_key=None, data_form="auto"):
     return values, table, labels, data_form
 
 
+def _selected_profile_values(series):
+    """Preserve genomic gaps while removing only wide-table tail padding."""
+
+    values = series.to_numpy(dtype=float)
+    present = np.flatnonzero(~np.isnan(values))
+    return values[: present[-1] + 1] if present.size else values
+
+
 def _rdata_payload_from_source(
     source,
     *,
@@ -1135,13 +1143,13 @@ def _rdata_payload_from_source(
             if chromosome is not None:
                 if chromosome not in table.columns:
                     raise KeyError(f"Column {chromosome!r} not found in {source_path}.")
-                values = table[chromosome].dropna().to_numpy(dtype=float)
+                values = _selected_profile_values(table[chromosome])
                 labels = [str(chromosome)]
                 table = None
             elif value_column is not None:
                 if value_column not in table.columns:
                     raise KeyError(f"Column {value_column!r} not found in {source_path}.")
-                values = table[value_column].dropna().to_numpy(dtype=float)
+                values = _selected_profile_values(table[value_column])
                 labels = [str(value_column)]
                 table = None
             else:

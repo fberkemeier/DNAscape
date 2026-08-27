@@ -115,7 +115,9 @@ def test_shell_exposes_complete_navigation_and_local_entrypoint() -> None:
     assert 'mark("app-menu")' in source
     assert 'mark("menu-theme")' in source
     assert 'mark("theme-action-icon")' in source
-    assert 'theme_icon = "light_mode" if use_light_theme else "dark_mode"' in source
+    assert "ui.dark_mode(None)" in source
+    assert 'None: ("System theme", "brightness_auto", "light")' in source
+    assert "dark_mode.auto()" in source
     assert 'aria-label="Go to Overview"' in source
     assert "__dnascapeFileDragFeedback" in source
     assert "dn-file-drag-active" in source
@@ -160,8 +162,11 @@ def test_workflow_copy_and_data_sections_use_updated_ui_semantics() -> None:
         assert "icon=DATA_ICON" in ui_sources[page]
         assert 'panel_title("Controls")' in ui_sources[page]
         if page == "data_management.py":
-            assert 'panel_title("Download")' in ui_sources[page]
-            assert "preview_plot(" not in ui_sources[page]
+            assert 'panel_title("Generated files")' in ui_sources[page]
+            assert 'expansion("Export settings"' in ui_sources[page]
+            assert '"show_preview": False' in ui_sources[page]
+            assert 'mark("data-manager-result-preview")' in ui_sources[page]
+            assert "render_preview_chart(" in ui_sources[page]
         else:
             assert "preview_plot(" in ui_sources[page]
         assert "ui.radio(" not in ui_sources[page]
@@ -172,10 +177,12 @@ def test_workflow_copy_and_data_sections_use_updated_ui_semantics() -> None:
         assert "with action_dock():" in ui_sources[page]
         assert "stat_strip(" in ui_sources[page]
         assert "raw_output_controls(" in ui_sources[page]
+        workflow = page.removesuffix(".py")
         preview_title = ui_sources[page].index('panel_title("Preview")')
+        result_plot = ui_sources[page].index(f'.mark("{workflow}-result-container")')
         plotting_settings = ui_sources[page].index("preview_settings_controls(")
         raw_output = ui_sources[page].index("raw_output_controls(")
-        assert preview_title < plotting_settings < raw_output
+        assert preview_title < result_plot < plotting_settings < raw_output
     plotting_source = ui_sources["plotting.py"]
     assert "with action_dock():" in plotting_source
     assert "stat_strip(" not in plotting_source
@@ -184,26 +191,31 @@ def test_workflow_copy_and_data_sections_use_updated_ui_semantics() -> None:
     data_section = plotting_source.index('"Data",')
     plotting_settings = plotting_source.index("plot_settings = preview_settings_controls(")
     preview_title = plotting_source.index('panel_title("Preview")')
-    assert data_section < plotting_settings < preview_title
-    assert "dn-control-plot-settings" in plotting_source
+    assert data_section < preview_title < plotting_settings
+    assert "dn-control-plot-settings" not in plotting_source
+    assert 'label="Layout"' in plotting_source
+    assert '"Curves"' in plotting_source
     assert "dn-preview-settings-section" in preview_source
     assert "dn-preview-settings-grid" in preview_source
     for label in (
         "Title",
         "X-axis label",
         "Y-axis label",
-        "Curve color",
         "Heatmap palette",
-        "Histogram bins",
+        "Number of bins",
+        "Bin size",
         "Colorbar",
-        "Log Y",
-        "Log Z",
-        "Invert Y",
     ):
         assert f'label="{label}"' in preview_source or f'("{label}"' in preview_source
-    assert 'label="Second curve color"' in preview_source
-    assert '"First curve color"' in preview_source
-    assert '"Bar color"' in preview_source
+    assert '"Color",' in preview_source
+    for axis in ("X", "Y", "Z"):
+        assert f'ui.label("{axis}").classes("dn-axis-option-label")' in preview_source
+    assert preview_source.count('ui.checkbox("Log"') == 3
+    assert preview_source.count('ui.checkbox("Invert"') == 3
+    assert "Series label" not in preview_source
+    assert 'compact_color_input(' in preview_source
+    assert '"Second color"' in preview_source
+    assert '"Bar color"' not in preview_source
     for icon in ("fit_screen", "download"):
         assert f'icon="{icon}"' in ui_sources["common.py"]
     assert 'icon="delete_outline"' not in ui_sources["common.py"]
@@ -224,8 +236,9 @@ def test_workflow_copy_and_data_sections_use_updated_ui_semantics() -> None:
     assert 'classes("dn-upload-field")' in ui_sources["common.py"]
     assert 'classes("dn-upload-formats")' in ui_sources["common.py"]
     assert '"dragenter"' in ui_sources["common.py"]
-    assert '"dragleave"' in ui_sources["common.py"]
-    assert "dn-upload-dragging" in ui_sources["common.py"]
+    assert "dn-upload-dragging" not in ui_sources["common.py"]
+    assert "dn-upload-file-dragging" not in ui_sources["common.py"]
+    assert "expand-separator" not in ui_sources["common.py"]
     assert 'value="Upload a profile"' in ui_sources["common.py"]
     assert "<polyline points=" not in ui_sources["common.py"]
     assert 'mark("preview-guidance")' in ui_sources["common.py"]
@@ -277,8 +290,10 @@ def test_styles_include_theme_and_responsive_breakpoints() -> None:
     assert ".dn-app-menu-item" in styles
     assert ".dn-main-logo-frame" in styles
     assert "mask-image: radial-gradient" in styles
-    assert ".dn-upload-dragging" in styles
     assert ".dn-file-drag-active .dn-upload-compact" in styles
+    uploader_dnd = _css_declarations(styles, ".dn-upload-compact .q-uploader__dnd")
+    assert uploader_dnd["background"] == "transparent !important"
+    assert uploader_dnd["outline"] == "0 !important"
     assert 'content: "check"' not in styles
     assert 'content: "Choose a file"' in styles
     assert 'content: " or drag it here"' in styles
@@ -363,6 +378,14 @@ def test_navigation_theme_and_compact_height_styles_are_explicit() -> None:
     assert "body.body--dark .dn-nav-button .q-btn__content" in styles
     assert "body.body--dark .dn-nav-button .q-btn__content .block" in styles
     assert "body.body--dark .dn-nav-active" in styles
+
+    dark_theme = _css_declarations(styles, "body.body--dark")
+    assert dark_theme["--dn-accent"] == "#da8068"
+    assert dark_theme["--q-primary"] == "var(--dn-accent)"
+    dark_primary = _css_declarations(styles, "body.body--dark .text-primary")
+    assert dark_primary["color"] == "var(--dn-accent) !important"
+    cache_icon = _css_declarations(styles, ".dn-cache-icon-action .q-icon")
+    assert cache_icon["color"] == "currentColor !important"
 
     # Both logo sizes use the same slightly-left, slightly-raised crescent cutout.
     assert re.search(r"circle 2\.5\d*px at 47\.95% 3(?:\.0)?%", styles)
@@ -457,10 +480,10 @@ def test_simulation_summary_and_raw_download_css_preserve_alignment() -> None:
     assert run_stats["display"] == "contents"
 
     raw_row = _css_declarations(styles, ".dn-raw-output-row")
-    assert raw_row["display"] == "flex"
-    assert raw_row["align-items"] == "flex-end"
+    assert raw_row["display"] == "grid"
+    assert raw_row["grid-template-columns"] == "2rem minmax(0, 1fr) auto auto"
     download = _css_declarations(styles, ".dn-raw-output-download")
-    assert download["margin-left"] == "auto"
+    assert download["justify-self"] == "end"
 
 
 def test_reused_logo_assets_exist() -> None:

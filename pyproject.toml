@@ -28,12 +28,21 @@ genomics = [
 app = [
   "nicegui>=3.12,<4",
   "py7zr>=1,<2",
+  # Preserve ECharts paths and text when converting SVG previews to PDF.
+  "svglib>=1.5,<2",
+  # Fast BigWig reader where a binary wheel exists; the pure-Python fallback
+  # keeps the local app usable on Windows and on newer Python releases.
+  "pybigtools>=0.3,<0.4; python_version < '3.14'",
+  "gwseq-io-pp>=0.0.3,<0.1",
 ]
 test = [
   "pytest>=8",
   # Exercise the local NiceGUI interface with its real component tree.
   "nicegui>=3.12,<4",
   "py7zr>=1,<2",
+  "svglib>=1.5,<2",
+  "pybigtools>=0.3,<0.4; python_version < '3.14'",
+  "gwseq-io-pp>=0.0.3,<0.1",
 ]
 
 [project.urls]

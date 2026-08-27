@@ -317,7 +317,9 @@ def _binary_bytes(selected: SelectedMappingOutput, file_format: str) -> bytes:
         "data_form": np.asarray(selected.data_form),
         "semantic_form": np.asarray(selected.semantic_form),
     }
-    if selected.data_form in {"space", "spacetime"} and selected.position_kb.size:
+    if selected.key == "fit_history":
+        payload["iteration"] = np.arange(1, values.size + 1, dtype=int)
+    elif selected.data_form in {"space", "spacetime"} and selected.position_kb.size:
         payload["position_kb"] = selected.position_kb
     if selected.data_form in {"time", "spacetime"}:
         payload["time_min"] = selected.time_min
@@ -338,7 +340,8 @@ def _number_text(value: float) -> str:
 
 
 def _column_name(value: str) -> str:
-    return re.sub(r"[^a-z0-9]+", "_", value.strip().lower()).strip("_") or "value"
+    normalized = re.sub(r"[^a-z0-9]+", "_", value.strip().lower()).strip("_") or "value"
+    return "mse" if normalized == "fit_history" else normalized
 
 
 __all__ = [

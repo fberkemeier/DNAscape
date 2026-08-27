@@ -1,0 +1,763 @@
+from __future__ import annotations
+
+import asyncio
+from typing import Any
+
+import numpy as np
+import pytest
+
+from app.preview_plotting import (
+    PreviewBand,
+    PreviewChartHandle,
+    PreviewLine,
+    approximate_histogram_bin_count,
+    approximate_histogram_bin_size,
+    build_preview_plot_options,
+    histogram_domain,
+    nice_linear_limits,
+)
+
+
+class _CaptureChart:
+    def __init__(self, options: dict[str, Any], response: str) -> None:
+        self.options = options
+        self.response = response
+        self.update_calls = 0
+        self.method_calls: list[tuple[str, tuple[Any, ...], float]] = []
+
+    def update(self) -> None:
+        self.update_calls += 1
+
+    async def run_chart_method(
+        self,
+        name: str,
+        *args: Any,
+        timeout: float = 1,
+    ) -> str:
+        self.method_calls.append((name, args, timeout))
+        await asyncio.sleep(0)
+        return self.response
+
+
+def test_vector_capture_is_reused_until_the_visible_chart_changes() -> None:
+    async def exercise() -> None:
+        nested_data = [[0.0, 1.0], [1.0, 2.0]]
+        canvas = _CaptureChart(
+            {"animation": False, "series": [{"type": "line", "data": nested_data}]},
+            "canvas-data",
+        )
+        vector = _CaptureChart({"animation": False}, "svg-data")
+        handle = PreviewChartHandle(canvas=canvas, vector=vector)
+
+        first, second = await asyncio.gather(
+            handle.run_chart_method("getDataURL", {"type": "svg"}, timeout=10),
+            handle.run_chart_method("getDataURL", {"type": "svg"}, timeout=10),
+        )
+
+        assert first == second == "svg-data"
+        assert vector.update_calls == 1
+        assert len(vector.method_calls) == 1
+        assert vector.options == canvas.options
+        assert vector.options is not canvas.options
+        assert vector.options["series"] is canvas.options["series"]
+
+        await handle.run_chart_method(
+            "getDataURL",
+            {"type": "svg", "backgroundColor": "#ffffff"},
+            timeout=10,
+        )
+        assert vector.update_calls == 1
+        assert len(vector.method_calls) == 2
+
+        canvas.options["series"][0]["data"] = [[0.0, 3.0], [1.0, 4.0]]
+        handle.update()
+        refreshed = await handle.run_chart_method(
+            "getDataURL",
+            {"type": "svg"},
+            timeout=10,
+        )
+
+        assert refreshed == "svg-data"
+        assert canvas.update_calls == 1
+        assert vector.update_calls == 2
+        assert len(vector.method_calls) == 3
+        assert vector.options == canvas.options
+
+    asyncio.run(exercise())
+
+
+def _histogram_options(
+    values: object,
+    **overrides: object,
+) -> dict[str, Any]:
+    settings: dict[str, object] = {
+        "plot_type": "Histogram",
+        "title": "Distribution",
+        "x_label": "Value",
+        "y_label": "Count",
+        "color": "#2c7f77",
+        "palette": "viridis",
+        "histogram_bins": 4,
+        "density": False,
+        "show_legend": False,
+        "show_colorbar": False,
+        "log_y": False,
+        "invert_y": False,
+        "y_limits": None,
+        "series_label": "Values",
+        "values": values,
+    }
+    settings.update(overrides)
+    return build_preview_plot_options(**settings)  # type: ignore[arg-type]
+
+
+def test_histogram_bin_count_and_size_are_data_derived() -> None:
+    values = np.asarray([0.0, 2.0, 6.0, 10.0])
+
+    assert approximate_histogram_bin_size(values, 4) == 2.5
+    assert approximate_histogram_bin_count(values, 2.0) == 5
+
+
+def test_histogram_bin_helpers_ignore_nonfinite_values_and_bound_counts() -> None:
+    values = np.asarray([np.nan, -np.inf, 0.0, 10.0, np.inf])
+
+    assert approximate_histogram_bin_size(values, 4) == 2.5
+    assert approximate_histogram_bin_count(values, 0.1) == 100
+    assert approximate_histogram_bin_count([0.0, 10_000.0], 0.1) == 2_000
+    assert approximate_histogram_bin_count(values, None) is None
+    assert approximate_histogram_bin_count(values, 0.0) is None
+    assert approximate_histogram_bin_size(values, None) is None
+
+
+def test_constant_histogram_domains_match_numpy_and_stay_positive_on_log_x() -> None:
+    linear = histogram_domain([4.0, 4.0])
+    assert linear is not None
+    np.testing.assert_allclose(linear[1], (3.5, 4.5))
+    assert approximate_histogram_bin_size([4.0, 4.0], 5) == 0.2
+
+    logarithmic = histogram_domain([-2.0, 0.0, 0.1, 0.1], log_x=True)
+    assert logarithmic is not None
+    assert logarithmic[0].tolist() == [0.1, 0.1]
+    assert 0.0 < logarithmic[1][0] < 0.1 < logarithmic[1][1]
+
+
+def test_log_histogram_synchronization_uses_only_positive_values() -> None:
+    values = np.asarray([-100.0, 0.0, 1.0, 11.0, np.nan])
+
+    assert approximate_histogram_bin_size(values, 5, log_x=True) == 2.0
+    assert approximate_histogram_bin_count(values, 2.0, log_x=True) == 5
+    assert approximate_histogram_bin_count([-2.0, 0.0], 1.0, log_x=True) is None
+
+
+def test_histogram_x_limits_drive_exact_widths_and_bin_counts() -> None:
+    values = np.asarray([0.0, 2.0, 4.0, 6.0, 8.0])
+
+    assert approximate_histogram_bin_size(values, 4, x_limits=(2.0, 6.0)) == 1.0
+    assert (
+        approximate_histogram_bin_count(
+            values,
+            0.3,
+            x_limits=(2.0, 6.0),
+        )
+        == 14
+    )
+
+
+def test_histogram_renderer_respects_custom_x_range_and_arbitrary_bin_size() -> None:
+    options = _histogram_options(
+        [0.0, 0.2, 0.4, 0.6, 0.8, 1.0],
+        histogram_bin_size=0.125,
+        histogram_x_limits=(0.25, 0.75),
+        show_histogram_statistics=True,
+    )
+
+    assert options["xAxis"]["min"] == pytest.approx(0.25)
+    assert options["xAxis"]["max"] == pytest.approx(0.75)
+    assert len(options["series"][0]["data"]) == 4
+    assert options["graphic"][0]["style"]["text"] == (
+        "Mean       0.5\nMedian    0.5\nStd dev   0.1"
+    )
+
+
+def test_histogram_statistics_are_optional_and_positioned_like_a_legend() -> None:
+    assert _histogram_options([1.0, 2.0, 3.0, 4.0])["graphic"] == []
+
+    options = _histogram_options(
+        [1.0, 2.0, 3.0, 4.0],
+        show_histogram_statistics=True,
+        histogram_statistics_position="Bottom left",
+    )
+    graphic = options["graphic"]
+    assert isinstance(graphic, list)
+    summary = graphic[0]
+    assert summary["left"] == 84
+    assert summary["bottom"] == 8
+    assert options["grid"]["bottom"] >= 100
+    assert "top" not in summary
+    assert "right" not in summary
+    assert summary["style"]["text"] == "Mean       2.5\nMedian    2.5\nStd dev   1.118"
+    assert summary["z"] == 10_000
+    assert summary["z2"] == 10_000
+    assert summary["zlevel"] == 20
+
+
+def test_shared_grid_keeps_axis_titles_inside_every_cartesian_plot() -> None:
+    common = {
+        "title": "Preview",
+        "x_label": "A deliberately descriptive horizontal axis",
+        "y_label": "A deliberately descriptive vertical axis",
+        "color": "#2c7f77",
+        "palette": "viridis",
+        "histogram_bins": 4,
+        "density": False,
+        "show_legend": False,
+        "show_colorbar": False,
+        "log_y": False,
+        "invert_y": False,
+        "y_limits": None,
+        "series_label": "Values",
+    }
+    options = [
+        build_preview_plot_options(
+            plot_type="Line",
+            values=np.asarray([1.0, 2.0, 3.0]),
+            x_axis=np.asarray([0.0, 1.0, 2.0]),
+            **common,
+        ),
+        build_preview_plot_options(
+            plot_type="Histogram",
+            values=np.asarray([1.0, 2.0, 3.0]),
+            **common,
+        ),
+        build_preview_plot_options(
+            plot_type="Boxplot",
+            values=np.asarray([1.0, 2.0, 3.0]),
+            **common,
+        ),
+    ]
+
+    for plot in options:
+        # The complete gutter is calculated explicitly; containLabel would
+        # reserve the tick width for a second time and create excess padding.
+        assert plot["grid"]["containLabel"] is False
+        assert plot["grid"]["left"] >= plot["yAxis"]["nameGap"]
+        assert plot["grid"]["bottom"] > plot["xAxis"]["nameGap"]
+        assert plot["xAxis"]["nameTextStyle"]["fontSize"] == 11
+        assert plot["yAxis"]["nameTextStyle"]["fontSize"] == 11
+        assert plot["yAxis"]["axisLabel"]["fontSize"] == 10
+        assert plot["yAxis"]["axisLabel"]["margin"] == 7
+
+    # These explicit defaults clear values left by ECharts' live option merge
+    # when a numeric preview is replaced by the categorical boxplot view.
+    boxplot = options[-1]
+    assert boxplot["xAxis"]["axisTick"]["customValues"] is None
+    assert boxplot["xAxis"]["axisLabel"]["customValues"] is None
+    assert boxplot["xAxis"]["splitLine"]["showMinLine"] is True
+    assert boxplot["xAxis"]["splitLine"]["showMaxLine"] is True
+
+
+def test_heatmap_scale_is_compact_and_labels_its_vertical_bar_cleanly() -> None:
+    options = build_preview_plot_options(
+        plot_type="Heatmap",
+        title="Kinetic field",
+        x_label="Position (kb)",
+        y_label="Time (min)",
+        color="#2c7f77",
+        palette="viridis",
+        histogram_bins=4,
+        density=False,
+        show_legend=False,
+        show_colorbar=True,
+        log_y=False,
+        invert_y=False,
+        y_limits=None,
+        series_label="Firing rate",
+        values=np.asarray([[1.0, 2.0], [3.0, 4.0]]),
+        x_axis=np.asarray([0.0, 1.0]),
+        y_axis=np.asarray([0.0, 5.0]),
+    )
+
+    scale = options["visualMap"]
+    assert scale["orient"] == "vertical"
+    assert scale["text"] == ["4", "0"]
+    assert scale["textStyle"]["align"] == "center"
+    assert scale["textGap"] == 5
+    assert options["grid"]["right"] - scale["right"] - scale["itemWidth"] <= 50
+    assert options["graphic"][0]["rotation"] == pytest.approx(np.pi / 2)
+    assert options["graphic"][0]["right"] < scale["right"]
+
+
+def test_log_histogram_statistics_match_the_values_that_are_actually_plotted() -> None:
+    options = _histogram_options(
+        [-100.0, 0.0, 1.0, 3.0, np.nan],
+        log_x=True,
+        show_histogram_statistics=True,
+    )
+
+    assert options["graphic"][0]["style"]["text"] == ("Mean       2\nMedian    2\nStd dev   1")
+
+
+def test_histogram_boundary_mode_moves_exact_internal_edges_without_losing_endpoints() -> None:
+    settings = {
+        "histogram_bins": 2,
+        "histogram_x_limits": (0.0, 2.0),
+    }
+
+    left = _histogram_options([0.0, 1.0, 2.0], **settings)
+    right = _histogram_options(
+        [0.0, 1.0, 2.0],
+        histogram_boundary="right",
+        **settings,
+    )
+
+    assert [item[2] for item in left["series"][0]["data"]] == [1.0, 2.0]
+    assert [item[2] for item in right["series"][0]["data"]] == [2.0, 1.0]
+    assert sum(item[2] for item in left["series"][0]["data"]) == 3.0
+    assert sum(item[2] for item in right["series"][0]["data"]) == 3.0
+
+
+@pytest.mark.parametrize("boundary", ("left", "right"))
+def test_histogram_density_integrates_to_one_for_each_boundary_mode(boundary: str) -> None:
+    options = _histogram_options(
+        [0.0, 0.5, 1.0, 1.5, 2.0],
+        histogram_bins=2,
+        histogram_x_limits=(0.0, 2.0),
+        histogram_boundary=boundary,
+        density=True,
+    )
+
+    data = options["series"][0]["data"]
+    assert sum((item[1] - item[0]) * item[2] for item in data) == pytest.approx(1.0)
+
+
+def test_histogram_custom_rectangles_preserve_exact_edges_and_spacing_choice() -> None:
+    touching = _histogram_options(
+        [0.0, 0.4, 0.8, 1.0],
+        histogram_bin_size=0.4,
+        histogram_x_limits=(0.0, 1.0),
+        histogram_touching=True,
+    )
+    spaced = _histogram_options(
+        [0.0, 0.4, 0.8, 1.0],
+        histogram_bin_size=0.4,
+        histogram_x_limits=(0.0, 1.0),
+        histogram_touching=False,
+    )
+
+    touching_series = touching["series"][0]
+    assert touching_series["type"] == "custom"
+    assert [item[:2] for item in touching_series["data"]] == [
+        [0.0, 0.4],
+        [0.4, 0.8],
+        [0.8, 1.0],
+    ]
+    assert "* 0" in touching_series[":renderItem"]
+    assert "* 0.14" in spaced["series"][0][":renderItem"]
+
+
+def test_default_line_domains_use_exact_dynamic_padding_not_rounded_ticks() -> None:
+    options = build_preview_plot_options(
+        plot_type="Line",
+        title="Measured profile",
+        x_label="Position",
+        y_label="Signal",
+        color="#2c7f77",
+        palette="viridis",
+        histogram_bins=20,
+        density=False,
+        show_legend=False,
+        show_colorbar=False,
+        log_y=False,
+        invert_y=False,
+        y_limits=None,
+        series_label="Measured",
+        values=np.asarray([11.2, 12.5, 14.8]),
+        x_axis=np.asarray([2.3, 5.1, 9.7]),
+    )
+
+    assert options["xAxis"]["min"] == pytest.approx(2.3 - 7.4 * 0.04)
+    assert options["xAxis"]["max"] == pytest.approx(9.7 + 7.4 * 0.04)
+    assert options["yAxis"]["min"] == pytest.approx(11.2 - 3.6 * 0.04)
+    assert options["yAxis"]["max"] == pytest.approx(14.8 + 3.6 * 0.04)
+    assert options["xAxis"]["min"] != pytest.approx(2.0)
+    assert options["yAxis"]["max"] != pytest.approx(15.0)
+    assert options["xAxis"]["axisLabel"]["customValues"] == [4.0, 6.0, 8.0]
+    assert options["yAxis"]["axisLabel"]["customValues"] == [12.0, 13.0, 14.0]
+    assert options["xAxis"]["axisLabel"]["showMinLabel"] is True
+    assert options["xAxis"]["axisLabel"]["showMaxLabel"] is True
+    assert options["yAxis"]["axisLabel"]["showMinLabel"] is True
+    assert options["yAxis"]["axisLabel"]["showMaxLabel"] is True
+    assert options["xAxis"]["splitLine"]["showMinLine"] is True
+    assert options["xAxis"]["splitLine"]["showMaxLine"] is True
+    assert (
+        options["xAxis"]["splitLine"]["customValues"]
+        == options["xAxis"]["axisTick"]["customValues"]
+    )
+    assert 2.3 not in options["xAxis"]["axisTick"]["customValues"]
+    assert 9.7 not in options["xAxis"]["axisTick"]["customValues"]
+
+
+def test_dynamic_axis_margin_scales_with_the_data_span() -> None:
+    small = nice_linear_limits(10.0, 20.0)
+    large = nice_linear_limits(100.0, 200.0)
+
+    assert 10.0 - small[0] == pytest.approx(0.4)
+    assert small[1] - 20.0 == pytest.approx(0.4)
+    assert 100.0 - large[0] == pytest.approx(4.0)
+    assert large[1] - 200.0 == pytest.approx(4.0)
+
+
+def test_real_zero_endpoints_remain_labeled_while_only_outer_margin_is_hidden() -> None:
+    options = build_preview_plot_options(
+        plot_type="Line",
+        title="Zero based",
+        x_label="Position",
+        y_label="Signal",
+        color="#2c7f77",
+        palette="viridis",
+        histogram_bins=20,
+        density=False,
+        show_legend=False,
+        show_colorbar=False,
+        log_y=False,
+        invert_y=False,
+        y_limits=None,
+        series_label="Signal",
+        values=np.asarray([0.0, 0.5, 1.0]),
+        x_axis=np.asarray([0.0, 5.0, 10.0]),
+    )
+
+    assert options["xAxis"]["min"] == 0.0
+    assert options["yAxis"]["min"] == 0.0
+    assert options["xAxis"]["axisLabel"]["showMinLabel"] is True
+    assert options["yAxis"]["axisLabel"]["showMinLabel"] is True
+    assert options["xAxis"]["axisLabel"]["showMaxLabel"] is True
+    assert options["yAxis"]["axisLabel"]["showMaxLabel"] is True
+
+
+def test_line_grid_keeps_real_endpoint_ticks_without_gridding_padded_limits() -> None:
+    options = build_preview_plot_options(
+        plot_type="Line",
+        title="Replication timing",
+        x_label="Position (kb)",
+        y_label="Replication timing",
+        color="#2c7f77",
+        palette="viridis",
+        histogram_bins=20,
+        density=False,
+        show_legend=True,
+        show_colorbar=False,
+        log_y=False,
+        invert_y=False,
+        y_limits=None,
+        series_label="Replication timing",
+        values=np.asarray([18.0, 35.0, 23.0]),
+        x_axis=np.asarray([0.0, 500.0, 1_000.0]),
+    )
+
+    # The exact data range plus dynamic whitespace remains untouched.
+    assert options["xAxis"]["min"] == 0.0
+    assert options["xAxis"]["max"] == pytest.approx(1_040.0)
+    assert options["yAxis"]["min"] == pytest.approx(17.32)
+    assert options["yAxis"]["max"] == pytest.approx(35.68)
+
+    # Labels and ticks are globally aligned rather than offset by the padded
+    # minimum. Real endpoint ticks retain their grid lines; the padded 1,040
+    # boundary is absent from customValues and therefore has no grid line.
+    assert options["xAxis"]["axisTick"]["customValues"] == [
+        0.0,
+        200.0,
+        400.0,
+        600.0,
+        800.0,
+        1_000.0,
+    ]
+    assert (
+        options["xAxis"]["axisLabel"]["customValues"]
+        == options["xAxis"]["axisTick"]["customValues"]
+    )
+    assert options["xAxis"]["splitLine"]["showMinLine"] is True
+    assert options["xAxis"]["splitLine"]["showMaxLine"] is True
+    assert options["yAxis"]["axisTick"]["customValues"] == [20.0, 25.0, 30.0, 35.0]
+    assert options["yAxis"]["splitLine"]["showMinLine"] is True
+    assert options["yAxis"]["splitLine"]["showMaxLine"] is True
+
+
+def test_histogram_grid_keeps_aligned_maximum_tick_but_not_padded_limit() -> None:
+    options = build_preview_plot_options(
+        plot_type="Histogram",
+        title="Origins",
+        x_label="Origins",
+        y_label="Count",
+        color="#2c7f77",
+        palette="viridis",
+        histogram_bins=5,
+        density=False,
+        show_legend=False,
+        show_colorbar=False,
+        log_y=False,
+        invert_y=False,
+        y_limits=None,
+        series_label="Origins",
+        values=np.r_[np.repeat(1.0, 12), 2.0, 3.0, 4.0, 5.0],
+    )
+
+    assert options["yAxis"]["max"] == pytest.approx(12.48)
+    assert options["yAxis"]["axisTick"]["customValues"] == [
+        0.0,
+        2.0,
+        4.0,
+        6.0,
+        8.0,
+        10.0,
+        12.0,
+    ]
+    assert 12.48 not in options["yAxis"]["axisTick"]["customValues"]
+    assert (
+        options["yAxis"]["splitLine"]["customValues"]
+        == options["yAxis"]["axisTick"]["customValues"]
+    )
+    assert options["yAxis"]["splitLine"]["showMaxLine"] is True
+
+
+def test_explicit_and_fixed_scientific_y_domains_are_not_padded_or_hidden() -> None:
+    common = {
+        "plot_type": "Line",
+        "title": "Directionality",
+        "x_label": "Position",
+        "y_label": "Fork directionality",
+        "color": "#2c7f77",
+        "palette": "viridis",
+        "histogram_bins": 20,
+        "density": False,
+        "show_legend": False,
+        "show_colorbar": False,
+        "log_y": False,
+        "invert_y": False,
+        "series_label": "Directionality",
+        "values": np.asarray([-0.35, 0.1, 0.72]),
+        "x_axis": np.asarray([0.0, 1.0, 2.0]),
+    }
+    fixed = build_preview_plot_options(y_limits=(-1.0, 1.0), **common)
+    custom = build_preview_plot_options(y_limits=(-0.5, 0.8), **common)
+
+    assert (fixed["yAxis"]["min"], fixed["yAxis"]["max"]) == (-1.0, 1.0)
+    assert fixed["yAxis"]["axisLabel"]["showMinLabel"] is True
+    assert fixed["yAxis"]["axisLabel"]["showMaxLabel"] is True
+    assert (custom["yAxis"]["min"], custom["yAxis"]["max"]) == (-0.5, 0.8)
+    assert custom["yAxis"]["axisLabel"]["showMinLabel"] is True
+
+
+def test_y_axis_name_gap_tracks_tick_label_width_without_excess_spacing() -> None:
+    common = {
+        "plot_type": "Line",
+        "title": "Signal",
+        "x_label": "Position",
+        "y_label": "Signal",
+        "color": "#2c7f77",
+        "palette": "viridis",
+        "histogram_bins": 20,
+        "density": False,
+        "show_legend": False,
+        "show_colorbar": False,
+        "log_y": False,
+        "invert_y": False,
+        "y_limits": None,
+        "series_label": "Signal",
+        "x_axis": np.asarray([0.0, 1.0, 2.0]),
+    }
+    compact = build_preview_plot_options(values=np.asarray([1.0, 2.0, 3.0]), **common)
+    scientific = build_preview_plot_options(
+        values=np.asarray([1.2e-7, 5.0e-7, 9.8e-7]),
+        **common,
+    )
+
+    assert compact["yAxis"]["nameGap"] < 64
+    assert scientific["yAxis"]["nameGap"] > compact["yAxis"]["nameGap"]
+    assert compact["grid"]["left"] >= compact["yAxis"]["nameGap"]
+    assert scientific["grid"]["left"] >= scientific["yAxis"]["nameGap"]
+
+
+def test_line_layout_uses_actual_aligned_ticks_without_double_reserving_space() -> None:
+    """Match the scale and compact left gutter of the reported timing plot."""
+
+    options = build_preview_plot_options(
+        plot_type="Line",
+        title="Replication timing",
+        x_label="Position (kb)",
+        y_label="Replication timing",
+        color="#2c7f77",
+        palette="viridis",
+        histogram_bins=20,
+        density=False,
+        show_legend=True,
+        show_colorbar=False,
+        log_y=False,
+        invert_y=False,
+        y_limits=None,
+        series_label="Replication timing",
+        values=np.asarray([18.0, 35.0, 23.0]),
+        x_axis=np.asarray([0.0, 500.0, 1_000.0]),
+    )
+
+    # The domain keeps its exact margin, while explicit clean ticks avoid both
+    # the old 22.32-style labels and their unnecessary extra left padding.
+    assert options["yAxis"]["min"] == pytest.approx(17.32)
+    assert options["yAxis"]["axisLabel"]["customValues"] == [20.0, 25.0, 30.0, 35.0]
+    assert options["yAxis"]["nameGap"] <= 30
+    assert options["grid"]["left"] >= options["yAxis"]["nameGap"] + 9
+    assert options["grid"]["left"] <= 40
+    assert options["grid"]["containLabel"] is False
+
+
+def test_five_character_y_ticks_receive_extra_title_clearance() -> None:
+    options = build_preview_plot_options(
+        plot_type="Line",
+        title="Small signal",
+        x_label="Position",
+        y_label="Signal",
+        color="#2c7f77",
+        palette="viridis",
+        histogram_bins=20,
+        density=False,
+        show_legend=False,
+        show_colorbar=False,
+        log_y=False,
+        invert_y=False,
+        y_limits=None,
+        series_label="Signal",
+        values=np.asarray([0.001, 0.009, 0.004]),
+        x_axis=np.asarray([0.0, 1.0, 2.0]),
+    )
+
+    assert "0.002" in [f"{value:.5g}" for value in options["yAxis"]["axisLabel"]["customValues"]]
+    assert options["yAxis"]["nameGap"] >= 48
+    assert options["grid"]["left"] >= options["yAxis"]["nameGap"] + 9
+    assert options["grid"]["left"] <= 60
+
+
+def test_bottom_line_legend_is_below_axes_with_dedicated_grid_clearance() -> None:
+    common = {
+        "plot_type": "Line",
+        "title": "Curves",
+        "x_label": "Position",
+        "y_label": "Signal",
+        "color": "#2c7f77",
+        "palette": "viridis",
+        "histogram_bins": 20,
+        "density": False,
+        "show_legend": True,
+        "show_colorbar": False,
+        "log_y": False,
+        "invert_y": False,
+        "y_limits": None,
+        "series_label": "Signal",
+        "values": np.asarray([1.0, 2.0, 3.0]),
+        "x_axis": np.asarray([0.0, 1.0, 2.0]),
+    }
+    top = build_preview_plot_options(legend_position="Top right", **common)
+    bottom = build_preview_plot_options(legend_position="Bottom right", **common)
+
+    assert bottom["legend"]["bottom"] == 8
+    assert bottom["legend"]["orient"] == "horizontal"
+    assert bottom["grid"]["bottom"] == top["grid"]["bottom"] + 48
+
+
+def test_every_interactive_plot_uses_two_decimal_tooltip_formatting() -> None:
+    common = {
+        "title": "Preview",
+        "x_label": "X",
+        "y_label": "Y",
+        "color": "#2c7f77",
+        "palette": "viridis",
+        "histogram_bins": 4,
+        "density": False,
+        "show_legend": False,
+        "show_colorbar": False,
+        "log_y": False,
+        "invert_y": False,
+        "y_limits": None,
+        "series_label": "Values",
+        "interactive": True,
+    }
+    plots = (
+        build_preview_plot_options(
+            plot_type="Line",
+            values=np.asarray([1.234, 2.345]),
+            x_axis=np.asarray([0.123, 1.234]),
+            **common,
+        ),
+        build_preview_plot_options(
+            plot_type="Histogram",
+            values=np.asarray([1.234, 2.345, 3.456]),
+            **common,
+        ),
+        build_preview_plot_options(
+            plot_type="Boxplot",
+            values=np.asarray([1.234, 2.345, 3.456]),
+            **common,
+        ),
+        build_preview_plot_options(
+            plot_type="Heatmap",
+            values=np.asarray([[1.234, 2.345], [3.456, 4.567]]),
+            x_axis=np.asarray([0.123, 1.234]),
+            y_axis=np.asarray([5.678, 6.789]),
+            **common,
+        ),
+    )
+
+    for plot in plots:
+        assert "toFixed(2)" in plot["tooltip"][":valueFormatter"]
+        assert "toFixed(2)" in plot["tooltip"]["axisPointer"]["label"][":formatter"]
+    assert len(plots[-1]["series"]) == 2
+    assert len(plots[-1]["series"][1]["data"]) <= 2_400
+
+
+def test_line_renderer_supports_grouped_individual_curves_and_a_filled_band() -> None:
+    axis = np.asarray([0.0, 1.0, 2.0])
+    options = build_preview_plot_options(
+        plot_type="Line",
+        title="Replication timing",
+        x_label="Position (kb)",
+        y_label="Replication timing",
+        color="#2c7f77",
+        palette="viridis",
+        histogram_bins=20,
+        density=False,
+        show_legend=True,
+        show_colorbar=False,
+        log_y=False,
+        invert_y=False,
+        y_limits=None,
+        series_label="Mean",
+        lines=(
+            PreviewLine(
+                "Individual simulations",
+                axis,
+                np.asarray([1.0, 2.0, 3.0]),
+                "#2c7f77",
+                opacity=0.2,
+                width=0.8,
+            ),
+            PreviewLine("Mean", axis, np.asarray([2.0, 3.0, 4.0]), "#2c7f77"),
+        ),
+        bands=(
+            PreviewBand(
+                "Mean ± SD",
+                axis,
+                np.asarray([1.5, 2.5, 3.5]),
+                np.asarray([2.5, 3.5, 4.5]),
+                "#2c7f77",
+            ),
+        ),
+    )
+
+    assert options["series"][0]["type"] == "custom"
+    assert options["series"][0]["name"] == "Mean ± SD"
+    assert options["series"][1]["lineStyle"]["opacity"] == pytest.approx(0.2)
+    assert options["series"][1]["lineStyle"]["width"] == pytest.approx(0.8)
+    assert options["legend"]["data"] == [
+        "Individual simulations",
+        "Mean",
+        "Mean ± SD",
+    ]
