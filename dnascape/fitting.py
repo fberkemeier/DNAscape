@@ -17,7 +17,7 @@ from .mapping import (
     map_replicated_fraction_xt,
 )
 from .simulation import rsim
-from .utils import etaferr, mean_squared_error, smoothf
+from .utils import check_cancelled, etaferr, mean_squared_error, smoothf
 
 
 class _FitConverged(Exception):
@@ -254,6 +254,7 @@ def map_timing_firing(
     mse = mean_squared_error(T[crop], y[crop])
     best_x = np.asarray(x, dtype=float).copy()
     best_mse = mse
+    best_timing_fit = np.asarray(y, dtype=float).copy()
 
     if stall_rate > 0. or variable_fork_speed:
         maxiter0 = 0
@@ -264,6 +265,7 @@ def map_timing_firing(
     start_time = time.time()
 
     for it in range(1, maxiter0 + 1):
+        check_cancelled()
         x = update_firing_rate(T, y, x)
         y = map_firing_timing(
             x,
@@ -276,6 +278,7 @@ def map_timing_firing(
         if mse < best_mse:
             best_mse = mse
             best_x = np.asarray(x, dtype=float).copy()
+            best_timing_fit = np.asarray(y, dtype=float).copy()
 
         done = it == maxiter0 or _error_reached(mse, error)
         if verbose and (it % print_every == 0 or done):
@@ -310,6 +313,7 @@ def map_timing_firing(
         start_time = time.time()
     
         for k in range(iterations):
+            check_cancelled()
             simres = rsim(
                 firing_rate=rates,
                 sim_number=sim_number,
@@ -328,6 +332,7 @@ def map_timing_firing(
             if mse < best_mse:
                 best_mse = mse
                 best_rates = rates.copy()
+                best_timing_fit = np.asarray(T_pred, dtype=float).copy()
 
             eps = 1e-12
             ratio = (T_pred + eps) / (T_target + eps)
@@ -350,7 +355,10 @@ def map_timing_firing(
     if save_errQ:
         savecsv(arr=mse_list, chr_number=chr_number, stitle="fit_error", outpath="fit_error")
         
-    return x
+    return _RmapInfoArray(
+        x,
+        {"replication_timing_fit": best_timing_fit},
+    )
 
 
 def _time_axis_from_timing(relative_timing, resolution_time=5.0, time_grid=None):
@@ -677,6 +685,13 @@ class _RmapInfoArray(np.ndarray):
 
     def __array_finalize__(self, obj):
         self._rmap_info = getattr(obj, "_rmap_info", {})
+
+
+class _RmapInfoFloat(float):
+    def __new__(cls, value, info=None):
+        obj = super().__new__(cls, value)
+        obj._rmap_info = dict(info or {})
+        return obj
 
 
 def _trapz_weights(time_axis):
@@ -1839,12 +1854,14 @@ def map_timing_constant_firing(
     print_every = max(1, int(print_every))
     best_rate = rate
     best_mse = np.inf
+    best_timing_fit = None
     start_time = time.time()
 
     for it in range(1, maxiter + 1):
+        check_cancelled()
         if variable_fork_speed:
             seed = None if refine_seed is None else int(refine_seed) + it - 1
-            predicted = rsim(
+            predicted_full = rsim(
                 firing_rate=rate,
                 fork_speed=fork_speed,
                 sim_number=sim_number,
@@ -1856,7 +1873,7 @@ def map_timing_constant_firing(
                 verbose=False,
             )["replication_timing"]
         else:
-            predicted = map_firing_timing(
+            predicted_full = map_firing_timing(
                 rate,
                 fork_speed=fork_speed,
                 resolution=resolution,
@@ -1865,7 +1882,7 @@ def map_timing_constant_firing(
                 n_bins=T.size,
             )
         observed = T[crop]
-        predicted = predicted[crop]
+        predicted = predicted_full[crop]
         ok = (
             np.isfinite(observed)
             & np.isfinite(predicted)
@@ -1878,6 +1895,7 @@ def map_timing_constant_firing(
         if mse < best_mse:
             best_mse = mse
             best_rate = rate
+            best_timing_fit = np.asarray(predicted_full, dtype=float).copy()
         ratio = float(np.nanmedian(predicted[ok] / observed[ok]))
         if not np.isfinite(ratio) or ratio <= 0:
             break
@@ -1889,7 +1907,12 @@ def map_timing_constant_firing(
         if done and it != maxiter:
             break
 
-    return best_rate
+    info = (
+        {}
+        if best_timing_fit is None
+        else {"replication_timing_fit": best_timing_fit}
+    )
+    return _RmapInfoFloat(best_rate, info)
 
 
 def map_timing_firing_constant_speed(

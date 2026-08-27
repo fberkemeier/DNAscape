@@ -61,7 +61,7 @@ body {
 .dn-header-badge {
   color: var(--dn-accent) !important;
   font-size: 0.62rem;
-  letter-spacing: 0.08em;
+  letter-spacing: 0;
 }
 
 .dn-menu-button,
@@ -77,8 +77,34 @@ body {
   color: var(--dn-text) !important;
 }
 
-/* The drawer control reads as a miniature side panel, with the built-in
-   chevron showing the direction of the next action. */
+/* The drawer control sits inside the navigation surface. It remains tabbable
+   while visually quiet, then reveals itself when the drawer is engaged. */
+.dn-drawer-toggle-slot {
+  align-items: center;
+  display: flex;
+  height: 2rem;
+  justify-content: center;
+  position: absolute;
+  right: 0.45rem;
+  top: 0.4rem;
+  width: 2rem;
+  z-index: 6;
+}
+
+/* The open control is deliberately outside QDrawer: once navigation is fully
+   closed it stays visible at the same height, without reserving a mini rail. */
+.dn-drawer-expand-slot {
+  align-items: center;
+  display: flex;
+  height: 2rem;
+  justify-content: center;
+  left: 0.45rem;
+  position: fixed;
+  top: 0.4rem;
+  width: 2rem;
+  z-index: 2050;
+}
+
 .dn-drawer-toggle {
   background: transparent !important;
   border: 0 !important;
@@ -90,12 +116,18 @@ body {
   min-width: 2rem !important;
   padding: 0 !important;
   position: relative;
-  transition: background 120ms ease, color 120ms ease;
+  transition:
+    background 120ms ease,
+    color 120ms ease,
+    opacity 120ms ease,
+    transform 120ms ease;
   width: 2rem;
 }
 
 .dn-drawer-toggle .q-icon {
   font-size: 1.15rem !important;
+  font-variation-settings: "FILL" 0, "wght" 300, "GRAD" 0, "opsz" 20;
+  font-weight: 300;
 }
 
 .dn-drawer-toggle .q-focus-helper {
@@ -109,6 +141,22 @@ body {
 .dn-drawer-toggle:focus-visible {
   outline: 2px solid var(--dn-accent);
   outline-offset: 2px;
+}
+
+@media (hover: hover) and (pointer: fine) {
+  .dn-drawer .dn-drawer-toggle {
+    opacity: 0;
+    pointer-events: none;
+    transform: translateX(0.22rem);
+  }
+
+  .dn-drawer:hover .dn-drawer-toggle,
+  .dn-drawer:focus-within .dn-drawer-toggle,
+  .dn-drawer .dn-drawer-toggle:focus-visible {
+    opacity: 1;
+    pointer-events: auto;
+    transform: translateX(0);
+  }
 }
 
 .dn-app-menu-button {
@@ -195,6 +243,179 @@ body.body--dark .dn-app-menu {
   color: var(--dn-accent) !important;
 }
 
+.dn-settings-dialog {
+  background: var(--dn-panel) !important;
+  border: 1px solid var(--dn-line);
+  border-radius: 8px !important;
+  color: var(--dn-text) !important;
+  gap: 0.8rem !important;
+  max-width: min(34rem, calc(100vw - 2rem));
+  padding: 1rem !important;
+  width: 100%;
+}
+
+.dn-settings-dialog-head {
+  align-items: center;
+  margin: 0;
+  min-height: 2rem;
+  width: 100%;
+}
+
+.dn-settings-dialog .dn-settings-grid {
+  gap: 0.6rem;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+
+.dn-about-dialog {
+  gap: 0.68rem !important;
+  max-width: min(36rem, calc(100vw - 2rem));
+}
+
+.dn-about-identity {
+  align-items: center;
+  display: flex;
+  flex-direction: column;
+  padding: 0.05rem 0 0.15rem;
+  width: 100%;
+}
+
+.dn-about-logo {
+  display: block;
+  height: auto;
+  max-width: 100%;
+  width: 20.5rem;
+}
+
+body.body--dark .dn-about-logo {
+  filter: invert(1) hue-rotate(180deg) saturate(0.95) brightness(1.08);
+}
+
+.dn-about-meta {
+  align-items: center;
+  color: var(--dn-muted);
+  gap: 0.55rem !important;
+  justify-content: center;
+  margin-top: 0.15rem;
+}
+
+.dn-about-version {
+  color: var(--dn-text);
+  font-size: 0.72rem;
+  font-weight: 700;
+}
+
+.dn-about-local {
+  border-left: 1px solid var(--dn-line);
+  font-size: 0.7rem;
+  padding-left: 0.55rem;
+}
+
+.dn-about-copy {
+  color: var(--dn-muted);
+  font-size: 0.8rem;
+  line-height: 1.5;
+}
+
+.dn-about-summary {
+  margin: 0 auto;
+  max-width: 32rem;
+  text-align: center;
+}
+
+.dn-about-capabilities {
+  border-bottom: 1px solid var(--dn-line);
+  border-top: 1px solid var(--dn-line);
+  display: grid;
+  gap: 0;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  margin-top: 0.1rem;
+  width: 100%;
+}
+
+.dn-about-capability {
+  align-items: flex-start;
+  color: var(--dn-muted);
+  flex-wrap: nowrap;
+  gap: 0.4rem !important;
+  min-width: 0;
+  padding: 0.65rem 0.55rem;
+}
+
+.dn-about-capability + .dn-about-capability {
+  border-left: 1px solid var(--dn-line);
+}
+
+.dn-about-capability .q-icon {
+  color: var(--dn-accent);
+  flex: 0 0 auto;
+  font-size: 1rem;
+  margin-top: 0.04rem;
+}
+
+.dn-about-capability .q-label {
+  font-size: 0.7rem;
+  line-height: 1.35;
+}
+
+.dn-about-separator {
+  display: none;
+}
+
+.dn-about-author {
+  align-items: center;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.25rem 0.65rem;
+  justify-content: space-between;
+  width: 100%;
+}
+
+.dn-about-author-name {
+  color: var(--dn-text);
+  font-size: 0.76rem;
+  font-weight: 620;
+}
+
+.dn-about-email {
+  color: var(--dn-accent) !important;
+  font-size: 0.74rem;
+  font-weight: 650;
+}
+
+.dn-about-links {
+  align-items: center;
+  gap: 0.95rem !important;
+  width: 100%;
+}
+
+.dn-about-link {
+  align-items: center;
+  color: var(--dn-muted) !important;
+  display: inline-flex;
+  font-size: 0.72rem;
+  font-weight: 620;
+  gap: 0.3rem;
+  text-decoration: none !important;
+}
+
+.dn-about-link:hover,
+.dn-about-link:focus-visible {
+  color: var(--dn-accent) !important;
+}
+
+.dn-about-link .q-icon,
+.dn-about-github-icon,
+.dn-about-github-icon svg {
+  height: 0.95rem;
+  width: 0.95rem;
+}
+
+.dn-about-copyright {
+  color: var(--dn-muted);
+  font-size: 0.65rem;
+  margin-top: 0.05rem;
+}
+
 .dn-drawer {
   background: var(--dn-sidebar) !important;
   border-right: 1px solid var(--dn-line) !important;
@@ -223,6 +444,7 @@ body.body--dark .dn-app-menu {
   overflow-x: hidden;
   overflow-y: hidden;
   padding: 0.9rem 0.9rem 3rem;
+  position: relative;
   width: 100%;
   scrollbar-width: none;
 }
@@ -320,6 +542,8 @@ body.body--dark .dn-logo-link .dn-sidebar-logo {
 .dn-nav-button .q-icon {
   color: var(--dn-accent);
   font-size: 1.18rem;
+  font-variation-settings: "FILL" 0, "wght" 300, "GRAD" 0, "opsz" 20;
+  font-weight: 300;
   margin-right: 0.5rem;
 }
 
@@ -361,17 +585,88 @@ body.body--dark .dn-logo-link .dn-sidebar-logo {
 }
 
 .dn-plot-icon-axis {
-  opacity: 0.82;
-  stroke-width: 1.65;
+  opacity: 0.78;
+  stroke-width: 1.45;
 }
 
 .dn-plot-icon-line {
-  stroke-width: 1.9;
+  stroke-width: 1.65;
 }
 
 .dn-plot-icon-point {
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 1.15;
+  vector-effect: non-scaling-stroke;
+}
+
+/* Code-native navigation symbols use outline geometry, avoiding the large
+   accent-colour blocks produced by filled Material glyphs. */
+.dn-outline-icon,
+.dn-nav-outline-icon {
+  color: var(--dn-accent);
+  display: inline-flex;
+  flex: 0 0 auto;
+  height: 1.18rem;
+  justify-content: center;
+  line-height: 0;
+  width: 1.18rem;
+}
+
+.dn-nav-outline-icon {
+  margin-right: 0.5rem;
+}
+
+.dn-outline-icon svg,
+.dn-nav-outline-icon svg,
+svg.dn-outline-icon,
+svg.dn-nav-outline-icon {
+  display: block;
+  height: 100%;
+  overflow: visible;
+  width: 100%;
+}
+
+.dn-outline-icon path,
+.dn-outline-icon circle,
+.dn-outline-icon ellipse,
+.dn-outline-icon rect,
+.dn-outline-icon line,
+.dn-outline-icon polyline,
+.dn-outline-icon polygon,
+.dn-nav-outline-icon path,
+.dn-nav-outline-icon circle,
+.dn-nav-outline-icon ellipse,
+.dn-nav-outline-icon rect,
+.dn-nav-outline-icon line,
+.dn-nav-outline-icon polyline,
+.dn-nav-outline-icon polygon {
+  fill: none;
+  stroke: currentColor;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+  stroke-width: 1.55;
+  vector-effect: non-scaling-stroke;
+}
+
+.dn-outline-icon .dn-icon-dot,
+.dn-nav-outline-icon .dn-icon-dot {
   fill: currentColor;
   stroke: none;
+}
+
+.dn-workflow-symbol {
+  align-items: center;
+  display: inline-flex;
+  height: 1em;
+  justify-content: center;
+  line-height: 0;
+  width: 1em;
+}
+
+.dn-workflow-symbol .dn-outline-icon {
+  height: 1em;
+  width: 1em;
 }
 
 .dn-nav-button:hover {
@@ -468,7 +763,7 @@ body.body--dark .dn-nav-active {
   color: var(--dn-accent);
   font-size: 0.77rem;
   font-weight: 750;
-  letter-spacing: 0.1em;
+  letter-spacing: 0;
   line-height: 1.2;
   text-transform: uppercase;
 }
@@ -477,7 +772,7 @@ body.body--dark .dn-nav-active {
   color: var(--dn-text);
   font-size: clamp(1.65rem, 2.5vw, 2.35rem);
   font-weight: 650;
-  letter-spacing: -0.026em;
+  letter-spacing: 0;
   line-height: 1.1;
   margin-top: 0.15rem;
 }
@@ -505,7 +800,7 @@ body.body--dark .dn-nav-active {
   color: var(--dn-accent);
   font-size: 0.8rem;
   font-weight: 750;
-  letter-spacing: 0.07em;
+  letter-spacing: 0;
   margin-bottom: 0.1rem;
   text-transform: uppercase;
 }
@@ -537,6 +832,7 @@ body.body--dark .dn-nav-active {
   container-name: dn-controls;
   container-type: inline-size;
   gap: 0 !important;
+  height: max(14rem, calc(100dvh - 14rem));
   max-height: max(14rem, calc(100dvh - 14rem));
   min-height: 0;
   overflow-x: hidden;
@@ -555,41 +851,66 @@ body.body--dark .dn-nav-active {
 
 .dn-preview-card {
   box-sizing: border-box;
+  container-name: dn-preview;
+  container-type: inline-size;
+  gap: 0 !important;
+  height: max(14rem, calc(100dvh - 14rem));
   max-height: max(14rem, calc(100dvh - 14rem));
-  min-height: min(32rem, max(14rem, calc(100dvh - 14rem)));
+  min-height: 0;
   overflow-x: hidden;
   overflow-y: auto;
   overscroll-behavior: contain;
+  padding: 0.9rem 0.95rem !important;
+  position: relative;
+  scroll-padding-block: 0.75rem;
   scrollbar-color: color-mix(in srgb, var(--dn-muted) 45%, transparent) transparent;
   scrollbar-gutter: stable both-edges;
   scrollbar-width: thin;
 }
 
+.dn-preview-card .dn-panel-title {
+  margin-bottom: 0.35rem;
+}
+
+/* QCard is a flex column. Its children must contribute their natural height
+   so the card itself becomes the single scroll container instead of squeezing
+   the last expansion (most visibly Raw data) out of view. */
+.dn-control-card > *,
+.dn-preview-card > * {
+  flex: 0 0 auto;
+  min-width: 0;
+}
+
 .dn-expansion {
   background: transparent !important;
   border: 0 !important;
-  border-radius: 0 !important;
+  border-radius: 6px !important;
   color: var(--dn-text) !important;
-  margin: 0.1rem 0 !important;
+  flex: 0 0 auto;
+  margin: 0.14rem 0 !important;
+  min-width: 0;
   width: 100%;
 }
 
 .dn-expansion + .dn-expansion {
-  margin-top: 0.16rem !important;
+  margin-top: 0.2rem !important;
 }
 
 .dn-expansion > .q-expansion-item__container > .q-item {
+  background: var(--dn-soft) !important;
   border-radius: 6px;
+  box-sizing: border-box;
   color: var(--dn-text) !important;
   font-size: 0.87rem;
   font-weight: 600;
   min-height: 2.25rem;
-  padding: 0.25rem 0.2rem;
+  padding: 0.25rem 0.58rem;
   transition: background-color 120ms ease;
+  width: 100%;
 }
 
 .dn-expansion > .q-expansion-item__container > .q-item:hover {
-  background: color-mix(in srgb, var(--dn-soft) 72%, transparent);
+  background: color-mix(in srgb, var(--dn-active) 72%, var(--dn-panel)) !important;
 }
 
 .dn-expansion > .q-expansion-item__container > .q-item:focus-visible {
@@ -604,7 +925,9 @@ body.body--dark .dn-nav-active {
 }
 
 .dn-control-card .dn-expansion .q-expansion-item__border,
-.dn-control-card .dn-expansion > .q-expansion-item__container > .q-separator {
+.dn-control-card .dn-expansion > .q-expansion-item__container > .q-separator,
+.dn-preview-card .dn-expansion .q-expansion-item__border,
+.dn-preview-card .dn-expansion > .q-expansion-item__container > .q-separator {
   display: none !important;
   opacity: 0 !important;
 }
@@ -617,6 +940,24 @@ body.body--dark .dn-nav-active {
 .dn-expansion .q-item__section--avatar .q-icon,
 .dn-expansion .q-item__section--side .q-icon {
   font-size: 1.15rem;
+  font-variation-settings: "FILL" 0, "wght" 300, "GRAD" 0, "opsz" 20;
+  font-weight: 300;
+}
+
+.dn-expansion-data-icon {
+  color: var(--dn-muted);
+  height: 1.15rem;
+  width: 1.15rem;
+}
+
+/* The same data symbol remains accent-coloured in navigation, but is muted
+   when it is acting as section furniture inside a workflow card. The inner
+   SVG carries its own outline class, so both wrapper and SVG need scoping. */
+.dn-control-card .dn-expansion-data-icon,
+.dn-control-card .dn-expansion-data-icon .dn-outline-icon,
+.dn-preview-card .dn-expansion-data-icon,
+.dn-preview-card .dn-expansion-data-icon .dn-outline-icon {
+  color: var(--dn-muted) !important;
 }
 
 .dn-expansion-content {
@@ -642,6 +983,508 @@ body.body--dark .dn-nav-active {
 
 .dn-field-grid-three {
   grid-template-columns: repeat(3, minmax(0, 1fr));
+}
+
+/* Firing-rate and fork-speed sources follow the same compact visual rhythm as
+   the themed simulation settings below them. */
+.dn-simulation-data-grid {
+  align-items: stretch;
+  display: grid;
+  gap: 0;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  width: 100%;
+}
+
+/* Simulation settings are grouped by purpose and use three compact lanes when
+   the controls panel has room. The groups are separated by fine rules rather
+   than nested cards, keeping the section calm and space-efficient. */
+.dn-simulation-settings-grid,
+.dn-settings-grid {
+  align-items: start;
+  display: grid;
+  gap: 0.45rem 0;
+  width: 100%;
+}
+
+.dn-simulation-settings-grid {
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+
+.dn-settings-grid {
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+}
+
+.dn-setting-group,
+.dn-settings-theme {
+  align-content: start;
+  display: grid;
+  gap: 0.34rem;
+  min-width: 0;
+  padding: 0.08rem 0.48rem 0.26rem;
+}
+
+.dn-setting-group:first-child,
+.dn-settings-theme:first-child {
+  padding-left: 0;
+}
+
+.dn-setting-group:last-child,
+.dn-settings-theme:last-child {
+  padding-right: 0;
+}
+
+.dn-setting-group + .dn-setting-group,
+.dn-settings-theme + .dn-settings-theme {
+  border-left: 1px solid color-mix(in srgb, var(--dn-line) 78%, transparent);
+}
+
+/* Data selection is already separated by its grid and headings. Keeping it
+   rule-free avoids visual noise while retaining dividers in settings groups. */
+.dn-data-section .dn-setting-group + .dn-setting-group,
+.dn-data-section .dn-mapping-input-card:nth-child(even) {
+  border-left: 0;
+}
+
+.dn-setting-group-title,
+.dn-settings-theme-title {
+  color: var(--dn-muted);
+  font-size: 0.69rem;
+  font-weight: 700;
+  letter-spacing: 0;
+  line-height: 1.25;
+  margin: 0 0 0.08rem;
+  text-transform: uppercase;
+}
+
+/* Related controls within a theme use whitespace and a fine divider instead
+   of another nested card, so the hierarchy remains clear but lightweight. */
+.dn-setting-subgroup {
+  align-content: start;
+  display: grid;
+  gap: 0.32rem;
+  min-width: 0;
+  padding: 0.08rem 0 0.2rem;
+  width: 100%;
+}
+
+.dn-setting-subgroup + .dn-setting-subgroup {
+  border-top: 1px solid color-mix(in srgb, var(--dn-line) 62%, transparent);
+  margin-top: 0.12rem;
+  padding-top: 0.48rem;
+}
+
+.dn-setting-subgroup-title {
+  color: var(--dn-muted);
+  font-size: 0.68rem;
+  font-weight: 620;
+  letter-spacing: 0;
+  line-height: 1.3;
+  margin-bottom: 0.02rem;
+}
+
+/* Fork behaviour gets the full settings width, then divides its two related
+   themes evenly. This retains the same hierarchy as Ensemble and Timing while
+   avoiding a dense stack of switches in a narrow third column. */
+.dn-fork-behaviour-group {
+  border-left: 0 !important;
+  grid-column: 1 / -1;
+  padding-left: 0;
+  padding-right: 0;
+}
+
+.dn-fork-behaviour-grid {
+  align-items: start;
+  display: grid;
+  gap: 0;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  min-width: 0;
+  width: 100%;
+}
+
+.dn-fork-behaviour-grid > .dn-setting-subgroup {
+  min-width: 0;
+  padding: 0.08rem 0.55rem 0.2rem;
+}
+
+.dn-fork-behaviour-grid > .dn-setting-subgroup:first-child {
+  padding-left: 0;
+}
+
+.dn-fork-behaviour-grid > .dn-setting-subgroup + .dn-setting-subgroup {
+  border-left: 1px solid color-mix(in srgb, var(--dn-line) 72%, transparent);
+  border-top: 0;
+  margin-top: 0;
+  padding-top: 0.08rem;
+}
+
+.dn-setting-inline,
+.dn-option-with-field {
+  align-items: center;
+  display: flex;
+  gap: 0.26rem;
+  min-width: 0;
+  width: 100%;
+}
+
+.dn-setting-inline > .dn-field,
+.dn-option-with-field > .dn-field {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+
+.dn-setting-inline > .q-checkbox,
+.dn-setting-inline > .q-toggle,
+.dn-option-with-field > .q-checkbox,
+.dn-option-with-field > .q-toggle {
+  flex: 0 0 auto;
+  margin: 0;
+}
+
+.dn-control-card .dn-field-compact,
+.dn-control-card .dn-field-small {
+  justify-self: start;
+  max-width: 7.4rem;
+  width: 100%;
+}
+
+.dn-control-card .dn-field-xs {
+  justify-self: start;
+  max-width: 5.6rem;
+  width: 100%;
+}
+
+.dn-settings-help {
+  color: var(--dn-muted);
+  font-size: 0.7rem;
+  line-height: 1.35;
+  margin-top: 0.06rem;
+}
+
+.dn-preview-output-bar,
+.dn-preview-heading-row {
+  align-items: center;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.55rem;
+  justify-content: space-between;
+  width: 100%;
+}
+
+.dn-preview-heading-row {
+  align-items: flex-start;
+}
+
+.dn-preview-output-control {
+  flex: 0 1 17rem;
+  margin-left: auto;
+  max-width: 17rem;
+  min-width: min(13rem, 100%);
+}
+
+.dn-preview-output-control.q-field--dense .q-field__control,
+.dn-preview-output-control .q-field--dense .q-field__control {
+  min-height: 2.25rem;
+}
+
+/* Shared plot presentation controls use one compact expansion surface. */
+.dn-preview-settings-section {
+  margin-top: 0.2rem !important;
+}
+
+.dn-preview-settings-section .dn-expansion-content {
+  padding: 0.28rem 0.22rem 0.68rem;
+}
+
+.dn-preview-settings-grid {
+  align-items: stretch;
+  display: grid;
+  gap: 0;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  width: 100%;
+}
+
+.dn-preview-setting-group {
+  align-content: start;
+  display: grid !important;
+  gap: 0.46rem !important;
+  height: 100%;
+  min-width: 0;
+  padding: 0.08rem 0.75rem 0.22rem;
+  width: 100%;
+}
+
+.dn-preview-setting-group:first-child {
+  padding-left: 0;
+}
+
+.dn-preview-setting-group + .dn-preview-setting-group {
+  border-left: 1px solid color-mix(in srgb, var(--dn-line) 72%, transparent);
+}
+
+.dn-preview-setting-group:last-child {
+  padding-right: 0;
+}
+
+.dn-preview-colour-grid {
+  display: grid;
+  gap: 0.5rem;
+  grid-template-columns: repeat(auto-fit, minmax(min(8rem, 100%), 1fr));
+  width: 100%;
+}
+
+.dn-preview-setting-group > .dn-field-heading:first-child {
+  color: var(--dn-muted);
+  font-size: 0.69rem;
+  font-weight: 700;
+  letter-spacing: 0;
+  line-height: 1.25;
+  text-transform: uppercase;
+}
+
+.dn-preview-settings-section .q-field--dense .q-field__control,
+.dn-preview-settings-section .q-field--dense .q-field__marginal {
+  min-height: 2.35rem;
+}
+
+.dn-preview-settings-section .q-checkbox,
+.dn-preview-settings-section .q-toggle {
+  min-height: 1.8rem;
+}
+
+/* Plotting owns these shared settings in its narrower control column. */
+.dn-control-plot-settings {
+  width: 100%;
+}
+
+.dn-control-plot-settings .dn-preview-settings-grid {
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+
+.dn-control-plot-settings .dn-preview-setting-group,
+.dn-control-plot-settings .dn-preview-setting-group + .dn-preview-setting-group {
+  border-left: 0;
+}
+
+.dn-control-plot-settings .dn-preview-setting-group:nth-child(odd) {
+  padding-left: 0;
+}
+
+.dn-control-plot-settings .dn-preview-setting-group:nth-child(even) {
+  border-left: 1px solid color-mix(in srgb, var(--dn-line) 72%, transparent);
+  padding-right: 0;
+}
+
+.dn-control-plot-settings .dn-preview-setting-group:nth-child(n + 3) {
+  border-top: 1px solid color-mix(in srgb, var(--dn-line) 65%, transparent);
+  margin-top: 0.42rem;
+  padding-top: 0.62rem;
+}
+
+.dn-plot-profile-source {
+  border-top: 1px solid color-mix(in srgb, var(--dn-line) 70%, transparent);
+  padding: 0.78rem 0 0.72rem;
+  width: 100%;
+}
+
+.dn-plot-profile-source:first-child {
+  border-top: 0;
+  padding-top: 0.1rem;
+}
+
+.dn-plot-profile-source-head {
+  align-items: center;
+  margin-bottom: 0.48rem;
+  min-height: 2rem;
+  width: 100%;
+}
+
+.dn-plot-profile-selector {
+  margin-top: 0.55rem;
+  width: 100%;
+}
+
+.dn-add-profile-source {
+  color: var(--dn-accent) !important;
+  margin-top: 0.15rem;
+  min-height: 2.25rem !important;
+  padding-left: 0.2rem !important;
+  padding-right: 0.45rem !important;
+}
+
+.dn-add-profile-source:hover,
+.dn-add-profile-source:focus-visible {
+  background: color-mix(in srgb, var(--dn-accent-soft) 68%, transparent) !important;
+}
+
+.dn-data-manager-source-select {
+  margin-top: 0.58rem;
+  width: 100%;
+}
+
+.dn-workspace.dn-data-manager-workspace {
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+
+.dn-data-manager-conversion-grid {
+  align-items: start;
+  display: grid;
+  gap: 0;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  width: 100%;
+}
+
+.dn-data-manager-setting-group {
+  align-content: start;
+  display: grid !important;
+  gap: 0.42rem !important;
+  min-width: 0;
+  padding: 0.08rem 0.62rem 0.25rem;
+  width: 100%;
+}
+
+.dn-data-manager-setting-group:first-child {
+  padding-left: 0;
+}
+
+.dn-data-manager-setting-group + .dn-data-manager-setting-group {
+  border-left: 1px solid color-mix(in srgb, var(--dn-line) 72%, transparent);
+  padding-right: 0;
+}
+
+.dn-data-manager-compression {
+  min-height: 2rem;
+}
+
+.dn-data-manager-setting-heading {
+  margin: 0.78rem 0 0.28rem;
+}
+
+.dn-data-manager-output-card {
+  align-content: start;
+}
+
+.dn-data-manager-empty {
+  align-items: center;
+  color: var(--dn-muted);
+  gap: 0.35rem !important;
+  justify-content: center;
+  min-height: 12rem;
+  width: 100%;
+}
+
+.dn-data-manager-empty .q-icon {
+  color: var(--dn-line-strong);
+  font-size: 1.8rem;
+}
+
+.dn-data-manager-file {
+  align-items: center;
+  border-bottom: 1px solid var(--dn-line);
+  border-top: 1px solid var(--dn-line);
+  display: grid;
+  gap: 0.7rem;
+  grid-template-columns: 2rem minmax(0, 1fr);
+  margin-top: 0.5rem;
+  min-height: 4.5rem;
+  padding: 0.65rem 0.2rem;
+  width: 100%;
+}
+
+.dn-data-manager-file-icon {
+  color: var(--dn-accent);
+  font-size: 1.35rem;
+  justify-self: center;
+}
+
+.dn-data-manager-file-copy {
+  gap: 0.1rem !important;
+  min-width: 0;
+  width: 100%;
+}
+
+.dn-data-manager-download {
+  color: var(--dn-accent) !important;
+  justify-self: start;
+  max-width: 100%;
+  min-height: 2rem !important;
+  padding: 0 0.3rem !important;
+}
+
+.dn-data-manager-download .q-btn__content {
+  flex-wrap: nowrap;
+  justify-content: flex-start;
+  max-width: 100%;
+  overflow: hidden;
+}
+
+.dn-data-manager-download .q-btn__content > span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.dn-data-manager-file-detail {
+  color: var(--dn-muted);
+  font-size: 0.7rem;
+  line-height: 1.35;
+  overflow-wrap: anywhere;
+  padding-left: 0.3rem;
+}
+
+/* Automatic plot bounds remain visible and editable as a compact pair. The
+   reset control is intentionally icon-sized so it reads as a local utility,
+   not another workflow action. */
+.dn-y-limit-editor {
+  align-items: end;
+  display: grid;
+  gap: 0.38rem;
+  grid-template-columns: repeat(2, minmax(0, 1fr)) auto;
+  min-width: 0;
+  width: 100%;
+}
+
+.dn-y-limit-editor > .dn-field {
+  min-width: 0;
+}
+
+.dn-y-limit-reset {
+  align-self: end;
+  color: var(--dn-muted) !important;
+  height: 2.25rem !important;
+  min-height: 2.25rem !important;
+  min-width: 2.25rem !important;
+  padding: 0 !important;
+  width: 2.25rem !important;
+}
+
+.dn-y-limit-reset:hover,
+.dn-y-limit-reset:focus-visible {
+  background: var(--dn-hover) !important;
+  color: var(--dn-accent) !important;
+}
+
+/* Empty previews now give brief guidance without pretending to be a chart. */
+.dn-preview-guidance {
+  border-left: 2px solid color-mix(in srgb, var(--dn-muted) 38%, transparent);
+  display: flex;
+  flex-direction: column;
+  gap: 0.18rem;
+  margin: 0.35rem 0 0.25rem;
+  padding: 0.18rem 0.72rem;
+  width: 100%;
+}
+
+.dn-preview-guidance-title {
+  color: var(--dn-text);
+  font-size: 0.84rem;
+  font-weight: 600;
+  line-height: 1.35;
+}
+
+.dn-preview-guidance-copy {
+  color: var(--dn-muted);
+  font-size: 0.76rem;
+  line-height: 1.4;
 }
 
 .dn-field-heading {
@@ -691,15 +1534,21 @@ body.body--dark .dn-nav-active {
 }
 
 .dn-source-mode {
-  flex: 0 1 8.25rem;
-  max-width: 8.25rem;
-  min-width: 6.9rem;
+  flex: 1 1 auto;
+  max-width: none;
+  min-width: 0;
+  width: 100%;
 }
 
 .dn-source-mode.q-field--dense .q-field__control,
 .dn-source-mode .q-field--dense .q-field__control {
   background: color-mix(in srgb, var(--dn-soft) 84%, transparent);
   border-radius: 6px 6px 0 0;
+}
+
+.dn-simulation-data-grid .dn-source-mode.q-field--dense .q-field__control,
+.dn-simulation-data-grid .dn-source-mode .q-field--dense .q-field__control {
+  background: transparent !important;
 }
 
 .dn-source-fields {
@@ -715,6 +1564,405 @@ body.body--dark .dn-nav-active {
   gap: 0.42rem 0.58rem;
   grid-template-columns: repeat(2, minmax(0, 1fr));
   min-width: 0;
+  width: 100%;
+}
+
+/* Mapping starts with the scientific question, then progressively reveals
+   only the route inputs which can answer it. The selectors remain flat and
+   compact because Data's expansion header already supplies the outer frame. */
+.dn-mapping-request-grid {
+  align-items: start;
+  display: grid;
+  gap: 0.42rem 0;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  min-width: 0;
+  width: 100%;
+}
+
+.dn-mapping-request-group {
+  height: 100%;
+}
+
+.dn-mapping-request-group:nth-child(3) {
+  border-left: 0;
+  grid-column: 1 / -1;
+  margin-top: 0;
+  padding: 0.12rem 0 0.1rem;
+}
+
+.dn-mapping-route-select {
+  width: 100%;
+}
+
+.dn-mapping-target-shape {
+  flex: 0 1 9rem;
+  min-width: min(9rem, 100%);
+}
+
+.dn-mapping-required-heading {
+  align-items: center;
+  display: flex;
+  margin: 0.14rem 0 0;
+  min-height: 1.15rem;
+  width: 100%;
+}
+
+.dn-mapping-required-heading .dn-setting-group-title {
+  margin: 0;
+}
+
+.dn-mapping-input-grid {
+  align-items: start;
+  display: grid;
+  gap: 0;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  min-width: 0;
+  width: 100%;
+}
+
+.dn-mapping-input-card {
+  align-content: start;
+  display: grid;
+  gap: 0.34rem;
+  min-width: 0;
+  padding: 0.08rem 0.48rem 0.38rem;
+}
+
+.dn-mapping-input-card:nth-child(odd) {
+  padding-left: 0;
+}
+
+.dn-mapping-input-card:nth-child(even) {
+  border-left: 1px solid color-mix(in srgb, var(--dn-line) 78%, transparent);
+  padding-right: 0;
+}
+
+.dn-mapping-input-card:nth-child(n + 3) {
+  border-top: 1px solid color-mix(in srgb, var(--dn-line) 62%, transparent);
+  padding-top: 0.52rem;
+}
+
+.dn-mapping-input-card:only-child {
+  grid-column: 1 / -1;
+  padding-right: 0;
+}
+
+.dn-mapping-input-head {
+  align-items: center;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.34rem 0.52rem;
+  justify-content: space-between;
+  min-width: 0;
+  width: 100%;
+}
+
+.dn-mapping-input-head .dn-setting-group-title {
+  flex: 1 1 6.5rem;
+  margin: 0;
+  min-width: 0;
+}
+
+.dn-mapping-input-status {
+  color: var(--dn-muted);
+  font-size: 0.6rem;
+  font-weight: 650;
+  letter-spacing: 0;
+  line-height: 1.2;
+  text-transform: uppercase;
+}
+
+.dn-mapping-input-mode {
+  width: 100%;
+}
+
+.dn-mapping-override-fields {
+  align-content: start;
+  display: grid;
+  gap: 0.34rem;
+  min-width: 0;
+  width: 100%;
+}
+
+.dn-mapping-default-row {
+  align-items: center;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.12rem 0.45rem;
+  justify-content: space-between;
+  min-height: 1.8rem;
+  width: 100%;
+}
+
+.dn-mapping-default-toggle {
+  margin-left: -0.42rem;
+}
+
+.dn-mapping-default-copy {
+  color: var(--dn-muted);
+  font-size: 0.67rem;
+  line-height: 1.3;
+}
+
+.dn-mapping-input-surface,
+.dn-mapping-upload-source,
+.dn-mapping-prepared-source,
+.dn-mapping-regions-manual,
+.dn-mapping-regions-upload {
+  align-content: start;
+  display: grid;
+  gap: 0.32rem;
+  min-width: 0;
+  width: 100%;
+}
+
+.dn-mapping-source-choice {
+  max-width: 15rem;
+}
+
+.dn-mapping-input-hint {
+  color: var(--dn-muted);
+  font-size: 0.67rem;
+  line-height: 1.35;
+  white-space: normal;
+}
+
+.dn-mapping-prepared-result {
+  align-items: center;
+  display: grid;
+  gap: 0.32rem 0.48rem;
+  grid-template-columns: auto minmax(0, 1fr);
+  min-width: 0;
+  padding: 0.14rem 0;
+  width: 100%;
+}
+
+.dn-mapping-prepared-icon {
+  color: var(--dn-muted);
+  font-size: 1.15rem;
+  font-variation-settings: "FILL" 0, "wght" 300, "GRAD" 0, "opsz" 20;
+}
+
+.dn-mapping-prepared-copy {
+  gap: 0.05rem !important;
+  min-width: 0;
+}
+
+.dn-mapping-prepared-title {
+  color: var(--dn-text);
+  font-size: 0.76rem;
+  font-weight: 600;
+  line-height: 1.3;
+}
+
+.dn-mapping-prepared-select {
+  grid-column: 1 / -1;
+}
+
+.dn-mapping-import-options {
+  border-top: 1px solid color-mix(in srgb, var(--dn-line) 58%, transparent);
+  margin-top: 0.06rem;
+  padding-top: 0.2rem;
+  width: 100%;
+}
+
+.dn-mapping-import-summary {
+  color: var(--dn-muted);
+  cursor: pointer;
+  font-size: 0.69rem;
+  line-height: 1.35;
+  padding: 0.08rem 0;
+  user-select: none;
+}
+
+.dn-mapping-import-options[open] .dn-mapping-import-summary {
+  color: var(--dn-text);
+}
+
+.dn-mapping-import-grid {
+  display: grid;
+  gap: 0.35rem 0.48rem;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  padding-top: 0.25rem;
+  width: 100%;
+}
+
+.dn-mapping-detected-data {
+  display: grid;
+  gap: 0.28rem;
+  min-width: 0;
+  width: 100%;
+}
+
+.dn-mapping-detected-file {
+  align-items: center;
+  display: grid;
+  gap: 0.3rem 0.5rem;
+  grid-template-columns: minmax(0, 1fr);
+  min-width: 0;
+  padding: 0.08rem 0;
+  width: 100%;
+}
+
+.dn-mapping-detected-summary {
+  color: var(--dn-muted);
+  font-size: 0.68rem;
+  line-height: 1.35;
+  min-width: 0;
+}
+
+.dn-mapping-column-select {
+  min-width: 0;
+  width: 100%;
+}
+
+.dn-mapping-detected-warning,
+.dn-mapping-upload-error {
+  font-size: 0.67rem;
+  grid-column: 1 / -1;
+  line-height: 1.35;
+}
+
+.dn-mapping-detected-warning {
+  color: var(--dn-muted);
+}
+
+.dn-mapping-run-stats {
+  width: 100%;
+}
+
+.dn-mapping-progress {
+  margin-top: 0.1rem;
+}
+
+.dn-mapping-plain-import-options {
+  min-width: 0;
+  width: 100%;
+}
+
+.dn-mapping-track-options {
+  border-left: 2px solid color-mix(in srgb, var(--dn-muted) 28%, transparent);
+  display: grid;
+  gap: 0.35rem;
+  margin-top: 0.08rem;
+  min-width: 0;
+  padding: 0.18rem 0 0.08rem 0.55rem;
+  width: 100%;
+}
+
+.dn-mapping-track-options > .dn-field-heading {
+  color: var(--dn-text);
+  font-size: 0.7rem;
+  margin: 0;
+}
+
+.dn-mapping-track-grid {
+  display: grid;
+  gap: 0.35rem 0.48rem;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  min-width: 0;
+  width: 100%;
+}
+
+.dn-mapping-track-preprocessing {
+  border-top: 1px solid color-mix(in srgb, var(--dn-line) 58%, transparent);
+  padding-top: 0.14rem;
+  width: 100%;
+}
+
+.dn-mapping-settings {
+  display: grid;
+  gap: 0.35rem;
+  min-width: 0;
+  width: 100%;
+}
+
+.dn-mapping-settings-grid,
+.dn-mapping-region-choice-grid {
+  align-items: start;
+  display: grid;
+  gap: 0.38rem 0.5rem;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  min-width: 0;
+  width: 100%;
+}
+
+.dn-mapping-region-selectors {
+  align-content: start;
+  display: grid;
+  gap: 0.32rem;
+  min-width: 0;
+  width: 100%;
+}
+
+.dn-mapping-whole-region {
+  margin-left: -0.42rem;
+  min-height: 2.5rem;
+}
+
+.dn-mapping-settings-themes {
+  align-items: start;
+  display: grid;
+  gap: 0.45rem 0;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  min-width: 0;
+  width: 100%;
+}
+
+.dn-mapping-settings-theme {
+  width: 100%;
+}
+
+.dn-mapping-settings-theme:nth-child(odd) {
+  border-left: 0;
+  padding-left: 0;
+}
+
+.dn-mapping-settings-theme:nth-child(even) {
+  border-left: 1px solid color-mix(in srgb, var(--dn-line) 78%, transparent);
+  padding-left: 0.48rem;
+}
+
+.dn-mapping-settings-theme:nth-child(n + 3) {
+  border-top: 1px solid color-mix(in srgb, var(--dn-line) 62%, transparent);
+  margin-top: 0.12rem;
+  padding-top: 0.48rem;
+}
+
+.dn-mapping-window-grid {
+  display: grid;
+  gap: 0.38rem 0.5rem;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  min-width: 0;
+  width: 100%;
+}
+
+.dn-mapping-setting {
+  align-content: start;
+  display: grid;
+  min-width: 0;
+  width: 100%;
+}
+
+.dn-mapping-setting-optional {
+  min-width: 0;
+  padding-top: 0.12rem;
+  width: 100%;
+}
+
+.dn-mapping-setting-checkbox,
+.dn-mapping-setting-override {
+  margin-left: -0.42rem;
+}
+
+.dn-mapping-fit-primary {
+  display: grid;
+  grid-template-columns: minmax(0, 10rem);
+  width: 100%;
+}
+
+.dn-mapping-weibull-settings,
+.dn-mapping-spacetime-settings {
   width: 100%;
 }
 
@@ -753,28 +2001,57 @@ body.body--dark .dn-nav-active {
 
 .dn-source-block .dn-field-heading {
   color: var(--dn-text);
-  letter-spacing: 0.01em;
-}
-
-.dn-data-section > .q-expansion-item__container > .q-item {
-  background: transparent;
+  letter-spacing: 0;
 }
 
 .dn-output-section {
-  border: 1px solid var(--dn-line);
-  border-radius: 8px !important;
+  border: 0;
+  border-radius: 6px !important;
   margin-top: 0.2rem !important;
-  overflow: hidden;
-}
-
-.dn-output-section > .q-expansion-item__container > .q-item {
-  background: var(--dn-soft);
-  padding-left: 0.65rem;
-  padding-right: 0.65rem;
+  overflow: visible;
 }
 
 .dn-output-section .dn-expansion-content {
-  padding: 0.35rem 0.7rem 0.8rem;
+  padding: 0.35rem 0.22rem 0.8rem;
+}
+
+/* Keep the raw-export controls on one calm baseline whenever space permits.
+   Flex wrapping preserves that order at narrow panel widths, while the action
+   keeps itself at the far edge of whichever row it occupies. */
+.dn-raw-output-row {
+  align-items: flex-end;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.44rem 0.62rem;
+  min-width: 0;
+  width: 100%;
+}
+
+.dn-raw-output-row > .dn-raw-output-name {
+  flex: 2 1 13rem;
+  min-width: min(13rem, 100%);
+  width: auto;
+}
+
+.dn-raw-output-row > .dn-raw-output-type {
+  flex: 1 1 7.5rem;
+  min-width: min(7.5rem, 100%);
+  width: auto;
+}
+
+.dn-raw-output-compress {
+  align-self: center;
+  flex: 0 0 auto;
+  min-height: 2.25rem;
+  white-space: nowrap;
+}
+
+.dn-raw-output-download {
+  align-self: flex-end;
+  flex: 0 0 auto;
+  margin-left: auto;
+  min-height: 2.25rem;
+  white-space: nowrap;
 }
 
 .dn-source-grid {
@@ -825,7 +2102,7 @@ body.body--dark .dn-nav-active {
 }
 
 .dn-upload-compact {
-  background: var(--dn-panel) !important;
+  background: color-mix(in srgb, var(--dn-active) 30%, var(--dn-panel)) !important;
   border: 1px dashed var(--dn-divider) !important;
   border-radius: 8px !important;
   box-shadow: none !important;
@@ -837,11 +2114,25 @@ body.body--dark .dn-nav-active {
 }
 
 .dn-upload-compact .q-uploader__header {
-  background: color-mix(in srgb, var(--dn-soft) 78%, var(--dn-panel)) !important;
+  align-items: center;
+  background: transparent !important;
   border-bottom: 0;
+  box-sizing: border-box;
   color: var(--dn-text) !important;
-  min-height: 3.15rem;
+  display: flex;
+  min-height: inherit;
   padding: 0.48rem 0.6rem;
+}
+
+.dn-upload-compact .q-uploader__header::before {
+  color: var(--dn-muted);
+  content: "cloud_upload";
+  flex: 0 0 auto;
+  font-family: "Material Icons";
+  font-size: 1.35rem;
+  font-weight: normal;
+  line-height: 1;
+  margin-right: 0.48rem;
 }
 
 .dn-upload-compact .q-uploader__header-content {
@@ -851,24 +2142,25 @@ body.body--dark .dn-nav-active {
 
 .dn-upload-compact .q-uploader__title {
   color: var(--dn-text) !important;
-  font-size: 0.82rem;
-  font-weight: 620;
+  font-size: 0;
+  font-weight: 400;
   line-height: 1.25;
+}
+
+.dn-upload-compact .q-uploader__title::before {
+  content: "Choose a file";
+  font-size: 0.82rem;
+  font-weight: 700;
+}
+
+.dn-upload-compact .q-uploader__title::after {
+  content: " or drag it here";
+  font-size: 0.82rem;
+  font-weight: 400;
 }
 
 .dn-upload-compact .q-uploader__subtitle {
   display: none !important;
-}
-
-.dn-upload-compact .q-uploader__header .q-uploader__title {
-  font-size: 0 !important;
-}
-
-.dn-upload-compact .q-uploader__header .q-uploader__title::before {
-  content: 'Upload data';
-  font-size: 0.82rem;
-  font-weight: 620;
-  line-height: 1.25;
 }
 
 .dn-upload-compact .q-uploader__file-status,
@@ -877,24 +2169,18 @@ body.body--dark .dn-nav-active {
 }
 
 .dn-upload-compact .q-uploader__header .q-btn {
-  background: transparent !important;
-  color: var(--dn-muted) !important;
-  min-height: 1.9rem;
-  min-width: 1.9rem;
+  display: none !important;
 }
 
-.dn-upload-compact .q-uploader__header .q-btn:hover,
-.dn-upload-compact .q-uploader__header .q-btn:focus-visible {
-  background: var(--dn-active) !important;
-  color: var(--dn-text) !important;
+.dn-upload-compact:hover,
+.dn-upload-compact:focus-visible {
+  background: color-mix(in srgb, var(--dn-active) 44%, var(--dn-panel)) !important;
+  border-color: color-mix(in srgb, var(--dn-accent) 42%, var(--dn-divider)) !important;
+  outline: none;
 }
 
 .dn-upload-compact .q-uploader__list {
-  background: var(--dn-panel) !important;
-  color: var(--dn-text) !important;
-  max-height: 7rem;
-  min-height: 1rem;
-  padding: 0.38rem 0.55rem;
+  display: none !important;
 }
 
 .dn-upload-compact .q-uploader__file {
@@ -910,22 +2196,104 @@ body.body--dark .dn-nav-active {
   margin-bottom: 0;
 }
 
+.dn-file-drag-active .dn-upload-compact,
 .dn-upload-dragging,
 .dn-upload-compact.q-uploader--dnd {
-  background: var(--dn-soft) !important;
-  border-color: var(--dn-muted) !important;
+  background: color-mix(in srgb, var(--dn-accent) 8%, var(--dn-panel)) !important;
+  border-color: var(--dn-accent) !important;
   border-style: solid !important;
-  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--dn-muted) 28%, transparent) !important;
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--dn-accent) 24%, transparent) !important;
 }
 
+.dn-file-drag-active .dn-upload-compact .q-uploader__header,
 .dn-upload-dragging .q-uploader__header,
 .dn-upload-compact.q-uploader--dnd .q-uploader__header {
   background: transparent !important;
 }
 
-.dn-upload-dragging .q-uploader__header .q-uploader__title::before,
-.dn-upload-compact.q-uploader--dnd .q-uploader__header .q-uploader__title::before {
-  content: 'Drop data here';
+.dn-upload-files:empty {
+  display: none;
+}
+
+.dn-upload-files {
+  display: flex;
+  flex-direction: column;
+  gap: 0.28rem !important;
+}
+
+.dn-upload-file {
+  align-items: center;
+  background: color-mix(in srgb, var(--dn-soft) 82%, var(--dn-panel));
+  border: 1px solid var(--dn-line);
+  border-radius: 7px;
+  color: var(--dn-text);
+  display: grid;
+  gap: 0.42rem;
+  grid-template-columns: auto minmax(0, 1fr) auto;
+  min-height: 2.35rem;
+  padding: 0.3rem 0.38rem 0.3rem 0.55rem;
+  width: 100%;
+}
+
+.dn-upload-file-icon {
+  color: var(--dn-muted);
+  font-size: 1rem;
+  font-variation-settings: "FILL" 0, "wght" 300, "GRAD" 0, "opsz" 20;
+}
+
+.dn-upload-file-spinner {
+  color: var(--dn-muted) !important;
+  font-size: 0.9rem;
+}
+
+.dn-upload-file-name {
+  color: var(--dn-text);
+  font-size: 0.76rem;
+  line-height: 1.25;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.dn-upload-file-state {
+  color: var(--dn-muted);
+  font-size: 0.67rem;
+  line-height: 1.2;
+  white-space: nowrap;
+}
+
+.dn-upload-file-inspecting {
+  border-style: dashed;
+}
+
+.dn-upload-remove {
+  background: transparent !important;
+  color: var(--dn-muted) !important;
+  height: 1.72rem !important;
+  min-height: 1.72rem !important;
+  min-width: 1.72rem !important;
+  padding: 0 !important;
+  width: 1.72rem !important;
+}
+
+.dn-upload-remove .q-focus-helper {
+  display: none;
+}
+
+.dn-upload-remove .q-icon {
+  font-size: 1rem !important;
+}
+
+.dn-upload-remove:hover,
+.dn-upload-remove:focus-visible {
+  background: transparent !important;
+  color: var(--dn-muted) !important;
+}
+
+.dn-upload-remove:focus-visible {
+  outline: 1px solid var(--dn-accent);
+  outline-offset: 1px;
 }
 
 .dn-control-card .dn-upload-compact {
@@ -933,17 +2301,12 @@ body.body--dark .dn-nav-active {
 }
 
 .dn-control-card .dn-upload-compact .q-uploader__header {
-  min-height: 2.75rem;
+  min-height: 3.25rem;
   padding: 0.38rem 0.5rem;
 }
 
-.dn-control-card .dn-upload-compact .q-uploader__list {
-  max-height: 5rem;
-  padding: 0.28rem 0.42rem;
-}
-
-.dn-control-card .dn-upload-compact .q-uploader__list:empty {
-  display: none;
+.dn-control-card .dn-upload-file {
+  min-height: 2.15rem;
 }
 
 .dn-action-primary,
@@ -1335,6 +2698,64 @@ body.body--dark .dn-nav-active {
   width: 100%;
 }
 
+/* Simulation presents Output as the first member of the same metadata strip.
+   The two lightweight wrappers disappear from layout once the post-run stats
+   are visible, leaving five equally aligned grid items. */
+.dn-stat-grid.dn-simulation-summary-grid {
+  align-items: stretch;
+  grid-template-columns: minmax(10rem, 1.4fr) repeat(4, minmax(0, 1fr));
+  margin-bottom: 0;
+}
+
+.dn-stat-grid.dn-mapping-summary-grid {
+  grid-template-columns: minmax(10rem, 1.4fr) repeat(4, minmax(0, 1fr));
+}
+
+.dn-simulation-summary-grid > .dn-simulation-run-stats,
+.dn-simulation-summary-grid > .dn-simulation-run-stats > .dn-stat-grid,
+.dn-mapping-summary-grid > .dn-mapping-run-stats,
+.dn-mapping-summary-grid > .dn-mapping-run-stats > .dn-stat-grid {
+  display: contents;
+}
+
+.dn-mapping-summary-grid .dn-mapping-run-stats .dn-stat:last-child {
+  grid-column: span 2;
+}
+
+.dn-simulation-output-stat {
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+}
+
+.dn-simulation-output-select,
+.dn-simulation-output-select .q-field {
+  min-width: 0;
+  width: 100%;
+}
+
+.dn-simulation-output-select.q-field--dense .q-field__control,
+.dn-simulation-output-select.q-field--dense .q-field__marginal,
+.dn-simulation-output-select .q-field--dense .q-field__control,
+.dn-simulation-output-select .q-field--dense .q-field__marginal {
+  height: 1.45rem;
+  min-height: 1.45rem;
+}
+
+.dn-simulation-output-select .q-field__native,
+.dn-simulation-output-select .q-field__input {
+  color: var(--dn-text) !important;
+  font-size: 0.86rem;
+  font-weight: 620;
+  line-height: 1.25;
+  min-height: 1.45rem;
+  padding: 0;
+}
+
+.dn-simulation-output-select .q-field__append {
+  padding-left: 0.2rem;
+}
+
 .dn-stat {
   background: color-mix(in srgb, var(--dn-soft) 72%, transparent);
   border-left: 2px solid var(--dn-line);
@@ -1347,7 +2768,7 @@ body.body--dark .dn-nav-active {
 .dn-stat-label {
   color: var(--dn-muted);
   font-size: 0.62rem;
-  letter-spacing: 0.035em;
+  letter-spacing: 0;
   line-height: 1.2;
   text-transform: uppercase;
 }
@@ -1502,29 +2923,222 @@ body.body--dark .dn-main-logo-frame .dn-main-logo {
   text-decoration: none !important;
 }
 
-.dn-cache-controls {
-  align-items: end;
-  display: grid;
-  gap: 0.6rem;
-  grid-template-columns: 0.7fr 1.05fr 1fr 1.4fr;
+.dn-cache-panel {
+  gap: 0.7rem !important;
+  padding: 0.95rem !important;
+}
+
+.dn-cache-panel-head {
+  align-items: center;
+  min-height: 2rem;
   width: 100%;
 }
 
-.dn-cache-row {
+.dn-cache-memory-note {
+  color: var(--dn-muted);
+  cursor: help;
+  font-size: 1.15rem;
+}
+
+.dn-cache-toolbar {
+  align-items: end;
+  display: grid;
+  gap: 0.55rem;
+  grid-template-columns: minmax(190px, 1.7fr) minmax(130px, 0.9fr) minmax(125px, 0.8fr) auto;
+  width: 100%;
+}
+
+.dn-cache-clear {
+  min-height: 2.5rem !important;
+  white-space: nowrap;
+}
+
+.dn-cache-tabs {
+  border-bottom: 1px solid var(--dn-line);
+  min-height: 2.55rem;
+}
+
+.dn-cache-tabs .q-tab {
+  min-height: 2.55rem !important;
+  padding: 0 0.75rem !important;
+}
+
+.dn-cache-tabs .q-tab__label {
+  font-size: 0.76rem;
+  font-weight: 620;
+}
+
+.dn-cache-tab-panels {
+  background: transparent !important;
+  border: 0 !important;
+}
+
+.dn-cache-tab-panel {
+  background: transparent !important;
+  padding: 0 !important;
+}
+
+.dn-cache-group-summary {
   align-items: center;
-  background: var(--dn-soft);
-  border: 1px solid var(--dn-line);
-  border-radius: 8px;
+  color: var(--dn-muted);
+  min-height: 2.1rem;
+  padding: 0.25rem 0.35rem;
+  width: 100%;
+}
+
+.dn-cache-group-count,
+.dn-cache-group-size {
+  font-size: 0.7rem;
+  font-weight: 600;
+}
+
+.dn-cache-group-size {
+  margin-left: auto;
+}
+
+.dn-cache-list {
+  border-top: 1px solid var(--dn-line);
+  width: 100%;
+}
+
+.dn-cache-item {
+  align-items: center;
+  border-bottom: 1px solid var(--dn-line);
   display: grid;
   gap: 0.65rem;
-  grid-template-columns: minmax(180px, 1.8fr) minmax(95px, 0.8fr) minmax(90px, 0.65fr) auto;
-  padding: 0.75rem;
+  grid-template-columns: 1.9rem minmax(180px, 1.8fr) minmax(98px, 0.75fr) minmax(68px, 0.5fr) minmax(72px, 0.5fr) auto;
+  min-height: 3.85rem;
+  padding: 0.55rem 0.35rem;
+  transition: background-color 120ms ease;
   width: 100%;
+}
+
+.dn-cache-item:hover {
+  background: var(--dn-soft);
+}
+
+.dn-cache-kind-icon {
+  align-items: center;
+  color: var(--dn-accent);
+  display: flex;
+  justify-content: center;
+}
+
+.dn-cache-kind-icon .q-icon {
+  font-size: 1.2rem;
+}
+
+.dn-cache-identity {
+  min-width: 0;
 }
 
 .dn-cache-name {
   color: var(--dn-text);
-  font-weight: 620;
+  display: block;
+  font-size: 0.8rem;
+  font-weight: 650;
+  line-height: 1.25;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.dn-cache-detail {
+  color: var(--dn-muted);
+  display: block;
+  font-size: 0.69rem;
+  line-height: 1.3;
+  margin-top: 0.12rem;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.dn-cache-meta {
+  min-width: 0;
+}
+
+.dn-cache-meta-label {
+  color: var(--dn-muted);
+  font-size: 0.62rem;
+  font-weight: 600;
+  line-height: 1.1;
+}
+
+.dn-cache-meta-value {
+  color: var(--dn-text);
+  font-size: 0.72rem;
+  line-height: 1.35;
+  margin-top: 0.12rem;
+  overflow-wrap: anywhere;
+}
+
+.dn-cache-actions {
+  align-items: center;
+  flex-wrap: nowrap;
+  gap: 0.05rem !important;
+}
+
+.dn-cache-icon-action {
+  color: var(--dn-muted) !important;
+  min-height: 2rem !important;
+  min-width: 2rem !important;
+}
+
+.dn-cache-icon-action:hover,
+.dn-cache-icon-action:focus-visible {
+  background: var(--dn-hover) !important;
+  color: var(--dn-accent) !important;
+}
+
+.dn-cache-remove-action:hover,
+.dn-cache-remove-action:focus-visible {
+  color: #a33b31 !important;
+}
+
+.dn-cache-empty {
+  align-items: center;
+  color: var(--dn-muted);
+  gap: 0.35rem !important;
+  justify-content: center;
+  min-height: 9rem;
+  width: 100%;
+}
+
+.dn-cache-empty .q-icon {
+  color: var(--dn-line-strong);
+  font-size: 1.75rem;
+}
+
+.dn-cache-empty .q-field__label {
+  font-size: 0.78rem;
+}
+
+.dn-cache-pagination {
+  align-items: end;
+  display: flex;
+  gap: 0.35rem;
+  justify-content: flex-end;
+  padding: 0.55rem 0 0;
+  width: 100%;
+}
+
+.dn-cache-rows {
+  width: 5.5rem;
+}
+
+.dn-cache-page {
+  width: 7.2rem;
+}
+
+.dn-cache-dialog {
+  max-width: min(28rem, calc(100vw - 2rem));
+}
+
+.dn-cache-dialog-actions {
+  align-items: center;
+  justify-content: flex-end;
+  width: 100%;
 }
 
 .q-tabs {
@@ -1558,8 +3172,235 @@ body.body--dark .dn-main-logo-frame .dn-main-logo {
 
 @container dn-controls (max-width: 24rem) {
   .dn-source-grid,
-  .dn-data-fields {
+  .dn-data-fields,
+  .dn-simulation-data-grid,
+  .dn-data-manager-conversion-grid {
     grid-template-columns: 1fr;
+  }
+
+  .dn-data-manager-setting-group,
+  .dn-data-manager-setting-group:first-child,
+  .dn-data-manager-setting-group + .dn-data-manager-setting-group {
+    border-left: 0;
+    padding-left: 0;
+    padding-right: 0;
+  }
+
+  .dn-data-manager-setting-group + .dn-data-manager-setting-group {
+    border-top: 1px solid color-mix(in srgb, var(--dn-line) 65%, transparent);
+    margin-top: 0.35rem;
+    padding-top: 0.55rem;
+  }
+
+  .dn-mapping-request-grid,
+  .dn-mapping-input-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .dn-mapping-input-card,
+  .dn-mapping-input-card:nth-child(odd),
+  .dn-mapping-input-card:nth-child(even) {
+    border-left: 0;
+    padding-left: 0;
+    padding-right: 0;
+  }
+
+  .dn-mapping-input-card + .dn-mapping-input-card {
+    border-top: 1px solid color-mix(in srgb, var(--dn-line) 65%, transparent);
+    padding-top: 0.52rem;
+  }
+
+  .dn-mapping-request-group,
+  .dn-mapping-request-group:nth-child(2),
+  .dn-mapping-request-group:nth-child(3) {
+    border-left: 0;
+    border-top: 1px solid color-mix(in srgb, var(--dn-line) 65%, transparent);
+    grid-column: 1;
+    margin-top: 0.12rem;
+    padding: 0.48rem 0 0.1rem;
+  }
+
+  .dn-mapping-request-group:first-child {
+    border-top: 0;
+    margin-top: 0;
+    padding-top: 0.08rem;
+  }
+
+  .dn-mapping-request-group:nth-child(3) {
+    border-top: 0;
+    margin-top: 0;
+    padding-top: 0.12rem;
+  }
+
+  .dn-simulation-data-grid .dn-setting-group + .dn-setting-group {
+    border-left: 0;
+    border-top: 1px solid color-mix(in srgb, var(--dn-line) 65%, transparent);
+    margin-top: 0.28rem;
+    padding: 0.48rem 0 0.24rem;
+  }
+
+  .dn-fork-behaviour-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .dn-fork-behaviour-grid > .dn-setting-subgroup,
+  .dn-fork-behaviour-grid > .dn-setting-subgroup:first-child {
+    padding-left: 0;
+    padding-right: 0;
+  }
+
+  .dn-fork-behaviour-grid > .dn-setting-subgroup + .dn-setting-subgroup {
+    border-left: 0;
+    border-top: 1px solid color-mix(in srgb, var(--dn-line) 65%, transparent);
+    margin-top: 0.28rem;
+    padding-top: 0.48rem;
+  }
+}
+
+@container dn-controls (max-width: 28rem) {
+  .dn-simulation-settings-grid,
+  .dn-settings-grid,
+  .dn-mapping-settings-themes {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .dn-setting-group:nth-child(odd),
+  .dn-settings-theme:nth-child(odd) {
+    border-left: 0;
+    padding-left: 0;
+  }
+
+  .dn-setting-group:nth-child(even),
+  .dn-settings-theme:nth-child(even) {
+    border-left: 1px solid color-mix(in srgb, var(--dn-line) 78%, transparent);
+    padding-left: 0.48rem;
+  }
+}
+
+@container dn-controls (max-width: 19rem) {
+  .dn-simulation-settings-grid,
+  .dn-settings-grid,
+  .dn-mapping-settings-themes {
+    grid-template-columns: 1fr;
+  }
+
+  .dn-setting-group,
+  .dn-settings-theme,
+  .dn-setting-group:nth-child(even),
+  .dn-settings-theme:nth-child(even) {
+    border-left: 0;
+    border-top: 1px solid color-mix(in srgb, var(--dn-line) 65%, transparent);
+    padding: 0.48rem 0 0.24rem;
+  }
+
+  .dn-setting-group:first-child,
+  .dn-settings-theme:first-child {
+    border-top: 0;
+    padding-top: 0.08rem;
+  }
+
+  .dn-mapping-import-grid,
+  .dn-mapping-detected-file,
+  .dn-mapping-track-grid,
+  .dn-mapping-settings-grid,
+  .dn-mapping-region-choice-grid,
+  .dn-mapping-window-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .dn-mapping-detected-summary,
+  .dn-mapping-detected-warning,
+  .dn-mapping-upload-error {
+    grid-column: 1;
+  }
+
+  .dn-mapping-target-shape,
+  .dn-mapping-route-select,
+  .dn-mapping-source-choice,
+  .dn-mapping-input-mode {
+    flex-basis: 100%;
+    max-width: none;
+    width: 100%;
+  }
+}
+
+@container dn-preview (max-width: 34rem) {
+  .dn-stat-grid.dn-simulation-summary-grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .dn-simulation-output-stat {
+    grid-column: 1 / -1;
+  }
+}
+
+@container dn-preview (max-width: 40rem) {
+  .dn-preview-settings-grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .dn-preview-setting-group,
+  .dn-preview-setting-group + .dn-preview-setting-group {
+    border-left: 0;
+  }
+
+  .dn-preview-setting-group:nth-child(odd) {
+    padding-left: 0;
+  }
+
+  .dn-preview-setting-group:nth-child(even) {
+    border-left: 1px solid color-mix(in srgb, var(--dn-line) 72%, transparent);
+    padding-right: 0;
+  }
+
+  .dn-preview-setting-group:nth-child(n + 3) {
+    border-top: 1px solid color-mix(in srgb, var(--dn-line) 65%, transparent);
+    margin-top: 0.42rem;
+    padding-top: 0.62rem;
+  }
+}
+
+@container dn-preview (max-width: 30rem) {
+  .dn-preview-settings-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .dn-preview-setting-group,
+  .dn-preview-setting-group:nth-child(even) {
+    border-left: 0;
+    border-top: 1px solid color-mix(in srgb, var(--dn-line) 65%, transparent);
+    margin-top: 0;
+    padding: 0.58rem 0 0.24rem;
+  }
+
+  .dn-preview-setting-group:first-child {
+    border-top: 0;
+    padding-top: 0.08rem;
+  }
+}
+
+@container dn-preview (max-width: 20rem) {
+  .dn-stat-grid.dn-simulation-summary-grid {
+    grid-template-columns: 1fr;
+  }
+}
+
+@container dn-controls (max-width: 20rem) {
+  .dn-control-plot-settings .dn-preview-settings-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .dn-control-plot-settings .dn-preview-setting-group,
+  .dn-control-plot-settings .dn-preview-setting-group:nth-child(even) {
+    border-left: 0;
+    border-top: 1px solid color-mix(in srgb, var(--dn-line) 65%, transparent);
+    margin-top: 0;
+    padding: 0.58rem 0 0.24rem;
+  }
+
+  .dn-control-plot-settings .dn-preview-setting-group:first-child {
+    border-top: 0;
+    padding-top: 0.08rem;
   }
 }
 
@@ -1578,8 +3419,12 @@ body.body--dark .dn-main-logo-frame .dn-main-logo {
     grid-template-columns: repeat(2, minmax(0, 1fr));
   }
 
-  .dn-cache-controls {
+  .dn-cache-toolbar {
     grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .dn-cache-search {
+    grid-column: 1 / -1;
   }
 
   .dn-overview-grid {
@@ -1602,8 +3447,13 @@ body.body--dark .dn-main-logo-frame .dn-main-logo {
     grid-template-columns: 1fr;
   }
 
+  .dn-workspace.dn-data-manager-workspace {
+    grid-template-columns: 1fr;
+  }
+
   .dn-control-card,
   .dn-preview-card {
+    height: max(14rem, calc(100dvh - 12.3rem));
     max-height: max(14rem, calc(100dvh - 12.3rem));
     overflow-x: hidden;
     overflow-y: auto;
@@ -1649,23 +3499,116 @@ body.body--dark .dn-main-logo-frame .dn-main-logo {
     padding: 1.05rem 1.1rem;
   }
 
-  .dn-field-grid-three,
-  .dn-cache-row {
+  .dn-field-grid-three {
     grid-template-columns: 1fr;
+  }
+
+  .dn-cache-item {
+    gap: 0.28rem 0.55rem;
+    grid-template-areas:
+      "icon identity actions"
+      "icon created actions"
+      ". size format";
+    grid-template-columns: 1.75rem minmax(0, 1fr) auto;
+    padding: 0.62rem 0.25rem;
+  }
+
+  .dn-cache-kind-icon {
+    grid-area: icon;
+    justify-content: flex-start;
+  }
+
+  .dn-cache-identity {
+    grid-area: identity;
+  }
+
+  .dn-cache-created {
+    grid-area: created;
+  }
+
+  .dn-cache-size {
+    grid-area: size;
+  }
+
+  .dn-cache-format {
+    grid-area: format;
+  }
+
+  .dn-cache-actions {
+    grid-area: actions;
+  }
+
+  .dn-cache-created .dn-cache-meta-label,
+  .dn-cache-created .dn-cache-meta-value,
+  .dn-cache-size .dn-cache-meta-label,
+  .dn-cache-size .dn-cache-meta-value,
+  .dn-cache-format .dn-cache-meta-label,
+  .dn-cache-format .dn-cache-meta-value {
+    display: inline;
+    margin: 0;
+  }
+
+  .dn-cache-meta-label::after {
+    content: ": ";
   }
 }
 
 @media (max-width: 520px) {
+  .dn-about-dialog {
+    padding: 0.85rem !important;
+  }
+
+  .dn-about-logo {
+    width: min(18rem, 84vw);
+  }
+
+  .dn-about-capabilities {
+    grid-template-columns: 1fr;
+  }
+
+  .dn-about-capability + .dn-about-capability {
+    border-left: 0;
+    border-top: 1px solid var(--dn-line);
+  }
+
+  .dn-about-author {
+    align-items: flex-start;
+    flex-direction: column;
+  }
+
   .dn-field-grid,
   .dn-source-grid,
   .dn-data-fields,
   .dn-stat-grid,
-  .dn-cache-controls {
+  .dn-cache-toolbar {
     grid-template-columns: 1fr;
+  }
+
+  .dn-cache-search {
+    grid-column: auto;
+  }
+
+  .dn-cache-tabs .q-tab {
+    padding: 0 0.55rem !important;
+  }
+
+  .dn-cache-tabs .q-tab__label {
+    display: none;
+  }
+
+  .dn-cache-pagination {
+    justify-content: stretch;
+  }
+
+  .dn-cache-rows,
+  .dn-cache-page {
+    flex: 1 1 0;
+    width: auto;
   }
 
   .dn-control-card,
   .dn-preview-card {
+    height: max(13rem, calc(100dvh - 11.3rem));
     max-height: max(13rem, calc(100dvh - 11.3rem));
   }
 
@@ -1684,6 +3627,7 @@ body.body--dark .dn-main-logo-frame .dn-main-logo {
     padding-bottom: max(0.92rem, env(safe-area-inset-bottom));
     padding-left: 0.75rem;
     padding-right: 0.75rem;
+    position: static;
     width: calc(100% + 1.5rem);
   }
 
@@ -1717,6 +3661,14 @@ body.body--dark .dn-main-logo-frame .dn-main-logo {
     padding: 0.75rem !important;
     width: calc(100vw - 1rem);
   }
+
+  .dn-preview-output-control {
+    flex-basis: 100%;
+    margin-left: 0;
+    max-width: none;
+    min-width: 0;
+    width: 100%;
+  }
 }
 
 @media (max-height: 620px) {
@@ -1749,7 +3701,8 @@ body.body--dark .dn-main-logo-frame .dn-main-logo {
 }
 
 @media (prefers-reduced-motion: reduce) {
-  .dn-plot-toolbar {
+  .dn-plot-toolbar,
+  .dn-drawer-toggle {
     transition: none;
   }
 }

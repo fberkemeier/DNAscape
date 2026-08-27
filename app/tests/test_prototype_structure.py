@@ -43,8 +43,7 @@ def _css_declarations(styles: str, selector: str) -> dict[str, str]:
             (
                 candidate
                 for candidate in re.finditer(r"([^{}]+)\{([^{}]*)\}", styles, re.DOTALL)
-                if selector
-                in {item.strip() for item in candidate.group(1).split(",")}
+                if selector in {item.strip() for item in candidate.group(1).split(",")}
             ),
             None,
         )
@@ -70,7 +69,7 @@ def test_all_seven_page_modules_exist_and_define_render() -> None:
         assert "render" in definitions, file_name
 
 
-def test_ui_only_imports_scientific_package_through_simulation_service() -> None:
+def test_ui_only_imports_scientific_package_through_service_boundaries() -> None:
     scientific_imports: list[tuple[str, str]] = []
     for path in APP_DIR.rglob("*.py"):
         if "tests" in path.parts:
@@ -86,7 +85,10 @@ def test_ui_only_imports_scientific_package_through_simulation_service() -> None
                     scientific_imports.append((path.name, module))
     assert scientific_imports
     assert {file_name for file_name, _module in scientific_imports} == {
-        "simulation_service.py"
+        "data_conversion_service.py",
+        "mapping_catalog.py",
+        "mapping_service.py",
+        "simulation_service.py",
     }
 
 
@@ -99,21 +101,30 @@ def test_shell_exposes_complete_navigation_and_local_entrypoint() -> None:
     assert 'mark("nav-logo-overview")' in source
     assert 'mark("navigation-drawer")' in source
     assert 'mark("drawer-toggle")' in source
+    assert 'mark("drawer-toggle-slot")' in source
     assert "value=True" in source
     assert "top_corner=True" in source
     assert "top_corner=False" not in source
-    assert 'icon = "first_page" if drawer_is_open else "last_page"' in source
+    assert "drawer.hide()" in source
+    assert "drawer.show()" in source
+    assert 'mark("drawer-expand")' in source
+    assert 'mark("drawer-expand-slot")' in source
+    assert 'icon="last_page"' in source
+    assert 'drawer.props("mini mini-width=48")' not in source
     assert 'mark("app-menu-toggle")' in source
     assert 'mark("app-menu")' in source
     assert 'mark("menu-theme")' in source
     assert 'mark("theme-action-icon")' in source
     assert 'theme_icon = "light_mode" if use_light_theme else "dark_mode"' in source
     assert 'aria-label="Go to Overview"' in source
+    assert "__dnascapeFileDragFeedback" in source
+    assert "dn-file-drag-active" in source
     assert "GITHUB_ICON_SVG" in source
     assert 'ui.icon("code")' not in source
-    assert '("data-management", "Data Manager", DATA_ICON)' in source
+    assert '("data-management", "Data Manager", OUTLINE_ICON_SVGS["data"])' in source
     assert '("plotting", "Plotting", None)' in source
     assert "PLOT_ICON_SVG" in source
+    assert "dn-nav-outline-icon" in source
     menu_order = tuple(
         source.index(f'"{marker}"')
         for marker in ("menu-theme", "menu-documentation", "menu-github", "menu-issue")
@@ -126,66 +137,103 @@ def test_shell_exposes_complete_navigation_and_local_entrypoint() -> None:
 
 def test_workflow_copy_and_data_sections_use_updated_ui_semantics() -> None:
     ui_sources = {
-        path.name: path.read_text(encoding="utf-8")
-        for path in (APP_DIR / "pages").glob("*.py")
+        path.name: path.read_text(encoding="utf-8") for path in (APP_DIR / "pages").glob("*.py")
     }
+    preview_source = (APP_DIR / "preview_plotting.py").read_text(encoding="utf-8")
     assert "Data Management" not in "\n".join(ui_sources.values())
     assert '"Data Manager"' in ui_sources["overview.py"]
     assert '"Data Manager"' in ui_sources["data_management.py"]
-    assert 'DATA_ICON = "storage"' in ui_sources["common.py"]
-    assert "DATA_ICON" in ui_sources["overview.py"]
+    icons = (APP_DIR / "icons.py").read_text(encoding="utf-8")
+    assert 'DATA_ICON = "dnascape_data"' in icons
+    assert 'DATA_ICON_SVG = OUTLINE_ICON_SVGS["data"]' in icons
+    assert (
+        "from app.icons import DATA_ICON, DATA_ICON_SVG, PLOT_ICON_SVG" in ui_sources["common.py"]
+    )
+    assert 'section.add_slot("header")' in ui_sources["common.py"]
+    assert '"data-outline-icon"' in ui_sources["common.py"]
+    assert "OUTLINE_ICON_SVGS" in ui_sources["overview.py"]
+    assert 'OUTLINE_ICON_SVGS["data"]' in ui_sources["overview.py"]
+    assert "dn-workflow-symbol" in ui_sources["overview.py"]
     assert '"database"' not in ui_sources["overview.py"]
     assert "Interface prototype" not in ui_sources["overview.py"]
-    for page in ("mapping.py", "simulation.py", "plotting.py"):
+    for page in ("data_management.py", "mapping.py", "simulation.py", "plotting.py"):
         assert "icon=DATA_ICON" in ui_sources[page]
         assert 'panel_title("Controls")' in ui_sources[page]
-        assert "action_dock" in ui_sources[page]
-        assert "with action_dock():" in ui_sources[page]
-        assert "stat_strip(" in ui_sources[page]
-        assert "preview_plot(" in ui_sources[page]
-        assert "raw_output_controls(" in ui_sources[page]
+        if page == "data_management.py":
+            assert 'panel_title("Download")' in ui_sources[page]
+            assert "preview_plot(" not in ui_sources[page]
+        else:
+            assert "preview_plot(" in ui_sources[page]
         assert "ui.radio(" not in ui_sources[page]
         assert "dn-plot-export-actions" not in ui_sources[page]
         assert 'expansion("Export plot"' not in ui_sources[page]
-        for label in (
-            "Title",
-            "X-axis label",
-            "Y-axis label",
-            "Line / bar color",
-            "Heatmap palette",
-            "Histogram bins",
-            "Colorbar",
-            "Log Y",
-            "Invert Y",
-        ):
-            assert f'label="{label}"' in ui_sources[page] or f'("{label}"' in ui_sources[page]
+    for page in ("mapping.py", "simulation.py"):
+        assert "action_dock" in ui_sources[page]
+        assert "with action_dock():" in ui_sources[page]
+        assert "stat_strip(" in ui_sources[page]
+        assert "raw_output_controls(" in ui_sources[page]
+        preview_title = ui_sources[page].index('panel_title("Preview")')
+        plotting_settings = ui_sources[page].index("preview_settings_controls(")
+        raw_output = ui_sources[page].index("raw_output_controls(")
+        assert preview_title < plotting_settings < raw_output
+    plotting_source = ui_sources["plotting.py"]
+    assert "with action_dock():" in plotting_source
+    assert "stat_strip(" not in plotting_source
+    assert "raw_output_controls(" not in plotting_source
+    assert 'expansion("Region"' not in plotting_source
+    data_section = plotting_source.index('"Data",')
+    plotting_settings = plotting_source.index("plot_settings = preview_settings_controls(")
+    preview_title = plotting_source.index('panel_title("Preview")')
+    assert data_section < plotting_settings < preview_title
+    assert "dn-control-plot-settings" in plotting_source
+    assert "dn-preview-settings-section" in preview_source
+    assert "dn-preview-settings-grid" in preview_source
+    for label in (
+        "Title",
+        "X-axis label",
+        "Y-axis label",
+        "Curve color",
+        "Heatmap palette",
+        "Histogram bins",
+        "Colorbar",
+        "Log Y",
+        "Log Z",
+        "Invert Y",
+    ):
+        assert f'label="{label}"' in preview_source or f'("{label}"' in preview_source
+    assert 'label="Second curve color"' in preview_source
+    assert '"First curve color"' in preview_source
+    assert '"Bar color"' in preview_source
     for icon in ("fit_screen", "download"):
         assert f'icon="{icon}"' in ui_sources["common.py"]
     assert 'icon="delete_outline"' not in ui_sources["common.py"]
-    for page in ("mapping.py", "simulation.py", "plotting.py"):
-        assert 'checkbox("Grid"' not in ui_sources[page]
+    assert 'checkbox("Grid"' in preview_source
     assert "def action_dock(" in ui_sources["common.py"]
     assert 'classes("dn-action-dock")' in ui_sources["common.py"]
     assert 'mark("scientific-action-dock")' in ui_sources["common.py"]
     assert '["Profile", "Constant"],' in ui_sources["common.py"]
     assert 'mark(f"source-{marker}-mode")' in ui_sources["common.py"]
     assert "ui.radio(" not in ui_sources["common.py"]
-    assert 'mark("plotting-source-mode")' in ui_sources["plotting.py"]
-    assert 'mark("plotting-prepared-fields")' in ui_sources["plotting.py"]
-    assert 'mark("plotting-upload-fields")' in ui_sources["plotting.py"]
+    assert 'f"plotting-profile-source-' in ui_sources["plotting.py"]
     assert "PLOT_ICON_SVG" in ui_sources["overview.py"]
     assert "plot_action_button" in ui_sources["plotting.py"]
-    assert "plot_action_button()" in ui_sources["plotting.py"]
+    assert "build_preview_plot_options(" in ui_sources["plotting.py"]
+    assert "render_preview_chart(" in ui_sources["plotting.py"]
     assert "def data_upload(" in ui_sources["common.py"]
-    assert 'ui.upload(label="Upload data", auto_upload=False)' in ui_sources["common.py"]
+    assert "auto_upload=True" in ui_sources["common.py"]
     assert 'classes("dn-upload-field")' in ui_sources["common.py"]
     assert 'classes("dn-upload-formats")' in ui_sources["common.py"]
     assert '"dragenter"' in ui_sources["common.py"]
     assert '"dragleave"' in ui_sources["common.py"]
     assert "dn-upload-dragging" in ui_sources["common.py"]
     assert 'value="Upload a profile"' in ui_sources["common.py"]
+    assert "<polyline points=" not in ui_sources["common.py"]
+    assert 'mark("preview-guidance")' in ui_sources["common.py"]
     assert 'marker="data-manager-upload"' in ui_sources["data_management.py"]
-    assert 'marker="plotting-data-upload"' in ui_sources["plotting.py"]
+    assert "convert_data" in ui_sources["data_management.py"]
+    assert "inert_button" not in ui_sources["data_management.py"]
+    assert "mini_table(" not in ui_sources["data_management.py"]
+    assert '"plotting-data-upload"' in ui_sources["plotting.py"]
     assert sum(source.count("ui.upload(") for source in ui_sources.values()) == 1
     assert '"Raw data"' in ui_sources["common.py"]
     visible_prototype_copy = (
@@ -223,13 +271,23 @@ def test_styles_include_theme_and_responsive_breakpoints() -> None:
     assert ".dn-nav-active" in styles
     assert "font-weight: 400 !important" in styles
     assert ".dn-drawer-toggle" in styles
+    assert ".dn-drawer-toggle-slot" in styles
+    assert ".dn-drawer-expand-slot" in styles
     assert ".dn-app-menu-button" in styles
     assert ".dn-app-menu-item" in styles
     assert ".dn-main-logo-frame" in styles
     assert "mask-image: radial-gradient" in styles
     assert ".dn-upload-dragging" in styles
-    assert "Drop data here" in styles
+    assert ".dn-file-drag-active .dn-upload-compact" in styles
+    assert 'content: "check"' not in styles
+    assert 'content: "Choose a file"' in styles
+    assert 'content: " or drag it here"' in styles
+    assert 'content: "cloud_upload"' in styles
     assert ".dn-upload-formats" in styles
+    assert ".dn-simulation-settings-grid" in styles
+    assert ".dn-setting-group" in styles
+    assert ".dn-setting-inline" in styles
+    assert ".dn-preview-output-control" in styles
 
 
 def test_scientific_layout_hooks_keep_controls_aligned_and_actions_clear() -> None:
@@ -239,11 +297,34 @@ def test_scientific_layout_hooks_keep_controls_aligned_and_actions_clear() -> No
     assert control_card["scrollbar-gutter"] == "stable both-edges"
     assert "calc(100dvh - 14rem)" in control_card["max-height"]
 
+    preview_card = _css_declarations(styles, ".dn-preview-card")
+    assert preview_card["max-height"] == control_card["max-height"]
+    assert preview_card["overflow-y"].startswith("auto")
+    assert preview_card["overflow-x"].startswith("hidden")
+    assert preview_card["scrollbar-gutter"] == "stable both-edges"
+    preview_children = _css_declarations(styles, ".dn-preview-card > *")
+    assert preview_children["flex"] == "0 0 auto"
+    assert preview_children["min-width"] == "0"
+
     expansion = _css_declarations(styles, ".dn-expansion")
     assert expansion["width"] == "100%"
     assert expansion["margin"].endswith("!important")
     adjacent_expansion = _css_declarations(styles, ".dn-expansion + .dn-expansion")
     assert adjacent_expansion["margin-top"] != "0"
+
+    # Every expansion uses one quiet header surface and the same full-width
+    # alignment contract, regardless of which workspace column owns it.
+    expansion_header = _css_declarations(
+        styles,
+        ".dn-expansion > .q-expansion-item__container > .q-item",
+    )
+    assert "var(--dn-soft)" in expansion_header["background"]
+    assert expansion_header["border-radius"] != "0"
+
+    avatar = _css_declarations(styles, ".dn-expansion .q-item__section--avatar")
+    data_icon = _css_declarations(styles, ".dn-expansion-data-icon")
+    assert avatar["color"] == "var(--dn-muted)"
+    assert data_icon["color"] == "var(--dn-muted)"
 
     action_dock = _css_declarations(styles, ".dn-action-dock")
     assert action_dock["bottom"] == "0"
@@ -251,7 +332,7 @@ def test_scientific_layout_hooks_keep_controls_aligned_and_actions_clear() -> No
     assert "padding" in action_dock
 
     common = (APP_DIR / "pages" / "common.py").read_text(encoding="utf-8")
-    for page_name in ("mapping.py", "simulation.py", "plotting.py"):
+    for page_name in ("data_management.py", "mapping.py", "simulation.py", "plotting.py"):
         page = (APP_DIR / "pages" / page_name).read_text(encoding="utf-8")
         assert "with action_dock():" in page
     assert 'classes("dn-action-dock")' in common
@@ -264,6 +345,10 @@ def test_navigation_theme_and_compact_height_styles_are_explicit() -> None:
     assert drawer_toggle["background"] == "transparent !important"
     assert drawer_toggle["border"] == "0 !important"
     assert drawer_toggle["box-shadow"] == "none !important"
+    assert "@media (hover: hover) and (pointer: fine)" in styles
+    assert ".dn-drawer:hover .dn-drawer-toggle" in styles
+    assert ".dn-drawer:focus-within .dn-drawer-toggle" in styles
+    assert ".dn-drawer-expand-slot" in styles
 
     drawer_content = _css_declarations(styles, ".dn-drawer-content")
     assert drawer_content["overflow-y"] == "hidden"
@@ -285,12 +370,13 @@ def test_navigation_theme_and_compact_height_styles_are_explicit() -> None:
 
 
 def test_plotting_and_issue_icons_have_shared_semantics() -> None:
+    icons = (APP_DIR / "icons.py").read_text(encoding="utf-8")
     common = (APP_DIR / "pages" / "common.py").read_text(encoding="utf-8")
     main = (APP_DIR / "main.py").read_text(encoding="utf-8")
     overview = (APP_DIR / "pages" / "overview.py").read_text(encoding="utf-8")
     plotting = (APP_DIR / "pages" / "plotting.py").read_text(encoding="utf-8")
 
-    combined = "\n".join((common, main, overview, plotting))
+    combined = "\n".join((icons, common, main, overview, plotting))
     assert "PLOT_ICON_SVG" in combined
     assert "dn-plot-icon" in combined
     assert "dn-plot-icon-axis" in combined
@@ -299,6 +385,82 @@ def test_plotting_and_issue_icons_have_shared_semantics() -> None:
     assert '"plotting", "Plotting", "multiline_chart"' not in main
     assert '"menu-issue"' in main
     assert 'icon="lightbulb"' in main
+
+
+def test_simulation_output_selector_is_preview_owned_and_settings_are_compact() -> None:
+    source = (APP_DIR / "pages" / "simulation.py").read_text(encoding="utf-8")
+    export_source = (APP_DIR / "simulation_exports.py").read_text(encoding="utf-8")
+    preview_source = (APP_DIR / "preview_plotting.py").read_text(encoding="utf-8")
+
+    assert "Single view" not in source + export_source
+    assert 'value="Default"' in preview_source
+    assert source.count('.mark("simulation-output")') == 1
+    preview_bar = source.index('.mark("simulation-preview-output-bar")')
+    output_select = source.index('.mark("simulation-output")')
+    assert preview_bar < output_select
+    plotting_settings = source.index("preview_settings_controls(")
+    raw_data = source.index("raw_output_controls(")
+    assert output_select < plotting_settings < raw_data
+    assert "sync_plot_labels" in source
+    assert "render_latest_result()" in source
+    for hook in (
+        "dn-simulation-settings-grid",
+        "dn-setting-group",
+        "dn-setting-group-title",
+        "dn-setting-inline",
+        "dn-field-compact",
+        "dn-field-xs",
+        "dn-preview-settings-grid",
+        "dn-preview-setting-group",
+        "dn-simulation-data-grid",
+        "dn-setting-subgroup",
+    ):
+        assert hook in source or hook in preview_source
+    for group in (
+        "Firing rate",
+        "Fork speed",
+        "Ensemble",
+        "Timing & outputs",
+        "Fork behaviour",
+    ):
+        assert f'ui.label("{group}")' in source
+    for marker in ("simulation-stalling-settings", "simulation-factor-pool-settings"):
+        assert f'.mark("{marker}")' in source
+    assert 'ui.checkbox("Fixed seed", value=False)' in source
+    assert 'ui.checkbox("Y limits"' not in source
+    for marker in (
+        "simulation-y-minimum",
+        "simulation-y-maximum",
+        "simulation-reset-y-limits",
+    ):
+        assert f'"{marker}"' in source
+    for marker in (
+        "simulation-stats",
+        "simulation-finite-pool",
+    ):
+        assert re.search(rf'\.mark\(\s*["\']{re.escape(marker)}["\']\s*\)', source)
+
+
+def test_simulation_summary_and_raw_download_css_preserve_alignment() -> None:
+    styles = (APP_DIR / "static" / "styles.css").read_text(encoding="utf-8")
+
+    controls = _css_declarations(styles, ".dn-control-card")
+    preview = _css_declarations(styles, ".dn-preview-card")
+    assert controls["padding"].split()[0] == preview["padding"].split()[0]
+
+    summary = _css_declarations(styles, ".dn-stat-grid.dn-simulation-summary-grid")
+    assert summary["grid-template-columns"] == ("minmax(10rem, 1.4fr) repeat(4, minmax(0, 1fr))")
+    run_stats = _css_declarations(
+        styles,
+        ".dn-simulation-summary-grid > .dn-simulation-run-stats",
+    )
+    assert run_stats["display"] == "contents"
+
+    raw_row = _css_declarations(styles, ".dn-raw-output-row")
+    assert raw_row["display"] == "flex"
+    assert raw_row["align-items"] == "flex-end"
+    download = _css_declarations(styles, ".dn-raw-output-download")
+    assert download["margin-left"] == "auto"
 
 
 def test_reused_logo_assets_exist() -> None:

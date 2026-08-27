@@ -9,7 +9,7 @@ import weakref
 
 import numpy as np
 
-from .utils import etaf
+from .utils import check_cancelled, etaf
 
 _SOURCE_ALIASES = {
     "firing": "firing_rate",
@@ -1206,6 +1206,10 @@ def rsim(
         firing_cumulative_hazard = None
 
     for i, g in enumerate(generators, start=1):
+        # Cancellation is independent of console/progress verbosity. Mapping
+        # fits intentionally silence nested ensembles, but Stop must still be
+        # observed between individual simulations.
+        check_cancelled()
         fired_idx, _, _, rep_time, iod, time_stats, fdir, t_fire, src, prev = simulate_replication(
             firing_rate=firing_rate,
             fork_speed=fork_speed,

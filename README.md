@@ -50,12 +50,13 @@ pip install .
 ### NiceGUI interface prototype
 
 The new NiceGUI prototype mirrors the DNAscape workflow, visual style, pages,
-forms, and controls. Its Simulation page now runs bounded constant-input
-ensembles through `rsim` in a background worker and displays live progress and
-a result plot. Its optional detailed mode adds time-series and space-time
-outputs, while plot and selected raw-data downloads are generated lazily.
-Profile inputs and the remaining scientific actions are being connected
-incrementally. The prototype requires Python 3.10 or newer.
+forms, and controls. Its Simulation page now runs bounded scalar or uploaded
+kinetic fields through `rsim` in a background worker and displays live progress
+and a result plot. Its optional detailed mode adds temporal and space-time
+outputs. The Mapping page resolves the public `rmap` route catalogue, inspects
+profile uploads automatically, runs the selected route in a background worker,
+and previews the mapped output. Plot and selected raw-data downloads are
+generated lazily. The prototype requires Python 3.10 or newer.
 
 ```bash
 pip install -r app/requirements.txt

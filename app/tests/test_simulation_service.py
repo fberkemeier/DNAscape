@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import math
 from collections.abc import Callable
+from concurrent.futures import CancelledError
 from dataclasses import replace
 from typing import Any, cast
 
@@ -77,6 +78,21 @@ def test_tiny_constant_ensemble_runs_real_dnascape_and_reports_progress() -> Non
         assert array.flags.writeable is False
 
 
+def test_cancellation_is_checked_inside_the_simulation_ensemble() -> None:
+    checks = 0
+
+    def cancel() -> None:
+        nonlocal checks
+        checks += 1
+        if checks >= 3:
+            raise CancelledError
+
+    with pytest.raises(CancelledError):
+        run_constant_simulation(_request(replicates=20), cancel=cancel)
+
+    assert checks >= 3
+
+
 def test_detailed_mode_collects_time_and_space_time_outputs() -> None:
     result = run_constant_simulation(
         _request(
@@ -120,6 +136,54 @@ def test_rsim_statistics_flags_follow_explicit_detailed_mode(
     assert assumptions_seen["time_statsQ"] is detailed
     assert assumptions_seen["time_stats_xtQ"] is detailed
     assert ("time_grid" in assumptions_seen) is detailed
+
+
+def test_uploaded_kinetic_fields_are_passed_to_rsim_with_native_shapes(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    source_seen: dict[str, Any] = {}
+    firing_rate = np.asarray([0.1, 0.2, 0.3, 0.4])
+    fork_speed = np.asarray([[1.0, 1.5, 2.0]])
+
+    def inspect_rsim(*, source: dict[str, Any], assumptions: dict[str, Any]) -> dict[str, Any]:
+        del assumptions
+        source_seen.update(source)
+        return {
+            "replication_timing": np.asarray([4.0, 3.0, 2.0, 1.0]),
+            "origin_efficiency": np.asarray([0.1, 0.2, 0.3, 0.4]),
+            "fork_directionality": np.asarray([-0.5, -0.2, 0.2, 0.5]),
+        }
+
+    monkeypatch.setattr(dnascape, "rsim", inspect_rsim)
+    result = run_constant_simulation(_request(firing_rate=firing_rate, fork_speed=fork_speed))
+
+    np.testing.assert_array_equal(source_seen["firing_rate"], firing_rate)
+    np.testing.assert_array_equal(source_seen["fork_speed"], fork_speed)
+    assert np.asarray(source_seen["firing_rate"]).shape == (4,)
+    assert np.asarray(source_seen["fork_speed"]).shape == (1, 3)
+    assert np.asarray(source_seen["firing_rate"]).flags.writeable is False
+    assert np.asarray(source_seen["fork_speed"]).flags.writeable is False
+    assert firing_rate.flags.writeable is True
+    assert fork_speed.flags.writeable is True
+    np.testing.assert_array_equal(result.replication_timing, [4.0, 3.0, 2.0, 1.0])
+
+
+@pytest.mark.parametrize(
+    ("changes", "message"),
+    (
+        ({"firing_rate": np.asarray([0.1, 0.2, 0.3])}, "must contain 4 values"),
+        ({"fork_speed": np.ones((3, 2))}, "must contain 4 rows"),
+        ({"firing_rate": np.asarray([0.1, -0.2, 0.3, 0.4])}, "non-negative"),
+        ({"fork_speed": np.asarray([1.0, 0.0, 1.0, 1.0])}, "greater than zero"),
+        ({"firing_rate": np.ones((2, 2, 2))}, "must be scalar"),
+    ),
+)
+def test_uploaded_kinetic_field_validation_matches_rsim(
+    changes: dict[str, Any],
+    message: str,
+) -> None:
+    with pytest.raises(ValueError, match=message):
+        validate_constant_simulation(_request(**changes))
 
 
 @pytest.mark.parametrize(

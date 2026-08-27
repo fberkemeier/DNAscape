@@ -1,8 +1,8 @@
 """Small, framework-independent bridge to DNAscape's simulation engine.
 
-The NiceGUI page deliberately passes only plain scalar configuration into this
-module.  Keeping the scientific call outside the UI makes it straightforward
-to run in a worker thread and to test without constructing a browser session.
+The NiceGUI page passes plain configuration and already-materialized kinetic
+fields into this module. Keeping the scientific call outside the UI makes it
+straightforward to run in a worker thread and test without a browser session.
 """
 
 from __future__ import annotations
@@ -10,13 +10,14 @@ from __future__ import annotations
 import math
 import time
 from collections.abc import Callable, Mapping
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from threading import Lock
 from typing import Any, cast
 
 import numpy as np
 
 ProgressReporter = Callable[[float, str], None]
+CancelChecker = Callable[[], None]
 
 # These limits protect a local browser session from accidental multi-million
 # replicate jobs while still leaving ample room for useful interactive runs.
@@ -62,10 +63,15 @@ _RUN_LOCK = Lock()
 
 @dataclass(frozen=True)
 class ConstantSimulationRequest:
-    """Validated scalar inputs for one local simulation ensemble."""
+    """Inputs for one local simulation ensemble.
 
-    firing_rate: float
-    fork_speed: float
+    Kinetic fields use rsim's native forms: scalar, ``(n,)``, ``(1, T)``, or
+    ``(n, T)``. The historical class name remains part of the app API even
+    though uploaded arrays are now supported.
+    """
+
+    firing_rate: float | np.ndarray
+    fork_speed: float | np.ndarray
     resolution_x: float
     resolution_t: float
     region_start_kb: float
@@ -123,16 +129,61 @@ def _positive_integer(value: int, label: str, *, allow_zero: bool = False) -> in
     return int(number)
 
 
+def _kinetic_field(
+    value: float | np.ndarray,
+    label: str,
+    *,
+    n_bins: int,
+    positive: bool,
+) -> float | np.ndarray:
+    """Validate and normalize one field using rsim's public shape contract."""
+
+    try:
+        array = np.asarray(value, dtype=float)
+    except (TypeError, ValueError) as exc:
+        raise ValueError(f"{label} must contain numeric values.") from exc
+    if array.size == 0:
+        raise ValueError(f"{label} cannot be empty.")
+    if array.size == 1:
+        scalar = _finite(float(array.reshape(-1)[0]), label, positive=positive)
+        if not positive and scalar < 0:
+            raise ValueError(f"{label} must be non-negative.")
+        return scalar
+    if array.ndim == 1:
+        if array.size != n_bins:
+            raise ValueError(
+                f"{label} spatial data must contain {n_bins:,} values; got {array.size:,}."
+            )
+    elif array.ndim == 2:
+        is_time = array.shape[0] == 1 and array.shape[1] > 1
+        is_space = array.shape[1] == 1 and array.shape[0] > 1
+        is_space_time = array.shape[0] > 1 and array.shape[1] > 1
+        if (is_space or is_space_time) and array.shape[0] != n_bins:
+            raise ValueError(
+                f"{label} spatial data must contain {n_bins:,} rows; got {array.shape[0]:,}."
+            )
+        if not (is_time or is_space or is_space_time):
+            raise ValueError(f"{label} must be scalar, (n,), (1, T), (n, 1), or (n, T).")
+    else:
+        raise ValueError(f"{label} must be scalar, (n,), (1, T), (n, 1), or (n, T).")
+
+    if np.any(~np.isfinite(array)):
+        raise ValueError(f"{label} values must be finite.")
+    if positive and np.any(array <= 0):
+        raise ValueError(f"{label} values must be greater than zero.")
+    if not positive and np.any(array < 0):
+        raise ValueError(f"{label} values must be non-negative.")
+    normalized = array.astype(float, copy=False).view()
+    normalized.setflags(write=False)
+    return normalized
+
+
 def validate_constant_simulation(request: ConstantSimulationRequest) -> _ValidatedRequest:
     """Validate user-controlled values before allocating arrays or starting work."""
 
     if not isinstance(request.track_detailed_outputs, bool):
         raise ValueError("Detailed-output tracking must be true or false.")
 
-    firing_rate = _finite(request.firing_rate, "Firing rate")
-    if firing_rate < 0:
-        raise ValueError("Firing rate must be non-negative.")
-    _finite(request.fork_speed, "Fork speed", positive=True)
     resolution_x = _finite(request.resolution_x, "Spatial resolution", positive=True)
     resolution_t = _finite(request.resolution_t, "Time step", positive=True)
     start = _finite(request.region_start_kb, "Region start")
@@ -151,6 +202,24 @@ def validate_constant_simulation(request: ConstantSimulationRequest) -> _Validat
             f"The region contains {n_bins:,} bins; the local app limit is "
             f"{MAX_SPATIAL_BINS:,}. Increase the resolution or narrow the region."
         )
+
+    firing_rate = _kinetic_field(
+        request.firing_rate,
+        "Firing rate",
+        n_bins=n_bins,
+        positive=False,
+    )
+    fork_speed = _kinetic_field(
+        request.fork_speed,
+        "Fork speed",
+        n_bins=n_bins,
+        positive=True,
+    )
+    request = replace(
+        request,
+        firing_rate=firing_rate,
+        fork_speed=fork_speed,
+    )
 
     replicates = _positive_integer(request.replicates, "Replicates")
     if replicates > MAX_REPLICATES:
@@ -307,20 +376,25 @@ def _collect_outputs(
 def run_constant_simulation(
     request: ConstantSimulationRequest,
     report: ProgressReporter | None = None,
+    cancel: CancelChecker | None = None,
 ) -> ConstantSimulationResult:
-    """Run ``dnascape.simulation.rsim`` for two scalar kinetic inputs."""
+    """Run ``dnascape.simulation.rsim`` with scalar or array kinetic inputs."""
 
     from dnascape import rsim
     from dnascape.utils import progress_context
 
     simulate = cast(Callable[..., dict[str, Any]], rsim)
-    validated = validate_constant_simulation(request)
-    request = validated.request
     report = report or (lambda _value, _message: None)
+    cancel = cancel or (lambda: None)
     if not _RUN_LOCK.acquire(blocking=False):
         raise RuntimeError("Another simulation is already running in this local app.")
     try:
+        started = time.perf_counter()
+        cancel()
         report(0.02, "Preparing simulation...")
+        validated = validate_constant_simulation(request)
+        request = validated.request
+        cancel()
         detailed = bool(request.track_detailed_outputs)
         assumptions = {
             "sim_number": int(request.replicates),
@@ -344,18 +418,19 @@ def run_constant_simulation(
         }
         if detailed:
             assumptions["time_grid"] = validated.time_grid
-        started = time.perf_counter()
-        with progress_context(report=report, suppress_output=True):
+        with progress_context(report=report, cancel=cancel, suppress_output=True):
             raw = simulate(
                 source={
-                    "firing_rate": float(request.firing_rate),
-                    "fork_speed": float(request.fork_speed),
+                    "firing_rate": request.firing_rate,
+                    "fork_speed": request.fork_speed,
                 },
                 assumptions=assumptions,
             )
+        cancel()
         report(0.98, "Preparing preview...")
 
         outputs = _collect_outputs(raw, validated)
+        cancel()
         replication_timing = outputs["replication_timing"]
         position_kb = float(request.region_start_kb) + np.arange(
             validated.n_bins, dtype=float

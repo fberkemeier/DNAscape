@@ -1076,7 +1076,8 @@ def _read_rdata_table(
 
 
 def _read_rdata_npz(path, array_key=None, data_form="auto"):
-    with np.load(path, allow_pickle=False) as payload:
+    opener = gzip.open if str(path).lower().endswith(".gz") else open
+    with opener(path, "rb") as source, np.load(source, allow_pickle=False) as payload:
         if array_key is None:
             for preferred in ("values", "data", "arr_0"):
                 if preferred in payload.files:
@@ -1150,7 +1151,11 @@ def _rdata_payload_from_source(
         elif inferred_format == "txt":
             values = np.loadtxt(source_path, dtype=float)
         elif inferred_format in {"npy", "npv"}:
-            values = np.load(source_path, allow_pickle=False)
+            if str(source_path).lower().endswith(".gz"):
+                with gzip.open(source_path, "rb") as source_file:
+                    values = np.load(source_file, allow_pickle=False)
+            else:
+                values = np.load(source_path, allow_pickle=False)
         elif inferred_format == "npz":
             values, table, labels, data_form = _read_rdata_npz(
                 source_path,

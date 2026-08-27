@@ -11,8 +11,9 @@ from nicegui.elements.button import Button
 from nicegui.elements.tooltip import Tooltip
 
 from app import __version__
+from app.export_settings import COMPRESSION_OPTIONS, get_export_settings
+from app.icons import OUTLINE_ICON_SVGS, PLOT_ICON_SVG
 from app.pages import PAGE_RENDERERS
-from app.pages.common import DATA_ICON, PLOT_ICON_SVG
 
 APP_DIR = Path(__file__).resolve().parent
 ROOT_DIR = APP_DIR.parent
@@ -20,13 +21,13 @@ ASSET_DIR = ROOT_DIR / "docs" / "source" / "_static"
 STYLE_PATH = APP_DIR / "static" / "styles.css"
 
 NAV_ITEMS = (
-    ("overview", "Overview", "home"),
-    ("data-management", "Data Manager", DATA_ICON),
-    ("mapping", "Mapping", "map"),
-    ("simulation", "Simulation", "monitor"),
+    ("overview", "Overview", OUTLINE_ICON_SVGS["overview"]),
+    ("data-management", "Data Manager", OUTLINE_ICON_SVGS["data"]),
+    ("mapping", "Mapping", OUTLINE_ICON_SVGS["mapping"]),
+    ("simulation", "Simulation", OUTLINE_ICON_SVGS["simulation"]),
     ("plotting", "Plotting", None),
-    ("cached-files", "Cached Files", "inventory_2"),
-    ("resources", "Resources", "menu_book"),
+    ("cached-files", "Cached Files", OUTLINE_ICON_SVGS["cached"]),
+    ("resources", "Resources", OUTLINE_ICON_SVGS["resources"]),
 )
 
 GITHUB_URL = "https://github.com/fberkemeier/DNAscape"
@@ -66,6 +67,43 @@ def index() -> None:
     """Build one isolated, client-local prototype shell."""
 
     ui.add_css(STYLE_PATH.read_text(encoding="utf-8"))
+    ui.add_body_html(
+        """
+        <script>
+        (() => {
+          if (window.__dnascapeFileDragFeedback) return;
+          window.__dnascapeFileDragFeedback = true;
+          let clearTimer = null;
+          const hasFiles = event =>
+            Array.from(event.dataTransfer?.types || []).includes('Files');
+          const show = event => {
+            if (!hasFiles(event) || !document.querySelector('.dn-upload-compact')) return;
+            event.preventDefault();
+            if (clearTimer !== null) window.clearTimeout(clearTimer);
+            clearTimer = null;
+            document.body.classList.add('dn-file-drag-active');
+          };
+          const clear = () => {
+            if (clearTimer !== null) window.clearTimeout(clearTimer);
+            clearTimer = null;
+            document.body.classList.remove('dn-file-drag-active');
+          };
+          document.addEventListener('dragenter', show, true);
+          document.addEventListener('dragover', show, true);
+          document.addEventListener('dragleave', () => {
+            if (clearTimer !== null) window.clearTimeout(clearTimer);
+            clearTimer = window.setTimeout(clear, 90);
+          }, true);
+          document.addEventListener('drop', event => {
+            if (hasFiles(event)) event.preventDefault();
+            clear();
+          }, true);
+          document.addEventListener('dragend', clear, true);
+          window.addEventListener('blur', clear);
+        })();
+        </script>
+        """
+    )
     ui.colors(primary="#b03412")
     ui.query("body").classes("dn-body")
     dark_mode = ui.dark_mode()
@@ -78,12 +116,47 @@ def index() -> None:
         render_navigation.refresh()
         render_active_page.refresh()
 
+    drawer_collapse_button: Button
+    drawer_collapse_tooltip: Tooltip
+    drawer_expand_button: Button
+    drawer_expand_tooltip: Tooltip
+
+    def sync_drawer_controls() -> None:
+        """Keep the two spatially distinct drawer controls in sync."""
+
+        drawer_is_open = drawer.value is not False
+        drawer_collapse_button.set_visibility(drawer_is_open)
+        drawer_expand_button.set_visibility(not drawer_is_open)
+        drawer_collapse_button.props["aria-expanded"] = str(drawer_is_open).lower()
+        drawer_expand_button.props["aria-expanded"] = str(drawer_is_open).lower()
+        drawer_collapse_tooltip.set_text("Collapse navigation")
+        drawer_expand_tooltip.set_text("Expand navigation")
+
+    def collapse_drawer() -> None:
+        drawer.hide()
+        sync_drawer_controls()
+
+    def expand_drawer() -> None:
+        drawer.show()
+        sync_drawer_controls()
+
     # The drawer occupies the full left edge, including the header corner.
     # Quasar's breakpoint still switches it to overlay behavior on narrow screens.
     with ui.left_drawer(value=True, bordered=True, top_corner=True).props(
-        "width=240 breakpoint=900"
+        'width=240 breakpoint=900 id="dn-navigation-drawer"'
     ) as drawer:
         drawer.classes("dn-drawer").mark("navigation-drawer")
+        with ui.element("div").classes("dn-drawer-toggle-slot").mark("drawer-toggle-slot"):
+            with (
+                ui.button(icon="first_page", on_click=collapse_drawer)
+                .props(
+                    'flat round dense aria-label="Collapse navigation" '
+                    'aria-controls="dn-navigation-drawer" aria-expanded="true"'
+                )
+                .classes("dn-drawer-toggle dn-drawer-collapse")
+                .mark("drawer-toggle")
+            ) as drawer_collapse_button:
+                drawer_collapse_tooltip = ui.tooltip("Collapse navigation")
         with ui.column().classes("dn-drawer-content"):
             with (
                 ui.element("button")
@@ -108,20 +181,17 @@ def index() -> None:
                                 .props("flat no-caps align=left")
                                 .mark(f"nav-{slug}")
                             ) as button:
-                                ui.html(PLOT_ICON_SVG).classes(
-                                    "dn-nav-plot-icon dn-plot-icon-wrap"
-                                )
+                                ui.html(PLOT_ICON_SVG).classes("dn-nav-plot-icon dn-plot-icon-wrap")
                                 ui.label(label).classes("dn-nav-label")
                         else:
-                            button = (
-                                ui.button(
-                                    label,
-                                    icon=icon,
-                                    on_click=_handler(navigate, slug),
-                                )
+                            assert icon is not None
+                            with (
+                                ui.button(on_click=_handler(navigate, slug))
                                 .props("flat no-caps align=left")
                                 .mark(f"nav-{slug}")
-                            )
+                            ) as button:
+                                ui.html(icon).classes("dn-nav-symbol dn-nav-outline-icon")
+                                ui.label(label).classes("dn-nav-label")
                         button.classes(
                             "dn-nav-button dn-nav-active"
                             if page_state["active"] == slug
@@ -131,9 +201,11 @@ def index() -> None:
             render_navigation()
             ui.space()
             with ui.row().classes("dn-sidebar-links"):
-                with ui.link(target=GITHUB_URL, new_tab=True).props(
-                    'aria-label="GitHub"'
-                ).classes("dn-icon-link"):
+                with (
+                    ui.link(target=GITHUB_URL, new_tab=True)
+                    .props('aria-label="GitHub"')
+                    .classes("dn-icon-link")
+                ):
                     ui.html(GITHUB_ICON_SVG)
                     ui.tooltip("GitHub")
                 with ui.link(target=DOCS_URL, new_tab=True).classes("dn-icon-link"):
@@ -142,20 +214,23 @@ def index() -> None:
                     ui.icon("lightbulb").tooltip("Report an issue or suggest a feature")
             ui.label(f"v{__version__.replace('-prototype', '')}").classes("dn-version")
 
-    drawer_toggle_button: Button
-    drawer_toggle_tooltip: Tooltip
+    # Once the drawer has fully closed, its own control is no longer reachable.
+    # This small fixed control deliberately lives outside the drawer so opening
+    # navigation never depends on a remnant rail or an invisible hover target.
+    with ui.element("div").classes("dn-drawer-expand-slot").mark("drawer-expand-slot"):
+        with (
+            ui.button(icon="last_page", on_click=expand_drawer)
+            .props(
+                'flat round dense aria-label="Expand navigation" '
+                'aria-controls="dn-navigation-drawer" aria-expanded="false"'
+            )
+            .classes("dn-drawer-toggle dn-drawer-expand")
+            .mark("drawer-expand")
+        ) as drawer_expand_button:
+            drawer_expand_tooltip = ui.tooltip("Expand navigation")
 
-    def sync_drawer_toggle() -> None:
-        drawer_is_open = bool(drawer.value)
-        label = "Collapse navigation" if drawer_is_open else "Expand navigation"
-        icon = "first_page" if drawer_is_open else "last_page"
-        drawer_toggle_button.set_icon(icon)
-        drawer_toggle_button.props["aria-label"] = label
-        drawer_toggle_tooltip.set_text(label)
-
-    def toggle_drawer() -> None:
-        drawer.toggle()
-        sync_drawer_toggle()
+    drawer.on_value_change(lambda: sync_drawer_controls())
+    sync_drawer_controls()
 
     def toggle_theme() -> None:
         dark_mode.toggle()
@@ -185,11 +260,142 @@ def index() -> None:
             with ui.item_section():
                 ui.label(label)
 
+    export_settings = get_export_settings()
+    with (
+        ui.dialog().props("persistent") as settings_dialog,
+        ui.card().classes("dn-settings-dialog"),
+    ):
+        with ui.row().classes("dn-settings-dialog-head"):
+            ui.label("Settings").classes("dn-panel-title")
+            ui.space()
+            ui.button(icon="close", on_click=settings_dialog.close).props(
+                'flat round dense aria-label="Close settings"'
+            )
+        with ui.element("div").classes("dn-settings-grid"):
+            plot_dpi_setting = (
+                ui.number(
+                    label="Plot export DPI",
+                    value=export_settings.plot_dpi,
+                    min=72,
+                    max=384,
+                    step=24,
+                )
+                .props("dense")
+                .classes("dn-field")
+                .mark("settings-plot-dpi")
+            )
+            compression_setting = (
+                ui.select(
+                    COMPRESSION_OPTIONS,
+                    value=export_settings.raw_compression,
+                    label="Raw data compression",
+                )
+                .props("dense options-dense")
+                .classes("dn-field")
+                .mark("settings-raw-compression")
+            )
+
+        def update_plot_dpi() -> None:
+            value = int(plot_dpi_setting.value or 150)
+            export_settings.plot_dpi = max(72, min(384, value))
+
+        def update_compression() -> None:
+            export_settings.raw_compression = str(compression_setting.value or "gzip")
+
+        plot_dpi_setting.on_value_change(update_plot_dpi)
+        compression_setting.on_value_change(update_compression)
+
+    with (
+        ui.dialog() as about_dialog,
+        ui.card().classes("dn-settings-dialog dn-about-dialog").mark("about-dialog"),
+    ):
+        with ui.row().classes("dn-settings-dialog-head"):
+            ui.label("About").classes("dn-panel-title")
+            ui.space()
+            ui.button(icon="close", on_click=about_dialog.close).props(
+                'flat round dense aria-label="Close About"'
+            )
+        with ui.element("div").classes("dn-about-identity"):
+            (
+                ui.element("img")
+                .props(
+                    'src="/dnascape-assets/dnascape_logo.svg" '
+                    'alt="DNAscape" draggable=false'
+                )
+                .classes("dn-about-logo")
+                .mark("about-logo")
+            )
+            with ui.row().classes("dn-about-meta"):
+                ui.label(f"Version {__version__.replace('-prototype', '')}").classes(
+                    "dn-about-version"
+                )
+                ui.label("Local Python interface").classes("dn-about-local")
+        ui.label(
+            "DNAscape builds quantitative models of DNA replication from genomic data. "
+            "It connects data preparation, kinetic mapping, stochastic simulation, and "
+            "scientific visualization in one local workspace."
+        ).classes("dn-about-copy dn-about-summary")
+        with ui.element("div").classes("dn-about-capabilities"):
+            for icon, label in (
+                ("swap_horiz", "Map measured profiles to replication kinetics"),
+                ("science", "Simulate replication programmes with rsim"),
+                ("query_stats", "Inspect spatial and temporal outputs"),
+            ):
+                with ui.row().classes("dn-about-capability"):
+                    ui.icon(icon)
+                    ui.label(label)
+        ui.separator().classes("dn-about-separator")
+        with ui.element("div").classes("dn-about-author"):
+            ui.label("Created and maintained by Francisco Berkemeier").classes(
+                "dn-about-author-name"
+            )
+            ui.link("fp409@cam.ac.uk", "mailto:fp409@cam.ac.uk").classes(
+                "dn-about-email"
+            ).mark("about-email")
+        with ui.row().classes("dn-about-links"):
+            with (
+                ui.link(target=DOCS_URL, new_tab=True)
+                .classes("dn-about-link")
+                .mark("about-documentation")
+            ):
+                ui.icon("menu_book")
+                ui.label("Documentation")
+            with (
+                ui.link(target=GITHUB_URL, new_tab=True)
+                .classes("dn-about-link")
+                .mark("about-github")
+            ):
+                ui.html(GITHUB_ICON_SVG).classes("dn-about-github-icon")
+                ui.label("GitHub")
+        ui.label("Copyright 2026 Francisco Berkemeier. All rights reserved.").classes(
+            "dn-about-copyright"
+        )
+
     @ui.refreshable
     def render_app_menu_items() -> None:
         use_light_theme = bool(dark_mode.value)
         theme_label = "Light theme" if use_light_theme else "Dark theme"
         theme_icon = "light_mode" if use_light_theme else "dark_mode"
+        with (
+            ui.menu_item(on_click=settings_dialog.open)
+            .props('aria-label="Open settings"')
+            .classes("dn-app-menu-item")
+            .mark("menu-settings")
+        ):
+            with ui.item_section().props("avatar"):
+                ui.icon("settings").classes("dn-app-menu-icon")
+            with ui.item_section():
+                ui.label("Settings")
+        with (
+            ui.menu_item(on_click=about_dialog.open)
+            .props('aria-label="Open About DNAscape"')
+            .classes("dn-app-menu-item")
+            .mark("menu-about")
+        ):
+            with ui.item_section().props("avatar"):
+                ui.icon("info").classes("dn-app-menu-icon")
+            with ui.item_section():
+                ui.label("About")
         with (
             ui.menu_item(on_click=toggle_theme)
             .props(f'aria-label="Switch to {theme_label.lower()}"')
@@ -214,17 +420,9 @@ def index() -> None:
             icon="lightbulb",
         )
 
-    drawer.on_value_change(lambda: sync_drawer_toggle())
     dark_mode.on_value_change(lambda: render_app_menu_items.refresh())
 
     with ui.header(elevated=False).classes("dn-header"):
-        with (
-            ui.button(icon="first_page", on_click=toggle_drawer)
-            .props('flat round dense aria-label="Collapse navigation"')
-            .classes("dn-drawer-toggle")
-            .mark("drawer-toggle")
-        ) as drawer_toggle_button:
-            drawer_toggle_tooltip = ui.tooltip("Collapse navigation")
         ui.space()
         ui.badge("PROTOTYPE").props("outline").classes("dn-header-badge")
         with (
@@ -261,7 +459,7 @@ def _port() -> int:
 
 
 def _show_browser() -> bool:
-    return os.getenv("DNASCAPE_APP_SHOW", "true").strip().casefold() not in {
+    return os.getenv("DNASCAPE_APP_SHOW", "false").strip().casefold() not in {
         "0",
         "false",
         "no",
@@ -270,7 +468,7 @@ def _show_browser() -> bool:
 
 
 def main() -> None:
-    """Start the local-only prototype and open it in the default browser."""
+    """Start the local-only interface; browser launch is explicitly opt-in."""
 
     ui.run(
         title="DNAscape",

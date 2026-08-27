@@ -8,7 +8,8 @@ Run the local interface from the repository root:
    python -m pip install -r app/requirements.txt
    python -m app
 
-Open ``http://127.0.0.1:8080`` if the browser does not open automatically.
+Open ``http://127.0.0.1:8080`` after the server starts. DNAscape does not
+launch a browser automatically; set ``DNASCAPE_APP_SHOW=true`` to opt in.
 Use the app for inspection and short interactive runs; use Python scripts or
 notebooks for reproducible analyses, sweeps, and publication pipelines.
 
@@ -20,30 +21,36 @@ Overview
    and Resources.
 
 Data Manager
-   Explore file conversion and preprocessing controls. Backend conversion is
-   being connected incrementally.
+   Automatically detect uploaded DNAscape profile dependence and convert between
+   supported genomic data forms. Missing values can be rejected, preserved,
+   interpolated, or filled with zero. Completed conversions provide a direct
+   download and remain available in Cached Files for the browser tab.
 
 Mapping
-   Configure ``rmap`` inputs, regions, routes, and preview settings. Backend
-   execution is being connected incrementally.
+   Configure ``rmap`` inputs, regions, routes, and preview settings, then run
+   the resolved route in a cancellable background worker.
 
 Simulation
-   Run bounded constant firing-rate and fork-speed ensembles through ``rsim``.
+   Run bounded constant or uploaded firing-rate and fork-speed fields through ``rsim``.
    Progress appears in Preview while the scientific worker runs. Enable
    **Track detailed outputs** only when time courses and space-time fields are
    needed; the app validates memory and workload limits before allocation.
 
    Plot previews can be enlarged and exported as PNG, SVG, or PDF. Selected
-   raw arrays can be downloaded as CSV, TSV, TXT, NPY, or NPZ with optional
-   gzip compression.
+   raw arrays can be downloaded as CSV, TSV, TXT, NPY, or NPZ. The application
+   Settings menu controls plot DPI and raw compression; GZIP is the default.
 
 Plotting
-   Explore controls for profiles, heatmaps, and histograms. Backend plotting
-   is being connected incrementally.
+   Upload one or more profiles and create profile, heatmap, histogram, or
+   box-plot previews with the same plotting controls used by Mapping and
+   Simulation.
 
 Cached Files
-   Inspect the intended generated-file and retained-session layout while cache
-   persistence is being connected.
+   Search, sort, download, reopen, or remove uploads, prepared datasets,
+   generated files, and completed workflows retained in the current browser
+   tab. The oldest entries are removed automatically above 30 items per
+   category, 80 items overall, or 256 MB retained memory. The cache is cleared
+   when the app process ends.
 
 Resources
    Open the repository, documentation, issue tracker, and citation guidance.
@@ -74,4 +81,3 @@ The local interface validates numeric inputs, spatial and temporal grid sizes,
 replicate-scaled work, and detailed-output memory before calling ``rsim``.
 Oversized requests are rejected with guidance to coarsen the resolution,
 shorten the interval, or reduce the ensemble.
-

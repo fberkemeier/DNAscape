@@ -33,10 +33,16 @@ def progress_context(report=None, cancel=None, *, suppress_output=False):
         _PROGRESS_STATE.report, _PROGRESS_STATE.cancel, _PROGRESS_STATE.suppress_output = previous
 
 
-def _progress_update(it, maxiter, eta_sec, label=None, err=None):
+def check_cancelled():
+    """Raise through the worker's cancellation callback when a run was stopped."""
+
     cancel = getattr(_PROGRESS_STATE, "cancel", None)
     if callable(cancel):
         cancel()
+
+
+def _progress_update(it, maxiter, eta_sec, label=None, err=None):
+    check_cancelled()
 
     report = getattr(_PROGRESS_STATE, "report", None)
     if not callable(report):

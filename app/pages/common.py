@@ -2,26 +2,22 @@
 
 from __future__ import annotations
 
+import asyncio
+import weakref
 from collections.abc import Callable, Iterator, Sequence
 from contextlib import contextmanager
 from dataclasses import dataclass
 from functools import partial
 from typing import Any
 
-from nicegui import ui
+from nicegui import background_tasks, events, helpers, ui
 
-DATA_ICON = "storage"
-RAW_DATA_FORMATS = ("CSV", "TSV", "TXT", "NPY", "NPZ")
-PLOT_ICON_SVG = """
-<svg class="dn-plot-icon" viewBox="0 0 24 24" aria-hidden="true" focusable="false">
-  <path class="dn-plot-icon-axis" d="M4 3.5V20h16.5" />
-  <path class="dn-plot-icon-line" d="m7 16 4-5 3.2 3.1L19 7.5" />
-  <circle class="dn-plot-icon-point" cx="7" cy="16" r="1" />
-  <circle class="dn-plot-icon-point" cx="11" cy="11" r="1" />
-  <circle class="dn-plot-icon-point" cx="14.2" cy="14.1" r="1" />
-  <circle class="dn-plot-icon-point" cx="19" cy="7.5" r="1" />
-</svg>
-"""
+from app.icons import DATA_ICON, DATA_ICON_SVG, PLOT_ICON_SVG
+from app.mapping_uploads import MAX_DECOMPRESSED_BYTES, MAX_UPLOAD_BYTES
+
+# Binary arrays are normally substantially smaller than their text equivalents.
+# Keep the compact choices first so the default and the menu order agree.
+RAW_DATA_FORMATS = ("NPY", "NPV", "NPZ", "TXT", "TSV", "CSV")
 
 
 @dataclass(frozen=True)
@@ -38,8 +34,26 @@ class RawOutputControls:
 
     file_name: Any
     file_type: Any
-    gzip_output: Any
+    compress: Any
     download_button: Any
+
+
+@dataclass(kw_only=True)
+class UploadClearEventArguments(events.UiEventArguments):
+    """Event emitted when a user removes an uploaded file from the UI."""
+
+    name: str
+
+
+@dataclass
+class _DataUploadState:
+    """Typed server-side state associated with one NiceGUI upload element."""
+
+    locked: bool
+    remove_controls: list[Any]
+
+
+_DATA_UPLOAD_STATES: weakref.WeakKeyDictionary[Any, _DataUploadState] = weakref.WeakKeyDictionary()
 
 
 def page_intro(kicker: str, title: str, body: str) -> None:
@@ -79,11 +93,21 @@ def expansion(
     """Render a compact workflow section."""
 
     classes = f"dn-expansion {extra_classes}".strip()
-    with (
-        ui.expansion(title, value=expanded, icon=icon)
+    custom_data_icon = icon == DATA_ICON
+    section = (
+        ui.expansion(title, value=expanded, icon=None if custom_data_icon else icon)
         .classes(classes)
         .props("dense expand-separator")
-    ):
+    )
+    if custom_data_icon:
+        with section.add_slot("header"):
+            with ui.item_section().props("avatar"):
+                ui.html(DATA_ICON_SVG).classes("dn-expansion-data-icon dn-outline-icon").mark(
+                    "data-outline-icon"
+                )
+            with ui.item_section():
+                ui.item_label(title)
+    with section:
         with ui.column().classes("dn-expansion-content"):
             yield
 
@@ -146,9 +170,7 @@ def plot_toolbar(
                 .mark("plot-download-menu")
             ):
                 for file_format in ("PNG", "SVG", "PDF"):
-                    handler = (
-                        None if on_download is None else partial(on_download, file_format)
-                    )
+                    handler = None if on_download is None else partial(on_download, file_format)
                     (
                         ui.menu_item(file_format, on_click=handler)
                         .classes("dn-plot-download-item")
@@ -164,22 +186,113 @@ def action_dock() -> Iterator[None]:
         yield
 
 
+def set_data_upload_locked(uploader: Any, locked: bool) -> None:
+    """Atomically freeze or release an upload surface and its remove actions."""
+
+    state = _DATA_UPLOAD_STATES.get(uploader)
+    if state is None:
+        raise ValueError("The supplied control is not a DNAscape data upload surface.")
+    state.locked = bool(locked)
+    uploader.disable() if locked else uploader.enable()
+    for control in tuple(state.remove_controls):
+        if getattr(control, "is_deleted", False):
+            continue
+        control.disable() if locked else control.enable()
+
+
+def is_data_upload(control: Any) -> bool:
+    """Return whether ``control`` was created by :func:`data_upload`."""
+
+    try:
+        return control in _DATA_UPLOAD_STATES
+    except TypeError:
+        return False
+
+
 def data_upload(
     *,
     accept: str,
     accepted_formats: str,
     marker: str | None = None,
+    show_accepted_formats: bool = True,
+    on_upload: Callable[[events.UploadEventArguments], Any] | Callable[[], Any] | None = None,
+    on_clear: Callable[[UploadClearEventArguments], Any] | Callable[[], Any] | None = None,
+    on_rejected: Callable[[events.UiEventArguments], Any] | Callable[[], Any] | None = None,
+    multiple: bool = False,
+    max_file_size: int = MAX_UPLOAD_BYTES,
+    max_total_size: int = MAX_DECOMPRESSED_BYTES,
+    max_files: int | None = None,
+    hide_when_loaded: bool = False,
+    initial_names: Sequence[str] = (),
 ) -> Any:
-    """Render the shared, drag-aware data upload surface."""
+    """Render the shared drag-and-drop surface with immediate upload.
+
+    Quasar's completed queue exposes byte counts and a passive status glyph.
+    DNAscape replaces it with a compact filename row and an explicit remove
+    button. ``on_clear`` is also the authoritative hook for dropping any
+    server-side parsed data associated with that filename.
+    """
+
+    uploaded_names: list[str] = list(dict.fromkeys(str(name) for name in initial_names))
+    inspecting_names: list[str] = []
+    upload_lock = asyncio.Lock()
+
+    async def invoke_callback(callback: Callable[..., Any] | None, argument: Any) -> Any:
+        if callback is None:
+            return None
+        result = callback(argument) if helpers.expects_arguments(callback) else callback()
+        if helpers.should_await(result):
+            return await result
+        return result
+
+    async def handle_rejected(event: events.UiEventArguments) -> None:
+        ui.notify(
+            "This file type or size is not accepted here.",
+            type="warning",
+        )
+        await invoke_callback(on_rejected, event)
 
     with ui.element("div").classes("dn-upload-field"):
+        accept_tokens = [token.strip() for token in accept.split(",") if token.strip()]
+        if ".csv" in accept_tokens and "text/csv" not in accept_tokens:
+            accept_tokens.append("text/csv")
+        normalized_accept = ",".join(accept_tokens)
         uploader = (
-            ui.upload(label="Upload data", auto_upload=False)
-            .props(f"flat bordered accept={accept}")
+            ui.upload(
+                label="Choose a file or drag it here",
+                auto_upload=True,
+                multiple=multiple,
+                max_file_size=max_file_size,
+                max_total_size=max_total_size,
+                max_files=max_files,
+                on_rejected=handle_rejected,
+            )
+            .props(
+                'flat bordered tabindex="0" role="button" '
+                'aria-label="Choose a file or drag it here"'
+            )
             .classes("dn-upload-compact")
         )
+        uploader._props["accept"] = normalized_accept
         if marker:
             uploader.mark(marker)
+        upload_state = _DataUploadState(locked=False, remove_controls=[])
+        _DATA_UPLOAD_STATES[uploader] = upload_state
+        uploader.on(
+            "click",
+            js_handler=(
+                "event => { if (event.target.closest('input, button')) return; "
+                "event.currentTarget.querySelector('input[type=file]')?.click(); }"
+            ),
+        )
+        uploader.on(
+            "keydown",
+            js_handler=(
+                "event => { if (event.key !== 'Enter' && event.key !== ' ') return; "
+                "event.preventDefault(); "
+                "event.currentTarget.querySelector('input[type=file]')?.click(); }"
+            ),
+        )
         uploader.on(
             "dragenter",
             js_handler="event => event.currentTarget.classList.add('dn-upload-dragging')",
@@ -195,7 +308,122 @@ def data_upload(
             "drop",
             js_handler="event => event.currentTarget.classList.remove('dn-upload-dragging')",
         )
-        ui.label(f"Accepted: {accepted_formats}").classes("dn-upload-formats")
+        with ui.element("div").classes("dn-upload-files"):
+
+            @ui.refreshable
+            def uploaded_file_rows() -> None:
+                uploader.visible = not (hide_when_loaded and (uploaded_names or inspecting_names))
+                upload_state.remove_controls.clear()
+                for name in inspecting_names:
+                    row_marker = f"{marker}-inspecting" if marker else None
+                    with ui.element("div").classes(
+                        "dn-upload-file dn-upload-file-inspecting"
+                    ) as row:
+                        if row_marker:
+                            row.mark(row_marker)
+                        ui.spinner(size="xs").classes("dn-upload-file-spinner")
+                        ui.label(name).classes("dn-upload-file-name")
+                        ui.label("Inspecting…").classes("dn-upload-file-state")
+                for name in uploaded_names:
+                    row_marker = f"{marker}-file" if marker else None
+                    remove_marker = f"{marker}-remove" if marker else None
+
+                    def remove_current_file(
+                        _event: Any = None,
+                        upload_name: str = name,
+                    ) -> None:
+                        background_tasks.create(remove_uploaded_file(upload_name))
+
+                    with ui.element("div").classes("dn-upload-file") as row:
+                        if row_marker:
+                            row.mark(row_marker)
+                        ui.icon("description").classes("dn-upload-file-icon")
+                        ui.label(name).classes("dn-upload-file-name")
+                        remove = (
+                            ui.button(icon="close", on_click=remove_current_file)
+                            .props(
+                                'flat round dense aria-label="Remove uploaded file" '
+                                'data-upload-status="complete"'
+                            )
+                            .classes("dn-upload-remove")
+                        )
+                        if remove_marker:
+                            remove.mark(remove_marker)
+                        upload_state.remove_controls.append(remove)
+                        remove.bind_enabled_from(uploader, "enabled")
+                        if upload_state.locked:
+                            remove.disable()
+                        remove.tooltip(f"Remove {name}")
+
+            async def remove_uploaded_file(name: str) -> None:
+                # The uploader is disabled while a scientific worker owns its
+                # retained bytes.  Mirror that state server-side as well as on
+                # the visible remove button so a queued click cannot mutate an
+                # in-flight Mapping request.
+                if upload_state.locked or not uploader.enabled or name not in uploaded_names:
+                    return
+                uploaded_names.remove(name)
+                uploader.run_method("removeUploadedFiles")
+                uploaded_file_rows.refresh()
+                await invoke_callback(
+                    on_clear,
+                    UploadClearEventArguments(
+                        sender=uploader,
+                        client=uploader.client,
+                        name=name,
+                    ),
+                )
+
+            uploaded_file_rows()
+
+        async def handle_upload(event: events.UploadEventArguments) -> None:
+            # NiceGUI dispatches files in a multiple-upload batch as individual
+            # event tasks.  Serialize them to preserve the user's file order
+            # through inspection, state storage, and eventual XT stacking.
+            async with upload_lock:
+                allow_multiple = bool(uploader._props.get("multiple", multiple))
+                displaced = (
+                    tuple(name for name in uploaded_names if name == event.file.name)
+                    if allow_multiple
+                    else tuple(uploaded_names)
+                )
+                for old_name in displaced:
+                    uploaded_names.remove(old_name)
+                    await invoke_callback(
+                        on_clear,
+                        UploadClearEventArguments(
+                            sender=uploader,
+                            client=uploader.client,
+                            name=old_name,
+                        ),
+                    )
+                uploaded_file_rows.refresh()
+                # Remove Quasar's completed file object immediately.  Only the
+                # custom filename row and state retained by ``on_upload`` remain.
+                # ``removeUploadedFiles`` does not cancel queued or in-flight
+                # siblings in a multiple-file auto-upload batch (``reset`` does).
+                uploader.run_method("removeUploadedFiles")
+                inspecting_names.append(event.file.name)
+                uploaded_file_rows.refresh()
+                try:
+                    accepted = await invoke_callback(on_upload, event)
+                except Exception:
+                    inspecting_names.remove(event.file.name)
+                    uploaded_file_rows.refresh()
+                    raise
+                inspecting_names.remove(event.file.name)
+                # A callback can explicitly reject a file after inspecting its
+                # contents.  Exceptions likewise stop here, so an invalid file can
+                # never acquire the completed/check presentation.
+                if accepted is False:
+                    uploaded_file_rows.refresh()
+                    return
+                uploaded_names.append(event.file.name)
+                uploaded_file_rows.refresh()
+
+        uploader.on_upload(handle_upload)
+        if show_accepted_formats:
+            ui.label(f"Accepted: {accepted_formats}").classes("dn-upload-formats")
     return uploader
 
 
@@ -205,13 +433,15 @@ def source_input(
     default_mode: str = "Profile",
     constant: float = 1.0,
     units: str = "",
+    show_heading: bool = True,
 ) -> SourceInputControls:
     """Render a compact scalar/profile input and return its live controls."""
 
     marker = "-".join(label.casefold().replace("/", " ").split())
     with ui.element("div").classes("dn-source-compact").mark(f"source-{marker}"):
         with ui.element("div").classes("dn-source-head"):
-            ui.label(label).classes("dn-field-heading")
+            if show_heading:
+                ui.label(label).classes("dn-field-heading")
             mode = (
                 ui.select(
                     ["Profile", "Constant"],
@@ -264,42 +494,13 @@ def preview_plot(
     kind: str = "line",
     caption: str | None = None,
 ) -> None:
-    """Draw a lightweight, clearly labelled prototype chart."""
+    """Render a compact placeholder until a workflow has produced real data."""
 
-    paths = {
-        "line": '<polyline points="14,132 55,112 94,119 135,73 178,89 220,46 266,62 308,30"/>',
-        "mapping": '<polyline points="14,126 52,118 92,97 130,105 168,62 206,75 248,36 308,48"/>',
-        "simulation": '<polyline points="14,139 45,128 78,132 109,105 142,112 176,76 210,83 244,46 278,54 308,24"/>',
-        "histogram": (
-            '<rect x="24" y="108" width="24" height="38"/><rect x="58" y="82" width="24" height="64"/>'
-            '<rect x="92" y="48" width="24" height="98"/><rect x="126" y="24" width="24" height="122"/>'
-            '<rect x="160" y="41" width="24" height="105"/><rect x="194" y="72" width="24" height="74"/>'
-            '<rect x="228" y="102" width="24" height="44"/><rect x="262" y="124" width="24" height="22"/>'
-        ),
-    }
-    geometry = paths.get(kind, paths["line"])
-    primitive_class = "dn-bars" if kind == "histogram" else "dn-line"
-    markup = f"""
-        <div class="dn-chart" role="img" aria-label="{title} placeholder">
-          <div class="dn-chart-label">{title}</div>
-          <svg viewBox="0 0 324 168" preserveAspectRatio="none" aria-hidden="true">
-            <g class="{primitive_class}">{geometry}</g>
-          </svg>
-        </div>
-    """
-    with ui.dialog() as zoom_dialog, ui.card().classes("dn-plot-dialog"):
-        with ui.row().classes("dn-plot-dialog-header"):
-            ui.label(title).classes("dn-panel-title")
-            ui.space()
-            ui.button(icon="close", on_click=zoom_dialog.close).props(
-                'flat round dense aria-label="Close enlarged plot"'
-            )
-        ui.html(markup).classes("dn-chart-wrap dn-chart-wrap-large")
-    with ui.element("div").classes("dn-plot-shell"):
-        ui.html(markup).classes("dn-chart-wrap")
-        plot_toolbar(on_zoom=zoom_dialog.open)
-    if caption:
-        muted(caption)
+    del kind  # Retained for backwards-compatible page calls.
+    with ui.element("div").classes("dn-preview-guidance").mark("preview-guidance"):
+        ui.label(title).classes("dn-preview-guidance-title")
+        if caption:
+            ui.label(caption).classes("dn-preview-guidance-copy")
 
 
 def stat_strip(items: Sequence[tuple[str, str]]) -> dict[str, Any]:
@@ -317,7 +518,7 @@ def stat_strip(items: Sequence[tuple[str, str]]) -> dict[str, Any]:
 def raw_output_controls(
     *,
     file_name: str,
-    default_type: str = "CSV",
+    default_type: str = "NPY",
     on_download: Callable[[RawOutputControls], Any] | None = None,
 ) -> RawOutputControls:
     """Render the shared raw-data export surface."""
@@ -327,26 +528,36 @@ def raw_output_controls(
         icon=DATA_ICON,
         extra_classes="dn-output-section",
     ):
-        with ui.element("div").classes("dn-field-grid dn-field-grid-three"):
-            file_name_control = ui.input(label="File name", value=file_name).classes(
-                "dn-field"
+        with ui.element("div").classes("dn-raw-output-row").mark("raw-output-row"):
+            file_name_control = (
+                ui.input(label="File name", value=file_name)
+                .classes("dn-field dn-raw-output-name")
+                .props("dense")
             )
-            file_type_control = ui.select(
-                list(RAW_DATA_FORMATS),
-                value=default_type,
-                label="File type",
-            ).classes("dn-field")
-            gzip_control = ui.checkbox("GZ", value=False)
-        download_button = (
-            ui.button("Download raw data", icon="download")
-            .props("no-caps")
-            .classes("dn-action-secondary dn-action-compact")
-            .mark("action-download-raw-data")
-        )
+            file_type_control = (
+                ui.select(
+                    list(RAW_DATA_FORMATS),
+                    value=default_type,
+                    label="File type",
+                )
+                .classes("dn-field dn-raw-output-type")
+                .props("dense options-dense")
+            )
+            compress_control = (
+                ui.checkbox("Compress", value=True)
+                .classes("dn-raw-output-compress")
+                .mark("raw-output-compression")
+            )
+            download_button = (
+                ui.button("Download", icon="download")
+                .props("no-caps")
+                .classes("dn-action-primary dn-action-compact dn-raw-output-download")
+                .mark("action-download-raw-data")
+            )
         controls = RawOutputControls(
             file_name=file_name_control,
             file_type=file_type_control,
-            gzip_output=gzip_control,
+            compress=compress_control,
             download_button=download_button,
         )
         if on_download is not None:

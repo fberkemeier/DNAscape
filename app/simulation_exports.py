@@ -7,23 +7,34 @@ plotting imports are intentionally deferred until a plot is actually exported.
 
 from __future__ import annotations
 
+import base64
+import binascii
 import csv
 import gzip
+import importlib
 import io
+import lzma
 import math
 import re
+import shutil
+import subprocess
+import tempfile
 import unicodedata
+import zipfile
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Literal
+from urllib.parse import unquote_to_bytes
 
 import numpy as np
 
+from app.export_settings import normalize_compression
 from app.simulation_service import ConstantSimulationResult
 
 AxisKind = Literal["space", "time", "replicate", "xt"]
 
 PLOT_FORMATS = frozenset({"png", "svg", "pdf"})
-RAW_FORMATS = frozenset({"csv", "tsv", "txt", "npy", "npz"})
+RAW_FORMATS = frozenset({"csv", "tsv", "txt", "npy", "npv", "npz"})
 EXPORT_FORMATS = PLOT_FORMATS | RAW_FORMATS
 
 MAX_PLOT_SERIES_POINTS = 20_000
@@ -32,6 +43,7 @@ MAX_PLOT_XT_COLUMNS = 2_000
 MAX_PLOT_PIXELS = 25_000_000
 MAX_TEXT_EXPORT_VALUES = 1_000_000
 MAX_BINARY_EXPORT_BYTES = 128 * 1024 * 1024
+MAX_CHART_CAPTURE_BYTES = 64 * 1024 * 1024
 
 _SPACE_OUTPUTS = {
     "replication_timing",
@@ -119,6 +131,54 @@ class SelectedOutput:
     y_label: str
 
 
+def build_chart_capture_export(
+    data_uri: str,
+    file_format: str,
+    *,
+    filename: str | None = "dnascape_simulation_plot",
+    dpi: int = 150,
+) -> ExportArtifact:
+    """Package an ECharts ``getDataURL`` capture for browser download.
+
+    PNG is the exact canvas rendered by the preview chart. ECharts cannot emit
+    SVG from its canvas renderer or PDF directly, so those formats embed that
+    exact capture without redrawing the scientific data in another plotter.
+    """
+
+    normalized_format = normalize_export_format(file_format, allowed=PLOT_FORMATS)
+    mime_type, payload = _decode_chart_data_uri(data_uri)
+    if len(payload) > MAX_CHART_CAPTURE_BYTES:
+        raise ValueError(
+            f"Captured plot is {len(payload) / 1024**2:.1f} MiB; the local limit is "
+            f"{MAX_CHART_CAPTURE_BYTES / 1024**2:.0f} MiB. Reduce the export DPI."
+        )
+
+    if normalized_format == "pdf":
+        if mime_type != "image/png":
+            raise ValueError("PDF export requires a PNG capture of the preview chart.")
+        payload = _png_capture_to_pdf(payload, dpi=dpi)
+        media_type = "application/pdf"
+    elif normalized_format == "svg" and mime_type == "image/png":
+        payload = _png_capture_to_svg(payload)
+        media_type = "image/svg+xml"
+    else:
+        expected_mime = {
+            "png": "image/png",
+            "svg": "image/svg+xml",
+        }[normalized_format]
+        if mime_type != expected_mime:
+            raise ValueError(
+                f"The preview returned {mime_type!r}, but {expected_mime!r} was expected."
+            )
+        media_type = expected_mime
+
+    return ExportArtifact(
+        data=payload,
+        filename=safe_export_filename(filename, normalized_format),
+        media_type=media_type,
+    )
+
+
 def normalize_export_format(file_format: str, *, allowed: frozenset[str]) -> str:
     """Normalize and validate a user-facing export format."""
 
@@ -141,7 +201,7 @@ def safe_export_filename(
     normalized_extension = normalize_export_format(extension, allowed=EXPORT_FORMATS)
     candidate = str(filename or "").strip()
     candidate = re.split(r"[\\/]", candidate)[-1]
-    candidate = re.sub(r"(?i)\.gz$", "", candidate)
+    candidate = re.sub(r"(?i)\.(?:gz|zip|7z|xz)$", "", candidate)
     candidate = re.sub(
         rf"(?i)\.({'|'.join(sorted(EXPORT_FORMATS))})$",
         "",
@@ -158,6 +218,108 @@ def safe_export_filename(
     max_stem_length = max(1, 180 - len(suffix))
     candidate = candidate[:max_stem_length].rstrip(" .") or default_stem
     return f"{candidate}{suffix}"
+
+
+def _seven_zip_bytes(data: bytes, member_name: str) -> bytes:
+    """Create a one-member 7z archive with py7zr or a local 7-Zip binary."""
+
+    try:
+        py7zr = importlib.import_module("py7zr")
+    except ImportError:
+        executable = shutil.which("7z") or shutil.which("7zz")
+        if executable is None:
+            windows_7z = Path(r"C:\Program Files\7-Zip\7z.exe")
+            executable = str(windows_7z) if windows_7z.is_file() else None
+        if executable is None:
+            raise RuntimeError(
+                "7-Zip compression requires py7zr or a local 7z executable. "
+                "Install the DNAscape app dependencies and try again."
+            ) from None
+        with tempfile.TemporaryDirectory(prefix="dnascape-export-") as temporary:
+            directory = Path(temporary)
+            member_path = directory / member_name
+            member_path.write_bytes(data)
+            archive_path = directory / "export.7z"
+            completed = subprocess.run(
+                [
+                    executable,
+                    "a",
+                    "-t7z",
+                    "-mx=5",
+                    "-bd",
+                    "-y",
+                    str(archive_path),
+                    member_path.name,
+                ],
+                cwd=directory,
+                capture_output=True,
+                check=False,
+                timeout=30,
+            )
+            if completed.returncode != 0 or not archive_path.is_file():
+                raise RuntimeError("7-Zip could not create the raw-data archive.") from None
+            return archive_path.read_bytes()
+
+    archive = io.BytesIO()
+    with py7zr.SevenZipFile(archive, mode="w") as output:
+        output.writestr(data, member_name)
+    return archive.getvalue()
+
+
+def compressed_export_artifact(
+    data: bytes,
+    *,
+    filename: str,
+    media_type: str,
+    compression: str,
+) -> ExportArtifact:
+    """Wrap one raw-data file in the selected deterministic compression format."""
+
+    normalized = normalize_compression(compression)
+    if normalized == "none":
+        return ExportArtifact(data=data, filename=filename, media_type=media_type)
+    if normalized == "gzip":
+        return ExportArtifact(
+            data=gzip.compress(data, compresslevel=6, mtime=0),
+            filename=f"{filename}.gz",
+            media_type="application/gzip",
+        )
+    stem = filename.rsplit(".", 1)[0]
+    if normalized == "zip":
+        archive = io.BytesIO()
+        with zipfile.ZipFile(
+            archive,
+            mode="w",
+            compression=zipfile.ZIP_DEFLATED,
+            compresslevel=6,
+        ) as output:
+            output.writestr(filename, data)
+        return ExportArtifact(
+            data=archive.getvalue(),
+            filename=f"{stem}.zip",
+            media_type="application/zip",
+        )
+    if normalized == "7z":
+        return ExportArtifact(
+            data=_seven_zip_bytes(data, filename),
+            filename=f"{stem}.7z",
+            media_type="application/x-7z-compressed",
+        )
+    if normalized == "xz":
+        return ExportArtifact(
+            data=lzma.compress(data, format=lzma.FORMAT_XZ, preset=6),
+            filename=f"{filename}.xz",
+            media_type="application/x-xz",
+        )
+    raise AssertionError(f"Unhandled compression format {normalized!r}.")
+
+
+def _raw_compression(compression: str, gzip_output: bool | None) -> str:
+    """Keep the former gzip flag compatible while compression becomes configurable."""
+
+    if gzip_output is not None:
+        return "gzip" if gzip_output else "none"
+    return normalize_compression(compression)
 
 
 def select_result_output(
@@ -248,15 +410,19 @@ def build_plot_export(
     *,
     filename: str | None = "dnascape_simulation_plot",
     title: str | None = None,
+    series_label: str | None = None,
     x_label: str | None = None,
     y_label: str | None = None,
     color: str = "#2c7f77",
     cmap: str = "viridis",
     invert_y: bool = False,
     y_limits: tuple[float, float] | None = None,
-    view_mode: str = "Single view",
+    view_mode: str = "Default",
     histogram_bins: int = 60,
     density: bool = False,
+    show_legend: bool = True,
+    show_colorbar: bool = True,
+    log_y: bool = False,
     axis_kind: AxisKind | None = None,
     figure_size: tuple[float, float] = (8.0, 4.5),
     dpi: int = 150,
@@ -268,8 +434,8 @@ def build_plot_export(
     width, height, normalized_dpi = _validated_canvas(figure_size, dpi)
     normalized_limits = _validated_limits(y_limits)
     normalized_view = str(view_mode).strip().casefold()
-    if normalized_view not in {"single view", "multiple view", "histogram", "time array"}:
-        raise ValueError("View mode must be Single view, Multiple view, Histogram, or Time array.")
+    if normalized_view not in {"default", "histogram", "time array"}:
+        raise ValueError("View mode must be Default, Histogram, or Time array.")
     use_histogram = selected.axis_kind != "xt" and (
         selected.key in _REPLICATE_OUTPUTS or normalized_view == "histogram"
     )
@@ -290,20 +456,23 @@ def build_plot_export(
 
     if selected.axis_kind == "xt":
         assert selected.y is not None
+        # Match plotf and the notebook figures: rows are time, columns are
+        # genomic position, and imshow receives the canonical display matrix.
         default_x_label = selected.x_label
         default_y_label = selected.y_label
-        x_indices = _sample_indices(selected.x.size, MAX_PLOT_XT_COLUMNS)
-        y_indices = _sample_indices(selected.y.size, MAX_PLOT_XT_ROWS)
-        image_values = selected.values[np.ix_(y_indices, x_indices)]
+        time_indices = _sample_indices(selected.y.size, MAX_PLOT_XT_ROWS)
+        position_indices = _sample_indices(selected.x.size, MAX_PLOT_XT_COLUMNS)
+        image_values = selected.values[np.ix_(time_indices, position_indices)]
         image = axes.imshow(
             image_values,
             aspect="auto",
             origin="lower",
-            extent=_image_extent(selected.x[x_indices], selected.y[y_indices]),
+            extent=_image_extent(selected.x[position_indices], selected.y[time_indices]),
             cmap=cmap,
             interpolation="nearest",
         )
-        figure.colorbar(image, ax=axes, label=selected.label)
+        if show_colorbar:
+            figure.colorbar(image, ax=axes, label=selected.label)
     elif use_histogram:
         default_x_label = selected.y_label
         default_y_label = "Density" if density else "Count"
@@ -315,6 +484,7 @@ def build_plot_export(
             color=color,
             alpha=0.86,
             edgecolor="none",
+            label=str(series_label).strip() if series_label is not None else selected.label,
         )
     else:
         default_x_label = selected.x_label
@@ -325,14 +495,19 @@ def build_plot_export(
             selected.values[indices],
             color=color,
             linewidth=1.8,
+            label=str(series_label).strip() if series_label is not None else "Mean",
         )
     axes.set_xlabel(str(x_label).strip() if x_label is not None else default_x_label)
     axes.set_ylabel(str(y_label).strip() if y_label is not None else default_y_label)
 
     if normalized_limits is not None:
         axes.set_ylim(*normalized_limits)
+    if log_y and selected.axis_kind != "xt":
+        axes.set_yscale("log")
     if invert_y:
         axes.invert_yaxis()
+    if show_legend and selected.axis_kind != "xt":
+        axes.legend()
 
     buffer = io.BytesIO()
     try:
@@ -358,7 +533,8 @@ def build_raw_export(
     file_format: str,
     *,
     filename: str | None = "dnascape_simulation",
-    gzip_output: bool = False,
+    compression: str = "none",
+    gzip_output: bool | None = None,
     axis_kind: AxisKind | None = None,
 ) -> ExportArtifact:
     """Serialize one selected output as text, NPY, or self-describing NPZ bytes."""
@@ -382,28 +558,95 @@ def build_raw_export(
             )
         data = _binary_bytes(selected, normalized_format)
 
-    if gzip_output:
-        data = gzip.compress(data, compresslevel=6, mtime=0)
-    media_type = (
-        "application/gzip"
-        if gzip_output
-        else {
+    inner_filename = safe_export_filename(
+        filename,
+        normalized_format,
+    )
+    return compressed_export_artifact(
+        data=data,
+        filename=inner_filename,
+        media_type={
             "csv": "text/csv; charset=utf-8",
             "tsv": "text/tab-separated-values; charset=utf-8",
             "txt": "text/plain; charset=utf-8",
             "npy": "application/octet-stream",
+            "npv": "application/octet-stream",
             "npz": "application/octet-stream",
-        }[normalized_format]
+        }[normalized_format],
+        compression=_raw_compression(compression, gzip_output),
     )
-    return ExportArtifact(
-        data=data,
-        filename=safe_export_filename(
-            filename,
-            normalized_format,
-            gzip_output=gzip_output,
-        ),
-        media_type=media_type,
+
+
+def _decode_chart_data_uri(data_uri: str) -> tuple[str, bytes]:
+    """Decode a bounded image data URI returned by ECharts."""
+
+    if not isinstance(data_uri, str) or not data_uri.startswith("data:"):
+        raise ValueError("The preview did not return a downloadable chart image.")
+    try:
+        header, encoded = data_uri.split(",", 1)
+        metadata = header[5:].split(";")
+        mime_type = metadata[0].casefold()
+        if "base64" in (item.casefold() for item in metadata[1:]):
+            payload = base64.b64decode(encoded, validate=True)
+        else:
+            payload = unquote_to_bytes(encoded)
+    except (ValueError, binascii.Error) as exc:
+        raise ValueError("The preview returned an invalid chart image.") from exc
+    if not payload:
+        raise ValueError("The preview returned an empty chart image.")
+    return mime_type, payload
+
+
+def _png_capture_to_pdf(png_data: bytes, *, dpi: int) -> bytes:
+    """Embed a captured PNG in a one-page PDF without replotting its data."""
+
+    try:
+        normalized_dpi = int(dpi)
+    except (TypeError, ValueError) as exc:
+        raise ValueError("DPI must be a whole number between 72 and 600.") from exc
+    if normalized_dpi != dpi or not 72 <= normalized_dpi <= 600:
+        raise ValueError("DPI must be a whole number between 72 and 600.")
+
+    # Pillow is loaded only for the PDF conversion path. It is already a
+    # NiceGUI runtime dependency, while PNG/SVG downloads need no image stack.
+    from PIL import Image, UnidentifiedImageError
+
+    output = io.BytesIO()
+    try:
+        with Image.open(io.BytesIO(png_data)) as source:
+            source.load()
+            if source.width * source.height > MAX_PLOT_PIXELS:
+                raise ValueError("Captured preview exceeds the local PDF pixel limit.")
+            if source.mode in {"RGBA", "LA"} or "transparency" in source.info:
+                rgba = source.convert("RGBA")
+                image = Image.new("RGB", rgba.size, "white")
+                image.paste(rgba, mask=rgba.getchannel("A"))
+            else:
+                image = source.convert("RGB")
+            image.save(output, format="PDF", resolution=normalized_dpi)
+    except UnidentifiedImageError as exc:
+        raise ValueError("The preview returned an invalid PNG capture.") from exc
+    return output.getvalue()
+
+
+def _png_capture_to_svg(png_data: bytes) -> bytes:
+    """Wrap an exact canvas capture in a standards-compliant SVG document."""
+
+    if len(png_data) < 24 or not png_data.startswith(b"\x89PNG\r\n\x1a\n"):
+        raise ValueError("The preview returned an invalid PNG capture.")
+    width = int.from_bytes(png_data[16:20], "big")
+    height = int.from_bytes(png_data[20:24], "big")
+    if width <= 0 or height <= 0 or width * height > MAX_PLOT_PIXELS:
+        raise ValueError("Captured preview has invalid or excessive dimensions.")
+    encoded = base64.b64encode(png_data).decode("ascii")
+    markup = (
+        '<?xml version="1.0" encoding="UTF-8"?>\n'
+        f'<svg xmlns="http://www.w3.org/2000/svg" width="{width}" height="{height}" '
+        f'viewBox="0 0 {width} {height}">'
+        f'<image width="{width}" height="{height}" href="data:image/png;base64,{encoded}"/>'
+        "</svg>"
     )
+    return markup.encode("utf-8")
 
 
 def _infer_axis_kind(
@@ -519,59 +762,83 @@ def _image_extent(x: np.ndarray, y: np.ndarray) -> tuple[float, float, float, fl
 
 
 def _text_bytes(selected: SelectedOutput, file_format: str) -> bytes:
-    delimiter = {"csv": ",", "tsv": "\t", "txt": " "}[file_format]
+    values, _data_form, columns = _rdata_payload(selected)
+    if file_format == "txt":
+        stream = io.StringIO(newline="")
+        np.savetxt(stream, values, fmt="%.18e")
+        return stream.getvalue().encode("utf-8")
+
+    delimiter = {"csv": ",", "tsv": "\t"}[file_format]
     stream = io.StringIO(newline="")
     writer = csv.writer(stream, delimiter=delimiter, lineterminator="\n")
-    value_name = _column_name(selected.key)
-    if selected.axis_kind == "xt":
-        assert selected.y is not None
-        writer.writerow(("position_kb", "time_min", value_name))
-        for time_index, time_value in enumerate(selected.y):
-            row = selected.values[time_index]
-            for position_value, output_value in zip(selected.x, row):
-                writer.writerow(
-                    (
-                        _number_text(position_value),
-                        _number_text(time_value),
-                        _number_text(output_value),
-                    )
-                )
+    if values.ndim == 1:
+        writer.writerow((_column_name(selected.key),))
+        writer.writerows((_number_text(value),) for value in values)
     else:
-        axis_name = {
-            "space": "position_kb",
-            "time": "time_min",
-            "replicate": "replicate",
-        }[selected.axis_kind]
-        writer.writerow((axis_name, value_name))
-        writer.writerows(
-            (_number_text(axis_value), _number_text(output_value))
-            for axis_value, output_value in zip(selected.x, selected.values)
-        )
+        assert columns is not None
+        writer.writerow(columns)
+        writer.writerows(tuple(_number_text(value) for value in row) for row in values)
     return stream.getvalue().encode("utf-8")
 
 
 def _binary_bytes(selected: SelectedOutput, file_format: str) -> bytes:
     stream = io.BytesIO()
-    if file_format == "npy":
-        np.save(stream, selected.values, allow_pickle=False)
+    values, data_form, columns = _rdata_payload(selected)
+    if file_format in {"npy", "npv"}:
+        np.save(stream, values, allow_pickle=False)
         return stream.getvalue()
 
+    data_form_array = np.asarray(data_form)
     if selected.axis_kind == "xt":
         assert selected.y is not None
-        np.savez_compressed(
+        assert columns is not None
+        np.savez(
             stream,
-            values=selected.values,
+            values=values,
+            data_form=data_form_array,
+            columns=np.asarray(columns),
             position_kb=selected.x,
             time_min=selected.y,
         )
-        return stream.getvalue()
-    if selected.axis_kind == "space":
-        np.savez_compressed(stream, values=selected.values, position_kb=selected.x)
+    elif selected.axis_kind == "space":
+        np.savez(
+            stream,
+            values=values,
+            data_form=data_form_array,
+            position_kb=selected.x,
+        )
     elif selected.axis_kind == "time":
-        np.savez_compressed(stream, values=selected.values, time_min=selected.x)
+        assert columns is not None
+        np.savez(
+            stream,
+            values=values,
+            data_form=data_form_array,
+            columns=np.asarray(columns),
+            time_min=selected.x,
+        )
     else:
-        np.savez_compressed(stream, values=selected.values, replicate=selected.x)
+        np.savez(
+            stream,
+            values=values,
+            data_form=data_form_array,
+            replicate=selected.x,
+        )
     return stream.getvalue()
+
+
+def _rdata_payload(selected: SelectedOutput) -> tuple[np.ndarray, str, tuple[str, ...] | None]:
+    """Return values in the same shape and metadata convention as ``rsave``."""
+
+    if selected.axis_kind == "xt":
+        assert selected.y is not None
+        values = selected.values.T  # DNAscape convention is (space, time).
+        columns = tuple(f"t{index}" for index in range(selected.y.size))
+        return values, "spacetime", columns
+    if selected.axis_kind == "time":
+        values = selected.values.reshape(1, -1)
+        columns = tuple(f"t{index}" for index in range(selected.values.size))
+        return values, "time", columns
+    return selected.values, "space", None
 
 
 def _number_text(value: float) -> str:

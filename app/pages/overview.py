@@ -6,26 +6,26 @@ from collections.abc import Callable
 
 from nicegui import ui
 
-from app.pages.common import DATA_ICON, PLOT_ICON_SVG
+from app.icons import OUTLINE_ICON_SVGS, PLOT_ICON_SVG
 
 WORKFLOWS = (
     (
         "data-management",
         "Data Manager",
         "Prepare sequencing tables, genomic tracks, and profile formats for downstream analysis.",
-        DATA_ICON,
+        OUTLINE_ICON_SVGS["data"],
     ),
     (
         "mapping",
         "Mapping",
         "Infer spatial, temporal, or feature-dependent replication landscapes from kinetic inputs.",
-        "map",
+        OUTLINE_ICON_SVGS["mapping"],
     ),
     (
         "simulation",
         "Simulation",
         "Generate replication dynamics under selected kinetic assumptions and compare outputs.",
-        "monitor",
+        OUTLINE_ICON_SVGS["simulation"],
     ),
     (
         "plotting",
@@ -36,14 +36,14 @@ WORKFLOWS = (
     (
         "cached-files",
         "Cached Files",
-        "Manage data and figure exports retained during this local application session.",
-        "inventory_2",
+        "Reopen recent results and download files retained automatically in this browser tab.",
+        OUTLINE_ICON_SVGS["cached"],
     ),
     (
         "resources",
         "Resources",
         "Find documentation, examples, source code, and citation guidance for the project.",
-        "menu_book",
+        OUTLINE_ICON_SVGS["resources"],
     ),
 )
 
@@ -61,8 +61,7 @@ def render(navigate: Callable[[str], None]) -> None:
     with ui.column().classes("dn-overview"):
         with ui.element("div").classes("dn-main-logo-frame"):
             ui.element("img").props(
-                'src="/dnascape-assets/dnascape_logo_small.svg" '
-                'alt="DNAscape" draggable=false'
+                'src="/dnascape-assets/dnascape_logo_small.svg" alt="DNAscape" draggable=false'
             ).classes("dn-main-logo")
         with ui.column().classes("dn-overview-copy"):
             ui.label("Overview").classes("dn-eyebrow")
@@ -73,8 +72,11 @@ def render(navigate: Callable[[str], None]) -> None:
 
         with ui.element("div").classes("dn-overview-grid"):
             for slug, title, body, icon in WORKFLOWS:
-                with ui.element("button").props("type=button").classes("dn-workflow-card").on(
-                    "click", _navigate_handler(navigate, slug)
+                with (
+                    ui.element("button")
+                    .props("type=button")
+                    .classes("dn-workflow-card")
+                    .on("click", _navigate_handler(navigate, slug))
                 ):
                     with ui.element("div"):
                         ui.label(title).classes("dn-workflow-title")
@@ -83,4 +85,4 @@ def render(navigate: Callable[[str], None]) -> None:
                         ui.html(PLOT_ICON_SVG).classes("dn-workflow-icon dn-plot-icon-wrap")
                     else:
                         assert icon is not None
-                        ui.icon(icon).classes("dn-workflow-icon")
+                        ui.html(icon).classes("dn-workflow-icon dn-workflow-symbol")

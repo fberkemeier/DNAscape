@@ -27,11 +27,13 @@ genomics = [
 ]
 app = [
   "nicegui>=3.12,<4",
+  "py7zr>=1,<2",
 ]
 test = [
   "pytest>=8",
   # Exercise the local NiceGUI interface with its real component tree.
   "nicegui>=3.12,<4",
+  "py7zr>=1,<2",
 ]
 
 [project.urls]

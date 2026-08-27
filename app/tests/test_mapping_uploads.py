@@ -1,0 +1,448 @@
+"""Focused coverage for Mapping upload inspection and immediate-upload UX."""
+
+from __future__ import annotations
+
+import asyncio
+import gzip
+import io
+from dataclasses import replace
+from pathlib import Path
+from typing import Any
+
+import numpy as np
+import pytest
+from nicegui.elements.upload import Upload
+from nicegui.testing import user_simulation
+
+import app.mapping_uploads as uploads
+from app.mapping_service import materialize_track_upload
+from app.mapping_uploads import (
+    MAX_UPLOAD_BYTES,
+    UploadInspectionError,
+    UploadTooLargeError,
+    inspect_upload,
+    inspect_upload_event,
+    materialize_many,
+    materialize_upload,
+)
+from app.pages.common import UploadClearEventArguments, data_upload
+
+REPOSITORY_ROOT = Path(__file__).resolve().parents[2]
+
+
+def test_csv_header_detection_prefers_chr1_over_position_and_other_chromosomes() -> None:
+    inspection = inspect_upload(
+        "timing.csv",
+        b"position,chr2,chr1\n0,2.0,1.0\n1,2.5,1.5\n",
+        expected_form="x",
+    )
+
+    assert inspection.has_header is True
+    assert inspection.delimiter == ","
+    assert inspection.columns == ("position", "chr2", "chr1")
+    assert inspection.numeric_columns == ("chr2", "chr1")
+    assert inspection.default_column == "chr1"
+    np.testing.assert_array_equal(materialize_upload(inspection), [1.0, 1.5])
+
+
+def test_large_repository_csv_is_inspected_without_losing_ragged_chromosome_tails() -> None:
+    source = REPOSITORY_ROOT / "data" / "replication_timing" / "replication_timing_H1.csv"
+    assert source.stat().st_size == 53_806_241
+    assert source.stat().st_size <= MAX_UPLOAD_BYTES
+
+    inspection = inspect_upload(source.name, source.read_bytes(), expected_form="x")
+
+    chromosomes = tuple(f"chr{index}" for index in range(1, 23))
+    assert inspection.delimiter == "\t"
+    assert inspection.shape == (249_000, 22)
+    assert inspection.shape is not None
+    assert inspection.shape[0] * inspection.shape[1] > 4_000_000
+    assert inspection.columns == chromosomes
+    assert inspection.numeric_columns == chromosomes
+    assert inspection.default_column == "chr1"
+    assert inspection.missing_columns == chromosomes[1:]
+    assert inspection.missing_count == 2_602_550
+
+    chr1 = materialize_upload(inspection)
+    assert chr1.shape == (249_000,)
+    assert chr1[0] == pytest.approx(206.04622947236015)
+    assert chr1[-1] == pytest.approx(248.4035679038704)
+
+    chr2 = materialize_upload(inspection, column="chr2")
+    assert chr2.shape == (242_200,)
+    assert chr2[0] == pytest.approx(253.2694993937086)
+    assert chr2[-1] == pytest.approx(441.6402767830693)
+
+
+def test_streaming_table_limit_is_enforced_before_numeric_storage(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    table = b"chr1\tchr2\n1\t2\n3\t4\n5\t6\n"
+    monkeypatch.setattr(uploads, "MAX_TABLE_CELLS", 5)
+
+    with pytest.raises(UploadTooLargeError, match="cannot be kept safely"):
+        inspect_upload("too_many_values.tsv", table, expected_form="x")
+
+
+def test_pathological_single_row_width_is_rejected_before_csv_expansion(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(uploads, "MAX_TABLE_COLUMNS", 3)
+
+    with pytest.raises(UploadTooLargeError, match="too many columns"):
+        inspect_upload(
+            "too_wide.csv",
+            b"chr1,chr2,chr3,chr4\n1,2,3,4\n",
+            expected_form="x",
+        )
+
+
+def test_nonnumeric_signal_late_in_stream_is_not_missed_by_header_sample() -> None:
+    rows = ["position,chr1"]
+    rows.extend(f"{index},{index / 10}" for index in range(80))
+    rows[-1] = "79,typo"
+
+    with pytest.raises(UploadInspectionError, match="'chr1'.*nonnumeric"):
+        inspect_upload("late_typo.csv", "\n".join(rows).encode(), expected_form="x")
+
+
+def test_headerless_numeric_text_is_detected_without_losing_its_first_row() -> None:
+    inspection = inspect_upload("field.txt", b"1 2\n3 4\n", expected_form="xt")
+
+    assert inspection.has_header is False
+    assert inspection.delimiter is None
+    assert inspection.columns == ("Column 1", "Column 2")
+    assert inspection.shape == (2, 2)
+    np.testing.assert_array_equal(materialize_upload(inspection), [[1.0, 2.0], [3.0, 4.0]])
+
+
+def test_one_row_table_uses_rdata_time_profile_convention() -> None:
+    inspection = inspect_upload(
+        "speed.csv",
+        b"t0,t1,t2\n1.0,1.2,1.1\n",
+        expected_form="auto",
+    )
+
+    assert inspection.inferred_form == "t"
+    temporal = materialize_upload(replace(inspection, expected_form="t"))
+    assert temporal.shape == (1, 3)
+    np.testing.assert_array_equal(temporal, [[1.0, 1.2, 1.1]])
+
+
+def test_xt_table_uses_all_non_coordinate_columns_by_default() -> None:
+    inspection = inspect_upload(
+        "space_time.csv",
+        b"position,t0,t1\n0,0.1,0.2\n1,0.3,0.4\n",
+        expected_form="xt",
+    )
+
+    assert inspection.default_column == "t0"
+    np.testing.assert_allclose(
+        materialize_upload(inspection, column=None),
+        [[0.1, 0.2], [0.3, 0.4]],
+    )
+    with pytest.raises(UploadInspectionError, match="position-by-time matrix"):
+        materialize_upload(inspection, column="t0")
+
+    with pytest.raises(UploadInspectionError, match="not a selectable numeric signal"):
+        materialize_upload(inspection, column="position")
+
+
+def test_missing_value_policies_preserve_vector_rows_and_matrix_shape() -> None:
+    vector = inspect_upload(
+        "profile.csv",
+        b"position,chr1\n0,1\n1,\n2,3\n",
+        expected_form="x",
+    )
+    assert vector.shape == (3, 2)
+    assert vector.missing_columns == ("chr1",)
+    assert vector.missing_count == 1
+    with pytest.raises(UploadInspectionError, match="contain missing values"):
+        materialize_upload(vector)
+    np.testing.assert_array_equal(
+        materialize_upload(vector, missing_policy="zero"),
+        [1.0, 0.0, 3.0],
+    )
+    np.testing.assert_array_equal(
+        materialize_upload(vector, missing_policy="interpolate"),
+        [1.0, 2.0, 3.0],
+    )
+    ignored = materialize_upload(vector, missing_policy="ignore")
+    assert np.isnan(ignored[1])
+    np.testing.assert_array_equal(ignored[[0, 2]], [1.0, 3.0])
+
+    matrix = inspect_upload(
+        "field.csv",
+        b"position,t0,t1\n0,0,0\n1,,2\n2,2,\n",
+        expected_form="xt",
+    )
+    zeroed = materialize_upload(matrix, missing_policy="zero")
+    interpolated = materialize_upload(matrix, missing_policy="interpolate")
+    assert zeroed.shape == (3, 2)
+    assert interpolated.shape == (3, 2)
+    np.testing.assert_array_equal(zeroed, [[0.0, 0.0], [0.0, 2.0], [2.0, 0.0]])
+    np.testing.assert_array_equal(interpolated, [[0.0, 0.0], [1.0, 2.0], [2.0, 2.0]])
+
+    empty_slice = inspect_upload(
+        "empty_slice.csv",
+        b"position,t0,t1\n0,1,\n1,2,\n2,3,\n",
+        expected_form="xt",
+    )
+    recovered = materialize_upload(empty_slice, missing_policy="interpolate")
+    assert recovered.shape == (3, 2)
+    np.testing.assert_array_equal(recovered, [[1.0, 1.0], [2.0, 2.0], [3.0, 3.0]])
+
+
+def test_nonnumeric_signal_typo_never_falls_back_to_position_column() -> None:
+    with pytest.raises(UploadInspectionError, match="'chr1'.*nonnumeric"):
+        inspect_upload(
+            "broken.csv",
+            b"position,chr1\n0,1\n1,typo\n2,3\n",
+            expected_form="x",
+        )
+
+    with pytest.raises(UploadInspectionError, match="'t1'.*nonnumeric"):
+        inspect_upload(
+            "broken_matrix.csv",
+            b"position,t0,t1\n0,1,2\n1,3,typo\n",
+            expected_form="xt",
+        )
+
+
+def test_npz_metadata_and_array_key_are_detected_without_pickle() -> None:
+    buffer = io.BytesIO()
+    np.savez(
+        buffer,
+        values=np.asarray([[1.0, 2.0], [3.0, 4.0]]),
+        columns=np.asarray(["chr1", "chr2"]),
+        data_form=np.asarray(["xt"]),
+    )
+
+    inspection = inspect_upload("profiles.npz", buffer.getvalue(), expected_form="auto")
+
+    assert inspection.array_keys == ("values",)
+    assert inspection.default_array_key == "values"
+    assert inspection.columns == ("chr1", "chr2")
+    assert inspection.default_column == "chr1"
+    assert inspection.inferred_form == "xt"
+    np.testing.assert_array_equal(
+        materialize_upload(inspection, array_key="values"),
+        [[1.0, 2.0], [3.0, 4.0]],
+    )
+
+
+def test_npz_semantic_and_axis_metadata_are_not_offered_as_data_arrays() -> None:
+    buffer = io.BytesIO()
+    np.savez(
+        buffer,
+        values=np.asarray([[10.0, 20.0], [30.0, 40.0]]),
+        data_form=np.asarray(["space"]),
+        semantic_form=np.asarray(["regions"]),
+        region_names=np.asarray(["origin_a", "origin_b"]),
+        position_kb=np.asarray([0.0, 1.0]),
+        time_min=np.asarray([0.0, 5.0]),
+        replicate=np.asarray([0, 1]),
+    )
+
+    inspection = inspect_upload("regions.npz", buffer.getvalue(), expected_form="auto")
+
+    assert inspection.array_keys == ("values",)
+    assert inspection.semantic_form == "regions"
+    assert inspection.region_names == ("origin_a", "origin_b")
+    assert inspection.inferred_form == "regions"
+
+
+def test_multiple_profile_uploads_stack_in_time_order() -> None:
+    first = inspect_upload("t0.csv", b"chr1\n1\n2\n", expected_form="xt")
+    second = inspect_upload("t1.csv", b"chr1\n3\n4\n", expected_form="xt")
+
+    np.testing.assert_array_equal(
+        materialize_many([first, second], columns=["chr1", "chr1"]),
+        [[1.0, 3.0], [2.0, 4.0]],
+    )
+
+
+def test_non_finite_arrays_and_bounded_gzip_expansion_are_rejected(monkeypatch: Any) -> None:
+    buffer = io.BytesIO()
+    np.save(buffer, np.asarray([1.0, np.inf]), allow_pickle=False)
+    with pytest.raises(UploadInspectionError, match="infinite"):
+        inspect_upload("bad.npy", buffer.getvalue(), expected_form="x")
+
+    missing_buffer = io.BytesIO()
+    np.save(missing_buffer, np.asarray([1.0, np.nan, 3.0]), allow_pickle=False)
+    missing = inspect_upload("missing.npy", missing_buffer.getvalue(), expected_form="x")
+    assert missing.missing_count == 1
+    with pytest.raises(UploadInspectionError, match="contain missing values"):
+        materialize_upload(missing)
+    np.testing.assert_array_equal(
+        materialize_upload(missing, missing_policy="interpolate"),
+        [1.0, 2.0, 3.0],
+    )
+
+    monkeypatch.setattr(uploads, "MAX_DECOMPRESSED_BYTES", 32)
+    compressed = gzip.compress(b"1\n" * 17)
+    with pytest.raises(UploadTooLargeError, match="expands beyond"):
+        inspect_upload("large.txt.gz", compressed, expected_form="x")
+
+
+def test_bedgraph_uses_public_track_binning_and_validates_finite_output() -> None:
+    inspection = inspect_upload(
+        "signal.bedgraph",
+        b"chr1 0 1000 1.0\nchr1 1000 2000 3.0\n",
+        expected_form="x",
+    )
+
+    assert inspection.inferred_form == "track"
+    assert inspection.default_column == "value"
+    np.testing.assert_allclose(
+        materialize_track_upload(
+            inspection,
+            chromosome="chr1",
+            start=0,
+            end=2000,
+            bin_size=1000,
+        ),
+        [1.0, 3.0],
+    )
+
+
+def test_auto_upload_replacement_and_cross_remove_clear_retained_bytes() -> None:
+    retained: dict[str, uploads.UploadInspection] = {}
+    removed: list[str] = []
+
+    async def receive(event: Any) -> bool:
+        retained[event.file.name] = await inspect_upload_event(event, expected_form="x")
+        return True
+
+    def clear(event: UploadClearEventArguments) -> None:
+        removed.append(event.name)
+        retained.pop(event.name, None)
+
+    def page() -> None:
+        data_upload(
+            accept=".csv",
+            accepted_formats="CSV",
+            marker="test-upload",
+            show_accepted_formats=False,
+            on_upload=receive,
+            on_clear=clear,
+            hide_when_loaded=True,
+        )
+
+    async def wait_for(predicate: Any) -> None:
+        for _ in range(200):
+            if predicate():
+                return
+            await asyncio.sleep(0.01)
+        raise AssertionError("Timed out waiting for upload state.")
+
+    async def scenario() -> None:
+        async with user_simulation(page) as user:
+            await user.open("/")
+            uploader = next(iter(user.find(kind=Upload).elements))
+            assert uploader._props["auto-upload"] is True
+            assert uploader._props["accept"] == ".csv,text/csv"
+
+            await uploader.handle_uploads(
+                [Upload.SmallFileUpload("same.csv", "text/csv", b"chr1\n1\n2\n")]
+            )
+            await wait_for(lambda: retained.get("same.csv") is not None)
+            await user.should_see("same.csv")
+            await user.should_not_see("0 B")
+            await user.should_not_see("100%")
+            assert uploader.visible is False
+
+            await uploader.handle_uploads(
+                [Upload.SmallFileUpload("same.csv", "text/csv", b"chr1\n8\n9\n")]
+            )
+            await wait_for(
+                lambda: bool(
+                    retained.get("same.csv") and retained["same.csv"].content.endswith(b"8\n9\n")
+                )
+            )
+            assert removed == ["same.csv"]
+            await user.should_see("same.csv")
+            await user.should_not_see("Inspecting…")
+            assert len(user.find(marker="test-upload-file").elements) == 1
+
+            user.find(marker="test-upload-remove").click()
+            await user.should_not_see("same.csv")
+            await wait_for(lambda: not retained)
+            assert removed == ["same.csv", "same.csv"]
+            assert uploader.visible is True
+
+    asyncio.run(scenario())
+
+
+def test_invalid_upload_never_gets_a_completed_file_row() -> None:
+    def page() -> None:
+        async def reject_invalid(event: Any) -> bool:
+            try:
+                await inspect_upload_event(event, expected_form="x")
+            except UploadInspectionError:
+                return False
+            return True
+
+        data_upload(
+            accept=".csv",
+            accepted_formats="CSV",
+            marker="invalid-upload",
+            show_accepted_formats=False,
+            on_upload=reject_invalid,
+        )
+
+    async def scenario() -> None:
+        async with user_simulation(page) as user:
+            await user.open("/")
+            uploader = next(iter(user.find(kind=Upload).elements))
+            await uploader.handle_uploads(
+                [Upload.SmallFileUpload("invalid.csv", "text/csv", b"name\nalice\n")]
+            )
+            await asyncio.sleep(0.05)
+            await user.should_not_see("invalid.csv")
+
+    asyncio.run(scenario())
+
+
+def test_multiple_auto_uploads_keep_selection_order_and_individual_remove_rows() -> None:
+    received: list[str] = []
+    release_first = asyncio.Event()
+
+    async def receive(event: Any) -> bool:
+        # Make the first item observably slower: the shared uploader must still
+        # serialize callbacks in selection order for XT track stacking.
+        if event.file.name == "t0.csv":
+            await release_first.wait()
+        received.append(event.file.name)
+        return True
+
+    def page() -> None:
+        data_upload(
+            accept=".csv",
+            accepted_formats="CSV",
+            marker="multi-upload",
+            show_accepted_formats=False,
+            on_upload=receive,
+            multiple=True,
+        )
+
+    async def scenario() -> None:
+        async with user_simulation(page) as user:
+            await user.open("/")
+            uploader = next(iter(user.find(kind=Upload).elements))
+            assert uploader._props["multiple"] is True
+            await uploader.handle_uploads(
+                [
+                    Upload.SmallFileUpload("t0.csv", "text/csv", b"chr1\n1\n"),
+                    Upload.SmallFileUpload("t1.csv", "text/csv", b"chr1\n2\n"),
+                ]
+            )
+            await user.should_see("Inspecting…")
+            release_first.set()
+            await user.should_see("t0.csv")
+            await user.should_see("t1.csv")
+            await user.should_not_see("Inspecting…")
+            assert received == ["t0.csv", "t1.csv"]
+            assert len(user.find(marker="multi-upload-file").elements) == 2
+
+    asyncio.run(scenario())
