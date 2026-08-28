@@ -51,6 +51,8 @@ def test_csv_header_detection_prefers_chr1_over_position_and_other_chromosomes()
 
 def test_large_repository_csv_is_inspected_without_losing_ragged_chromosome_tails() -> None:
     source = REPOSITORY_ROOT / "data" / "replication_timing" / "replication_timing_H1.csv"
+    if not source.is_file():
+        pytest.skip("requires the optional local large-table benchmark fixture")
     assert source.stat().st_size == 53_806_241
     assert source.stat().st_size <= MAX_UPLOAD_BYTES
 
