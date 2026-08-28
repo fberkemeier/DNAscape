@@ -17,6 +17,7 @@ from nicegui.testing import user_simulation
 
 from app.main import index
 from app.pages.data_management import (
+    _automatic_output_name,
     _build_generated_files_archive,
     _track_aggregation_options,
 )
@@ -33,7 +34,7 @@ def test_download_all_archive_preserves_every_file_with_safe_unique_names() -> N
         )
     )
 
-    assert bundled.filename == "dnascape_generated_files.zip"
+    assert bundled.filename == "dnascape_data_outputs.zip"
     assert bundled.media_type == "application/zip"
     with zipfile.ZipFile(io.BytesIO(bundled.data)) as archive:
         assert archive.namelist() == [
@@ -48,6 +49,13 @@ def test_download_all_archive_preserves_every_file_with_safe_unique_names() -> N
             b"third",
             b"fourth",
         ]
+
+
+def test_automatic_data_manager_names_use_output_then_concise_source() -> None:
+    assert _automatic_output_name(
+        "Replication Timing H1.tsv.gz",
+        "replication_timing",
+    ) == "dnascape_data_replication-timing_h1"
 
 
 def test_gwseq_backend_hides_known_broken_minimum_and_maximum_aggregations() -> None:

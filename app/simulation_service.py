@@ -212,6 +212,17 @@ def validate_constant_simulation(request: ConstantSimulationRequest) -> _Validat
     ratio = (end - start) / resolution_x
     if not np.isfinite(ratio):
         raise ValueError("The requested spatial grid is not finite.")
+    nearest_bin_count = round(ratio)
+    if math.isclose(
+        ratio,
+        nearest_bin_count,
+        rel_tol=1e-12,
+        abs_tol=1e-12,
+    ):
+        # Region ends derived from ``start + n * resolution`` can land a few
+        # floating-point ulps above the exact integer ratio (for example,
+        # 0.3 / 0.1). Do not manufacture an extra spatial bin in that case.
+        ratio = float(nearest_bin_count)
     n_bins = int(math.ceil(ratio))
     if n_bins > MAX_SPATIAL_BINS:
         raise ValueError(

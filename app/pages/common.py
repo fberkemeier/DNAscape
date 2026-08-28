@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import weakref
-from collections.abc import Callable, Iterator, Sequence
+from collections.abc import Callable, Iterator, Mapping, Sequence
 from contextlib import contextmanager
 from dataclasses import dataclass
 from functools import partial
@@ -36,13 +36,16 @@ class RawOutputControls:
     file_type: Any
     compress: Any
     download_button: Any
+    row: Any
+    extra_slot: Any | None = None
 
 
 @dataclass(kw_only=True)
 class UploadClearEventArguments(events.UiEventArguments):
-    """Event emitted when a user removes an uploaded file from the UI."""
+    """Removal event; an empty ``name`` denotes bulk clearing of ``names``."""
 
     name: str
+    names: tuple[str, ...] = ()
 
 
 @dataclass
@@ -51,6 +54,7 @@ class _DataUploadState:
 
     locked: bool
     remove_controls: list[Any]
+    inspecting_names: list[str]
 
 
 _DATA_UPLOAD_STATES: weakref.WeakKeyDictionary[Any, _DataUploadState] = weakref.WeakKeyDictionary()
@@ -243,10 +247,11 @@ def set_data_upload_locked(uploader: Any, locked: bool) -> None:
         raise ValueError("The supplied control is not a DNAscape data upload surface.")
     state.locked = bool(locked)
     uploader.disable() if locked else uploader.enable()
+    removals_locked = bool(locked or state.inspecting_names)
     for control in tuple(state.remove_controls):
         if getattr(control, "is_deleted", False):
             continue
-        control.disable() if locked else control.enable()
+        control.disable() if removals_locked else control.enable()
 
 
 def is_data_upload(control: Any) -> bool:
@@ -307,9 +312,14 @@ def data_upload(
         if ".csv" in accept_tokens and "text/csv" not in accept_tokens:
             accept_tokens.append("text/csv")
         normalized_accept = ",".join(accept_tokens)
+        upload_prompt = (
+            "Choose files or drag them here"
+            if multiple
+            else "Choose a file or drag it here"
+        )
         uploader = (
             ui.upload(
-                label="Choose a file or drag it here",
+                label=upload_prompt,
                 auto_upload=True,
                 multiple=multiple,
                 max_file_size=max_file_size,
@@ -319,14 +329,22 @@ def data_upload(
             )
             .props(
                 'flat bordered tabindex="0" role="button" '
-                'aria-label="Choose a file or drag it here"'
+                f'aria-label="{upload_prompt}"'
             )
-            .classes("dn-upload-compact")
+            .classes(
+                "dn-upload-compact dn-upload-multiple"
+                if multiple
+                else "dn-upload-compact"
+            )
         )
         uploader._props["accept"] = normalized_accept
         if marker:
             uploader.mark(marker)
-        upload_state = _DataUploadState(locked=False, remove_controls=[])
+        upload_state = _DataUploadState(
+            locked=False,
+            remove_controls=[],
+            inspecting_names=inspecting_names,
+        )
         _DATA_UPLOAD_STATES[uploader] = upload_state
         # Quasar does not finish its XHR entry until after the Python upload
         # callback and HTTP response complete. Resetting the finished queue
@@ -393,18 +411,48 @@ def data_upload(
                         )
                         if remove_marker:
                             remove.mark(remove_marker)
+                        remove._props["data-upload-name"] = name
                         upload_state.remove_controls.append(remove)
                         remove.bind_enabled_from(uploader, "enabled")
-                        if upload_state.locked:
+                        if upload_state.locked or inspecting_names:
                             remove.disable()
                         remove.tooltip(f"Remove {name}")
+                if multiple and len(uploaded_names) > 1:
+
+                    def remove_all_current_files(_event: Any = None) -> None:
+                        background_tasks.create(remove_all_uploaded_files())
+
+                    with ui.element("div").classes("dn-upload-delete-all-row"):
+                        remove_all = (
+                            ui.button(
+                                "Delete all",
+                                icon="delete_sweep",
+                                on_click=remove_all_current_files,
+                            )
+                            .props(
+                                'flat no-caps dense aria-label="Remove all uploaded files"'
+                            )
+                            .classes("dn-upload-delete-all")
+                        )
+                        if marker:
+                            remove_all.mark(f"{marker}-delete-all")
+                        upload_state.remove_controls.append(remove_all)
+                        remove_all.bind_enabled_from(uploader, "enabled")
+                        if upload_state.locked or inspecting_names:
+                            remove_all.disable()
+                        remove_all.tooltip(f"Remove all {len(uploaded_names)} files")
 
             async def remove_uploaded_file(name: str) -> None:
                 # The uploader is disabled while a scientific worker owns its
                 # retained bytes.  Mirror that state server-side as well as on
                 # the visible remove button so a queued click cannot mutate an
                 # in-flight Mapping request.
-                if upload_state.locked or not uploader.enabled or name not in uploaded_names:
+                if (
+                    upload_state.locked
+                    or inspecting_names
+                    or not uploader.enabled
+                    or name not in uploaded_names
+                ):
                     return
                 uploaded_names.remove(name)
                 uploader.run_method("removeUploadedFiles")
@@ -414,17 +462,46 @@ def data_upload(
                         sender=uploader,
                         client=uploader.client,
                         name=name,
+                        names=(name,),
                     ),
                 )
                 if not uploader.is_deleted:
                     uploaded_file_rows.refresh()
 
+            async def remove_all_uploaded_files() -> None:
+                # Clear one stable snapshot of completed rows. Removal actions
+                # remain disabled during inspection so a same-name replacement
+                # cannot be mistaken for the completed file it supersedes.
+                if (
+                    upload_state.locked
+                    or inspecting_names
+                    or not uploader.enabled
+                    or len(uploaded_names) < 2
+                ):
+                    return
+                removed_names = tuple(uploaded_names)
+                uploaded_names.clear()
+                uploader.run_method("removeUploadedFiles")
+                try:
+                    await invoke_callback(
+                        on_clear,
+                        UploadClearEventArguments(
+                            sender=uploader,
+                            client=uploader.client,
+                            name="",
+                            names=removed_names,
+                        ),
+                    )
+                finally:
+                    if not uploader.is_deleted:
+                        uploaded_file_rows.refresh()
+
             uploaded_file_rows()
 
         async def handle_upload(event: events.UploadEventArguments) -> None:
             # NiceGUI dispatches files in a multiple-upload batch as individual
-            # event tasks.  Serialize them to preserve the user's file order
-            # through inspection, state storage, and eventual XT stacking.
+            # event tasks. Serialize them to preserve the user's file order
+            # through inspection, state storage, and scientific pairing.
             async with upload_lock:
                 allow_multiple = bool(uploader._props.get("multiple", multiple))
                 # Keep the existing completed row and page state in place while
@@ -449,12 +526,13 @@ def data_upload(
                     uploaded_file_rows.refresh()
                     return
                 if allow_multiple:
-                    uploaded_names[:] = [
-                        name for name in uploaded_names if name != event.file.name
-                    ]
+                    # Replacing a same-name item must retain its position: the
+                    # scientific batch pairer uses this stable upload order.
+                    if event.file.name not in uploaded_names:
+                        uploaded_names.append(event.file.name)
                 else:
                     uploaded_names.clear()
-                uploaded_names.append(event.file.name)
+                    uploaded_names.append(event.file.name)
                 uploaded_file_rows.refresh()
 
         uploader.on_upload(handle_upload)
@@ -551,61 +629,99 @@ def stat_strip(items: Sequence[tuple[str, str]]) -> dict[str, Any]:
     return values
 
 
+def raw_output_file_row(
+    *,
+    file_name: str,
+    default_type: str = "NPY",
+    default_compress: bool = True,
+    on_download: Callable[[RawOutputControls], Any] | None = None,
+    markers: Mapping[str, str] | None = None,
+    extra_classes: str = "",
+) -> RawOutputControls:
+    """Render one editable raw-data artifact row without a surrounding section."""
+
+    resolved_markers = {
+        "row": "raw-output-row",
+        "compression": "raw-output-compression",
+        "download": "action-download-raw-data",
+        **dict(markers or {}),
+    }
+    row_classes = f"dn-download-file-row dn-raw-output-row {extra_classes}".strip()
+    with ui.element("div").classes(row_classes) as row:
+        if marker := resolved_markers.get("row"):
+            row.mark(marker)
+        ui.icon("description").classes("dn-download-file-icon")
+        with ui.element("div").classes("dn-raw-output-fields"):
+            file_name_control = (
+                ui.input(label="File name", value=file_name)
+                .classes("dn-field dn-raw-output-name")
+                .props("dense")
+            )
+            if marker := resolved_markers.get("file_name"):
+                file_name_control.mark(marker)
+            file_type_control = (
+                ui.select(
+                    list(RAW_DATA_FORMATS),
+                    value=default_type,
+                    label="File type",
+                )
+                .classes("dn-field dn-raw-output-type")
+                .props("dense options-dense")
+            )
+            if marker := resolved_markers.get("file_type"):
+                file_type_control.mark(marker)
+        compress_control = ui.checkbox("Compress", value=default_compress).classes(
+            "dn-raw-output-compress"
+        )
+        if marker := resolved_markers.get("compression"):
+            compress_control.mark(marker)
+        download_button = (
+            ui.button(icon="download")
+            .props('flat round dense aria-label="Download raw data"')
+            .classes("dn-download-file-action dn-raw-output-download")
+        )
+        if marker := resolved_markers.get("download"):
+            download_button.mark(marker)
+        download_button.tooltip("Download")
+    controls = RawOutputControls(
+        file_name=file_name_control,
+        file_type=file_type_control,
+        compress=compress_control,
+        download_button=download_button,
+        row=row,
+    )
+    if on_download is not None:
+        download_button.on_click(lambda: on_download(controls))
+    return controls
+
+
 def raw_output_controls(
     *,
     file_name: str,
     default_type: str = "NPY",
     on_download: Callable[[RawOutputControls], Any] | None = None,
 ) -> RawOutputControls:
-    """Render the shared raw-data export surface."""
+    """Render the shared raw-data export section and an optional extension slot."""
 
     with expansion(
         "Raw data",
         icon=DATA_ICON,
         extra_classes="dn-output-section",
     ):
-        with (
-            ui.element("div")
-            .classes("dn-download-file-row dn-raw-output-row")
-            .mark("raw-output-row")
-        ):
-            ui.icon("description").classes("dn-download-file-icon")
-            with ui.element("div").classes("dn-raw-output-fields"):
-                file_name_control = (
-                    ui.input(label="File name", value=file_name)
-                    .classes("dn-field dn-raw-output-name")
-                    .props("dense")
-                )
-                file_type_control = (
-                    ui.select(
-                        list(RAW_DATA_FORMATS),
-                        value=default_type,
-                        label="File type",
-                    )
-                    .classes("dn-field dn-raw-output-type")
-                    .props("dense options-dense")
-                )
-            compress_control = (
-                ui.checkbox("Compress", value=True)
-                .classes("dn-raw-output-compress")
-                .mark("raw-output-compression")
-            )
-            download_button = (
-                ui.button(icon="download")
-                .props('flat round dense aria-label="Download raw data"')
-                .classes("dn-download-file-action dn-raw-output-download")
-                .mark("action-download-raw-data")
-            )
-            download_button.tooltip("Download")
-        controls = RawOutputControls(
-            file_name=file_name_control,
-            file_type=file_type_control,
-            compress=compress_control,
-            download_button=download_button,
+        controls = raw_output_file_row(
+            file_name=file_name,
+            default_type=default_type,
+            on_download=on_download,
         )
-        if on_download is not None:
-            download_button.on_click(lambda: on_download(controls))
-        return controls
+        extra_slot = ui.element("div").classes("dn-raw-output-extra")
+    return RawOutputControls(
+        file_name=controls.file_name,
+        file_type=controls.file_type,
+        compress=controls.compress,
+        download_button=controls.download_button,
+        row=controls.row,
+        extra_slot=extra_slot,
+    )
 
 
 def empty_state(title: str, body: str, *, icon: str = "science") -> None:

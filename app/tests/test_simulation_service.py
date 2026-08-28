@@ -443,6 +443,19 @@ def test_summary_mode_does_not_limit_or_allocate_an_unused_time_grid() -> None:
     assert validated.time_grid.size == 0
 
 
+def test_fractional_resolution_does_not_create_a_floating_point_extra_bin() -> None:
+    validated = validate_constant_simulation(
+        _request(
+            firing_rate=np.asarray([0.1, 0.2, 0.3]),
+            fork_speed=np.asarray([1.1, 1.2, 1.3]),
+            resolution_x=0.1,
+            region_end_kb=3 * 0.1,
+        )
+    )
+
+    assert validated.n_bins == 3
+
+
 def test_summary_mode_does_not_compute_an_extreme_unused_time_ratio() -> None:
     validated = validate_constant_simulation(
         _request(

@@ -100,6 +100,15 @@ async def _assert_family_surface(user: Any, family: MappingRouteFamily) -> Mappi
         expected_types = ({"scalar": "Constant"} if "scalar" in allowed else {}) | (
             {"profile": "Profile"} if set(allowed) & {"x", "t", "xt"} else {}
         )
+        if "scalar" in allowed and input_spec.key.removesuffix("_xt") in {
+            "firing_rate",
+            "fork_speed",
+        }:
+            expected_types = {
+                "scalar": "Constant",
+                "constants": "Multiple constants",
+                **({"profile": "Profile"} if set(allowed) & {"x", "t", "xt"} else {}),
+            }
         if not expected_types:
             expected_types = {form: form.replace("_", " ").title() for form in allowed}
         assert _option_keys(input_type) == tuple(expected_types)
@@ -334,7 +343,7 @@ def test_mapping_import_controls_follow_rdata_forms_and_track_semantics() -> Non
             )
             assert ".bedgraph" in spatial_upload._props["accept"]
             assert ".bw" in spatial_upload._props["accept"]
-            assert "multiple" not in spatial_upload._props
+            assert spatial_upload._props["multiple"] is True
             await user.should_not_see(marker="mapping-input-replication-timing-track-options")
 
             spatial_upload = cast(Upload, spatial_upload)
@@ -414,7 +423,7 @@ def test_mapping_import_controls_follow_rdata_forms_and_track_semantics() -> Non
             assert "multiple" in temporal_upload._props
             await user.should_not_see(marker="mapping-input-fork-speed-shape-guidance")
 
-            # Space-time accepts one matrix or an ordered series of aligned tracks.
+            # Space-time accepts one complete matrix per independent dataset.
             await _set_select(user, "mapping-input-fork-speed-form", "xt")
             spacetime_upload = next(iter(user.find(marker="source-fork-speed-upload").elements))
             assert ".bedgraph" in spacetime_upload._props["accept"]
@@ -423,9 +432,8 @@ def test_mapping_import_controls_follow_rdata_forms_and_track_semantics() -> Non
             await user.should_not_see(marker="mapping-input-fork-speed-interpretation")
             await user.should_not_see(marker="mapping-input-fork-speed-multiple-track-guidance")
 
-            # A lone XT table may expose all signal columns as one matrix.  As
-            # soon as a second file is added, each file becomes one ordered
-            # profile and must retain a valid per-file signal selection.
+            # Every XT file may expose all signal columns as one matrix or a
+            # specific signal selection, independently of the other datasets.
             spacetime_upload = cast(Upload, spacetime_upload)
             await spacetime_upload.handle_uploads(
                 [
@@ -476,7 +484,7 @@ def test_mapping_import_controls_follow_rdata_forms_and_track_semantics() -> Non
             }
             assert selections_by_file == {
                 "speed_t0.csv": "t1",
-                "speed_t1.csv": "t0",
+                "speed_t1.csv": "__all__",
             }
             for selector in value_selectors:
                 options = (
@@ -484,10 +492,9 @@ def test_mapping_import_controls_follow_rdata_forms_and_track_semantics() -> Non
                     if isinstance(selector.options, list)
                     else tuple(selector.options.keys())
                 )
-                assert "__all__" not in options
+                assert "__all__" in options
 
-            # A route with one required factor accepts one matrix file, not a
-            # multi-file track series.
+            # Even a one-factor route accepts several complete matrix datasets.
             await _set_select(user, "mapping-target", "initiation_pdf")
             await _set_select(user, "mapping-target-form", "spacetime")
             single_input_family = _family_for_method(
@@ -499,8 +506,8 @@ def test_mapping_import_controls_follow_rdata_forms_and_track_semantics() -> Non
                 for element in user.find(marker="source-initiation-events-upload").elements
                 if not element.is_deleted
             )
-            assert single_upload._props["max-files"] == 1
-            assert "multiple" not in single_upload._props
+            assert "max-files" not in single_upload._props
+            assert single_upload._props["multiple"] is True
             assert ".bedgraph" not in single_upload._props["accept"]
             assert ".bw" not in single_upload._props["accept"]
             await user.should_not_see(

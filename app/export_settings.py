@@ -30,6 +30,7 @@ class ExportSettings:
     raw_compression: str = "gzip"
     cached_file_format: str = "tsv"
     cached_compression: str = "gzip"
+    result_name_style: str = "short"
     preserve_page_state: bool = True
 
 
@@ -50,6 +51,7 @@ def reset_export_settings() -> ExportSettings:
     _EXPORT_SETTINGS.raw_compression = defaults.raw_compression
     _EXPORT_SETTINGS.cached_file_format = defaults.cached_file_format
     _EXPORT_SETTINGS.cached_compression = defaults.cached_compression
+    _EXPORT_SETTINGS.result_name_style = defaults.result_name_style
     _EXPORT_SETTINGS.preserve_page_state = defaults.preserve_page_state
     return _EXPORT_SETTINGS
 

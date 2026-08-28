@@ -26,6 +26,10 @@ MAX_HEATMAP_ROWS = 300
 MAX_HEATMAP_COLUMNS = 720
 MAX_HEATMAP_CELLS = MAX_HEATMAP_ROWS * MAX_HEATMAP_COLUMNS
 MAX_HEATMAP_TOOLTIP_CELLS = 2_400
+# Dense overlays remain fast and readable without a per-point hover surface.
+# Six curves is the largest combined view where the tooltip still helps more
+# than it obscures the data.
+MAX_INTERACTIVE_CURVES = 6
 
 FIXED_QUANTITY_Y_LIMITS: dict[str, tuple[float, float]] = {
     "origin_efficiency": (0.0, 1.0),
@@ -1423,6 +1427,36 @@ def _tooltip_options(*, interactive: bool, trigger: str) -> dict[str, Any]:
     }
 
 
+def limit_curve_hover(
+    options: dict[str, Any],
+    *,
+    maximum: int = MAX_INTERACTIVE_CURVES,
+) -> dict[str, Any]:
+    """Disable dense curve hover details while retaining legend selection."""
+
+    curves = [
+        item
+        for item in options.get("series", ())
+        if isinstance(item, dict) and item.get("type") in {"line", "scatter"}
+    ]
+    if len(curves) <= max(0, int(maximum)):
+        return options
+    tooltip = dict(options.get("tooltip", {}))
+    tooltip["show"] = False
+    axis_pointer = dict(tooltip.get("axisPointer", {}))
+    pointer_label = dict(axis_pointer.get("label", {}))
+    pointer_label["show"] = False
+    axis_pointer["label"] = pointer_label
+    tooltip["axisPointer"] = axis_pointer
+    options["tooltip"] = tooltip
+    for curve in curves:
+        curve["silent"] = True
+        emphasis = dict(curve.get("emphasis", {}))
+        emphasis["disabled"] = True
+        curve["emphasis"] = emphasis
+    return options
+
+
 def _histogram_statistics_graphic(
     values: np.ndarray,
     *,
@@ -2647,7 +2681,7 @@ def build_preview_plot_options(
         data_upper=x_data_upper,
         log_axis=log_x,
     )
-    return {
+    return limit_curve_hover({
         "animation": False,
         "title": title_options,
         "tooltip": {
@@ -2665,7 +2699,7 @@ def build_preview_plot_options(
         "xAxis": x_axis_options,
         "yAxis": y_axis_options,
         "series": line_options,
-    }
+    })
 
 
 def render_preview_chart(

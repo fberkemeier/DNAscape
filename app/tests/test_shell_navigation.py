@@ -20,6 +20,7 @@ from app.export_settings import (
     get_export_settings,
 )
 from app.main import index
+from app.result_naming import NAME_STYLE_OPTIONS
 from app.session_cache import current_session_cache
 from app.simulation_exports import ExportArtifact
 
@@ -75,6 +76,7 @@ def test_export_preferences_live_in_the_application_settings_menu() -> None:
         settings.raw_compression,
         settings.cached_file_format,
         settings.cached_compression,
+        settings.result_name_style,
         settings.preserve_page_state,
     )
 
@@ -98,6 +100,10 @@ def test_export_preferences_live_in_the_application_settings_menu() -> None:
                 Select,
                 next(iter(user.find(marker="settings-cached-compression").elements)),
             )
+            result_name_style = cast(
+                Select,
+                next(iter(user.find(marker="settings-result-name-style").elements)),
+            )
             preserve_page_state = cast(
                 Checkbox,
                 next(iter(user.find(marker="settings-preserve-page-state").elements)),
@@ -109,20 +115,28 @@ def test_export_preferences_live_in_the_application_settings_menu() -> None:
             assert cached_format.value == previous[2]
             assert cached_compression.options == COMPRESSION_OPTIONS
             assert cached_compression.value == previous[3]
-            assert preserve_page_state.value == previous[4]
+            assert result_name_style.options == NAME_STYLE_OPTIONS
+            assert result_name_style.value == previous[4]
+            assert preserve_page_state.value == previous[5]
             assert user.client is not None
             with user.client:
                 dpi.set_value(240)
                 compression.set_value("zip")
                 cached_format.set_value("csv")
                 cached_compression.set_value("xz")
+                result_name_style.set_value("full")
                 preserve_page_state.set_value(False)
             await asyncio.sleep(0)
             assert settings.plot_dpi == 240
             assert settings.raw_compression == "zip"
             assert settings.cached_file_format == "csv"
             assert settings.cached_compression == "xz"
+            assert settings.result_name_style == "full"
             assert settings.preserve_page_state is False
+            with user.client:
+                result_name_style.set_value("short")
+            await asyncio.sleep(0)
+            assert settings.result_name_style == "short"
 
     try:
         asyncio.run(scenario())
@@ -132,6 +146,7 @@ def test_export_preferences_live_in_the_application_settings_menu() -> None:
             settings.raw_compression,
             settings.cached_file_format,
             settings.cached_compression,
+            settings.result_name_style,
             settings.preserve_page_state,
         ) = previous
 
@@ -210,12 +225,14 @@ def test_reset_menu_restores_defaults_and_clears_the_client_workspace() -> None:
         settings.raw_compression,
         settings.cached_file_format,
         settings.cached_compression,
+        settings.result_name_style,
         settings.preserve_page_state,
     )
     settings.plot_dpi = 288
     settings.raw_compression = "zip"
     settings.cached_file_format = "csv"
     settings.cached_compression = "xz"
+    settings.result_name_style = "full"
     settings.preserve_page_state = False
 
     async def scenario() -> None:
@@ -238,6 +255,12 @@ def test_reset_menu_restores_defaults_and_clears_the_client_workspace() -> None:
 
             defaults = ExportSettings()
             assert settings == defaults
+            assert settings.result_name_style == "short"
+            name_style = cast(
+                Select,
+                next(iter(user.find(marker="settings-result-name-style").elements)),
+            )
+            assert name_style.value == "short"
             with user.client:
                 assert current_session_cache().count() == 0
 
@@ -249,6 +272,7 @@ def test_reset_menu_restores_defaults_and_clears_the_client_workspace() -> None:
             settings.raw_compression,
             settings.cached_file_format,
             settings.cached_compression,
+            settings.result_name_style,
             settings.preserve_page_state,
         ) = previous
 

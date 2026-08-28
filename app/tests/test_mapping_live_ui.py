@@ -43,6 +43,69 @@ def _mapped_result(request: MappingRequest, values: np.ndarray) -> MappingResult
     )
 
 
+def test_combined_mapping_colors_every_curve_and_limits_dense_hover(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from app.pages import mapping as mapping_page
+
+    def fake_options(_result: Any, **_kwargs: Any) -> dict[str, Any]:
+        return {
+            "xAxis": {"min": 0.0, "max": 2.0},
+            "tooltip": {
+                "show": True,
+                "axisPointer": {"label": {"show": True}},
+            },
+            "legend": {"selectedMode": True},
+            "series": [
+                {
+                    "type": "line",
+                    "name": role,
+                    "lineStyle": {},
+                    "itemStyle": {},
+                    "silent": False,
+                    "emphasis": {"disabled": False},
+                    "data": [[0.0, 1.0], [1.0, 2.0]],
+                }
+                for role in ("Observed", "Fitted")
+            ],
+        }
+
+    monkeypatch.setattr(mapping_page, "_mapping_plot_options", fake_options)
+    named = tuple(
+        mapping_page._NamedMappingResult(
+            f"mapping-case-{index}",
+            f"Firing rate · Input: sample_{index}",
+            f"firing-rate-sample-{index}",
+            cast(MappingResult, object()),
+            f"Firing rate · sample_{index}",
+            f"firing-rate-sample-{index}",
+        )
+        for index in range(1, 8)
+    )
+    color_keys = tuple(
+        (item.key, "firing_rate", series_index)
+        for item in named
+        for series_index in range(2)
+    )
+    colors = {
+        color_key: f"#{index:06x}"
+        for index, color_key in enumerate(color_keys, start=1)
+    }
+
+    options = mapping_page._combined_mapping_plot_options(
+        named,
+        colors=colors,
+        output_key="firing_rate",
+    )
+
+    assert [item["lineStyle"]["color"] for item in options["series"]] == list(
+        colors.values()
+    )
+    assert options["tooltip"]["show"] is False
+    assert all(item["silent"] is True for item in options["series"])
+    assert options["legend"]["selectedMode"] is True
+
+
 def test_csv_upload_auto_selects_chr1_and_map_renders_progress_and_result(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -125,6 +188,395 @@ def test_csv_upload_auto_selects_chr1_and_map_renders_progress_and_result(
         asyncio.run(scenario())
     finally:
         release.set()
+
+
+def test_mapping_batch_runs_all_files_tabs_exports_and_preserves_previous_result(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from app.pages import mapping as mapping_page
+
+    requests: list[MappingRequest] = []
+    archived_counts: list[int] = []
+    real_archive = mapping_page.build_artifact_archive
+
+    def fake_run(request: MappingRequest, report: Any, _cancel: Any) -> MappingResult:
+        requests.append(request)
+        report(0.6, "Fitting batch dataset...")
+        values = np.asarray(request.inputs["replication_timing"], dtype=float)
+        result = _mapped_result(request, values / 10.0)
+        unique_key = "first_only" if len(requests) == 1 else "second_only"
+        return replace(
+            result,
+            outputs={**result.outputs, unique_key: values},
+            output_forms={**result.output_forms, unique_key: "x"},
+        )
+
+    def track_archive(artifacts: Any, **kwargs: Any) -> Any:
+        archived_counts.append(len(artifacts))
+        return real_archive(artifacts, **kwargs)
+
+    monkeypatch.setattr(mapping_page, "run_mapping", fake_run)
+    monkeypatch.setattr(mapping_page, "build_artifact_archive", track_archive)
+
+    async def scenario() -> None:
+        async with user_simulation(index) as user:
+            await user.open("/")
+            user.find(marker="nav-mapping").click()
+            await user.should_see(marker="source-replication-timing-upload", retries=60)
+            await user.should_not_see(marker="mapping-batch-datasets")
+
+            uploader = cast(
+                Upload,
+                next(iter(user.find(marker="source-replication-timing-upload").elements)),
+            )
+            assert uploader._props["multiple"] is True
+            await uploader.handle_uploads(
+                [
+                    Upload.SmallFileUpload(
+                        "timing_a.csv",
+                        "text/csv",
+                        b"timing\n8\n7\n9\n",
+                    ),
+                    Upload.SmallFileUpload(
+                        "timing_b.csv",
+                        "text/csv",
+                        b"timing\n6\n5\n7\n8\n",
+                    ),
+                ]
+            )
+            await user.should_see("Datasets: 2", retries=40)
+
+            user.find(marker="action-map").click()
+            await user.should_see("Complete · 2 datasets", retries=60)
+            assert len(requests) == 2
+            np.testing.assert_array_equal(
+                requests[0].inputs["replication_timing"],
+                [8.0, 7.0, 9.0],
+            )
+            np.testing.assert_array_equal(
+                requests[1].inputs["replication_timing"],
+                [6.0, 5.0, 7.0, 8.0],
+            )
+            await user.should_see(marker="mapping-batch-raw-files")
+            await user.should_see(marker="mapping-download-all-raw")
+
+            layout = cast(
+                Select,
+                next(iter(user.find(marker="mapping-preview-layout").elements)),
+            )
+            output = cast(
+                Select,
+                next(iter(user.find(marker="mapping-preview-output").elements)),
+            )
+            assert layout.value == "Combined"
+            assert tuple(output.options) == ("firing_rate",)
+
+            # Non-line views are individual-only. Changing view must reconcile
+            # that layout before redrawing instead of sending an unsupported
+            # Combined/Histogram pairing to the batch plotter.
+            view = cast(
+                Select,
+                next(iter(user.find(marker="mapping-view").elements)),
+            )
+            with user.client:
+                view.set_value("Histogram")
+            await user.should_see(marker="mapping-dataset-select", retries=20)
+            assert layout.value == "Individual"
+            assert list(layout.options) == ["Individual"]
+            with user.client:
+                view.set_value("Default")
+            await asyncio.sleep(0)
+            assert list(layout.options) == ["Combined", "Individual"]
+            dataset_select = cast(
+                Select,
+                next(iter(user.find(marker="mapping-dataset-select").elements)),
+            )
+            assert tuple(dataset_select.options) == (
+                "mapping-case-1",
+                "mapping-case-2",
+            )
+            assert tuple(dataset_select.options.values()) == (
+                "Firing rate · timing_a",
+                "Firing rate · timing_b",
+            )
+            with user.client:
+                dataset_select.set_value("mapping-case-2")
+            await asyncio.sleep(0)
+            # Dataset selection must retain the submit-time output
+            # intersection; result-specific outputs cannot leak into a batch.
+            assert tuple(output.options) == ("firing_rate",)
+
+            user.find(marker="mapping-download-all-raw").click()
+            for _ in range(40):
+                if archived_counts:
+                    break
+                await asyncio.sleep(0.02)
+            assert archived_counts == [2]
+
+            # Same-name replacement keeps its original pairing position.
+            await uploader.handle_uploads(
+                [
+                    Upload.SmallFileUpload(
+                        "timing_a.csv",
+                        "text/csv",
+                        b"timing\n10\n11\n12\n",
+                    )
+                ]
+            )
+            await asyncio.sleep(0.25)
+            user.find(marker="action-map").click()
+            for _ in range(80):
+                if len(requests) >= 4:
+                    break
+                await asyncio.sleep(0.02)
+            assert len(requests) == 4
+            np.testing.assert_array_equal(
+                requests[2].inputs["replication_timing"],
+                [10.0, 11.0, 12.0],
+            )
+            np.testing.assert_array_equal(
+                requests[3].inputs["replication_timing"],
+                [6.0, 5.0, 7.0, 8.0],
+            )
+
+            # Replace one retained dataset with an incompatible matrix. The
+            # click-time consistency check must stop before another worker and
+            # leave the already published two-dataset preview intact.
+            await uploader.handle_uploads(
+                [
+                    Upload.SmallFileUpload(
+                        "timing_a.csv",
+                        "text/csv",
+                        b"position,t0,t1\n0,1,2\n1,3,4\n2,5,6\n",
+                    )
+                ]
+            )
+            await asyncio.sleep(0.1)
+            user.find(marker="action-map").click()
+            await asyncio.sleep(0.1)
+            await user.should_see("Mapping could not be completed", retries=40)
+            assert len(requests) == 4
+            await user.should_see(marker="mapping-result-plot")
+            await user.should_see(marker="mapping-batch-raw-files")
+
+    asyncio.run(scenario())
+
+
+def test_mapping_batch_submit_plan_rejects_mismatched_counts_and_forms() -> None:
+    from app.pages.mapping import (
+        _plan_mapping_batch,
+        _PreparedBatchInput,
+        _validate_paired_batch_axes,
+    )
+
+    def prepared(
+        label: str,
+        filenames: tuple[str, ...],
+        forms: tuple[str | None, ...],
+    ) -> _PreparedBatchInput:
+        return _PreparedBatchInput(
+            key=label.casefold().replace(" ", "_"),
+            label=label,
+            form="x",
+            values=tuple(np.arange(index + 2, dtype=float) for index in range(len(filenames))),
+            prewindowed=(False,) * len(filenames),
+            filenames=filenames,
+            detected_forms=forms,
+        )
+
+    with pytest.raises(ValueError, match="needs either one shared file or 3 paired files"):
+        _plan_mapping_batch(
+            (
+                prepared("Timing", ("a.csv", "b.csv"), ("x", "x")),
+                prepared(
+                    "Speed",
+                    ("a.csv", "b.csv", "c.csv"),
+                    ("x", "x", "x"),
+                ),
+            )
+        )
+
+    with pytest.raises(ValueError, match="do not have one consistent data type"):
+        _plan_mapping_batch(
+            (
+                prepared(
+                    "Timing",
+                    ("timing_a.csv", "timing_b.csv"),
+                    ("x", "xt"),
+                ),
+            )
+        )
+
+    constants = _PreparedBatchInput(
+        key="fork_speed",
+        label="Fork speed",
+        form="scalar",
+        values=(1.0, 1.2, 1.4),
+        prewindowed=(False, False, False),
+    )
+    plan = _plan_mapping_batch((constants,))
+    assert plan.size == 3
+    assert plan.names == ("Dataset 1", "Dataset 2", "Dataset 3")
+
+    with pytest.raises(ValueError, match="one shared value/file or 3 paired"):
+        _plan_mapping_batch(
+            (
+                constants,
+                replace(constants, key="firing_rate", label="Firing rate", values=(0.1, 0.2)),
+            )
+        )
+
+    # Dataset sizes may differ across a batch, but paired spatial factors must
+    # still agree within each individual dataset.
+    timing = _PreparedBatchInput(
+        key="replication_timing",
+        label="Replication timing",
+        form="x",
+        values=(np.arange(3.0), np.arange(5.0)),
+        prewindowed=(False, False),
+        filenames=("short.tsv", "long.tsv"),
+        detected_forms=("x", "x"),
+    )
+    speed = _PreparedBatchInput(
+        key="fork_speed",
+        label="Fork speed",
+        form="x",
+        values=(np.arange(3.0), np.arange(5.0)),
+        prewindowed=(False, False),
+        filenames=("short_speed.tsv", "long_speed.tsv"),
+        detected_forms=("x", "x"),
+    )
+    assert _plan_mapping_batch((timing, speed)).size == 2
+    _validate_paired_batch_axes((timing, speed), 0, "short")
+    _validate_paired_batch_axes((timing, speed), 1, "long")
+    with pytest.raises(ValueError, match="inconsistent spatial bins"):
+        _validate_paired_batch_axes(
+            (timing, replace(speed, values=(np.arange(3.0), np.arange(4.0)))),
+            1,
+            "long",
+        )
+
+
+def test_mapping_multiple_constants_pair_with_independent_profile_files(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from app.pages import mapping as mapping_page
+
+    requests: list[MappingRequest] = []
+
+    def fake_run(request: MappingRequest, report: Any, _cancel: Any) -> MappingResult:
+        requests.append(request)
+        report(0.8, "Mapping paired dataset...")
+        values = np.asarray(request.inputs["replication_timing"], dtype=float)
+        return _mapped_result(request, values)
+
+    monkeypatch.setattr(mapping_page, "run_mapping", fake_run)
+
+    async def scenario() -> None:
+        async with user_simulation(index) as user:
+            await user.open("/")
+            user.find(marker="nav-mapping").click()
+            await user.should_see(marker="mapping-route", retries=60)
+            assert user.client is not None
+            route = cast(
+                Select,
+                next(iter(user.find(marker="mapping-route").elements)),
+            )
+            with user.client:
+                route.set_value("firing_rate--space--replication_timing-and-fork_speed")
+            await asyncio.sleep(0)
+            await asyncio.sleep(0)
+
+            input_type = cast(
+                Select,
+                next(iter(user.find(marker="mapping-input-fork-speed-type").elements)),
+            )
+            assert tuple(input_type.options) == ("scalar", "constants", "profile")
+            with user.client:
+                input_type.set_value("constants")
+            await asyncio.sleep(0)
+            matching = cast(
+                Select,
+                next(
+                    iter(
+                        user.find(
+                            marker="mapping-input-fork-speed-combination-mode"
+                        ).elements
+                    )
+                ),
+            )
+            assert matching.value == "pairwise"
+            constant_1 = cast(
+                Number,
+                next(
+                    iter(user.find(marker="mapping-input-fork-speed-constant-1").elements)
+                ),
+            )
+            constant_2 = cast(
+                Number,
+                next(
+                    iter(user.find(marker="mapping-input-fork-speed-constant-2").elements)
+                ),
+            )
+            with user.client:
+                constant_1.set_value(1.2)
+                constant_2.set_value(1.8)
+
+            uploader = cast(
+                Upload,
+                next(iter(user.find(marker="source-replication-timing-upload").elements)),
+            )
+            await uploader.handle_uploads(
+                [
+                    Upload.SmallFileUpload("short.tsv", "text/tab-separated-values", b"value\n8\n7\n9\n"),
+                    Upload.SmallFileUpload(
+                        "long.tsv",
+                        "text/tab-separated-values",
+                        b"value\n6\n5\n7\n8\n",
+                    ),
+                ]
+            )
+            await user.should_see("Datasets: 2", retries=30)
+            await user.should_see("short.tsv")
+            await user.should_see("long.tsv")
+            constant_1 = cast(
+                Number,
+                next(
+                    iter(user.find(marker="mapping-input-fork-speed-constant-1").elements)
+                ),
+            )
+            constant_2 = cast(
+                Number,
+                next(
+                    iter(user.find(marker="mapping-input-fork-speed-constant-2").elements)
+                ),
+            )
+            assert constant_1.value == pytest.approx(1.2)
+            assert constant_2.value == pytest.approx(1.8)
+            # A single signal column is automatic and should not consume UI space.
+            await user.should_not_see(
+                marker="mapping-input-replication-timing-value-column"
+            )
+
+            user.find(marker="action-map").click()
+            await user.should_see(marker="mapping-result-plot", retries=60)
+            assert len(requests) == 2
+            assert requests[0].inputs["fork_speed"] == pytest.approx(1.2)
+            assert requests[1].inputs["fork_speed"] == pytest.approx(1.8)
+            assert np.asarray(requests[0].inputs["replication_timing"]).size == 3
+            assert np.asarray(requests[1].inputs["replication_timing"]).size == 4
+            for marker in (
+                "mapping-batch-raw-type-mapping-case-1",
+                "mapping-batch-raw-compression-mapping-case-1",
+                "mapping-download-raw-mapping-case-1",
+                "mapping-batch-raw-type-mapping-case-2",
+                "mapping-batch-raw-compression-mapping-case-2",
+                "mapping-download-raw-mapping-case-2",
+                "mapping-download-all-raw",
+            ):
+                assert user.find(marker=marker).elements
+
+    asyncio.run(scenario())
 
 
 def test_mapping_plot_settings_redraw_the_completed_preview(
@@ -441,7 +893,7 @@ def test_mapping_reports_mse_and_orders_residual_before_mse_output(
             )
             assert x_label.value == "Iteration"
             assert y_label.value == "MSE"
-            assert raw_name.value == "dnascape_mapping_mse"
+            assert raw_name.value == "dnascape_mapping_firing-rate-timing_mse"
             chart = cast(
                 EChart,
                 next(iter(user.find(marker="mapping-result-plot").elements)),

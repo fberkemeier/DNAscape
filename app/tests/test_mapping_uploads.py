@@ -25,7 +25,11 @@ from app.mapping_uploads import (
     materialize_many,
     materialize_upload,
 )
-from app.pages.common import UploadClearEventArguments, data_upload
+from app.pages.common import (
+    UploadClearEventArguments,
+    data_upload,
+    set_data_upload_locked,
+)
 
 REPOSITORY_ROOT = Path(__file__).resolve().parents[2]
 
@@ -492,5 +496,149 @@ def test_multiple_auto_uploads_keep_selection_order_and_individual_remove_rows()
             await user.should_not_see("Inspecting…")
             assert received == ["t0.csv", "t1.csv"]
             assert len(user.find(marker="multi-upload-file").elements) == 2
+
+    asyncio.run(scenario())
+
+
+def test_multiple_upload_delete_all_is_scoped_ordered_and_lock_safe() -> None:
+    cleared: list[tuple[str, tuple[str, ...]]] = []
+    received: list[str] = []
+
+    async def receive(event: Any) -> bool:
+        received.append(event.file.name)
+        return True
+
+    def clear(event: UploadClearEventArguments) -> None:
+        cleared.append((event.name, event.names))
+
+    def page() -> None:
+        data_upload(
+            accept=".csv",
+            accepted_formats="CSV",
+            marker="bulk-upload",
+            show_accepted_formats=False,
+            on_upload=receive,
+            on_clear=clear,
+            multiple=True,
+        )
+
+    async def wait_for(predicate: Any) -> None:
+        for _ in range(200):
+            if predicate():
+                return
+            await asyncio.sleep(0.01)
+        raise AssertionError("Timed out waiting for upload state.")
+
+    async def scenario() -> None:
+        async with user_simulation(page) as user:
+            await user.open("/")
+            uploader = next(iter(user.find(kind=Upload).elements))
+            await user.should_not_see(marker="bulk-upload-delete-all")
+
+            await uploader.handle_uploads(
+                [Upload.SmallFileUpload("first.csv", "text/csv", b"chr1\n1\n")]
+            )
+            await wait_for(lambda: received == ["first.csv"])
+            await user.should_see("first.csv")
+            await user.should_not_see("Inspectingâ€¦")
+            await user.should_not_see(marker="bulk-upload-delete-all")
+
+            await uploader.handle_uploads(
+                [Upload.SmallFileUpload("second.csv", "text/csv", b"chr1\n2\n")]
+            )
+            await wait_for(lambda: received == ["first.csv", "second.csv"])
+            await user.should_see(marker="bulk-upload-delete-all")
+            await user.should_not_see("Inspectingâ€¦")
+            assert len(user.find(marker="bulk-upload-file").elements) == 2
+
+            delete_all = next(iter(user.find(marker="bulk-upload-delete-all").elements))
+            set_data_upload_locked(uploader, True)
+            assert delete_all.enabled is False
+            user.find(marker="bulk-upload-delete-all").click()
+            await asyncio.sleep(0.05)
+            assert cleared == []
+            assert len(user.find(marker="bulk-upload-file").elements) == 2
+
+            set_data_upload_locked(uploader, False)
+            assert delete_all.enabled is True
+            user.find(marker="bulk-upload-delete-all").click()
+            await wait_for(lambda: len(cleared) == 1)
+            assert cleared == [("", ("first.csv", "second.csv"))]
+            await user.should_not_see(marker="bulk-upload-file")
+            await user.should_not_see(marker="bulk-upload-delete-all")
+
+            await uploader.handle_uploads(
+                [Upload.SmallFileUpload("same.csv", "text/csv", b"chr1\n3\n")]
+            )
+            await wait_for(lambda: received[-1:] == ["same.csv"])
+            await user.should_see("same.csv")
+            await user.should_not_see("Inspectingâ€¦")
+            await uploader.handle_uploads(
+                [Upload.SmallFileUpload("same.csv", "text/csv", b"chr1\n4\n")]
+            )
+            await wait_for(lambda: received.count("same.csv") == 2)
+            await user.should_not_see("Inspectingâ€¦")
+            assert len(user.find(marker="bulk-upload-file").elements) == 1
+            await user.should_not_see(marker="bulk-upload-delete-all")
+            assert cleared == [("", ("first.csv", "second.csv"))]
+
+    asyncio.run(scenario())
+
+
+def test_multiple_upload_removals_wait_for_inflight_inspection() -> None:
+    entered = asyncio.Event()
+    release = asyncio.Event()
+    cleared: list[tuple[str, tuple[str, ...]]] = []
+
+    async def receive(_event: Any) -> bool:
+        entered.set()
+        await release.wait()
+        return True
+
+    def clear(event: UploadClearEventArguments) -> None:
+        cleared.append((event.name, event.names))
+
+    def page() -> None:
+        data_upload(
+            accept=".csv",
+            accepted_formats="CSV",
+            marker="inspection-locked-upload",
+            show_accepted_formats=False,
+            on_upload=receive,
+            on_clear=clear,
+            multiple=True,
+            initial_names=("first.csv", "second.csv"),
+        )
+
+    async def scenario() -> None:
+        async with user_simulation(page) as user:
+            await user.open("/")
+            uploader = next(iter(user.find(kind=Upload).elements))
+            pending = asyncio.create_task(
+                uploader.handle_uploads(
+                    [Upload.SmallFileUpload("third.csv", "text/csv", b"chr1\n3\n")]
+                )
+            )
+            await asyncio.wait_for(entered.wait(), timeout=1)
+            delete_all = next(
+                iter(user.find(marker="inspection-locked-upload-delete-all").elements)
+            )
+            assert delete_all.enabled is False
+            user.find(marker="inspection-locked-upload-delete-all").click()
+            await asyncio.sleep(0.05)
+            assert cleared == []
+
+            release.set()
+            await pending
+            await user.should_not_see(
+                marker="inspection-locked-upload-inspecting",
+                retries=80,
+            )
+            await user.should_see("third.csv")
+            delete_all = next(
+                iter(user.find(marker="inspection-locked-upload-delete-all").elements)
+            )
+            assert delete_all.enabled is True
+            assert len(user.find(marker="inspection-locked-upload-file").elements) == 3
 
     asyncio.run(scenario())

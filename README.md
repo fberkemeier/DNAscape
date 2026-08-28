@@ -59,14 +59,19 @@ rescaled into an explicit target interval (optionally inverted), and
 threshold-filtered while retaining their original sample grid. Value-scaling
 choices are mutually exclusive. Its Simulation page runs up to 50,000 scalar or
 uploaded-profile replicates through `rsim` in a background worker and displays
-live progress and a result plot. Standard results include completion time,
+live progress and a result plot. Multiple compatible profiles can be run as one
+validated batch with shared settings, combined or per-dataset previews, and
+individual or ZIP raw-data downloads. Standard results include completion time,
 origins per replicate, and inter-origin distances. Optional one-dimensional
 time courses are separate from the memory-intensive position-by-time fields.
 Replication-timing previews can show the full-ensemble mean ± standard-deviation
 band and a memory-bounded subset of up to 50 individual simulations. The
 Mapping page resolves the public `rmap` route catalogue, inspects profile uploads
 automatically, runs the selected route in a background worker, and previews the
-mapped output. Plot and selected raw-data downloads are generated lazily. The app
+mapped output. Every profile input accepts one or several complete datasets by
+default; compatible factors are paired by upload order, preflighted together, and
+exposed through dataset tabs plus bulk raw-data export. Plot and selected raw-data
+downloads are generated lazily. The app
 requires Python 3.10 or newer.
 
 ```bash

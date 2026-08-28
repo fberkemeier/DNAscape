@@ -713,6 +713,48 @@ def test_every_interactive_plot_uses_two_decimal_tooltip_formatting() -> None:
     assert len(plots[-1]["series"][1]["data"]) <= 2_400
 
 
+def test_dense_curve_overlays_disable_hover_but_keep_legend_selection() -> None:
+    axis = np.asarray([0.0, 1.0, 2.0])
+
+    def options(curve_count: int) -> dict[str, Any]:
+        return build_preview_plot_options(
+            plot_type="Line",
+            title="Profiles",
+            x_label="Position",
+            y_label="Value",
+            color="#2c7f77",
+            palette="viridis",
+            histogram_bins=20,
+            density=False,
+            show_legend=True,
+            show_colorbar=False,
+            log_y=False,
+            invert_y=False,
+            y_limits=None,
+            series_label="Profiles",
+            lines=tuple(
+                PreviewLine(
+                    f"Curve {index + 1}",
+                    axis,
+                    axis + index,
+                    "#2c7f77",
+                )
+                for index in range(curve_count)
+            ),
+        )
+
+    six = options(6)
+    seven = options(7)
+
+    assert six["tooltip"]["show"] is True
+    assert all(item["silent"] is False for item in six["series"])
+    assert seven["tooltip"]["show"] is False
+    assert seven["tooltip"]["axisPointer"]["label"]["show"] is False
+    assert all(item["silent"] is True for item in seven["series"])
+    assert all(item["emphasis"]["disabled"] is True for item in seven["series"])
+    assert seven["legend"]["selectedMode"] is True
+
+
 def test_line_renderer_supports_grouped_individual_curves_and_a_filled_band() -> None:
     axis = np.asarray([0.0, 1.0, 2.0])
     options = build_preview_plot_options(

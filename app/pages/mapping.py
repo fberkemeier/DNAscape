@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import math
-from collections.abc import Callable
+from collections.abc import Callable, Mapping, Sequence
 from concurrent.futures import CancelledError
 from dataclasses import dataclass, field, replace
 from threading import Event, Lock
@@ -13,6 +13,19 @@ from typing import Any, cast
 import numpy as np
 from nicegui import run, ui
 
+from app.artifact_archives import (
+    DEFAULT_BATCH_ARCHIVE_SOURCE_BYTES,
+    build_artifact_archive,
+)
+from app.batch_workflows import (
+    BatchPlan,
+    BatchSourceSummary,
+    CombinationSource,
+    combination_names,
+    plan_batch_sources,
+    plan_combination_indices,
+    unique_dataset_names,
+)
 from app.export_settings import get_export_settings
 from app.mapping_catalog import (
     DataForm,
@@ -35,6 +48,7 @@ from app.mapping_service import (
     materialize_many_tracks,
     materialize_track_upload,
     run_mapping,
+    validate_mapping_request,
 )
 from app.mapping_uploads import (
     UploadInspection,
@@ -54,6 +68,7 @@ from app.pages.common import (
     panel_title,
     preview_plot,
     raw_output_controls,
+    raw_output_file_row,
     set_data_upload_locked,
     stat_strip,
 )
@@ -63,13 +78,16 @@ from app.preview_plotting import (
     PreviewLine,
     automatic_y_limits,
     build_preview_plot_options,
+    compact_color_input,
     finite_values,
     histogram_x_limits_from_controls,
+    limit_curve_hover,
     plotting_settings_ready,
     preview_settings_controls,
     render_preview_chart,
     sync_preview_settings_visibility,
 )
+from app.result_naming import safe_filename_stem, unique_filename_stems
 from app.session_cache import (
     cache_artifact,
     cache_upload,
@@ -77,7 +95,7 @@ from app.session_cache import (
     consume_cached_workflow,
     current_session_cache,
 )
-from app.simulation_exports import build_chart_capture_export
+from app.simulation_exports import ExportArtifact, build_chart_capture_export
 
 _DEPENDENCE_LABELS = {
     "constant": "Constant",
@@ -177,6 +195,21 @@ _COMPARISON_PREFIX = "comparison:"
 _FIT_DIAGNOSTIC_KEY = "fit_diagnostic"
 _MSE_DIAGNOSTIC_KEY = "mse_diagnostic"
 _PLOT_TYPES = ["Line", "Heatmap", "Histogram", "Boxplot"]
+_BATCH_COLOURS = (
+    "#2c7f77",
+    "#b03412",
+    "#6f5a9c",
+    "#c47a1b",
+    "#3f6fa3",
+    "#7d8f3a",
+    "#9c4d70",
+    "#4e7d8d",
+)
+
+_MAX_MAPPING_CASES = 50_000
+_MAX_COMBINED_MAPPING_DATASETS = 50
+_BATCH_RAW_PAGE_SIZE = 50
+_BATCH_NAV_PAGE_SIZE = 50
 
 _WEIBULL_ONLY_SETTINGS = {"weibull_shape", "weibull_delay", "fit_weibull_shape"}
 _FREE_FIRING_ONLY_SETTINGS = {"stall_rate_per_kb", "tau"}
@@ -229,6 +262,74 @@ class _MappingUploadState:
     materialized_cache: dict[str, Any] = field(default_factory=lambda: {"key": None, "value": None})
 
 
+@dataclass
+class _MappingConstantState:
+    """Multiple scalar values retained across disposable Mapping widgets."""
+
+    values_by_key: dict[str, float] = field(default_factory=dict)
+    manual_keys: list[str] = field(default_factory=lambda: ["manual-1", "manual-2"])
+    next_manual_index: int = 3
+
+
+@dataclass(frozen=True, slots=True)
+class _PreparedBatchInput:
+    """One route input materialized as one or several independent datasets."""
+
+    key: str
+    label: str
+    form: DataForm
+    values: tuple[Any, ...]
+    prewindowed: tuple[bool, ...]
+    filenames: tuple[str, ...] = ()
+    detected_forms: tuple[str | None, ...] = ()
+    components: tuple[str, ...] = ()
+
+
+@dataclass(frozen=True, slots=True)
+class _MappingBatchCase:
+    """One fully resolved request in a pairwise or Cartesian Mapping run."""
+
+    key: str
+    name: str
+    export_stem: str
+    item_indices: tuple[int, ...]
+    short_name: str = ""
+    short_export_stem: str = ""
+
+
+@dataclass(frozen=True, slots=True)
+class _NamedMappingResult:
+    """A completed mapping result paired with its stable dataset label."""
+
+    key: str
+    name: str
+    export_stem: str
+    result: MappingResult
+    short_name: str = ""
+    short_export_stem: str = ""
+
+
+@dataclass
+class _MappingRawPreference:
+    """Editable raw-export values retained across refreshable batch rows."""
+
+    file_name: str
+    file_type: str = "NPY"
+    compress: bool = True
+    automatic_name: str = ""
+    customized: bool = False
+
+
+@dataclass(frozen=True, slots=True)
+class _MappingRawExportSelection:
+    """One immutable raw-export choice captured before asynchronous work."""
+
+    output_key: str
+    file_name: str
+    file_type: str
+    compression: str
+
+
 # Building the scientific route catalogue is the only non-trivial part of
 # Mapping-page setup. Resolve it while the local app starts so opening Mapping
 # never pays that cold cost or leaves the navigation looking unresponsive.
@@ -279,8 +380,8 @@ def _retained_form_selections(
         key: form
         for key in family.input_keys
         if (
-            form := _detected_profile_form(
-                upload_states.get(_friendly_input_key(key), _MappingUploadState()).inspections
+            form := _retained_profile_form(
+                upload_states.get(_friendly_input_key(key), _MappingUploadState()).inspections,
             )
         )
         is not None
@@ -306,6 +407,19 @@ def _retained_form_selections(
             retained_form if retained_form in exact_input.forms else exact_input.forms[0]
         )
     return selections
+
+
+def _retained_profile_form(
+    inspections: list[UploadInspection],
+) -> DataForm | None:
+    detected = {
+        value
+        for inspection in inspections
+        if (value := _inspection_profile_form(inspection)) is not None
+    }
+    if len(detected) != 1:
+        return None
+    return cast(DataForm, next(iter(detected)))
 
 
 def _format_copy(input_spec: MappingInput, form: str) -> str:
@@ -339,22 +453,13 @@ def _friendly_input_key(key: str) -> str:
     return key.removesuffix("_xt")
 
 
-def _detected_profile_form(inspections: list[UploadInspection]) -> DataForm | None:
-    """Resolve rdata's shape convention for one retained profile input."""
+def _inspection_profile_form(inspection: UploadInspection) -> str | None:
+    """Return one file's independently detected profile form."""
 
-    if not inspections:
-        return None
-    if len(inspections) > 1:
-        return cast(DataForm, "xt")
-    if all(item.source_format in {"bedgraph", "bigwig"} for item in inspections):
-        return cast(DataForm, "x")
-    detected = str(inspections[0].inferred_form)
-    return cast(DataForm, detected) if detected in {"x", "t", "xt"} else None
-
-
-def _detected_dependence_label(inspections: list[UploadInspection]) -> str:
-    form = _detected_profile_form(inspections)
-    return _FORM_LABELS.get(str(form), "Unknown")
+    if inspection.source_format in {"bedgraph", "bigwig"}:
+        return "x"
+    detected = str(inspection.inferred_form)
+    return detected if detected in {"x", "t", "xt"} else None
 
 
 def _preview_outputs(route: MappingRoute) -> dict[str, str]:
@@ -415,6 +520,21 @@ def _result_preview_outputs(result: MappingResult) -> dict[str, str]:
     if "fit_history" in result.outputs:
         outputs["fit_history"] = "MSE"
     return outputs
+
+
+def _common_result_preview_outputs(
+    results: Sequence[MappingResult],
+) -> dict[str, str]:
+    """Return the ordered output intersection shared by a completed batch."""
+
+    if not results:
+        return {}
+    output_sets = [_result_preview_outputs(result) for result in results]
+    return {
+        key: label
+        for key, label in output_sets[0].items()
+        if all(key in options for options in output_sets[1:])
+    }
 
 
 def _resolved_output_key(result: Any, output_key: str) -> str:
@@ -894,6 +1014,79 @@ def _render_mapping_result(
     )
 
 
+def _combined_mapping_plot_options(
+    results: Sequence[_NamedMappingResult],
+    *,
+    colors: Mapping[tuple[str, str, int], str] | None = None,
+    **plot_kwargs: Any,
+) -> dict[str, Any]:
+    """Merge compatible one-dimensional Mapping previews into one EChart."""
+
+    if len(results) < 2:
+        raise ValueError("A combined Mapping preview requires several results.")
+    combined_series: list[dict[str, Any]] = []
+    combined_names: list[str] = []
+    x_minima: list[float] = []
+    x_maxima: list[float] = []
+    base: dict[str, Any] | None = None
+    output_key = str(plot_kwargs.get("output_key") or "output")
+    curve_index = 0
+    for named in results:
+        color = _BATCH_COLOURS[curve_index % len(_BATCH_COLOURS)]
+        kwargs = dict(plot_kwargs)
+        kwargs["color"] = color
+        kwargs["secondary_color"] = _BATCH_COLOURS[
+            (curve_index + 1) % len(_BATCH_COLOURS)
+        ]
+        options = _mapping_plot_options(named.result, **kwargs)
+        series = list(options.get("series", ()))
+        if not series or any(item.get("type") not in {"line", "scatter"} for item in series):
+            raise ValueError(
+                "This output cannot be combined. Choose Individual to view each dataset."
+            )
+        if base is None:
+            base = options
+        x_axis = options.get("xAxis", {})
+        try:
+            x_minima.append(float(x_axis["min"]))
+            x_maxima.append(float(x_axis["max"]))
+        except (KeyError, TypeError, ValueError):
+            pass
+        for series_index, item in enumerate(series):
+            curve_color = (colors or {}).get(
+                (named.key, output_key, series_index),
+                _BATCH_COLOURS[curve_index % len(_BATCH_COLOURS)],
+            )
+            line_style = dict(item.get("lineStyle", {}))
+            line_style["color"] = curve_color
+            item["lineStyle"] = line_style
+            item_style = dict(item.get("itemStyle", {}))
+            item_style["color"] = curve_color
+            item["itemStyle"] = item_style
+            original_name = str(item.get("name") or "Output")
+            result_name = _mapping_display_name(named)
+            display_name = (
+                result_name
+                if len(series) == 1
+                else f"{result_name} · {original_name}"
+            )
+            item["name"] = display_name
+            combined_names.append(display_name)
+            combined_series.append(item)
+            curve_index += 1
+    assert base is not None
+    base["series"] = combined_series
+    if x_minima and x_maxima:
+        base_x_axis = dict(base.get("xAxis", {}))
+        base_x_axis["min"] = min(x_minima)
+        base_x_axis["max"] = max(x_maxima)
+        base["xAxis"] = base_x_axis
+    legend = dict(base.get("legend", {}))
+    legend["data"] = combined_names
+    base["legend"] = legend
+    return limit_curve_hover(base)
+
+
 def _setting_value(setting: Any) -> Any:
     """Choose a useful initial control value from exact route metadata."""
 
@@ -1075,6 +1268,136 @@ def _read_number(control: Any, label: str) -> float:
     return value
 
 
+def _read_multiple_constants(control: Any, label: str) -> tuple[float, ...]:
+    """Parse a compact comma/newline list without validating while users type."""
+
+    parts = [part for part in str(control.value or "").replace(",", " ").split() if part]
+    if not parts:
+        raise ValueError(f"Enter at least one value for {label.lower()}.")
+    values: list[float] = []
+    for part in parts:
+        try:
+            value = float(part)
+        except ValueError as exc:
+            raise ValueError(f"{label} values must be numbers.") from exc
+        if not math.isfinite(value):
+            raise ValueError(f"{label} values must be finite.")
+        if value < 0:
+            raise ValueError(f"{label} values cannot be negative.")
+        values.append(value)
+    return tuple(values)
+
+
+def _read_multiple_constant_controls(
+    controls: Sequence[Any],
+    label: str,
+) -> tuple[float, ...]:
+    """Read the aligned scalar fields only when the user starts Mapping."""
+
+    if not controls:
+        raise ValueError(f"Add at least one value for {label.lower()}.")
+    values: list[float] = []
+    for index, control in enumerate(controls, start=1):
+        value = _read_number(control, f"{label} value {index}")
+        if value < 0:
+            raise ValueError(f"{label} values cannot be negative.")
+        values.append(value)
+    return tuple(values)
+
+
+def _format_mapping_component(value: float, *, units: str = "") -> str:
+    """Format a scalar compactly for target-first result labels."""
+
+    numeric = f"{float(value):.10g}"
+    return f"{numeric} {units}" if units else numeric
+
+
+def _mapping_export_stem(display_name: str, index: int) -> str:
+    """Create a bounded target-first stem without treating decimals as suffixes."""
+
+    return safe_filename_stem(
+        display_name,
+        fallback=f"mapping-result-{index}",
+        maximum=150,
+    )
+
+
+def _mapping_display_name(named: _NamedMappingResult) -> str:
+    """Resolve a completed result through the application naming preference."""
+
+    if get_export_settings().result_name_style == "full":
+        return named.name
+    return named.short_name or named.name
+
+
+def _mapping_result_stem(named: _NamedMappingResult) -> str:
+    """Resolve the matching collision-safe file stem."""
+
+    if get_export_settings().result_name_style == "full":
+        return named.export_stem
+    return named.short_export_stem or named.export_stem
+
+
+def _mapping_raw_default_filename(
+    named: _NamedMappingResult,
+    output_key: str,
+) -> str:
+    """Return a target-first filename for one mapped result and selected output."""
+
+    identity_stem = _mapping_result_stem(named)[:120].rstrip("-") or "mapping-result"
+    comparison = output_key.startswith(_COMPARISON_PREFIX)
+    actual_output = _resolved_output_key(named.result, output_key)
+    output_stem = (
+        f"{output_key.removeprefix(_COMPARISON_PREFIX)}-comparison"
+        if comparison
+        else "mse"
+        if actual_output == "fit_history"
+        else actual_output
+    )
+    base = f"dnascape_mapping_{identity_stem}"
+    if not comparison and actual_output == named.result.primary_output:
+        return base
+    return f"{base}_{_mapping_export_stem(output_stem, 1)}"
+
+
+def _mapping_raw_preference(
+    preferences: dict[tuple[str, str], _MappingRawPreference],
+    named: _NamedMappingResult,
+    output_key: str,
+) -> _MappingRawPreference:
+    """Return one stable preference, updating only untouched automatic names."""
+
+    key = (named.key, output_key)
+    automatic_name = _mapping_raw_default_filename(named, output_key)
+    preference = preferences.setdefault(
+        key,
+        _MappingRawPreference(
+            file_name=automatic_name,
+            automatic_name=automatic_name,
+        ),
+    )
+    if not preference.automatic_name:
+        preference.automatic_name = preference.file_name
+    if not preference.customized:
+        preference.file_name = automatic_name
+        preference.automatic_name = automatic_name
+    return preference
+
+
+def _mapping_raw_page_bounds(
+    total: int,
+    requested_page: int,
+) -> tuple[int, int, int, int]:
+    """Return ``page, page_count, start, end`` for bounded raw-row rendering."""
+
+    normalized_total = max(0, int(total))
+    page_count = max(1, math.ceil(normalized_total / _BATCH_RAW_PAGE_SIZE))
+    page = min(max(1, int(requested_page)), page_count)
+    start = (page - 1) * _BATCH_RAW_PAGE_SIZE
+    end = min(normalized_total, start + _BATCH_RAW_PAGE_SIZE)
+    return page, page_count, start, end
+
+
 def _read_setting(live: _SettingControl) -> Any:
     setting = live.setting
     if live.override is not None and not bool(live.override.value):
@@ -1202,22 +1525,21 @@ def _render_upload_input(
     on_change: Callable[[], Any],
     on_error: Callable[[str], Any],
     on_detected_form: Callable[[DataForm], Any],
-    single_file: bool = False,
+    on_structure_change: Callable[[], Any],
 ) -> None:
     # A per-client prepared-result workspace is not available yet.  Ordinary
     # factors therefore expose only the working upload path instead of a dead
     # selectable option.
     source = None
-    allow_multiple = not single_file and any(
-        input_spec.multiple_for(candidate)  # type: ignore[arg-type]
-        for candidate in profile_forms
-    )
     with ui.element("div").classes("dn-mapping-upload-source"):
         inspections = retained.inspections
         selector_controls: dict[str, tuple[Any | None, Any | None]] = {}
         selection_values = retained.selection_values
         materialized_cache = retained.materialized_cache
         track_options: Any | None = None
+
+        def uses_matrix_columns(inspection: UploadInspection) -> bool:
+            return _inspection_profile_form(inspection) == "xt"
 
         def sync_selection_values() -> None:
             """Preserve valid table-column and NPZ-array choices across refreshes."""
@@ -1231,7 +1553,7 @@ def _render_upload_input(
                 if inspection.numeric_columns:
                     valid_columns = set(inspection.numeric_columns)
                     default_column = inspection.default_column
-                    if _detected_profile_form(inspections) == "xt" and len(inspections) == 1:
+                    if uses_matrix_columns(inspection):
                         valid_columns.add("__all__")
                         default_column = "__all__"
                     if selected.get("column") not in valid_columns:
@@ -1264,7 +1586,8 @@ def _render_upload_input(
                 .classes("dn-mapping-detected-data")
                 .mark(f"mapping-input-{marker}-detected-data")
             ):
-                ui.label(f"Dependence: {_detected_dependence_label(inspections)}").classes(
+                summary = f"Datasets: {len(inspections)}"
+                ui.label(summary).classes(
                     "dn-mapping-detected-summary dn-mapping-detected-dependence"
                 )
                 for inspection in inspections:
@@ -1287,9 +1610,11 @@ def _render_upload_input(
                 for inspection in inspections:
                     selected = selection_values.setdefault(inspection.name, {})
                     column_control = None
-                    if inspection.numeric_columns:
+                    # A selector adds no information when there is only one
+                    # usable signal column: rdata already chooses it safely.
+                    if len(inspection.numeric_columns) > 1:
                         column_options: Any = list(inspection.numeric_columns)
-                        if _detected_profile_form(inspections) == "xt" and len(inspections) == 1:
+                        if uses_matrix_columns(inspection):
                             column_options = {
                                 "__all__": "All signal columns",
                                 **{column: column for column in inspection.numeric_columns},
@@ -1305,12 +1630,6 @@ def _render_upload_input(
                             .mark(f"mapping-input-{marker}-value-column")
                         )
                         column_control._props["data-upload-name"] = inspection.name
-                        if (
-                            len(inspection.numeric_columns) == 1
-                            and _detected_profile_form(inspections) != "xt"
-                        ):
-                            column_control.disable()
-
                         def store_column(
                             control: Any = column_control,
                             values: dict[str, str | None] = selected,
@@ -1358,19 +1677,21 @@ def _render_upload_input(
             except (OSError, TypeError, ValueError) as exc:
                 on_error(str(exc))
                 return False
-            candidates = list(inspections) if allow_multiple else []
-            candidates[:] = [item for item in candidates if item.name != inspection.name]
-            candidates.append(inspection)
-            detected_form = _detected_profile_form(candidates)
-            if detected_form not in profile_forms:
-                expected = ", ".join(_FORM_LABELS[item] for item in profile_forms)
-                message = (
-                    f"{input_spec.label} was detected as "
-                    f"{_FORM_LABELS.get(str(detected_form), 'an unsupported profile')}; "
-                    f"this route accepts {expected}."
-                )
-                on_error(message)
-                return False
+            candidates = list(inspections)
+            replaced_index = next(
+                (
+                    index
+                    for index, item in enumerate(candidates)
+                    if item.name == inspection.name
+                ),
+                None,
+            )
+            if replaced_index is None:
+                candidates.append(inspection)
+            else:
+                # Preserve the pairing position when retained bytes for one
+                # named dataset are replaced.
+                candidates[replaced_index] = inspection
             materialized_cache.update(key=None, value=None)
             inspections[:] = candidates
             sync_selection_values()
@@ -1383,10 +1704,12 @@ def _render_upload_input(
             render_inspection.refresh()
             render_selection.refresh()
             sync_track_options_visibility()
-            assert detected_form is not None
-            on_detected_form(detected_form)
+            individual_form = _inspection_profile_form(inspection)
+            if len(candidates) == 1 and individual_form in profile_forms:
+                on_detected_form(cast(DataForm, individual_form))
             cache_upload(inspection, source="Mapping", navigate_to="mapping")
             on_change()
+            on_structure_change()
             return True
 
         def cleared(event: Any) -> None:
@@ -1394,6 +1717,17 @@ def _render_upload_input(
             name = str(getattr(event, "name", ""))
             if name:
                 inspections[:] = [item for item in inspections if item.name != name]
+            elif removed_names := {
+                str(value)
+                for value in getattr(event, "names", ())
+                if str(value)
+            }:
+                # Delete all snapshots the completed rows it owns. Keep an
+                # upload whose inspection finishes concurrently instead of
+                # clearing scientific state that remains visible afterwards.
+                inspections[:] = [
+                    item for item in inspections if item.name not in removed_names
+                ]
             else:
                 inspections.clear()
             sync_selection_values()
@@ -1401,6 +1735,7 @@ def _render_upload_input(
             render_selection.refresh()
             sync_track_options_visibility()
             on_change()
+            on_structure_change()
 
         available_formats = {
             item
@@ -1414,7 +1749,9 @@ def _render_upload_input(
             if extension.strip()
         }
         upload_accept = ",".join(sorted(accept_tokens))
-        if single_file and profile_forms == ("xt",):
+        if profile_forms == ("xt",):
+            # Genomic tracks are one-dimensional. A batch XT input consists
+            # of one complete matrix per file, never one track per time point.
             available_formats.difference_update({"bigwig", "bedgraph"})
             track_extensions = {".bedgraph", ".bdg", ".bw", ".bigwig"}
             upload_accept = ",".join(
@@ -1431,9 +1768,9 @@ def _render_upload_input(
             show_accepted_formats=False,
             on_upload=uploaded,
             on_clear=cleared,
-            multiple=allow_multiple,
-            max_files=None if allow_multiple else 1,
-            hide_when_loaded=True,
+            multiple=True,
+            max_files=None,
+            hide_when_loaded=False,
             initial_names=tuple(item.name for item in inspections),
         )
         render_inspection()
@@ -1589,15 +1926,164 @@ def _render_upload_input(
             sync_track_options_visibility()
 
 
+def _render_multiple_constant_input(
+    input_spec: MappingInput,
+    marker: str,
+    surface: dict[str, Any],
+    retained: _MappingConstantState,
+    peer_rows: Callable[[], tuple[tuple[str, str], ...]],
+    combination_mode: dict[str, str],
+    on_change: Callable[[], Any],
+    on_structure_change: Callable[[], Any],
+) -> None:
+    """Render a compact value row beside every uploaded counterpart dataset."""
+
+    units = _SCALAR_UNITS.get(_friendly_input_key(input_spec.key), "")
+    aligned_rows = peer_rows()
+    manual = not aligned_rows
+    if manual:
+        aligned_rows = tuple(
+            (key, f"Value {index}")
+            for index, key in enumerate(retained.manual_keys, start=1)
+        )
+
+    # Populate newly encountered peer identities from the matching manual row
+    # before falling back to the package's scalar default. Values already tied
+    # to a filename survive removals and same-name replacements.
+    for index, (row_key, _label) in enumerate(aligned_rows):
+        if row_key in retained.values_by_key:
+            continue
+        manual_key = (
+            retained.manual_keys[index] if index < len(retained.manual_keys) else ""
+        )
+        retained.values_by_key[row_key] = retained.values_by_key.get(
+            manual_key,
+            _scalar_default(input_spec),
+        )
+
+    with (
+        ui.element("div")
+        .classes("dn-mapping-constant-batch")
+        .mark(f"mapping-input-{marker}-constants")
+    ):
+        matching = (
+            ui.select(
+                {
+                    "pairwise": "Pairwise",
+                    "all": "All combinations",
+                },
+                value=combination_mode.get("value", "pairwise"),
+                label="Matching",
+            )
+            .props("dense options-dense")
+            .classes("dn-field dn-mapping-constant-matching")
+            .mark(f"mapping-input-{marker}-combination-mode")
+        )
+
+        def matching_changed() -> None:
+            value = str(matching.value or "pairwise")
+            combination_mode["value"] = value if value in {"pairwise", "all"} else "pairwise"
+            on_change()
+            on_structure_change()
+
+        matching.on_value_change(matching_changed)
+        constant_controls: list[Any] = []
+        with (
+            ui.element("div")
+            .classes("dn-mapping-constant-list")
+            .mark(f"mapping-input-{marker}-constant-list")
+        ):
+            for index, (row_key, row_label) in enumerate(aligned_rows, start=1):
+                with ui.element("div").classes("dn-mapping-constant-row"):
+                    label = ui.label(row_label).classes("dn-mapping-constant-label")
+                    label.tooltip(row_label)
+                    control = (
+                        ui.number(
+                            value=retained.values_by_key[row_key],
+                            min=0,
+                            step=0.001 if input_spec.key == "firing_rate" else 0.1,
+                        )
+                        .props("dense")
+                        .classes("dn-field dn-mapping-constant-value")
+                        .mark(f"mapping-input-{marker}-constant-{index}")
+                    )
+                    control._props["aria-label"] = f"{input_spec.label} for {row_label}"
+                    if units:
+                        control.tooltip(units)
+
+                    def value_changed(
+                        value_control: Any = control,
+                        identity: str = row_key,
+                    ) -> None:
+                        try:
+                            value = float(value_control.value)
+                        except (TypeError, ValueError):
+                            on_change()
+                            return
+                        if math.isfinite(value):
+                            retained.values_by_key[identity] = value
+                        on_change()
+
+                    control.on_value_change(value_changed)
+                    constant_controls.append(control)
+                    if manual:
+                        with ui.element("div").classes("dn-mapping-constant-actions"):
+                            remove = (
+                                ui.button(icon="remove")
+                                .props(
+                                    'flat round dense aria-label="Remove constant value"'
+                                )
+                                .mark(f"mapping-input-{marker}-constant-remove-{index}")
+                            )
+                            remove.set_enabled(len(retained.manual_keys) > 1)
+
+                            def remove_value(identity: str = row_key) -> None:
+                                if len(retained.manual_keys) <= 1:
+                                    return
+                                retained.manual_keys.remove(identity)
+                                retained.values_by_key.pop(identity, None)
+                                on_change()
+                                on_structure_change()
+
+                            remove.on_click(remove_value)
+        if manual:
+            with ui.element("div").classes("dn-mapping-constant-add-row"):
+                add = (
+                    ui.button("Add value", icon="add")
+                    .props("flat no-caps dense")
+                    .classes("dn-action-secondary")
+                    .mark(f"mapping-input-{marker}-constant-add")
+                )
+
+                def add_value() -> None:
+                    identity = f"manual-{retained.next_manual_index}"
+                    retained.next_manual_index += 1
+                    retained.manual_keys.append(identity)
+                    retained.values_by_key[identity] = _scalar_default(input_spec)
+                    on_change()
+                    on_structure_change()
+
+                add.on_click(add_value)
+        surface.update(
+            constants=constant_controls,
+            constant_controls=constant_controls,
+            constant_row_keys=tuple(key for key, _label in aligned_rows),
+            combination_mode=matching,
+        )
+
+
 def _render_mapping_input(
     input_spec: MappingInput,
     *,
     forms: tuple[DataForm, ...] | None = None,
     selected_form: DataForm | None = None,
     retained: _MappingUploadState | None = None,
+    retained_constants: _MappingConstantState | None = None,
+    peer_constant_rows: Callable[[], tuple[tuple[str, str], ...]] | None = None,
+    combination_mode: dict[str, str] | None = None,
     on_change: Callable[[], Any] | None = None,
+    on_structure_change: Callable[[], Any] | None = None,
     on_error: Callable[[str], Any] | None = None,
-    single_file: bool = False,
 ) -> _MappingInputControl:
     """Render one route-family input and expose its live form control.
 
@@ -1611,10 +2097,11 @@ def _render_mapping_input(
     if not available_forms:
         raise ValueError(f"Mapping input {input_spec.key!r} has no supported forms.")
     upload_state = retained or _MappingUploadState()
+    constant_state = retained_constants or _MappingConstantState()
     profile_forms: tuple[DataForm, ...] = tuple(
         cast(DataForm, form) for form in available_forms if form in {"x", "t", "xt"}
     )
-    retained_form = _detected_profile_form(upload_state.inspections)
+    retained_form = _retained_profile_form(upload_state.inspections)
     if retained_form in profile_forms:
         default_form = retained_form
     else:
@@ -1622,6 +2109,7 @@ def _render_mapping_input(
     defaulted_override = input_spec.role == "feature_assumption" and input_spec.has_default
     surface: dict[str, Any] = {}
     scientific_change = on_change or (lambda: None)
+    scientific_structure_change = on_structure_change or (lambda: None)
     scientific_error = on_error or (lambda _message: None)
     with ui.element("section").classes("dn-mapping-input-card").mark(f"mapping-input-{marker}"):
         with ui.element("div").classes("dn-mapping-input-head"):
@@ -1646,12 +2134,29 @@ def _render_mapping_input(
                 mode_options: dict[str, str] = {"profile": "Profile"}
                 if "scalar" in available_forms:
                     mode_options = {"scalar": "Constant", **mode_options}
+                    if _friendly_input_key(input_spec.key) in {
+                        "firing_rate",
+                        "fork_speed",
+                    }:
+                        mode_options = {
+                            "scalar": "Constant",
+                            "constants": "Multiple constants",
+                            "profile": "Profile",
+                        }
                 default_mode = "scalar" if default_form == "scalar" else "profile"
             else:
                 mode_options = {
                     str(form): _FORM_LABELS.get(str(form), str(form).replace("_", " ").title())
                     for form in available_forms
                 }
+                if available_forms == ("scalar",) and _friendly_input_key(input_spec.key) in {
+                    "firing_rate",
+                    "fork_speed",
+                }:
+                    mode_options = {
+                        "scalar": "Constant",
+                        "constants": "Multiple constants",
+                    }
                 default_mode = str(default_form)
             mode_control = (
                 ui.select(mode_options, value=default_mode, label="Input type")
@@ -1719,6 +2224,17 @@ def _render_mapping_input(
                         )
                         surface["scalar"] = scalar
                         scalar.on_value_change(scientific_change)
+                    elif mode == "constants":
+                        _render_multiple_constant_input(
+                            input_spec,
+                            marker,
+                            surface,
+                            constant_state,
+                            peer_constant_rows or (lambda: ()),
+                            combination_mode or {"value": "pairwise"},
+                            scientific_change,
+                            scientific_structure_change,
+                        )
                     else:
                         _render_upload_input(
                             input_spec,
@@ -1729,7 +2245,7 @@ def _render_mapping_input(
                             scientific_change,
                             scientific_error,
                             detected_form_changed,
-                            single_file=single_file,
+                            scientific_structure_change,
                         )
 
             render_input_surface()
@@ -1737,21 +2253,27 @@ def _render_mapping_input(
             def mode_changed() -> None:
                 mode = str(mode_control.value or default_mode)
                 if mode == "profile":
-                    detected = _detected_profile_form(upload_state.inspections)
+                    detected = _retained_profile_form(upload_state.inspections)
                     desired = (
                         detected if detected in profile_forms else cast(DataForm, profile_forms[0])
                     )
+                elif mode == "constants":
+                    desired = cast(DataForm, "scalar")
                 else:
                     desired = cast(DataForm, mode)
                 form_control.set_value(desired)
                 render_input_surface.refresh()
                 scientific_change()
+                scientific_structure_change()
 
             mode_control.on_value_change(mode_changed)
 
             def refresh_input_surface() -> None:
                 form = str(form_control.value or default_form)
-                desired_mode = "profile" if form in profile_forms else form
+                if form == "scalar" and mode_control.value == "constants":
+                    desired_mode = "constants"
+                else:
+                    desired_mode = "profile" if form in profile_forms else form
                 if desired_mode in mode_options and mode_control.value != desired_mode:
                     mode_control.value = desired_mode
                     mode_control.update()
@@ -1821,6 +2343,11 @@ def _read_mapping_input(live: _MappingInputControl) -> Any:
     if live.override is not None and not bool(live.override.value):
         raise KeyError(live.spec.key)
     if form == "scalar":
+        constants = live.surface.get("constants")
+        if constants is not None:
+            if isinstance(constants, (tuple, list)):
+                return _read_multiple_constant_controls(constants, live.spec.label)
+            return _read_multiple_constants(constants, live.spec.label)
         control = live.surface.get("scalar")
         if control is None:
             raise ValueError(f"{live.spec.label} has no constant value control.")
@@ -2008,6 +2535,354 @@ async def _read_mapping_input_async(
     return values, False
 
 
+async def _read_mapping_input_batch_async(
+    key: str,
+    live: _MappingInputControl,
+    *,
+    missing_policy: str = "error",
+    region_start_kb: float | None = None,
+    region_end_kb: float | None = None,
+    resolution_x: float | None = None,
+    whole_genome: bool = False,
+) -> _PreparedBatchInput:
+    """Materialize one live route input as broadcast or per-dataset values."""
+
+    if live.override is not None and not bool(live.override.value):
+        raise KeyError(live.spec.key)
+    form = cast(DataForm, str(live.form.value))
+    inspections = tuple(cast(list[UploadInspection], live.surface.get("inspections", [])))
+    source = live.surface.get("source")
+    uploaded = form not in {"scalar", "regions", "bundle"} or (
+        form == "regions" and source is not None and str(source.value) == "upload"
+    )
+    if str(getattr(live.surface.get("mode"), "value", "")) == "constants":
+        constant_controls = cast(
+            Sequence[Any],
+            live.surface.get("constant_controls", live.surface.get("constants", ())),
+        )
+        if not constant_controls:
+            raise ValueError(f"{live.spec.label} has no multiple-constant control.")
+        values = _read_multiple_constant_controls(constant_controls, live.spec.label)
+        units = _SCALAR_UNITS.get(_friendly_input_key(live.spec.key), "")
+        return _PreparedBatchInput(
+            key=key,
+            label=live.spec.label,
+            form=form,
+            values=values,
+            prewindowed=(False,) * len(values),
+            components=tuple(
+                _format_mapping_component(value, units=units) for value in values
+            ),
+        )
+    if not uploaded or len(inspections) <= 1:
+        value, prewindowed = await _read_mapping_input_async(
+            live,
+            missing_policy=missing_policy,
+            region_start_kb=region_start_kb,
+            region_end_kb=region_end_kb,
+            resolution_x=resolution_x,
+            whole_genome=whole_genome,
+        )
+        filenames = tuple(item.name for item in inspections) if uploaded else ()
+        detected = (
+            tuple(_batch_detected_form(item, form) for item in inspections) if uploaded else ()
+        )
+        return _PreparedBatchInput(
+            key=key,
+            label=live.spec.label,
+            form=form,
+            values=(value,),
+            prewindowed=(prewindowed,),
+            filenames=filenames,
+            detected_forms=detected,
+            components=(
+                unique_dataset_names(filenames)
+                if filenames
+                else (
+                    _format_mapping_component(
+                        float(value),
+                        units=_SCALAR_UNITS.get(_friendly_input_key(live.spec.key), ""),
+                    ),
+                )
+                if form == "scalar"
+                else ("Manual",)
+            ),
+        )
+
+    values: list[Any] = []
+    prewindowed_values: list[bool] = []
+    for inspection in inspections:
+        # Reuse the proven single-upload materializer while retaining the
+        # original file-specific column/array selection and shared track setup.
+        surface = dict(live.surface)
+        surface["inspections"] = [inspection]
+        surface["materialized_cache"] = {"key": None, "value": None}
+        single_live = _MappingInputControl(
+            spec=live.spec,
+            form=live.form,
+            refresh_surface=live.refresh_surface,
+            override=live.override,
+            surface=surface,
+        )
+        value, prewindowed = await _read_mapping_input_async(
+            single_live,
+            missing_policy=missing_policy,
+            region_start_kb=region_start_kb,
+            region_end_kb=region_end_kb,
+            resolution_x=resolution_x,
+            whole_genome=whole_genome,
+        )
+        values.append(value)
+        prewindowed_values.append(prewindowed)
+    return _PreparedBatchInput(
+        key=key,
+        label=live.spec.label,
+        form=form,
+        values=tuple(values),
+        prewindowed=tuple(prewindowed_values),
+        filenames=tuple(item.name for item in inspections),
+        detected_forms=tuple(_batch_detected_form(item, form) for item in inspections),
+        components=unique_dataset_names(tuple(item.name for item in inspections)),
+    )
+
+
+def _batch_detected_form(inspection: UploadInspection, selected_form: DataForm) -> str | None:
+    """Resolve the X/T vector ambiguity while retaining true XT mismatches."""
+
+    detected = _inspection_profile_form(inspection)
+    if selected_form in {"x", "t"} and detected in {"x", "t"}:
+        return str(selected_form)
+    return detected
+
+
+def _plan_mapping_batch(inputs: Sequence[_PreparedBatchInput]) -> BatchPlan:
+    """Validate submit-time Mapping cardinality and file-form consistency."""
+
+    for item in inputs:
+        if item.form != "xt":
+            continue
+        incompatible = tuple(
+            filename
+            for filename, detected in zip(
+                item.filenames,
+                item.detected_forms,
+                strict=True,
+            )
+            if detected not in {None, "xt"}
+        )
+        if incompatible:
+            names = ", ".join(incompatible)
+            raise ValueError(
+                f"{item.label} expects one complete space-time matrix per dataset; "
+                f"these files are not space-time matrices: {names}."
+            )
+
+    file_plan = plan_batch_sources(
+        tuple(
+            BatchSourceSummary(
+                label=item.label,
+                filenames=item.filenames,
+                forms=item.detected_forms,
+                shapes=tuple(
+                    tuple(int(size) for size in np.asarray(value).shape) for value in item.values
+                ),
+            )
+            for item in inputs
+            if item.filenames
+        ),
+        fallback_name="mapping",
+        require_matching_shapes=False,
+    )
+    size = max((len(item.values) for item in inputs), default=1)
+    size = max(size, file_plan.size)
+    for item in inputs:
+        count = len(item.values)
+        if count not in {1, size}:
+            raise ValueError(
+                f"{item.label} has {count} datasets, but this batch needs either "
+                f"one shared value/file or {size} paired values/files."
+            )
+
+    if size == file_plan.size:
+        names = file_plan.names
+    elif size == 1:
+        names = file_plan.names
+    else:
+        names = tuple(f"Dataset {index}" for index in range(1, size + 1))
+    return BatchPlan(size=size, names=names)
+
+
+def _prepared_components(item: _PreparedBatchInput) -> tuple[str, ...]:
+    """Return one deterministic naming component for every prepared value."""
+
+    if len(item.components) == len(item.values):
+        return item.components
+    if len(item.filenames) == len(item.values):
+        return unique_dataset_names(item.filenames)
+    if item.form == "scalar":
+        units = _SCALAR_UNITS.get(_friendly_input_key(item.key), "")
+        return tuple(
+            _format_mapping_component(float(value), units=units) for value in item.values
+        )
+    return tuple(f"Dataset {index}" for index in range(1, len(item.values) + 1))
+
+
+def _validate_mapping_source_metadata(inputs: Sequence[_PreparedBatchInput]) -> None:
+    """Validate every source independently before planning cross-source cases."""
+
+    for item in inputs:
+        if not item.values:
+            raise ValueError(f"{item.label} must contain at least one value or file.")
+        if len(item.prewindowed) != len(item.values):
+            raise ValueError(f"{item.label} preprocessing metadata are incomplete.")
+        if item.filenames and len(item.filenames) != len(item.values):
+            raise ValueError(f"{item.label} upload metadata are incomplete.")
+        if item.filenames and len(item.detected_forms) != len(item.filenames):
+            raise ValueError(f"{item.label} inspection metadata are incomplete.")
+        if item.form == "xt":
+            incompatible = tuple(
+                filename
+                for filename, detected in zip(
+                    item.filenames,
+                    item.detected_forms,
+                    strict=True,
+                )
+                if detected not in {None, "xt"}
+            )
+            if incompatible:
+                names = ", ".join(incompatible)
+                raise ValueError(
+                    f"{item.label} expects one complete space-time matrix per dataset; "
+                    f"these files are not space-time matrices: {names}."
+                )
+        if item.filenames:
+            plan_batch_sources(
+                (
+                    BatchSourceSummary(
+                        label=item.label,
+                        filenames=item.filenames,
+                        forms=item.detected_forms,
+                        shapes=tuple(
+                            tuple(int(size) for size in np.asarray(value).shape)
+                            for value in item.values
+                        ),
+                    ),
+                ),
+                require_matching_shapes=False,
+            )
+
+
+def _plan_mapping_cases(
+    inputs: Sequence[_PreparedBatchInput],
+    *,
+    target_label: str,
+    combination_mode: str = "pairwise",
+) -> tuple[_MappingBatchCase, ...]:
+    """Resolve pairwise or full Cartesian Mapping cases with target-first names."""
+
+    _validate_mapping_source_metadata(inputs)
+    mode = "all" if combination_mode == "all" else "pairwise"
+    source_sizes = tuple(len(item.values) for item in inputs)
+    if mode == "all":
+        projected = math.prod(source_sizes) if source_sizes else 1
+    else:
+        projected = max(source_sizes, default=1)
+    if projected > _MAX_MAPPING_CASES:
+        raise ValueError(
+            f"These inputs would create {projected:,} mapping runs. "
+            f"Reduce the inputs or use at most {_MAX_MAPPING_CASES:,} combinations."
+        )
+    combinations = plan_combination_indices(source_sizes, mode=mode)
+    sources = tuple(
+        CombinationSource(
+            item.label,
+            _prepared_components(item),
+            include_singleton_in_short=item.form != "scalar",
+        )
+        for item in inputs
+    )
+    identities = combination_names(
+        target_label,
+        sources,
+        combinations,
+        include_singletons=True,
+    )
+    full_stems = unique_filename_stems(
+        tuple(identity.full for identity in identities),
+        fallback="mapping-result",
+        maximum=150,
+    )
+    short_stems = unique_filename_stems(
+        tuple(identity.short for identity in identities),
+        fallback="mapping-result",
+        maximum=150,
+    )
+    cases: list[_MappingBatchCase] = []
+    for index, (identity, export_stem, short_export_stem, indices) in enumerate(
+        zip(
+            identities,
+            full_stems,
+            short_stems,
+            combinations,
+            strict=True,
+        ),
+        start=1,
+    ):
+        cases.append(
+            _MappingBatchCase(
+                key=f"mapping-case-{index}",
+                name=identity.full,
+                export_stem=export_stem,
+                item_indices=tuple(indices),
+                short_name=identity.short,
+                short_export_stem=short_export_stem,
+            )
+        )
+    return tuple(cases)
+
+
+def _validate_mapping_case_axes(
+    inputs: Sequence[_PreparedBatchInput],
+    item_indices: Sequence[int],
+    dataset_name: str,
+) -> None:
+    """Reject mismatched spatial/temporal factors for one resolved case."""
+
+    if len(inputs) != len(item_indices):
+        raise ValueError("A Mapping case must choose one item from every input.")
+    spatial: dict[str, int] = {}
+    temporal: dict[str, int] = {}
+    for prepared, item_index in zip(inputs, item_indices, strict=True):
+        value = prepared.values[item_index]
+        array = np.asarray(value)
+        if prepared.form == "x":
+            spatial[prepared.label] = int(array.size)
+        elif prepared.form == "t":
+            temporal[prepared.label] = int(array.size)
+        elif prepared.form == "xt" and array.ndim == 2:
+            spatial[prepared.label] = int(array.shape[0])
+            temporal[prepared.label] = int(array.shape[1])
+    if len(set(spatial.values())) > 1:
+        detail = ", ".join(f"{label}: {size:,}" for label, size in spatial.items())
+        raise ValueError(f"Dataset {dataset_name!r} has inconsistent spatial bins ({detail}).")
+    if len(set(temporal.values())) > 1:
+        detail = ", ".join(f"{label}: {size:,}" for label, size in temporal.items())
+        raise ValueError(f"Dataset {dataset_name!r} has inconsistent time points ({detail}).")
+
+
+def _validate_paired_batch_axes(
+    inputs: Sequence[_PreparedBatchInput],
+    index: int,
+    dataset_name: str,
+) -> None:
+    """Reject mismatched paired factors before rmap can crop one silently."""
+    _validate_mapping_case_axes(
+        inputs,
+        tuple(0 if len(item.values) == 1 else index for item in inputs),
+        dataset_name,
+    )
+
+
 def render(_navigate: Callable[[str], None]) -> None:
     """Render mapping routes, inputs, configuration, and output placeholders."""
 
@@ -2018,11 +2893,31 @@ def render(_navigate: Callable[[str], None]) -> None:
     latest_result: MappingResult | None = (
         restored_result if isinstance(restored_result, MappingResult) else None
     )
+    restored_label = latest_result.target_label if latest_result is not None else ""
+    latest_results: list[_NamedMappingResult] = (
+        [
+            _NamedMappingResult(
+                "mapping-case-1",
+                restored_label,
+                _mapping_export_stem(restored_label, 1),
+                latest_result,
+            )
+        ]
+        if latest_result is not None
+        else []
+    )
+    active_dataset_key = latest_results[0].key if latest_results else ""
     result_chart: Any | None = None
     updating_y_limits = False
     y_limits_automatic = True
     mapping_input_controls: dict[str, _MappingInputControl] = {}
     mapping_upload_states: dict[str, _MappingUploadState] = {}
+    mapping_constant_states: dict[str, _MappingConstantState] = {}
+    mapping_combination_mode = {"value": "pairwise"}
+    mapping_raw_preferences: dict[tuple[str, str], _MappingRawPreference] = {}
+    mapping_batch_colors: dict[tuple[str, str, int], str] = {}
+    batch_raw_page = {"value": 1}
+    dataset_page = {"value": 1}
     region_setting_controls: dict[str, _SettingControl] = {}
     mapping_setting_controls: dict[str, _SettingControl] = {}
 
@@ -2178,20 +3073,76 @@ def render(_navigate: Callable[[str], None]) -> None:
                     def scientific_input_changed() -> None:
                         invalidate_mapping_result()
 
+                    refreshing_constant_surfaces = False
+
+                    def counterpart_rows(current_key: str) -> tuple[tuple[str, str], ...]:
+                        """Describe the uploaded datasets a constant list must align with."""
+
+                        sources: list[tuple[str, str, tuple[UploadInspection, ...]]] = []
+                        for input_key, live in mapping_input_controls.items():
+                            if input_key == current_key:
+                                continue
+                            mode = str(getattr(live.surface.get("mode"), "value", ""))
+                            inspections = tuple(
+                                cast(
+                                    list[UploadInspection],
+                                    live.surface.get("inspections", []),
+                                )
+                            )
+                            if mode == "profile" and inspections:
+                                sources.append((input_key, live.spec.label, inspections))
+                        if not sources:
+                            return ()
+                        row_count = max(len(inspections) for _key, _label, inspections in sources)
+                        rows: list[tuple[str, str]] = []
+                        for row_index in range(row_count):
+                            identities: list[str] = []
+                            labels: list[str] = []
+                            for source_key, source_label, inspections in sources:
+                                item_index = 0 if len(inspections) == 1 else row_index
+                                if item_index >= len(inspections):
+                                    identities.append(f"{source_key}:unpaired-{row_index + 1}")
+                                    labels.append(f"{source_label}: unpaired")
+                                    continue
+                                inspection = inspections[item_index]
+                                identities.append(f"{source_key}:{inspection.name}")
+                                labels.append(
+                                    inspection.name
+                                    if len(sources) == 1
+                                    else f"{source_label}: {inspection.name}"
+                                )
+                            rows.append(("|".join(identities), " · ".join(labels)))
+                        return tuple(rows)
+
+                    def refresh_constant_surfaces() -> None:
+                        nonlocal refreshing_constant_surfaces
+                        if refreshing_constant_surfaces:
+                            return
+                        refreshing_constant_surfaces = True
+                        try:
+                            for live in tuple(mapping_input_controls.values()):
+                                mode = str(getattr(live.surface.get("mode"), "value", ""))
+                                if mode == "constants":
+                                    live.refresh_surface()
+                        finally:
+                            refreshing_constant_surfaces = False
+
+                    def scientific_input_structure_changed() -> None:
+                        """Refresh only cardinality-dependent constant rows."""
+
+                        invalidate_mapping_result()
+                        refresh_constant_surfaces()
+
                     @ui.refreshable
                     def render_required_inputs() -> None:
                         mapping_input_controls.clear()
                         family = _route_family(str(route_control.value))
-                        selections = _retained_form_selections(
-                            family,
-                            mapping_upload_states,
-                        )
+                        selections = _retained_form_selections(family, mapping_upload_states)
                         initial_route = family.resolve(selections)
                         displayed_forms: dict[str, DataForm] = {}
                         controls: dict[str, Any] = {}
                         refreshers: dict[str, Callable[[], Any]] = {}
                         overrides: dict[str, Any] = {}
-                        single_file = len(family.required_factor_keys) == 1
                         synchronizing = False
 
                         with (
@@ -2210,14 +3161,23 @@ def render(_navigate: Callable[[str], None]) -> None:
                                     _friendly_input_key(key),
                                     _MappingUploadState(),
                                 )
+                                retained_constants = mapping_constant_states.setdefault(
+                                    _friendly_input_key(key),
+                                    _MappingConstantState(),
+                                )
                                 live = _render_mapping_input(
                                     input_spec,
                                     forms=allowed,
                                     selected_form=displayed_forms[key],
                                     retained=retained,
+                                    retained_constants=retained_constants,
+                                    peer_constant_rows=(
+                                        lambda input_key=key: counterpart_rows(input_key)
+                                    ),
+                                    combination_mode=mapping_combination_mode,
                                     on_change=scientific_input_changed,
+                                    on_structure_change=scientific_input_structure_changed,
                                     on_error=lambda message: report_mapping_input_error(message),
-                                    single_file=single_file,
                                 )
                                 control = live.form
                                 controls[key] = control
@@ -2225,6 +3185,11 @@ def render(_navigate: Callable[[str], None]) -> None:
                                 mapping_input_controls[key] = live
                                 if live.override is not None:
                                     overrides[key] = live.override
+
+                        # A retained peer upload may be rendered after its
+                        # constant counterpart. Rebuild only those constant
+                        # rows once the complete route input grid exists.
+                        refresh_constant_surfaces()
 
                         def sync_input_forms(changed_key: str | None = None) -> None:
                             """Keep every input-form selector on an implemented combination."""
@@ -2325,10 +3290,7 @@ def render(_navigate: Callable[[str], None]) -> None:
                         if family_key is None or family_key not in route_control.options:
                             return
                         family = _route_family(str(family_key))
-                        selections = _retained_form_selections(
-                            family,
-                            mapping_upload_states,
-                        )
+                        selections = _retained_form_selections(family, mapping_upload_states)
                         selected = family.resolve(selections)
                         render_required_inputs.refresh()
                         sync_exact_route(selected)
@@ -2362,6 +3324,7 @@ def render(_navigate: Callable[[str], None]) -> None:
                         sync_route_families()
 
                     render_required_inputs()
+
                     target_control.on_value_change(sync_target)
                     dependence_control.on_value_change(sync_route_families)
                     route_control.on_value_change(sync_selected_family)
@@ -2495,7 +3458,7 @@ def render(_navigate: Callable[[str], None]) -> None:
                 with (
                     ui.element("div")
                     .classes("dn-stat-grid dn-simulation-summary-grid dn-mapping-summary-grid")
-                    .mark("mapping-preview-output-bar")
+                    .mark("mapping-preview-output-bar") as mapping_summary_bar
                 ):
                     with (
                         ui.element("div")
@@ -2513,6 +3476,22 @@ def render(_navigate: Callable[[str], None]) -> None:
                             preview_output.disable()
                     with (
                         ui.element("div")
+                        .classes("dn-stat dn-simulation-output-stat")
+                        .mark("mapping-layout-stat") as layout_stat
+                    ):
+                        ui.label("Layout").classes("dn-stat-label")
+                        preview_layout = (
+                            ui.select(
+                                ["Combined", "Individual"],
+                                value="Combined",
+                            )
+                            .props('dense borderless options-dense aria-label="Preview layout"')
+                            .classes("dn-field dn-simulation-output-select")
+                            .mark("mapping-preview-layout")
+                        )
+                    layout_stat.visible = False
+                    with (
+                        ui.element("div")
                         .classes("dn-mapping-run-stats")
                         .mark("mapping-stats") as stats_container
                     ):
@@ -2523,6 +3502,96 @@ def render(_navigate: Callable[[str], None]) -> None:
                                 ("Method", ""),
                             )
                         )
+
+                @ui.refreshable
+                def render_dataset_selector() -> None:
+                    if len(latest_results) <= 1 or str(preview_layout.value) != "Individual":
+                        return
+                    active_index = next(
+                        (
+                            index
+                            for index, item in enumerate(latest_results)
+                            if item.key == active_dataset_key
+                        ),
+                        0,
+                    )
+                    active_page = active_index // _BATCH_NAV_PAGE_SIZE + 1
+                    page_count = max(
+                        1,
+                        math.ceil(len(latest_results) / _BATCH_NAV_PAGE_SIZE),
+                    )
+                    requested_page = min(
+                        max(1, int(dataset_page.get("value", active_page))),
+                        page_count,
+                    )
+                    page_start = (requested_page - 1) * _BATCH_NAV_PAGE_SIZE
+                    page_end = min(
+                        len(latest_results),
+                        page_start + _BATCH_NAV_PAGE_SIZE,
+                    )
+                    if not page_start <= active_index < page_end:
+                        requested_page = active_page
+                        page_start = (requested_page - 1) * _BATCH_NAV_PAGE_SIZE
+                        page_end = min(
+                            len(latest_results),
+                            page_start + _BATCH_NAV_PAGE_SIZE,
+                        )
+                    dataset_page["value"] = requested_page
+                    with (
+                        ui.row()
+                        .classes("w-full items-end dn-dataset-selector-row")
+                        .mark("mapping-dataset-selector")
+                    ):
+                        if page_count > 1:
+                            page_control = (
+                                ui.number(
+                                    label="Page",
+                                    value=requested_page,
+                                    min=1,
+                                    max=page_count,
+                                    step=1,
+                                )
+                                .props("dense")
+                                .classes("dn-field dn-dataset-page-select")
+                                .mark("mapping-dataset-page")
+                            )
+
+                            def page_changed() -> None:
+                                try:
+                                    page = int(page_control.value)
+                                except (TypeError, ValueError):
+                                    return
+                                page = min(max(1, page), page_count)
+                                dataset_page["value"] = page
+                                select_dataset(
+                                    latest_results[
+                                        (page - 1) * _BATCH_NAV_PAGE_SIZE
+                                    ].key
+                                )
+                                render_dataset_selector.refresh()
+
+                            page_control.on_value_change(page_changed)
+                        options = {
+                            item.key: _mapping_display_name(item)
+                            for item in latest_results[page_start:page_end]
+                        }
+                        dataset_select = (
+                            ui.select(
+                                options,
+                                value=active_dataset_key,
+                                label="Dataset",
+                            )
+                            .props("dense options-dense use-input input-debounce=0")
+                            .classes("dn-field dn-dataset-select")
+                            .mark("mapping-dataset-select")
+                        )
+                        active_item = latest_results[active_index]
+                        dataset_select.tooltip(active_item.name)
+                        dataset_select.on_value_change(
+                            lambda event: select_dataset(str(event.value))
+                        )
+
+                render_dataset_selector()
                 stats_container.visible = False
                 progress = (
                     ui.linear_progress(value=0.0, show_value=False)
@@ -2606,11 +3675,241 @@ def render(_navigate: Callable[[str], None]) -> None:
                 invert_y = plot_settings.invert_y
                 y_minimum = plot_settings.y_minimum
                 y_maximum = plot_settings.y_maximum
+                with (
+                    ui.element("div")
+                    .classes("w-full")
+                    .mark("mapping-dataset-color-settings") as batch_color_container
+                ):
+                    with expansion(
+                        "Curves",
+                        icon="palette",
+                        extra_classes="dn-preview-settings-section",
+                    ):
+
+                        @ui.refreshable
+                        def render_batch_colors() -> None:
+                            if (
+                                len(latest_results) < 2
+                                or str(preview_layout.value or "Combined") != "Combined"
+                            ):
+                                return
+                            output_key = str(
+                                preview_output.value
+                                or latest_results[0].result.primary_output
+                            )
+                            roles = (
+                                ("Observed", "Fitted")
+                                if output_key.startswith(_COMPARISON_PREFIX)
+                                else ("",)
+                            )
+                            with ui.element("div").classes("dn-preview-settings-grid"):
+                                curve_index = 0
+                                for item in latest_results:
+                                    for series_index, role in enumerate(roles):
+                                        color_key = (
+                                            item.key,
+                                            output_key,
+                                            series_index,
+                                        )
+                                        default_color = _BATCH_COLOURS[
+                                            curve_index % len(_BATCH_COLOURS)
+                                        ]
+                                        mapping_batch_colors.setdefault(
+                                            color_key,
+                                            default_color,
+                                        )
+                                        short_label = _mapping_display_name(item)
+                                        control_label = (
+                                            short_label
+                                            if not role
+                                            else f"{short_label} · {role}"
+                                        )
+                                        color_surface, color_control = compact_color_input(
+                                            control_label,
+                                            mapping_batch_colors[color_key],
+                                            marker=(
+                                                "mapping-dataset-color-"
+                                                f"{curve_index + 1}"
+                                            ),
+                                        )
+                                        color_surface.tooltip(
+                                            item.name if not role else f"{item.name} · {role}"
+                                        )
+
+                                        def color_changed(
+                                            _event: Any = None,
+                                            *,
+                                            retained_key: tuple[str, str, int] = color_key,
+                                            control: Any = color_control,
+                                        ) -> None:
+                                            mapping_batch_colors[retained_key] = str(
+                                                control.value or "#2c7f77"
+                                            )
+                                            render_latest_result()
+
+                                        color_control.on_value_change(color_changed)
+                                        curve_index += 1
+
+                        render_batch_colors()
+                batch_color_container.visible = bool(
+                    len(latest_results) > 1
+                    and str(preview_layout.value or "Combined") == "Combined"
+                )
                 raw_controls = raw_output_controls(
                     file_name=f"dnascape_mapping_{initial_output_key}",
                     default_type="NPY",
                 )
+                single_raw_automatic_name = {
+                    "value": f"dnascape_mapping_{initial_output_key}"
+                }
+
+                def set_single_raw_automatic_name(next_name: str) -> None:
+                    """Update an untouched filename while preserving manual edits."""
+
+                    current_name = str(raw_controls.file_name.value or "")
+                    if current_name in {
+                        "",
+                        str(single_raw_automatic_name["value"]),
+                    }:
+                        raw_controls.file_name.value = next_name
+                        raw_controls.file_name.update()
+                    single_raw_automatic_name["value"] = next_name
                 raw_controls.file_name.mark("mapping-raw-filename")
+                raw_controls.file_type.mark("mapping-raw-file-type")
+                assert raw_controls.extra_slot is not None
+
+                with raw_controls.extra_slot:
+
+                    @ui.refreshable
+                    def render_batch_raw_files() -> None:
+                        multiple = len(latest_results) > 1
+                        raw_controls.row.set_visibility(not multiple)
+                        if not multiple:
+                            batch_raw_page["value"] = 1
+                            return
+                        output_key = str(
+                            preview_output.value
+                            or latest_results[0].result.primary_output
+                        )
+                        rows: list[
+                            tuple[_NamedMappingResult, _MappingRawPreference]
+                        ] = []
+                        for item in latest_results:
+                            preference = _mapping_raw_preference(
+                                mapping_raw_preferences,
+                                item,
+                                output_key,
+                            )
+                            rows.append((item, preference))
+
+                        page, page_count, start, end = _mapping_raw_page_bounds(
+                            len(rows),
+                            int(batch_raw_page["value"]),
+                        )
+                        batch_raw_page["value"] = page
+                        with (
+                            ui.element("div")
+                            .classes("dn-download-file-list dn-mapping-batch-raw-list")
+                            .mark("mapping-batch-raw-files")
+                        ):
+                            if page_count > 1:
+
+                                def raw_page_changed(event: Any) -> None:
+                                    try:
+                                        requested = int(event.value)
+                                    except (TypeError, ValueError):
+                                        return
+                                    requested = min(max(requested, 1), page_count)
+                                    if requested == batch_raw_page["value"]:
+                                        return
+                                    batch_raw_page["value"] = requested
+                                    render_batch_raw_files.refresh()
+
+                                with ui.row().classes("dn-mapping-batch-raw-pager"):
+                                    (
+                                        ui.number(
+                                            "Page",
+                                            value=page,
+                                            min=1,
+                                            max=page_count,
+                                            step=1,
+                                            on_change=raw_page_changed,
+                                        )
+                                        .props("dense")
+                                        .classes("dn-field")
+                                        .mark("mapping-batch-raw-page")
+                                    )
+                                    ui.label(
+                                        f"of {page_count} · {len(rows):,} files"
+                                    ).classes("dn-mapping-batch-raw-page-count")
+                            for item, preference in rows[start:end]:
+                                with ui.element("div").classes(
+                                    "dn-mapping-batch-raw-item"
+                                ):
+                                    title = ui.label(_mapping_display_name(item)).classes(
+                                        "dn-download-file-name dn-mapping-batch-raw-title"
+                                    )
+                                    title.tooltip(item.name)
+                                    row_controls = raw_output_file_row(
+                                        file_name=preference.file_name,
+                                        default_type=preference.file_type,
+                                        default_compress=preference.compress,
+                                        on_download=(
+                                            lambda controls, named=item: download_named_raw(
+                                                named,
+                                                controls,
+                                            )
+                                        ),
+                                        markers={
+                                            "row": f"mapping-batch-raw-row-{item.key}",
+                                            "file_name": f"mapping-batch-raw-name-{item.key}",
+                                            "file_type": f"mapping-batch-raw-type-{item.key}",
+                                            "compression": (
+                                                "mapping-batch-raw-compression-"
+                                                f"{item.key}"
+                                            ),
+                                            "download": f"mapping-download-raw-{item.key}",
+                                        },
+                                        extra_classes="dn-mapping-batch-raw-row",
+                                    )
+                                    def store_file_name(
+                                        control: Any = row_controls.file_name,
+                                        retained: _MappingRawPreference = preference,
+                                    ) -> None:
+                                        retained.file_name = str(control.value or "")
+                                        retained.customized = bool(
+                                            retained.file_name
+                                            and retained.file_name != retained.automatic_name
+                                        )
+
+                                    def store_file_type(
+                                        control: Any = row_controls.file_type,
+                                        retained: _MappingRawPreference = preference,
+                                    ) -> None:
+                                        retained.file_type = str(control.value or "NPY")
+
+                                    def store_compression(
+                                        control: Any = row_controls.compress,
+                                        retained: _MappingRawPreference = preference,
+                                    ) -> None:
+                                        retained.compress = bool(control.value)
+
+                                    row_controls.file_name.on_value_change(store_file_name)
+                                    row_controls.file_type.on_value_change(store_file_type)
+                                    row_controls.compress.on_value_change(store_compression)
+                            with ui.row().classes("dn-data-manager-delete-all-row"):
+                                (
+                                    ui.button(
+                                        "Download all",
+                                        icon="download",
+                                        on_click=download_all_raw,
+                                    )
+                                    .props("flat no-caps")
+                                    .classes("dn-action-secondary")
+                                    .mark("mapping-download-all-raw")
+                                )
+
+                    render_batch_raw_files()
 
                 def report_mapping_input_error(message: str) -> None:
                     """Report upload failures through the shared transient message surface."""
@@ -2625,6 +3924,102 @@ def render(_navigate: Callable[[str], None]) -> None:
                         return
                     if latest_result is None:
                         status.text = "Ready"
+
+                def select_dataset(key: str) -> None:
+                    """Activate one completed dataset without re-running Mapping."""
+
+                    nonlocal active_dataset_key, latest_result
+                    selected = next(
+                        (item for item in latest_results if item.key == key),
+                        None,
+                    )
+                    if selected is None:
+                        return
+                    active_dataset_key = selected.key
+                    latest_result = selected.result
+                    requested_output = str(preview_output.value or "")
+                    options = (
+                        _common_result_preview_outputs(
+                            tuple(item.result for item in latest_results)
+                        )
+                        if len(latest_results) > 1
+                        else _result_preview_outputs(latest_result)
+                    )
+                    preview_output.options = options
+                    preview_output.value = (
+                        requested_output
+                        if requested_output in options
+                        else latest_result.primary_output
+                        if latest_result.primary_output in options
+                        else next(iter(options))
+                    )
+                    if len(options) == 1:
+                        preview_output.disable()
+                    else:
+                        preview_output.enable()
+                    preview_output.update()
+                    primary = np.asarray(latest_result.outputs[latest_result.primary_output])
+                    mapping_stats["Form"].text = _DEPENDENCE_LABELS.get(
+                        latest_result.output_dependence,
+                        latest_result.output_dependence.replace("_", " ").title(),
+                    )
+                    mapping_stats["Points"].text = f"{primary.size:,}"
+                    mapping_stats["Method"].text = latest_result.method.replace("_", " ").title()
+                    for value in mapping_stats.values():
+                        value.update()
+                    apply_preview_output()
+                    populate_automatic_y_limits(redraw=False)
+                    render_latest_result()
+
+                def combined_output_supported() -> bool:
+                    if (
+                        not 2 <= len(latest_results) <= _MAX_COMBINED_MAPPING_DATASETS
+                        or resolved_plot_type() != "Line"
+                    ):
+                        return False
+                    output_key = str(
+                        preview_output.value
+                        or (latest_result.primary_output if latest_result else "")
+                    )
+                    if output_key.startswith(_COMPARISON_PREFIX):
+                        return all(
+                            output_key.removeprefix(_COMPARISON_PREFIX) in item.result.comparisons
+                            for item in latest_results
+                        )
+                    return all(
+                        (actual := _resolved_output_key(item.result, output_key))
+                        in item.result.outputs
+                        and np.asarray(item.result.outputs[actual]).ndim <= 1
+                        for item in latest_results
+                    )
+
+                def sync_batch_presentation() -> None:
+                    multiple = len(latest_results) > 1
+                    layout_stat.visible = multiple
+                    mapping_summary_bar.classes(
+                        add="dn-mapping-summary-grid-batch" if multiple else None,
+                        remove=None if multiple else "dn-mapping-summary-grid-batch",
+                    )
+                    options = (
+                        ["Combined", "Individual"]
+                        if multiple and combined_output_supported()
+                        else ["Individual"]
+                        if multiple
+                        else ["Combined"]
+                    )
+                    preview_layout.options = options
+                    if preview_layout.value not in options:
+                        preview_layout.value = options[0]
+                    preview_layout.update()
+                    combined = bool(
+                        multiple
+                        and str(preview_layout.value or "Combined") == "Combined"
+                        and combined_output_supported()
+                    )
+                    batch_color_container.visible = combined
+                    if combined:
+                        render_batch_colors.refresh()
+                    render_dataset_selector.refresh()
 
                 def resolved_plot_type() -> str:
                     output_key = str(
@@ -2690,6 +4085,12 @@ def render(_navigate: Callable[[str], None]) -> None:
                         ),
                         allow_boxplot=dependence == "ensemble" and not multiple_curves,
                     )
+                    if (
+                        len(latest_results) > 1
+                        and str(preview_layout.value or "Combined") == "Combined"
+                    ):
+                        plot_settings.primary_color_surface.visible = False
+                        plot_settings.secondary_color_surface.visible = False
 
                 def current_y_limits() -> tuple[float, float] | None:
                     if y_minimum.value is None or y_maximum.value is None:
@@ -2716,24 +4117,41 @@ def render(_navigate: Callable[[str], None]) -> None:
                     ):
                         return
                     try:
-                        limits = _mapping_automatic_y_limits(
-                            latest_result,
-                            output_key=str(preview_output.value or latest_result.primary_output),
-                            plot_type=resolved_plot_type(),
-                            histogram_bins=int(_read_number(histogram_bins, "Histogram bins")),
-                            density=bool(density.value),
-                            log_y=bool(log_y.value),
-                            log_x=bool(log_x.value),
-                            histogram_bin_size=(
-                                float(plot_settings.histogram_bin_size.value)
-                                if plot_settings.histogram_bin_size.value is not None
-                                else None
-                            ),
-                            histogram_x_limits=histogram_x_limits_from_controls(
-                                plot_settings,
+                        limit_results = (
+                            [item.result for item in latest_results]
+                            if len(latest_results) > 1 and str(preview_layout.value) == "Combined"
+                            else [latest_result]
+                        )
+                        candidates = [
+                            _mapping_automatic_y_limits(
+                                item,
+                                output_key=str(preview_output.value or item.primary_output),
+                                plot_type=resolved_plot_type(),
+                                histogram_bins=int(_read_number(histogram_bins, "Histogram bins")),
+                                density=bool(density.value),
+                                log_y=bool(log_y.value),
                                 log_x=bool(log_x.value),
-                            ),
-                            histogram_boundary=str(histogram_boundary.value or "left"),
+                                histogram_bin_size=(
+                                    float(plot_settings.histogram_bin_size.value)
+                                    if plot_settings.histogram_bin_size.value is not None
+                                    else None
+                                ),
+                                histogram_x_limits=histogram_x_limits_from_controls(
+                                    plot_settings,
+                                    log_x=bool(log_x.value),
+                                ),
+                                histogram_boundary=str(histogram_boundary.value or "left"),
+                            )
+                            for item in limit_results
+                        ]
+                        finite_limits = [item for item in candidates if item is not None]
+                        limits = (
+                            (
+                                min(item[0] for item in finite_limits),
+                                max(item[1] for item in finite_limits),
+                            )
+                            if finite_limits
+                            else None
                         )
                     except ValueError:
                         limits = None
@@ -2857,11 +4275,32 @@ def render(_navigate: Callable[[str], None]) -> None:
                             if _resolved_output_key(latest_result, output_key) == "fit_history"
                             else output_key.replace(":", "_")
                         )
+                        active_named = next(
+                            (
+                                item
+                                for item in latest_results
+                                if item.key == active_dataset_key
+                            ),
+                            None,
+                        )
+                        individual_result = (
+                            active_named is not None
+                            and (
+                                len(latest_results) == 1
+                                or str(preview_layout.value) == "Individual"
+                            )
+                        )
+                        plot_name = (
+                            f"{_mapping_raw_default_filename(active_named, output_key)}_plot"
+                            if individual_result and active_named is not None
+                            else "dnascape_mapping_"
+                            f"{_mapping_export_stem(output_stem, 1)}_combined_plot"
+                        )
                         artifact = await run.io_bound(
                             build_chart_capture_export,
                             data_uri,
                             file_format,
-                            filename=f"dnascape_mapping_{output_stem}_plot",
+                            filename=plot_name,
                             dpi=normalized_dpi,
                         )
                         if artifact is None or not artifact.data:
@@ -2878,51 +4317,90 @@ def render(_navigate: Callable[[str], None]) -> None:
                     )
                     ui.download(artifact.data, artifact.filename, artifact.media_type)
 
-                async def download_raw(controls: RawOutputControls) -> None:
-                    if latest_result is None:
-                        ui.notify("Run Mapping before downloading data.", type="warning")
-                        return
-                    output_key = str(preview_output.value or latest_result.primary_output)
+                def snapshot_named_raw_export(
+                    named: _NamedMappingResult,
+                    *,
+                    output_key: str | None = None,
+                    controls: RawOutputControls | None = None,
+                    preference: _MappingRawPreference | None = None,
+                ) -> _MappingRawExportSelection:
+                    """Freeze one row before any export work yields to the UI."""
+
+                    selected_output = str(
+                        output_key
+                        or preview_output.value
+                        or named.result.primary_output
+                    )
+                    if controls is not None:
+                        file_name = str(controls.file_name.value or "").strip()
+                        file_type = str(controls.file_type.value or "NPY")
+                        compress = bool(controls.compress.value)
+                    elif preference is not None:
+                        file_name = str(preference.file_name or "").strip()
+                        file_type = str(preference.file_type or "NPY")
+                        compress = bool(preference.compress)
+                    else:
+                        raise RuntimeError("Raw export settings are unavailable.")
+                    return _MappingRawExportSelection(
+                        output_key=selected_output,
+                        file_name=(
+                            file_name
+                            or _mapping_raw_default_filename(named, selected_output)
+                        ),
+                        file_type=file_type,
+                        compression=(
+                            get_export_settings().raw_compression
+                            if compress
+                            else "none"
+                        ),
+                    )
+
+                async def build_named_raw_artifact(
+                    named: _NamedMappingResult,
+                    selection: _MappingRawExportSelection,
+                ) -> tuple[ExportArtifact, str]:
+                    if selection.output_key.startswith(_COMPARISON_PREFIX):
+                        fitted_key = selection.output_key.removeprefix(
+                            _COMPARISON_PREFIX
+                        )
+                        artifact = await run.io_bound(
+                            build_mapping_comparison_raw_export,
+                            named.result,
+                            fitted_key,
+                            selection.file_type,
+                            filename=selection.file_name,
+                            compression=selection.compression,
+                        )
+                    else:
+                        exported_output_key = _resolved_output_key(
+                            named.result,
+                            selection.output_key,
+                        )
+                        artifact = await run.io_bound(
+                            build_mapping_raw_export,
+                            named.result,
+                            exported_output_key,
+                            selection.file_type,
+                            filename=selection.file_name,
+                            compression=selection.compression,
+                        )
+                    if artifact is None or not artifact.data:
+                        raise RuntimeError("Raw export stopped before returning data.")
+                    return artifact, selection.output_key
+
+                async def download_named_raw(
+                    named: _NamedMappingResult,
+                    controls: RawOutputControls,
+                ) -> None:
                     try:
-                        if output_key.startswith(_COMPARISON_PREFIX):
-                            fitted_key = output_key.removeprefix(_COMPARISON_PREFIX)
-                            artifact = await run.io_bound(
-                                build_mapping_comparison_raw_export,
-                                latest_result,
-                                fitted_key,
-                                str(controls.file_type.value or "NPY"),
-                                filename=str(
-                                    controls.file_name.value
-                                    or f"dnascape_mapping_{fitted_key}_comparison"
-                                ),
-                                compression=(
-                                    get_export_settings().raw_compression
-                                    if controls.compress.value
-                                    else "none"
-                                ),
-                            )
-                        else:
-                            exported_output_key = _resolved_output_key(
-                                latest_result,
-                                output_key,
-                            )
-                            artifact = await run.io_bound(
-                                build_mapping_raw_export,
-                                latest_result,
-                                exported_output_key,
-                                str(controls.file_type.value or "NPY"),
-                                filename=str(
-                                    controls.file_name.value
-                                    or f"dnascape_mapping_{exported_output_key}"
-                                ),
-                                compression=(
-                                    get_export_settings().raw_compression
-                                    if controls.compress.value
-                                    else "none"
-                                ),
-                            )
-                        if artifact is None or not artifact.data:
-                            raise RuntimeError("Raw export stopped before returning data.")
+                        selection = snapshot_named_raw_export(
+                            named,
+                            controls=controls,
+                        )
+                        artifact, output_key = await build_named_raw_artifact(
+                            named,
+                            selection,
+                        )
                     except (RuntimeError, TypeError, ValueError) as exc:
                         ui.notify(str(exc), type="negative")
                         return
@@ -2930,10 +4408,98 @@ def render(_navigate: Callable[[str], None]) -> None:
                         artifact,
                         source="Mapping",
                         kind="raw",
-                        detail=output_key.replace(":", " ").replace("_", " ").title(),
+                        detail=(
+                            f"{_mapping_display_name(named)} · "
+                            + output_key.replace(":", " ").replace("_", " ").title()
+                        ),
                         navigate_to="mapping",
                     )
                     ui.download(artifact.data, artifact.filename, artifact.media_type)
+
+                async def download_all_raw() -> None:
+                    if not latest_results:
+                        ui.notify("Run Mapping before downloading data.", type="warning")
+                        return
+                    try:
+                        named_results = tuple(latest_results)
+                        output_key = str(
+                            preview_output.value
+                            or named_results[0].result.primary_output
+                        )
+                        selections = tuple(
+                            snapshot_named_raw_export(
+                                item,
+                                output_key=output_key,
+                                preference=_mapping_raw_preference(
+                                    mapping_raw_preferences,
+                                    item,
+                                    output_key,
+                                ),
+                            )
+                            for item in named_results
+                        )
+                        # Build sequentially to avoid launching one large raw
+                        # conversion per dataset at the same time.
+                        prepared: list[tuple[ExportArtifact, str]] = []
+                        prepared_bytes = 0
+                        for item, selection in zip(
+                            named_results,
+                            selections,
+                            strict=True,
+                        ):
+                            built = await build_named_raw_artifact(item, selection)
+                            prepared_bytes += len(built[0].data)
+                            if prepared_bytes > DEFAULT_BATCH_ARCHIVE_SOURCE_BYTES:
+                                raise ValueError(
+                                    "The bulk download would contain more than 256 MiB "
+                                    "of raw data. Download the files individually or "
+                                    "reduce the batch."
+                                )
+                            prepared.append(built)
+                        artifacts = tuple(item[0] for item in prepared)
+                        archive = await run.io_bound(
+                            build_artifact_archive,
+                            artifacts,
+                            filename=(
+                                "dnascape_mapping_"
+                                f"{_mapping_export_stem(output_key, 1)}_batch.zip"
+                            ),
+                            max_source_bytes=DEFAULT_BATCH_ARCHIVE_SOURCE_BYTES,
+                        )
+                    except (OSError, RuntimeError, TypeError, ValueError) as exc:
+                        ui.notify(str(exc), type="negative")
+                        return
+                    for named, (artifact, output_key) in zip(
+                        named_results,
+                        prepared,
+                        strict=True,
+                    ):
+                        cache_artifact(
+                            artifact,
+                            source="Mapping",
+                            kind="raw",
+                            detail=(
+                                f"{_mapping_display_name(named)} · "
+                                + output_key.replace(":", " ").replace("_", " ").title()
+                            ),
+                            navigate_to="mapping",
+                        )
+                    ui.download(archive.data, archive.filename, archive.media_type)
+
+                async def download_raw(controls: RawOutputControls) -> None:
+                    if latest_result is None:
+                        ui.notify("Run Mapping before downloading data.", type="warning")
+                        return
+                    named = next(
+                        (item for item in latest_results if item.result is latest_result),
+                        _NamedMappingResult(
+                            "mapping-case-1",
+                            latest_result.target_label,
+                            _mapping_export_stem(latest_result.target_label, 1),
+                            latest_result,
+                        ),
+                    )
+                    await download_named_raw(named, controls)
 
                 def render_latest_result() -> None:
                     nonlocal result_chart
@@ -2949,8 +4515,7 @@ def render(_navigate: Callable[[str], None]) -> None:
                     result_slot.clear()
                     with result_slot:
                         try:
-                            result_chart = _render_mapping_result(
-                                latest_result,
+                            plot_kwargs = dict(
                                 output_key=str(
                                     preview_output.value or latest_result.primary_output
                                 ),
@@ -3000,14 +4565,36 @@ def render(_navigate: Callable[[str], None]) -> None:
                                 histogram_boundary=str(histogram_boundary.value or "left"),
                                 show_grid=bool(show_grid.value),
                                 y_limits=current_y_limits(),
-                                on_download=download_plot,
                             )
+                            if len(latest_results) > 1 and str(preview_layout.value) == "Combined":
+                                options = _combined_mapping_plot_options(
+                                    latest_results,
+                                    colors=mapping_batch_colors,
+                                    **plot_kwargs,
+                                )
+                                result_chart = render_preview_chart(
+                                    options,
+                                    title=str(preview_title.value or ""),
+                                    marker="mapping-result-plot",
+                                    on_download=download_plot,
+                                )
+                            else:
+                                result_chart = _render_mapping_result(
+                                    latest_result,
+                                    **plot_kwargs,
+                                    on_download=download_plot,
+                                )
                         except (RuntimeError, TypeError, ValueError) as exc:
                             ui.notify(str(exc), type="negative")
                             preview_plot("Output unavailable", kind="mapping")
 
                 async def map_data() -> None:
-                    nonlocal active_cancel, latest_result, result_chart, running
+                    nonlocal \
+                        active_cancel, \
+                        active_dataset_key, \
+                        latest_result, \
+                        result_chart, \
+                        running
                     if running:
                         if active_cancel is not None and not active_cancel.is_set():
                             active_cancel.set()
@@ -3030,16 +4617,13 @@ def render(_navigate: Callable[[str], None]) -> None:
                     progress.value = 0.01
                     status.text = "Reading inputs..."
                     stats_container.visible = False
-                    latest_result = None
-                    result_chart = None
-                    result_slot.clear()
-                    with result_slot:
-                        ui.label("Mapping is running in the background...").classes("dn-muted")
+                    if not latest_results:
+                        result_chart = None
+                        result_slot.clear()
+                        with result_slot:
+                            ui.label("Mapping is running in the background...").classes("dn-muted")
                     try:
                         route = selected_route_state["route"]
-                        inputs: dict[str, Any] = {}
-                        forms: dict[str, DataForm] = {}
-                        prewindowed_inputs: set[str] = set()
                         missing_policy = str(_region_missing.value or "error")
                         settings = setting_values()
                         selected_start = _read_number(region_start, "Region start")
@@ -3055,9 +4639,10 @@ def render(_navigate: Callable[[str], None]) -> None:
                         async def read_input(
                             key: str,
                             live: _MappingInputControl,
-                        ) -> tuple[str, Any, DataForm | None, bool]:
+                        ) -> _PreparedBatchInput | None:
                             try:
-                                value, prewindowed = await _read_mapping_input_async(
+                                return await _read_mapping_input_batch_async(
+                                    key,
                                     live,
                                     missing_policy=missing_policy,
                                     region_start_kb=selected_start,
@@ -3066,8 +4651,7 @@ def render(_navigate: Callable[[str], None]) -> None:
                                     whole_genome=use_whole_region,
                                 )
                             except KeyError:
-                                return key, None, None, False
-                            return key, value, cast(DataForm, str(live.form.value)), prewindowed
+                                return None
 
                         preparation = asyncio.gather(
                             *(read_input(key, live) for key, live in mapping_input_controls.items())
@@ -3081,62 +4665,153 @@ def render(_navigate: Callable[[str], None]) -> None:
                                     pass
                                 check_cancelled()
                             await asyncio.sleep(0.04)
-                        prepared_inputs = await preparation
+                        prepared_inputs = tuple(
+                            item for item in await preparation if item is not None
+                        )
                         check_cancelled()
-                        for key, value, form, prewindowed in prepared_inputs:
-                            if form is None:
-                                continue
-                            inputs[key] = value
-                            forms[key] = form
-                            if prewindowed:
-                                prewindowed_inputs.add(key)
-                        request = MappingRequest(
-                            route=route,
-                            inputs=inputs,
-                            input_forms=forms,
-                            settings=settings,
-                            target_shape=(
-                                str(target_shape_control.value)
-                                if target_shape_control.value is not None
-                                else None
+                        has_multiple_constants = any(
+                            str(getattr(live.surface.get("mode"), "value", ""))
+                            == "constants"
+                            for live in mapping_input_controls.values()
+                        )
+                        cases = _plan_mapping_cases(
+                            prepared_inputs,
+                            target_label=mapping_target(route.target_key).label,
+                            combination_mode=(
+                                mapping_combination_mode.get("value", "pairwise")
+                                if has_multiple_constants
+                                else "pairwise"
                             ),
-                            region_start_kb=selected_start,
-                            region_end_kb=selected_end,
-                            resolution_x=selected_resolution,
-                            resolution_t=(
-                                float(settings["resolution_time"])
-                                if settings.get("resolution_time") is not None
-                                else None
-                            ),
-                            whole_genome=use_whole_region,
-                            prewindowed_inputs=frozenset(prewindowed_inputs),
                         )
 
-                        progress_state = _ProgressState()
-                        worker = asyncio.create_task(
-                            run.io_bound(
-                                run_mapping,
+                        requests: list[tuple[_MappingBatchCase, MappingRequest]] = []
+                        for case in cases:
+                            _validate_mapping_case_axes(
+                                prepared_inputs,
+                                case.item_indices,
+                                case.name,
+                            )
+                            inputs = {
+                                item.key: item.values[item_index]
+                                for item, item_index in zip(
+                                    prepared_inputs,
+                                    case.item_indices,
+                                    strict=True,
+                                )
+                            }
+                            forms = {item.key: item.form for item in prepared_inputs}
+                            prewindowed_inputs = {
+                                item.key
+                                for item, item_index in zip(
+                                    prepared_inputs,
+                                    case.item_indices,
+                                    strict=True,
+                                )
+                                if item.prewindowed[item_index]
+                            }
+                            requests.append(
+                                (
+                                    case,
+                                    MappingRequest(
+                                        route=route,
+                                        inputs=inputs,
+                                        input_forms=forms,
+                                        settings=settings,
+                                        target_shape=(
+                                            str(target_shape_control.value)
+                                            if target_shape_control.value is not None
+                                            else None
+                                        ),
+                                        region_start_kb=selected_start,
+                                        region_end_kb=selected_end,
+                                        resolution_x=selected_resolution,
+                                        resolution_t=(
+                                            float(settings["resolution_time"])
+                                            if settings.get("resolution_time") is not None
+                                            else None
+                                        ),
+                                        whole_genome=use_whole_region,
+                                        prewindowed_inputs=frozenset(prewindowed_inputs),
+                                    ),
+                                )
+                            )
+
+                        # Validate every paired request before the first rmap
+                        # worker starts, so a bad batch cannot publish partial data.
+                        status.text = "Checking batch consistency..."
+                        for _case, request in requests:
+                            checked = await run.io_bound(
+                                validate_mapping_request,
                                 request,
-                                progress_state.report,
                                 check_cancelled,
                             )
-                        )
-                        while not worker.done():
-                            if cancel_event.is_set():
-                                status.text = "Stopping mapping..."
-                            else:
-                                value, message = progress_state.snapshot()
-                                progress.value = max(0.02, value)
-                                status.text = message
-                            await asyncio.sleep(0.04)
-                        result = await worker
-                        if result is None:
-                            check_cancelled()
-                            raise RuntimeError("The mapping worker stopped before returning data.")
+                            if checked is None:
+                                raise RuntimeError("Mapping validation stopped before returning.")
+                        check_cancelled()
+
+                        staged_results: list[_NamedMappingResult] = []
+                        total_requests = len(requests)
+                        for index, (case, request) in enumerate(requests):
+                            progress_state = _ProgressState()
+                            worker = asyncio.create_task(
+                                run.io_bound(
+                                    run_mapping,
+                                    request,
+                                    progress_state.report,
+                                    check_cancelled,
+                                )
+                            )
+                            while not worker.done():
+                                if cancel_event.is_set():
+                                    status.text = "Stopping mapping..."
+                                else:
+                                    value, message = progress_state.snapshot()
+                                    progress.value = max(
+                                        0.02,
+                                        (index + value) / total_requests,
+                                    )
+                                    status.text = (
+                                        f"Dataset {index + 1}/{total_requests} · {message}"
+                                        if total_requests > 1
+                                        else message
+                                    )
+                                await asyncio.sleep(0.04)
+                            result = await worker
+                            if result is None:
+                                check_cancelled()
+                                raise RuntimeError(
+                                    "The mapping worker stopped before returning data."
+                                )
+                            staged_results.append(
+                                _NamedMappingResult(
+                                    case.key,
+                                    case.name,
+                                    case.export_stem,
+                                    result,
+                                    case.short_name,
+                                    case.short_export_stem,
+                                )
+                            )
+                        check_cancelled()
 
                         requested_output = str(preview_output.value or "")
-                        latest_result = result
-                        output_options = _result_preview_outputs(result)
+                        output_options = _common_result_preview_outputs(
+                            tuple(item.result for item in staged_results)
+                        )
+                        if not output_options:
+                            raise RuntimeError("Mapped datasets returned no common preview output.")
+                        retained_keys = {item.key for item in staged_results}
+                        for preference_key in tuple(mapping_raw_preferences):
+                            if preference_key[0] not in retained_keys:
+                                mapping_raw_preferences.pop(preference_key, None)
+                        for color_key in tuple(mapping_batch_colors):
+                            if color_key[0] not in retained_keys:
+                                mapping_batch_colors.pop(color_key, None)
+                        latest_results[:] = staged_results
+                        active_dataset_key = staged_results[0].key
+                        dataset_page["value"] = 1
+                        latest_result = staged_results[0].result
+                        result = latest_result
                         preview_output.options = output_options
                         preview_output.value = (
                             requested_output
@@ -3150,6 +4825,9 @@ def render(_navigate: Callable[[str], None]) -> None:
                         else:
                             preview_output.enable()
                         preview_output.update()
+                        sync_batch_presentation()
+                        render_dataset_selector.refresh()
+                        render_batch_raw_files.refresh()
                         apply_preview_output()
 
                         primary = np.asarray(result.outputs[result.primary_output])
@@ -3163,8 +4841,13 @@ def render(_navigate: Callable[[str], None]) -> None:
                             value.update()
                         stats_container.visible = True
                         progress.value = 1.0
-                        status.text = f"Complete in {result.elapsed_seconds:.2f} s"
-                        if result.fit_mse is not None:
+                        total_elapsed = sum(item.result.elapsed_seconds for item in latest_results)
+                        status.text = (
+                            f"Complete · {len(latest_results)} datasets in {total_elapsed:.2f} s"
+                            if len(latest_results) > 1
+                            else f"Complete in {result.elapsed_seconds:.2f} s"
+                        )
+                        if len(latest_results) == 1 and result.fit_mse is not None:
                             status.text += f" · MSE {result.fit_mse:.4g}"
                         if result.inter_origin_distances_truncated:
                             total = result.inter_origin_distance_count
@@ -3183,39 +4866,52 @@ def render(_navigate: Callable[[str], None]) -> None:
                         histogram_bin_sync.sync_to_data(redraw=False)
                         populate_automatic_y_limits(redraw=False)
                         render_latest_result()
-                        cache_workflow(
-                            result,
-                            name=f"Mapping: {result.target_label}",
-                            source="Mapping",
-                            detail=(
-                                f"{mapping_stats['Form'].text} | {primary.size:,} points | "
-                                f"{mapping_stats['Method'].text}"
-                            ),
-                            navigate_to="mapping",
-                        )
+                        for named in latest_results:
+                            named_primary = np.asarray(
+                                named.result.outputs[named.result.primary_output]
+                            )
+                            cache_workflow(
+                                named.result,
+                                name=_mapping_display_name(named),
+                                source="Mapping",
+                                detail=(
+                                    f"{mapping_stats['Form'].text} | "
+                                    f"{named_primary.size:,} points | "
+                                    f"{mapping_stats['Method'].text}"
+                                ),
+                                navigate_to="mapping",
+                            )
                     except CancelledError:
                         progress.visible = False
                         status.text = "Mapping stopped"
-                        stats_container.visible = False
-                        latest_result = None
-                        result_slot.clear()
-                        with result_slot:
-                            preview_plot(
-                                "Mapping stopped",
-                                kind="mapping",
-                            )
+                        if latest_results:
+                            stats_container.visible = True
+                            render_latest_result()
+                        else:
+                            stats_container.visible = False
+                            latest_result = None
+                            result_slot.clear()
+                            with result_slot:
+                                preview_plot(
+                                    "Mapping stopped",
+                                    kind="mapping",
+                                )
                     except Exception as exc:
                         progress.visible = False
                         status.text = "Mapping could not be completed"
                         ui.notify(str(exc) or type(exc).__name__, type="negative")
-                        stats_container.visible = False
-                        latest_result = None
-                        result_slot.clear()
-                        with result_slot:
-                            preview_plot(
-                                "No result",
-                                kind="mapping",
-                            )
+                        if latest_results:
+                            stats_container.visible = True
+                            render_latest_result()
+                        else:
+                            stats_container.visible = False
+                            latest_result = None
+                            result_slot.clear()
+                            with result_slot:
+                                preview_plot(
+                                    "No result",
+                                    kind="mapping",
+                                )
                     finally:
                         running = False
                         active_cancel = None
@@ -3314,11 +5010,25 @@ def render(_navigate: Callable[[str], None]) -> None:
                     elif comparison_source_key is None:
                         preview_x_label.value = "Position (kb)"
                         preview_y_label.value = output_label
-                    raw_controls.file_name.value = (
-                        f"dnascape_mapping_{comparison_source_key}_comparison"
-                        if comparison_source_key is not None
-                        else f"dnascape_mapping_{'mse' if actual_output_key == 'fit_history' else actual_output_key}"
+                    selected_named = next(
+                        (
+                            item
+                            for item in latest_results
+                            if item.key == active_dataset_key
+                        ),
+                        None,
                     )
+                    next_automatic_name = (
+                        _mapping_raw_default_filename(selected_named, output_key)
+                        if selected_named is not None
+                        else (
+                            f"dnascape_mapping_{comparison_source_key}_comparison"
+                            if comparison_source_key is not None
+                            else "dnascape_mapping_"
+                            f"{'mse' if actual_output_key == 'fit_history' else actual_output_key}"
+                        )
+                    )
+                    set_single_raw_automatic_name(next_automatic_name)
                     for control in (
                         preview_title,
                         preview_x_label,
@@ -3358,12 +5068,26 @@ def render(_navigate: Callable[[str], None]) -> None:
                         preview_y_label.value = output_label
                     preview_x_label.update()
                     preview_y_label.update()
+                    # A histogram or boxplot cannot represent several datasets
+                    # as one overlaid line chart. Reconcile the layout before
+                    # the redraw below so the plotter never sees an unsupported
+                    # Combined/view pairing.
+                    sync_batch_presentation()
                     histogram_bin_sync.sync_to_data(redraw=False)
                     refresh_axis_range()
 
                 def refresh_preview_output() -> None:
                     apply_preview_output()
+                    sync_batch_presentation()
+                    render_batch_raw_files.refresh()
                     histogram_bin_sync.sync_to_data(redraw=False)
+                    populate_automatic_y_limits(redraw=False)
+                    render_latest_result()
+
+                def refresh_preview_layout() -> None:
+                    sync_batch_presentation()
+                    sync_plot_controls()
+                    render_dataset_selector.refresh()
                     populate_automatic_y_limits(redraw=False)
                     render_latest_result()
 
@@ -3388,6 +5112,7 @@ def render(_navigate: Callable[[str], None]) -> None:
                     render_latest_result()
 
                 preview_output.on_value_change(refresh_preview_output)
+                preview_layout.on_value_change(refresh_preview_layout)
                 for plot_control in (
                     preview_title,
                     preview_x_label,
@@ -3451,22 +5176,67 @@ def render(_navigate: Callable[[str], None]) -> None:
                         value.update()
                     stats_container.visible = True
                     status.text = "Restored from Cached Files"
+                    sync_batch_presentation()
                     apply_preview_output()
                     populate_automatic_y_limits(redraw=False)
                     render_latest_result()
 
                 def clear_mapping_output() -> None:
-                    nonlocal latest_result, result_chart
+                    nonlocal active_dataset_key, latest_result, result_chart
+                    latest_results.clear()
+                    mapping_raw_preferences.clear()
+                    mapping_batch_colors.clear()
+                    active_dataset_key = ""
+                    dataset_page["value"] = 1
                     latest_result = None
                     result_chart = None
                     progress.visible = False
                     stats_container.visible = False
                     status.text = "Ready"
                     result_slot.clear()
+                    layout_stat.visible = False
+                    batch_color_container.visible = False
+                    render_dataset_selector.refresh()
+                    render_batch_colors.refresh()
+                    render_batch_raw_files.refresh()
                     with result_slot:
                         preview_plot("No result yet", kind="mapping")
 
                 current_session_cache().register_output_clearer(
                     "mapping",
                     clear_mapping_output,
+                )
+
+                def refresh_mapping_page() -> None:
+                    """Refresh style-dependent labels without rerunning Mapping."""
+
+                    render_dataset_selector.refresh()
+                    if batch_color_container.visible:
+                        render_batch_colors.refresh()
+                    render_batch_raw_files.refresh()
+                    if latest_result is None:
+                        return
+                    active_named = next(
+                        (
+                            item
+                            for item in latest_results
+                            if item.key == active_dataset_key
+                        ),
+                        None,
+                    )
+                    if active_named is not None:
+                        set_single_raw_automatic_name(
+                            _mapping_raw_default_filename(
+                                active_named,
+                                str(
+                                    preview_output.value
+                                    or active_named.result.primary_output
+                                ),
+                            )
+                        )
+                    render_latest_result()
+
+                current_session_cache().register_page_refresher(
+                    "mapping",
+                    refresh_mapping_page,
                 )

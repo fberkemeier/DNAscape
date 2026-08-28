@@ -26,6 +26,7 @@ from nicegui.elements.select import Select
 from nicegui.elements.tabs import TabPanels
 from nicegui.elements.upload import Upload
 from nicegui.testing import user_simulation
+from nicegui.testing.user import UserInteraction
 
 from app.icons import DATA_ICON_SVG
 from app.main import index
@@ -499,7 +500,7 @@ def test_upload_fields_share_clear_copy_and_route_aware_mapping_defaults() -> No
 
             user.find(marker="nav-mapping").click()
             await user.should_see(marker="source-replication-timing-upload")
-            await user.should_see("Choose a file or drag it here")
+            await user.should_see("Choose files or drag them here")
             await user.should_not_see(
                 "Accepted: CSV, TSV, TXT, NPY, NPV, NPZ, bedGraph, BigWig, GZ"
             )
@@ -649,7 +650,10 @@ def test_plotting_commits_data_once_then_updates_plot_settings_live() -> None:
             )
             await user.should_see("Dependence: Space")
             await user.should_see("Array size: 3")
-            await user.should_not_see(marker="plotting-data-upload")
+            await user.should_see(marker="plotting-data-upload")
+            assert uploader._props.get("multiple") is True
+            await user.should_not_see(marker="action-add-plot-profile")
+            await user.should_not_see(marker="plotting-profile-selection-1")
             await user.should_not_see(marker="plotting-result-plot")
             await user.should_see("No plot yet")
 
@@ -675,6 +679,13 @@ def test_plotting_commits_data_once_then_updates_plot_settings_live() -> None:
 
             user.find("Plotting settings").click()
             user.find("Curves").click()
+            curves_expansion = next(
+                expansion
+                for expansion in user.find(kind=Expansion).elements
+                if expansion._props.get("label") == "Curves"
+            )
+            assert "dn-preview-settings-section" in curves_expansion._classes
+            assert "dn-plot-curve-settings" in curves_expansion._classes
             assert user.client is not None
             title = cast(Input, next(iter(user.find(marker="plotting-title").elements)))
             thickness = cast(
@@ -838,6 +849,11 @@ def test_plotting_commits_data_once_then_updates_plot_settings_live() -> None:
             await user.should_see("Dependence: Space-time", retries=30)
             await user.should_see("Array size: 2 x 2")
             assert chart().options["series"][0]["type"] == "line"
+            # Plot controls follow the committed chart, as they do in Mapping;
+            # merely staging a heatmap must not relabel the visible line plot.
+            await user.should_not_see(marker="plotting-heatmap-palette")
+            await user.should_not_see(marker="plotting-colorbar")
+            await user.should_see("Curves")
 
             user.find(marker="action-plot").click()
             await wait_for_chart(lambda options: options["series"][0]["type"] == "custom")
@@ -853,7 +869,11 @@ def test_plotting_commits_data_once_then_updates_plot_settings_live() -> None:
 
             profiles = cast(
                 Select,
-                next(iter(user.find(marker="plotting-profile-selection-1").elements)),
+                next(
+                    control
+                    for control in user.find(kind=Select).elements
+                    if control._props.get("data-upload-name") == "space_time.csv"
+                ),
             )
             with user.client:
                 profiles.set_value(["t0", "t1"])
@@ -872,13 +892,7 @@ def test_plotting_commits_data_once_then_updates_plot_settings_live() -> None:
             assert chart().options["series"][0]["lineStyle"]["color"] == "#2c7f77"
             assert chart().options["series"][1]["lineStyle"]["color"] == "#b03412"
 
-            user.find(marker="action-add-plot-profile").click()
-            await user.should_see(marker="plotting-data-upload-2")
-            second_uploader = cast(
-                Upload,
-                next(iter(user.find(marker="plotting-data-upload-2").elements)),
-            )
-            await second_uploader.handle_uploads(
+            await uploader.handle_uploads(
                 [
                     Upload.SmallFileUpload(
                         "other.csv",
@@ -898,8 +912,35 @@ def test_plotting_commits_data_once_then_updates_plot_settings_live() -> None:
                 "other",
             ]
 
-            user.find(marker="plotting-remove-profile-2").click()
-            await user.should_not_see("other.csv")
+            # Dropping a same-name table replaces its retained values without
+            # adding another row or disturbing the source order.
+            await uploader.handle_uploads(
+                [
+                    Upload.SmallFileUpload(
+                        "other.csv",
+                        "text/csv",
+                        b"position,other\n0,8\n1,9\n2,10\n",
+                    )
+                ]
+            )
+            await user.should_see("Array size: 3", retries=30)
+            assert len(user.find(marker="plotting-data-upload-file").elements) == 2
+            user.find(marker="action-plot").click()
+            await wait_for_chart(
+                lambda options: options["series"][2]["data"]
+                == [[0.0, 8.0], [1.0, 9.0], [2.0, 10.0]]
+            )
+
+            remove_button = next(
+                button
+                for button in user.find(
+                    marker="plotting-data-upload-remove"
+                ).elements
+                if button._props.get("data-upload-name") == "other.csv"
+            )
+            assert len(user.find(marker="plotting-data-upload-remove").elements) == 2
+            UserInteraction(user, {remove_button}, None).click()
+            await user.should_not_see("other.csv", retries=30)
             assert len(chart().options["series"]) == 3
 
     asyncio.run(scenario())
@@ -924,13 +965,7 @@ def test_plotting_separates_spatial_curves_and_heatmaps_and_blocks_time_heatmaps
                 ]
             )
             await user.should_see("space.csv", retries=30)
-            user.find(marker="action-add-plot-profile").click()
-            await user.should_see(marker="plotting-data-upload-2")
-            second_uploader = cast(
-                Upload,
-                next(iter(user.find(marker="plotting-data-upload-2").elements)),
-            )
-            await second_uploader.handle_uploads(
+            await first_uploader.handle_uploads(
                 [
                     Upload.SmallFileUpload(
                         "map.csv",
@@ -940,6 +975,7 @@ def test_plotting_separates_spatial_curves_and_heatmaps_and_blocks_time_heatmaps
                 ]
             )
             await user.should_see("map.csv", retries=30)
+            assert len(user.find(marker="plotting-data-upload-file").elements) == 2
             await user.should_see(marker="plotting-presentation")
 
             presentation = cast(
@@ -1029,18 +1065,19 @@ def test_plotting_separates_spatial_curves_and_heatmaps_and_blocks_time_heatmaps
             else:
                 raise AssertionError("separate plotting controls did not update independently")
 
-            user.find(marker="action-delete-all-plot-profiles").click()
-            await user.should_see("No plot yet", retries=30)
+            user.find(marker="plotting-data-upload-delete-all").click()
             await user.should_see(marker="plotting-data-upload")
-            await user.should_not_see(marker="plotting-data-upload-2")
-            await user.should_not_see(marker="plotting-result-plot")
-            await user.should_not_see(marker="plotting-result-plot-2")
-            await user.should_not_see(marker="plotting-separate-settings-surface-1")
-            await user.should_not_see(marker="plotting-separate-settings-surface-2")
             await user.should_not_see("space.csv")
             await user.should_not_see("map.csv")
-            assert presentation.value == "Combined"
-            assert presentation.visible is False
+            # Removing staged inputs follows Mapping's behavior: the last
+            # committed preview remains available until it is replaced or the
+            # application is reset.
+            await user.should_see(marker="plotting-result-plot")
+            await user.should_see(marker="plotting-result-plot-2")
+            await user.should_see(marker="plotting-separate-settings-surface-1")
+            await user.should_see(marker="plotting-separate-settings-surface-2")
+            assert presentation.value == "Separate"
+            assert presentation.visible is True
 
     async def reject_time_and_heatmap() -> None:
         async with user_simulation(index) as user:
@@ -1060,13 +1097,7 @@ def test_plotting_separates_spatial_curves_and_heatmaps_and_blocks_time_heatmaps
                 ]
             )
             await user.should_see("time.csv", retries=30)
-            user.find(marker="action-add-plot-profile").click()
-            await user.should_see(marker="plotting-data-upload-2")
-            second_uploader = cast(
-                Upload,
-                next(iter(user.find(marker="plotting-data-upload-2").elements)),
-            )
-            await second_uploader.handle_uploads(
+            await first_uploader.handle_uploads(
                 [
                     Upload.SmallFileUpload(
                         "map.csv",
@@ -1088,6 +1119,136 @@ def test_plotting_separates_spatial_curves_and_heatmaps_and_blocks_time_heatmaps
 
     asyncio.run(separate_space_and_heatmap())
     asyncio.run(reject_time_and_heatmap())
+
+
+def test_plotting_preserves_independent_settings_across_layout_toggles() -> None:
+    async def scenario() -> None:
+        async with user_simulation(index) as user:
+            await user.open("/")
+            user.find(marker="nav-plotting").click()
+            first_uploader = cast(
+                Upload,
+                next(iter(user.find(marker="plotting-data-upload").elements)),
+            )
+            await first_uploader.handle_uploads(
+                [
+                    Upload.SmallFileUpload(
+                        "first.csv",
+                        "text/csv",
+                        b"position,signal\n0,1\n1,3\n2,2\n",
+                    )
+                ]
+            )
+            await user.should_see("first.csv", retries=30)
+            await first_uploader.handle_uploads(
+                [
+                    Upload.SmallFileUpload(
+                        "second.csv",
+                        "text/csv",
+                        b"position,signal\n0,4\n1,6\n2,5\n",
+                    )
+                ]
+            )
+            await user.should_see("second.csv", retries=30)
+            user.find(marker="action-plot").click()
+            await user.should_see(marker="plotting-result-plot", retries=30)
+
+            presentation = cast(
+                Select,
+                next(iter(user.find(marker="plotting-presentation").elements)),
+            )
+            assert presentation.options == ["Combined", "Separate"]
+            assert user.client is not None
+            with user.client:
+                presentation.set_value("Separate")
+            await user.should_see(marker="plotting-separate-settings-surface-1", retries=30)
+            await user.should_see(marker="plotting-separate-settings-surface-2", retries=30)
+
+            first_title = cast(
+                Input,
+                next(iter(user.find(marker="plotting-title-separate-1").elements)),
+            )
+            first_color = cast(
+                Input,
+                next(iter(user.find(marker="plotting-primary-color-separate-1").elements)),
+            )
+            second_title = cast(
+                Input,
+                next(iter(user.find(marker="plotting-title-separate-2").elements)),
+            )
+            second_color = cast(
+                Input,
+                next(iter(user.find(marker="plotting-primary-color-separate-2").elements)),
+            )
+            second_view = cast(
+                Select,
+                next(iter(user.find(marker="plotting-view-separate-2").elements)),
+            )
+            with user.client:
+                first_title.set_value("First custom plot")
+                first_color.set_value("#8b6f37")
+                second_title.set_value("Second distribution")
+                second_color.set_value("#6f5b8f")
+                second_view.set_value("Histogram")
+            await asyncio.sleep(0)
+            second_bins = cast(
+                Number,
+                next(iter(user.find(marker="plotting-histogram-bins-separate-2").elements)),
+            )
+            with user.client:
+                second_bins.set_value(3)
+            await asyncio.sleep(0)
+
+            with user.client:
+                presentation.set_value("Combined")
+            await user.should_not_see(marker="plotting-separate-settings-surface-1")
+            with user.client:
+                presentation.set_value("Separate")
+            await user.should_see(marker="plotting-separate-settings-surface-1", retries=30)
+            await user.should_see(marker="plotting-separate-settings-surface-2", retries=30)
+
+            restored_first_title = cast(
+                Input,
+                next(iter(user.find(marker="plotting-title-separate-1").elements)),
+            )
+            restored_first_color = cast(
+                Input,
+                next(iter(user.find(marker="plotting-primary-color-separate-1").elements)),
+            )
+            restored_second_title = cast(
+                Input,
+                next(iter(user.find(marker="plotting-title-separate-2").elements)),
+            )
+            restored_second_color = cast(
+                Input,
+                next(iter(user.find(marker="plotting-primary-color-separate-2").elements)),
+            )
+            restored_second_view = cast(
+                Select,
+                next(iter(user.find(marker="plotting-view-separate-2").elements)),
+            )
+            restored_second_bins = cast(
+                Number,
+                next(iter(user.find(marker="plotting-histogram-bins-separate-2").elements)),
+            )
+            assert restored_first_title.value == "First custom plot"
+            assert restored_first_color.value == "#8b6f37"
+            assert restored_second_title.value == "Second distribution"
+            assert restored_second_color.value == "#6f5b8f"
+            assert restored_second_view.value == "Histogram"
+            assert restored_second_bins.value == 3
+
+            charts = [
+                cast(EChart, next(iter(user.find(marker=marker).elements)))
+                for marker in ("plotting-result-plot", "plotting-result-plot-2")
+            ]
+            assert charts[0].options["title"]["text"] == "First custom plot"
+            assert charts[0].options["series"][0]["lineStyle"]["color"] == "#8b6f37"
+            assert charts[1].options["title"]["text"] == "Second distribution"
+            assert charts[1].options["series"][0]["type"] == "custom"
+            assert len(charts[1].options["series"][0]["data"]) == 3
+
+    asyncio.run(scenario())
 
 
 def test_scientific_previews_start_with_guidance_and_share_download_sections() -> None:
@@ -1259,6 +1420,7 @@ def test_scientific_controls_use_compact_mode_selects_and_keep_primary_actions_d
             assert not timing_form.visible
             assert speed_type.options == {
                 "scalar": "Constant",
+                "constants": "Multiple constants",
                 "profile": "Profile",
             }
             assert speed_type.value == "scalar"
@@ -1288,6 +1450,7 @@ def test_scientific_controls_use_compact_mode_selects_and_keep_primary_actions_d
             simulation_form = _select_by_marker(user, "source-firing-rate-form")
             assert simulation_mode.options == {
                 "scalar": "Constant",
+                "constants": "Multiple constants",
                 "profile": "Profile",
             }
             assert simulation_mode.value == "scalar"
@@ -1322,8 +1485,13 @@ def test_scientific_controls_use_compact_mode_selects_and_keep_primary_actions_d
         async with user_simulation(index) as user:
             await user.open("/")
             user.find(marker="nav-plotting").click()
-            await user.should_see(marker="plotting-profile-source-1")
             await user.should_see(marker="plotting-data-upload")
+            await user.should_not_see(marker="plotting-profile-source-1")
+            plotting_uploader = cast(
+                Upload,
+                next(iter(user.find(marker="plotting-data-upload").elements)),
+            )
+            assert plotting_uploader._props.get("multiple") is True
             await user.should_see(marker="plotting-settings")
             await user.should_not_see("Region")
             assert all(
@@ -1911,7 +2079,7 @@ def test_detailed_simulation_switch_exposes_xt_plot_and_live_downloads(
                     "data:image/svg+xml;base64,PHN2Zy8+",
                     "SVG",
                     {
-                        "filename": "dnascape_replication_timing_plot",
+                            "filename": "dnascape_simulation_replication_timing_plot",
                         "dpi": 150,
                     },
                 )
@@ -2205,7 +2373,7 @@ def test_detailed_simulation_switch_exposes_xt_plot_and_live_downloads(
                 "data:image/svg+xml;base64,PHN2Zy8+",
                 "SVG",
                 {
-                    "filename": "dnascape_replicated_fraction_xt_plot",
+                        "filename": "dnascape_simulation_replicated_fraction_xt_plot",
                     "dpi": 150,
                 },
             )
@@ -2340,8 +2508,10 @@ def test_uploaded_firing_rate_and_fork_speed_reach_simulation_worker(
             assert firing_form.value == "x"
             assert speed_form.value == "t"
             await user.should_not_see("Accepted:")
-            assert not firing_upload.visible
-            assert not speed_upload.visible
+            # Profile uploaders remain available so another file can extend
+            # the batch or a same-name upload can replace retained bytes.
+            assert firing_upload.visible
+            assert speed_upload.visible
             region_start = cast(
                 Number,
                 next(iter(user.find(marker="simulation-region-start").elements)),
@@ -2362,6 +2532,171 @@ def test_uploaded_firing_rate_and_fork_speed_reach_simulation_worker(
             np.testing.assert_array_equal(requests[0].fork_speed, [[1.1, 1.2, 1.3]])
             assert np.asarray(requests[0].firing_rate).shape == (3,)
             assert np.asarray(requests[0].fork_speed).shape == (1, 3)
+
+    asyncio.run(scenario())
+
+
+def test_simulation_batch_runs_all_profiles_and_keeps_atomic_preview(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from app.pages import simulation as simulation_page
+    from app.simulation_service import ConstantSimulationRequest
+
+    requests: list[ConstantSimulationRequest] = []
+    archived_counts: list[int] = []
+    real_archive = simulation_page.build_artifact_archive
+
+    def fake_run(
+        request: ConstantSimulationRequest,
+        report: Any,
+        _cancel: Any,
+    ) -> ConstantSimulationResult:
+        requests.append(request)
+        report(0.6, "Simulating batch dataset...")
+        timing = np.asarray(request.firing_rate, dtype=float).reshape(-1) * 10.0
+        position = np.arange(timing.size, dtype=float)
+        return ConstantSimulationResult(
+            position_kb=position,
+            replication_timing=timing,
+            elapsed_seconds=0.04,
+            replicates=request.replicates,
+            geometry=request.geometry,
+            time_grid=np.asarray([], dtype=float),
+            outputs={"replication_timing": timing},
+        )
+
+    def track_archive(artifacts: Any, **kwargs: Any) -> Any:
+        retained = tuple(artifacts)
+        archived_counts.append(len(retained))
+        return real_archive(retained, **kwargs)
+
+    monkeypatch.setattr(simulation_page, "run_constant_simulation", fake_run)
+    monkeypatch.setattr(simulation_page, "build_artifact_archive", track_archive)
+
+    async def scenario() -> None:
+        async with user_simulation(index) as user:
+            await user.open("/")
+            user.find(marker="nav-simulation").click()
+            await user.should_see("Simulate DNA replication", retries=60)
+            firing_mode = cast(
+                Select,
+                next(iter(user.find(marker="source-firing-rate-mode").elements)),
+            )
+            assert user.client is not None
+            with user.client:
+                firing_mode.set_value("profile")
+            uploader = cast(
+                Upload,
+                next(iter(user.find(marker="source-firing-rate-upload").elements)),
+            )
+            assert uploader._props["multiple"] is True
+            await uploader.handle_uploads(
+                [
+                    Upload.SmallFileUpload(
+                        "sample_a.csv",
+                        "text/csv",
+                        b"firing_rate\n0.1\n0.2\n0.3\n",
+                    ),
+                    Upload.SmallFileUpload(
+                        "sample_b.csv",
+                        "text/csv",
+                        b"firing_rate\n0.4\n0.5\n0.6\n",
+                    ),
+                ]
+            )
+            await user.should_see("Files: 2", retries=40)
+
+            user.find(marker="action-simulate").click()
+            await user.should_see("2 datasets complete", retries=60)
+            assert len(requests) == 2
+            np.testing.assert_array_equal(requests[0].firing_rate, [0.1, 0.2, 0.3])
+            np.testing.assert_array_equal(requests[1].firing_rate, [0.4, 0.5, 0.6])
+            assert requests[0].fork_speed == pytest.approx(1.4)
+            assert requests[1].fork_speed == pytest.approx(1.4)
+
+            layout = cast(
+                Select,
+                next(iter(user.find(marker="simulation-presentation").elements)),
+            )
+            assert layout.value == "Combined"
+            assert layout.options == ["Combined", "Individual"]
+            chart = cast(
+                EChart,
+                next(iter(user.find(marker="simulation-result-plot").elements)),
+            )
+            series_names = [series["name"] for series in chart.options["series"]]
+            assert series_names == [
+                "Simulation · sample_a",
+                "Simulation · sample_b",
+            ]
+            # Status and chart updates can reach the simulated client one
+            # outbox tick before the refreshable curve controls.
+            await user.should_see(marker="simulation-dataset-color-1", retries=30)
+            await user.should_see(marker="simulation-dataset-color-2", retries=30)
+            await user.should_see(marker="simulation-batch-raw-surface")
+            user.find("Raw data").click()
+            await user.should_see(marker="simulation-batch-raw-1")
+            await user.should_see(marker="simulation-batch-raw-2")
+            user.find(marker="action-download-all-simulation-raw").click()
+            for _ in range(40):
+                if archived_counts:
+                    break
+                await asyncio.sleep(0.02)
+            assert archived_counts == [2]
+
+            with user.client:
+                layout.set_value("Individual")
+            await user.should_see(marker="simulation-dataset-select", retries=20)
+            dataset_select = _select_by_marker(user, "simulation-dataset-select")
+            assert list(dataset_select.options.values()) == [
+                "Simulation · sample_a",
+                "Simulation · sample_b",
+            ]
+            assert all(
+                str(key).startswith("simulation-case-")
+                for key in dataset_select.options
+            )
+            assert dataset_select.value == next(iter(dataset_select.options))
+
+            # A same-name replacement remains in its original batch slot.
+            await uploader.handle_uploads(
+                [
+                    Upload.SmallFileUpload(
+                        "sample_a.csv",
+                        "text/csv",
+                        b"firing_rate\n0.7\n0.8\n0.9\n",
+                    )
+                ]
+            )
+            await asyncio.sleep(0.25)
+            user.find(marker="action-simulate").click()
+            for _ in range(80):
+                if len(requests) >= 4:
+                    break
+                await asyncio.sleep(0.02)
+            assert len(requests) == 4
+            np.testing.assert_array_equal(requests[2].firing_rate, [0.7, 0.8, 0.9])
+            np.testing.assert_array_equal(requests[3].firing_rate, [0.4, 0.5, 0.6])
+
+            # Replacing one same-name upload must retain the other dataset. The
+            # ambiguous, differently named signals are rejected before any
+            # further worker starts, and the last complete preview remains.
+            await uploader.handle_uploads(
+                [
+                    Upload.SmallFileUpload(
+                        "sample_b.csv",
+                        "text/csv",
+                        b"other_a,other_b\n0.4,1.4\n0.5,1.5\n0.6,1.6\n",
+                    )
+                ]
+            )
+            await asyncio.sleep(0.25)
+            await user.should_see("Files: 2", retries=20)
+            user.find(marker="action-simulate").click()
+            await user.should_see("Check the settings", retries=40)
+            assert len(requests) == 4
+            await user.should_see(marker="simulation-result-plot")
+            await user.should_see(marker="simulation-batch-raw-surface")
 
     asyncio.run(scenario())
 
@@ -2408,7 +2743,10 @@ def test_simulation_profile_headers_select_arrays_and_resize_region() -> None:
             assert region_end.value == pytest.approx(2.0)
 
             user.find(marker="source-firing-rate-upload-remove").click()
-            await user.should_see(marker="source-firing-rate-upload")
+            await user.should_not_see(
+                marker="source-firing-rate-upload-file",
+                retries=20,
+            )
             await uploader.handle_uploads(
                 [
                     Upload.SmallFileUpload(

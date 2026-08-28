@@ -36,6 +36,7 @@ from app.preview_plotting import (
     render_preview_chart,
     sync_preview_settings_visibility,
 )
+from app.result_naming import safe_filename_stem, unique_filename_stems
 from app.session_cache import cache_artifact, cache_upload, current_session_cache
 from app.simulation_exports import build_chart_capture_export
 
@@ -47,7 +48,6 @@ _DEPENDENCE_LABELS = {
 }
 _NATURAL_SELECTION = "__natural_profile__"
 _MATRIX_SELECTION = "__all_columns__"
-_MAX_PROFILE_FILES = 8
 _LINE_COLOURS = (
     "#2c7f77",
     "#b03412",
@@ -70,9 +70,11 @@ class _ProfileSourceState:
 
 @dataclass(frozen=True)
 class _PlotSeries:
+    series_id: tuple[int, str]
     name: str
     form: str
     values: np.ndarray
+    full_identity: str = ""
 
 
 @dataclass
@@ -91,6 +93,52 @@ class _SeparatePlotContext:
     y_limits_automatic: bool = True
     updating_y_limits: bool = False
     histogram_bin_sync: HistogramBinSynchronizer | None = None
+
+
+@dataclass
+class _SeparatePlotSettingsSnapshot:
+    """Persisted values for one source profile's independent plot controls."""
+
+    values: dict[str, Any]
+    y_limits_automatic: bool = True
+    histogram_basis: str = "bins"
+    histogram_x_limits_automatic: bool = True
+
+
+_SEPARATE_SETTING_VALUE_FIELDS = (
+    "view",
+    "title",
+    "x_axis_label",
+    "y_axis_label",
+    "primary_color",
+    "secondary_color",
+    "heatmap_palette",
+    "log_x",
+    "invert_x",
+    "log_z",
+    "invert_z",
+    "line_width",
+    "histogram_bins",
+    "histogram_bin_size",
+    "histogram_touching",
+    "histogram_boundary",
+    "show_individual_profiles",
+    "individual_profile_count",
+    "show_standard_deviation",
+    "histogram_x_minimum",
+    "histogram_x_maximum",
+    "show_histogram_statistics",
+    "histogram_statistics_position",
+    "show_legend",
+    "legend_position",
+    "show_grid",
+    "density",
+    "colorbar",
+    "log_y",
+    "invert_y",
+    "y_minimum",
+    "y_maximum",
+)
 
 
 _PLOTTING_SETTING_MARKERS = {
@@ -158,6 +206,56 @@ def _file_identity(name: str) -> str:
     if path.suffix.casefold() == ".gz":
         path = path.with_suffix("")
     return path.stem.replace("_", " ").strip() or "Profile"
+
+
+def _full_series_identity(inspection_name: str, token: str) -> str:
+    """Retain source context for Full filenames without changing plot labels."""
+
+    source = _file_identity(inspection_name)
+    if token in {_NATURAL_SELECTION, _MATRIX_SELECTION}:
+        return source
+    selected = str(token).strip() or "Profile"
+    if selected.casefold() == source.casefold():
+        return source
+    return f"{source} · {selected}"
+
+
+def _plot_download_filenames(
+    groups: Sequence[Sequence[_PlotSeries]],
+) -> tuple[str, ...]:
+    """Return consistent, collision-safe defaults for rendered profile plots."""
+
+    use_full_names = get_export_settings().result_name_style == "full"
+    identities = tuple(
+        " + ".join(
+            (
+                item.full_identity
+                if use_full_names and item.full_identity
+                else item.name
+            ).strip()
+            or "Profile"
+            for item in group
+        )
+        or "Profile"
+        for group in groups
+    )
+    concise = tuple(
+        safe_filename_stem(
+            identity,
+            fallback=f"profile-{index}",
+            maximum=96,
+        )
+        for index, identity in enumerate(identities, start=1)
+    )
+    unique = unique_filename_stems(
+        concise,
+        fallback="profile",
+        maximum=96,
+    )
+    return tuple(
+        f"dnascape_plotting_profile_{identity}_plot"
+        for identity in unique
+    )
 
 
 def _npz_values(state: _ProfileSourceState, key: str) -> np.ndarray:
@@ -298,7 +396,15 @@ def _materialize_source(
             name = _file_identity(inspection.name)
         else:
             name = token
-        series.append(_PlotSeries(name=name, form=form, values=values))
+        series.append(
+            _PlotSeries(
+                series_id=(state.source_id, token),
+                name=name,
+                form=form,
+                values=values,
+                full_identity=_full_series_identity(inspection.name, token),
+            )
+        )
     return series
 
 
@@ -309,7 +415,15 @@ def _unique_series_names(series: Sequence[_PlotSeries]) -> tuple[_PlotSeries, ..
     for item in series:
         occurrences[item.name] += 1
         name = f"{item.name} {occurrences[item.name]}" if counts[item.name] > 1 else item.name
-        normalized.append(_PlotSeries(name=name, form=item.form, values=item.values))
+        normalized.append(
+            _PlotSeries(
+                series_id=item.series_id,
+                name=name,
+                form=item.form,
+                values=item.values,
+                full_identity=item.full_identity,
+            )
+        )
     return tuple(normalized)
 
 
@@ -400,12 +514,13 @@ def _integer_value(control: Any, label: str) -> int:
 def render(_navigate: Callable[[str], None]) -> None:
     """Render staged profile controls and an explicitly committed preview."""
 
-    sources = [_ProfileSourceState(source_id=1)]
-    next_source_id = 2
+    sources: list[_ProfileSourceState] = []
+    next_source_id = 1
     latest_series: tuple[_PlotSeries, ...] = ()
     result_charts: list[Any] = []
     separate_plot_contexts: list[_SeparatePlotContext] = []
-    curve_styles: dict[str, _CurveStyle] = {}
+    curve_styles: dict[tuple[int, str], _CurveStyle] = {}
+    separate_plot_settings: dict[tuple[int, str], _SeparatePlotSettingsSnapshot] = {}
     y_limits_automatic = True
     updating_y_limits = False
 
@@ -425,169 +540,173 @@ def render(_navigate: Callable[[str], None]) -> None:
                     extra_classes="dn-data-section",
                 ):
 
-                    def add_source() -> None:
+                    async def uploaded(event: Any) -> bool:
+                        """Inspect and atomically append or replace one plotting source."""
+
                         nonlocal next_source_id
-                        if len(sources) >= _MAX_PROFILE_FILES:
-                            ui.notify(
-                                f"Up to {_MAX_PROFILE_FILES} profile files can be combined.",
-                                type="warning",
+                        try:
+                            inspection = await inspect_upload_event(
+                                event,
+                                expected_form="auto",
                             )
-                            return
-                        sources.append(_ProfileSourceState(source_id=next_source_id))
-                        next_source_id += 1
+                            replaced_index = next(
+                                (
+                                    index
+                                    for index, source in enumerate(sources)
+                                    if source.inspection is not None
+                                    and source.inspection.name == inspection.name
+                                ),
+                                None,
+                            )
+                            previous = (
+                                sources[replaced_index]
+                                if replaced_index is not None
+                                else None
+                            )
+                            candidate = _ProfileSourceState(
+                                source_id=(
+                                    previous.source_id
+                                    if previous is not None
+                                    else next_source_id
+                                ),
+                                inspection=inspection,
+                            )
+                            _set_default_selection(candidate)
+                            if previous is not None:
+                                options = _source_selection_options(candidate)
+                                allowed = (
+                                    {_NATURAL_SELECTION}
+                                    if options is None
+                                    else set(options)
+                                )
+                                retained_selection = tuple(
+                                    token
+                                    for token in previous.selection
+                                    if token in allowed
+                                )
+                                if retained_selection:
+                                    candidate.selection = retained_selection
+                            # Validate every selected profile before changing the
+                            # retained collection. A bad same-name replacement
+                            # therefore leaves the previous file fully usable.
+                            _materialize_source(candidate)
+                        except (OSError, RuntimeError, TypeError, ValueError) as exc:
+                            ui.notify(str(exc), type="negative")
+                            return False
+
+                        if replaced_index is None:
+                            sources.append(candidate)
+                            next_source_id += 1
+                        else:
+                            sources[replaced_index] = candidate
+                        cache_upload(
+                            inspection,
+                            source="Plotting",
+                            navigate_to="plotting",
+                        )
+                        render_profile_sources.refresh()
+                        staged_sources_changed()
+                        return True
+
+                    def cleared(event: Any) -> None:
+                        """Mirror the shared uploader's single or bulk removal."""
+
+                        name = str(getattr(event, "name", ""))
+                        if name:
+                            sources[:] = [
+                                source
+                                for source in sources
+                                if source.inspection is None
+                                or source.inspection.name != name
+                            ]
+                        elif removed_names := {
+                            str(value)
+                            for value in getattr(event, "names", ())
+                            if str(value)
+                        }:
+                            sources[:] = [
+                                source
+                                for source in sources
+                                if source.inspection is None
+                                or source.inspection.name not in removed_names
+                            ]
+                        else:
+                            sources.clear()
                         render_profile_sources.refresh()
                         staged_sources_changed()
 
-                    def remove_source(source_id: int) -> None:
-                        if len(sources) == 1:
-                            return
-                        sources[:] = [source for source in sources if source.source_id != source_id]
-                        render_profile_sources.refresh()
-                        staged_sources_changed()
+                    data_upload(
+                        accept=_PROFILE_ACCEPT,
+                        accepted_formats="CSV, TSV, TXT, NPY, NPV, NPZ, GZ",
+                        marker="plotting-data-upload",
+                        show_accepted_formats=False,
+                        on_upload=uploaded,
+                        on_clear=cleared,
+                        multiple=True,
+                        max_files=None,
+                        hide_when_loaded=False,
+                        initial_names=tuple(
+                            source.inspection.name
+                            for source in sources
+                            if source.inspection is not None
+                        ),
+                    )
 
                     @ui.refreshable
                     def render_profile_sources() -> None:
                         for position, state in enumerate(sources, start=1):
-                            marker = (
-                                "plotting-data-upload"
-                                if position == 1
-                                else f"plotting-data-upload-{state.source_id}"
-                            )
                             with (
                                 ui.element("div")
                                 .classes("dn-plot-profile-source")
                                 .mark(f"plotting-profile-source-{state.source_id}")
                             ):
                                 with ui.row().classes("dn-plot-profile-source-head"):
-                                    ui.label(f"Profile file {position}").classes(
+                                    ui.label(
+                                        state.inspection.name
+                                        if state.inspection is not None
+                                        else f"Profile file {position}"
+                                    ).classes(
                                         "dn-setting-group-title"
                                     )
-                                    ui.space()
-                                    if len(sources) > 1:
-
-                                        def remove_current(
-                                            _event: Any = None,
-                                            source_id: int = state.source_id,
-                                        ) -> None:
-                                            remove_source(source_id)
-
-                                        remove = (
-                                            ui.button(icon="close", on_click=remove_current)
-                                            .props(
-                                                'flat round dense aria-label="Remove profile file"'
-                                            )
-                                            .classes("dn-upload-remove")
-                                            .mark(f"plotting-remove-profile-{state.source_id}")
-                                        )
-                                        remove.tooltip("Remove profile file")
-
-                                async def uploaded(
-                                    event: Any,
-                                    source: _ProfileSourceState = state,
-                                ) -> bool:
-                                    try:
-                                        inspection = await inspect_upload_event(
-                                            event,
-                                            expected_form="auto",
-                                        )
-                                        candidate = _ProfileSourceState(
-                                            source_id=source.source_id,
-                                            inspection=inspection,
-                                        )
-                                        _set_default_selection(candidate)
-                                        _materialize_source(candidate)
-                                    except (OSError, RuntimeError, TypeError, ValueError) as exc:
-                                        ui.notify(str(exc), type="negative")
-                                        return False
-                                    source.inspection = candidate.inspection
-                                    source.selection = candidate.selection
-                                    source.array_cache = candidate.array_cache
-                                    cache_upload(
-                                        inspection,
-                                        source="Plotting",
-                                        navigate_to="plotting",
-                                    )
-                                    render_profile_sources.refresh()
-                                    staged_sources_changed()
-                                    return True
-
-                                def cleared(
-                                    _event: Any,
-                                    source: _ProfileSourceState = state,
-                                ) -> None:
-                                    source.inspection = None
-                                    source.selection = ()
-                                    source.array_cache.clear()
-                                    render_profile_sources.refresh()
-                                    staged_sources_changed()
-
-                                data_upload(
-                                    accept=_PROFILE_ACCEPT,
-                                    accepted_formats="CSV, TSV, TXT, NPY, NPV, NPZ, GZ",
-                                    marker=marker,
-                                    show_accepted_formats=False,
-                                    on_upload=uploaded,
-                                    on_clear=cleared,
-                                    max_files=1,
-                                    hide_when_loaded=True,
-                                    initial_names=(
-                                        (state.inspection.name,)
-                                        if state.inspection is not None
-                                        else ()
-                                    ),
-                                )
 
                                 @ui.refreshable
                                 def selection_panel(
                                     source: _ProfileSourceState = state,
                                 ) -> None:
                                     options = _source_selection_options(source)
-                                    if not options:
+                                    # Match Mapping: omit selectors which cannot
+                                    # change anything (plain arrays, headerless
+                                    # vectors, and one-signal-column tables).
+                                    if not options or len(options) <= 1:
                                         return
-                                    multiple = len(options) > 1
-                                    value: Any = (
-                                        list(source.selection)
-                                        if multiple
-                                        else source.selection[0]
-                                        if source.selection
-                                        else None
-                                    )
+                                    value = list(source.selection)
                                     selector = (
                                         ui.select(
                                             dict(options),
                                             value=value,
-                                            label="Profiles" if multiple else "Profile",
-                                            multiple=multiple,
-                                            clearable=multiple,
+                                            label="Profiles",
+                                            multiple=True,
+                                            clearable=True,
                                         )
-                                        .props(
-                                            "dense options-dense use-chips"
-                                            if multiple
-                                            else "dense options-dense"
+                                        .props("dense options-dense use-chips")
+                                        .classes(
+                                            "dn-field dn-mapping-column-select "
+                                            "dn-plot-profile-selector"
                                         )
-                                        .classes("dn-field dn-plot-profile-selector")
                                         .mark(f"plotting-profile-selection-{source.source_id}")
                                     )
-                                    if not multiple:
-                                        selector.disable()
+                                    if source.inspection is not None:
+                                        selector._props["data-upload-name"] = (
+                                            source.inspection.name
+                                        )
 
                                     def selection_changed() -> None:
-                                        raw = (
-                                            tuple(str(token) for token in (selector.value or []))
-                                            if multiple
-                                            else (str(selector.value),)
-                                            if selector.value is not None
-                                            else ()
+                                        raw = tuple(
+                                            str(token) for token in (selector.value or [])
                                         )
                                         normalized = _normalize_multi_selection(source, raw)
                                         source.selection = normalized
-                                        expected_value: Any = (
-                                            list(normalized)
-                                            if multiple
-                                            else normalized[0]
-                                            if normalized
-                                            else None
-                                        )
+                                        expected_value = list(normalized)
                                         if selector.value != expected_value:
                                             selector.value = expected_value
                                             selector.update()
@@ -641,27 +760,6 @@ def render(_navigate: Callable[[str], None]) -> None:
                                         )
 
                                 summary_panel()
-
-                        with ui.row().classes("w-full items-center"):
-                            add_file = (
-                                ui.button("Add file", icon="add", on_click=add_source)
-                                .props("flat dense no-caps")
-                                .classes("dn-add-profile-source")
-                                .mark("action-add-plot-profile")
-                            )
-                            add_file.tooltip("Add another profile file")
-                            ui.space()
-                            delete_all = (
-                                ui.button(
-                                    "Delete all",
-                                    icon="delete_outline",
-                                    on_click=lambda: delete_all_profiles(),
-                                )
-                                .props("flat dense no-caps")
-                                .classes("dn-add-profile-source")
-                                .mark("action-delete-all-plot-profiles")
-                            )
-                            delete_all.tooltip("Remove every loaded plotting profile")
 
                     render_profile_sources()
                     compatibility_note = (
@@ -721,13 +819,15 @@ def render(_navigate: Callable[[str], None]) -> None:
                         return
                     with expansion(
                         "Curves",
-                        icon="show_chart",
-                        extra_classes="dn-plot-curve-settings",
+                        icon="palette",
+                        extra_classes=(
+                            "dn-preview-settings-section dn-plot-curve-settings"
+                        ),
                     ):
                         with ui.column().classes("dn-plot-curve-list"):
                             for index, item in enumerate(curve_series):
                                 style = curve_styles.setdefault(
-                                    item.name,
+                                    item.series_id,
                                     _CurveStyle(_LINE_COLOURS[index % len(_LINE_COLOURS)]),
                                 )
                                 with ui.element("div").classes("dn-plot-curve-row"):
@@ -754,7 +854,7 @@ def render(_navigate: Callable[[str], None]) -> None:
                                     def style_changed(
                                         _event: Any = None,
                                         *,
-                                        series_name: str = item.name,
+                                        series_id: tuple[int, str] = item.series_id,
                                         color_control: Any = color,
                                         width_control: Any = width,
                                     ) -> None:
@@ -767,7 +867,7 @@ def render(_navigate: Callable[[str], None]) -> None:
                                             return
                                         if not np.isfinite(parsed_width) or parsed_width <= 0:
                                             return
-                                        curve_styles[series_name] = _CurveStyle(
+                                        curve_styles[series_id] = _CurveStyle(
                                             str(color_control.value or _LINE_COLOURS[0]),
                                             parsed_width,
                                         )
@@ -786,6 +886,13 @@ def render(_navigate: Callable[[str], None]) -> None:
             for token in source.selection
             if _selection_form(source, token) in _DEPENDENCE_LABELS
         )
+
+    def preview_forms() -> tuple[str, ...]:
+        """Describe the committed preview, falling back to staged data initially."""
+
+        if latest_series:
+            return tuple(item.form for item in latest_series)
+        return staged_forms()
 
     def requested_plot_type(*, form: str, multiple: bool, controls: Any = None) -> str:
         if form == "xt":
@@ -809,8 +916,8 @@ def render(_navigate: Callable[[str], None]) -> None:
             )
         return None
 
-    def sync_presentation_options() -> None:
-        forms = staged_forms()
+    def sync_presentation_options(*, sync_action: bool = True) -> None:
+        forms = preview_forms()
         multiple = len(forms) > 1
         combined_compatible = (
             not multiple
@@ -828,10 +935,11 @@ def render(_navigate: Callable[[str], None]) -> None:
         compatibility_note.visible = incompatibility is not None
         compatibility_note.text = incompatibility or ""
         compatibility_note.update()
-        if incompatibility is None:
-            plot_button.enable()
-        else:
-            plot_button.disable()
+        if sync_action:
+            if incompatibility is None and staged_forms():
+                plot_button.enable()
+            else:
+                plot_button.disable()
 
     def latest_groups() -> tuple[tuple[_PlotSeries, ...], ...]:
         return _plot_groups(
@@ -853,7 +961,10 @@ def render(_navigate: Callable[[str], None]) -> None:
         )
 
     def sync_staged_controls(*, reset_axes: bool = False) -> None:
-        forms = staged_forms()
+        # Mapping's settings always describe its displayed result. Keep the
+        # same contract here after the first Plot commit; newly staged files
+        # must not change controls for a chart which is still on screen.
+        forms = preview_forms()
         multiple = len(forms) > 1
         unique_forms = set(forms)
         form = forms[0] if forms and len(unique_forms) == 1 else "xt" if "xt" in forms else "x"
@@ -1015,12 +1126,12 @@ def render(_navigate: Callable[[str], None]) -> None:
                     x=np.arange(item.values.size, dtype=float),
                     y=np.asarray(item.values, dtype=float).reshape(-1),
                     color=(
-                        curve_styles[item.name].color
+                        curve_styles[item.series_id].color
                         if use_curve_styles
                         else str(active_controls.primary_color.value or _LINE_COLOURS[0])
                     ),
                     width=(
-                        curve_styles[item.name].width
+                        curve_styles[item.series_id].width
                         if use_curve_styles
                         else _numeric_value(active_controls.line_width, "Curve thickness")
                     ),
@@ -1198,6 +1309,38 @@ def render(_navigate: Callable[[str], None]) -> None:
         except (RuntimeError, TypeError, ValueError) as exc:
             ui.notify(str(exc), type="negative")
 
+    def remember_separate_plot_settings(context: _SeparatePlotContext) -> None:
+        """Snapshot one plot before its transient controls are rebuilt."""
+
+        first = context.group[0]
+        synchronizer = context.histogram_bin_sync
+        separate_plot_settings[first.series_id] = _SeparatePlotSettingsSnapshot(
+            values={
+                field_name: getattr(context.controls, field_name).value
+                for field_name in _SEPARATE_SETTING_VALUE_FIELDS
+            },
+            y_limits_automatic=context.y_limits_automatic,
+            histogram_basis=str(getattr(synchronizer, "_basis", "bins")),
+            histogram_x_limits_automatic=bool(
+                getattr(synchronizer, "_x_limits_automatic", True)
+            ),
+        )
+
+    def remember_all_separate_plot_settings() -> None:
+        for context in tuple(separate_plot_contexts):
+            remember_separate_plot_settings(context)
+
+    def restore_separate_plot_settings(
+        controls: Any,
+        snapshot: _SeparatePlotSettingsSnapshot,
+    ) -> None:
+        """Restore saved primitive values before wiring live callbacks."""
+
+        for field_name, value in snapshot.values.items():
+            control = getattr(controls, field_name)
+            control.value = value
+            control.update()
+
     def render_separate_settings(
         *,
         index: int,
@@ -1207,6 +1350,7 @@ def render(_navigate: Callable[[str], None]) -> None:
         """Render and wire one independent settings block below its chart."""
 
         first = group[0]
+        saved_settings = separate_plot_settings.get(first.series_id)
         x_label, y_label = _axis_labels(first.form, "Default", False)
         holder: dict[str, _SeparatePlotContext] = {}
         with (
@@ -1225,8 +1369,13 @@ def render(_navigate: Callable[[str], None]) -> None:
             group=group,
             controls=controls,
             chart=chart,
+            y_limits_automatic=(
+                saved_settings.y_limits_automatic if saved_settings is not None else True
+            ),
         )
         holder["context"] = context
+        if saved_settings is not None:
+            restore_separate_plot_settings(controls, saved_settings)
 
         def range_changed() -> None:
             clear_separate_y_limits(context)
@@ -1271,6 +1420,11 @@ def render(_navigate: Callable[[str], None]) -> None:
             on_valid_change=range_changed,
             log_x=lambda: bool(controls.log_x.value),
         )
+        if saved_settings is not None:
+            context.histogram_bin_sync._basis = saved_settings.histogram_basis
+            context.histogram_bin_sync._x_limits_automatic = (
+                saved_settings.histogram_x_limits_automatic
+            )
         controls.view.on_value_change(view_changed_separately)
         controls.density.on_value_change(density_changed_separately)
         controls.histogram_boundary.on_value_change(range_changed)
@@ -1300,9 +1454,11 @@ def render(_navigate: Callable[[str], None]) -> None:
         ):
             live_control.on_value_change(lambda: update_separate_chart(context))
 
-        sync_separate_controls(context, reset_axes=True)
-        context.histogram_bin_sync.sync_to_data(redraw=False)
-        populate_separate_y_limits(context)
+        sync_separate_controls(context, reset_axes=saved_settings is None)
+        if saved_settings is None:
+            context.histogram_bin_sync.sync_to_data(redraw=False)
+        if context.y_limits_automatic:
+            populate_separate_y_limits(context)
         update_separate_chart(context)
         return context
 
@@ -1378,6 +1534,7 @@ def render(_navigate: Callable[[str], None]) -> None:
             # Each separate plot receives a fresh natural representation and
             # its own live controls immediately below the rendered chart.
             prepared = tuple((group, plot_options(group)) for group in groups)
+        remember_all_separate_plot_settings()
         result_charts.clear()
         separate_plot_contexts.clear()
         result_slot.clear()
@@ -1390,10 +1547,6 @@ def render(_navigate: Callable[[str], None]) -> None:
                         if separate
                         else str(plot_settings.title.value or "Profiles")
                     )
-                    filename = "dnascape_profile_plot"
-                    if separate:
-                        safe_name = "_".join(first.name.casefold().split()) or f"plot_{index + 1}"
-                        filename = f"dnascape_{safe_name}"
                     with ui.element("div").classes("dn-plot-result-panel"):
                         if separate:
                             ui.label(first.name).classes("dn-setting-group-title")
@@ -1401,9 +1554,16 @@ def render(_navigate: Callable[[str], None]) -> None:
                             file_format: str,
                             *,
                             plot_index: int = index,
-                            plot_filename: str = filename,
+                            plot_group: tuple[_PlotSeries, ...] = tuple(group),
                             plot_detail: str = chart_title,
                         ) -> None:
+                            try:
+                                current_names = _plot_download_filenames(latest_groups())
+                                plot_filename = current_names[plot_index]
+                            except (IndexError, RuntimeError, TypeError, ValueError):
+                                # The rendered chart remains downloadable while
+                                # controls are between two valid layout states.
+                                plot_filename = _plot_download_filenames((plot_group,))[0]
                             await download_plot(
                                 file_format,
                                 chart=result_charts[plot_index],
@@ -1474,14 +1634,15 @@ def render(_navigate: Callable[[str], None]) -> None:
             curve_styles.clear()
             curve_styles.update(
                 {
-                    item.name: previous_styles.get(
-                        item.name,
+                    item.series_id: previous_styles.get(
+                        item.series_id,
                         _CurveStyle(_LINE_COLOURS[index % len(_LINE_COLOURS)]),
                     )
                     for index, item in enumerate(selected)
                     if item.form in {"x", "t"}
                 }
             )
+            sync_presentation_options(sync_action=False)
             histogram_bin_sync.sync_to_data(redraw=False)
             sync_staged_controls(reset_axes=False)
             render_curve_settings.refresh()
@@ -1591,37 +1752,12 @@ def render(_navigate: Callable[[str], None]) -> None:
         result_charts.clear()
         separate_plot_contexts.clear()
         curve_styles.clear()
+        separate_plot_settings.clear()
         shared_settings_surface.visible = True
         shared_settings_surface.update()
         render_curve_settings.refresh()
         result_slot.clear()
         with result_slot:
             preview_plot("No plot yet", kind="plotting")
-
-    def delete_all_profiles() -> None:
-        """Remove every staged upload and committed plotting result."""
-
-        nonlocal next_source_id
-        sources[:] = [_ProfileSourceState(source_id=1)]
-        next_source_id = 2
-        clear_plot_output()
-        presentation.options = ["Combined", "Separate"]
-        presentation.value = "Combined"
-        presentation.visible = False
-        presentation.update()
-        plot_settings.view.value = "Default"
-        plot_settings.title.value = "Profile"
-        plot_settings.x_axis_label.value = "Position (bin)"
-        plot_settings.y_axis_label.value = "Value"
-        for control in (
-            plot_settings.view,
-            plot_settings.title,
-            plot_settings.x_axis_label,
-            plot_settings.y_axis_label,
-        ):
-            control.update()
-        clear_automatic_y_limits()
-        render_profile_sources.refresh()
-        staged_sources_changed()
 
     current_session_cache().register_output_clearer("plotting", clear_plot_output)

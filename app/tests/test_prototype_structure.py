@@ -482,6 +482,10 @@ def test_simulation_summary_and_raw_download_css_preserve_alignment() -> None:
     raw_row = _css_declarations(styles, ".dn-raw-output-row")
     assert raw_row["display"] == "grid"
     assert raw_row["grid-template-columns"] == "2rem minmax(0, 1fr) auto auto"
+    batch_slot = _css_declarations(styles, ".dn-raw-output-extra")
+    assert batch_slot["align-self"] == "stretch"
+    assert batch_slot["min-width"] == "0"
+    assert batch_slot["width"] == "100%"
     download = _css_declarations(styles, ".dn-raw-output-download")
     assert download["justify-self"] == "end"
 

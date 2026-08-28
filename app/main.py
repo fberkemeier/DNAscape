@@ -19,6 +19,7 @@ from app.export_settings import (
 )
 from app.icons import OUTLINE_ICON_SVGS, PLOT_ICON_SVG
 from app.pages import PAGE_RENDERERS
+from app.result_naming import NAME_STYLE_OPTIONS, normalize_name_style
 from app.session_cache import current_session_cache
 
 APP_DIR = Path(__file__).resolve().parent
@@ -364,6 +365,16 @@ def index() -> None:
                 .classes("dn-field")
                 .mark("settings-cached-compression")
             )
+            name_style_setting = (
+                ui.select(
+                    NAME_STYLE_OPTIONS,
+                    value=export_settings.result_name_style,
+                    label="Result and file names",
+                )
+                .props("dense options-dense")
+                .classes("dn-field")
+                .mark("settings-result-name-style")
+            )
             preserve_page_setting = (
                 ui.checkbox(
                     "Keep page controls and outputs",
@@ -386,6 +397,13 @@ def index() -> None:
         def update_cached_compression() -> None:
             export_settings.cached_compression = str(cached_compression_setting.value or "gzip")
 
+        def update_name_style() -> None:
+            export_settings.result_name_style = normalize_name_style(
+                str(name_style_setting.value or "short")
+            )
+            for slug in tuple(built_pages):
+                current_session_cache().refresh_page(slug)
+
         def update_page_preservation() -> None:
             export_settings.preserve_page_state = bool(preserve_page_setting.value)
             if export_settings.preserve_page_state:
@@ -398,6 +416,7 @@ def index() -> None:
         compression_setting.on_value_change(update_compression)
         cached_format_setting.on_value_change(update_cached_format)
         cached_compression_setting.on_value_change(update_cached_compression)
+        name_style_setting.on_value_change(update_name_style)
         preserve_page_setting.on_value_change(update_page_preservation)
 
     with (
@@ -476,12 +495,14 @@ def index() -> None:
         compression_setting.value = defaults.raw_compression
         cached_format_setting.value = defaults.cached_file_format
         cached_compression_setting.value = defaults.cached_compression
+        name_style_setting.value = defaults.result_name_style
         preserve_page_setting.value = defaults.preserve_page_state
         for control in (
             plot_dpi_setting,
             compression_setting,
             cached_format_setting,
             cached_compression_setting,
+            name_style_setting,
             preserve_page_setting,
         ):
             control.update()

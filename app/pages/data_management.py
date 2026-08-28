@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import asyncio
-import io
 import time
 import zipfile
 from collections.abc import Callable, Mapping, Sequence
@@ -15,6 +14,7 @@ from typing import Any
 import numpy as np
 from nicegui import run, ui
 
+from app.artifact_archives import build_artifact_archive
 from app.data_conversion_service import (
     DATA_EXPORT_FORMATS,
     DataConversionRequest,
@@ -43,6 +43,7 @@ from app.pages.common import (
 )
 from app.preview_plotting import build_preview_plot_options, render_preview_chart
 from app.remote_sources import RemoteSourceError, fetch_remote_source
+from app.result_naming import safe_filename_stem
 from app.session_cache import cache_artifact, cache_dataset, cache_upload, current_session_cache
 from app.simulation_exports import ExportArtifact, build_chart_capture_export
 
@@ -209,7 +210,28 @@ def _source_stem(name: str) -> str:
     path = PurePath(name)
     if path.suffix.casefold() == ".gz":
         path = path.with_suffix("")
-    return path.stem or "dnascape_data"
+    return safe_filename_stem(
+        path.stem,
+        fallback="data",
+        maximum=96,
+    )
+
+
+def _automatic_output_name(source_name: str, feature: str) -> str:
+    """Use the shared workflow/output/source order for converted data."""
+
+    output = (
+        "converted"
+        if feature == "generic"
+        else _FEATURE_VALUE_NAMES.get(feature, feature)
+    )
+    output_stem = safe_filename_stem(output, fallback="converted")
+    source_stem = _source_stem(source_name)
+    if source_stem == output_stem:
+        source_stem = "profile"
+    elif source_stem.startswith(f"{output_stem}-"):
+        source_stem = source_stem.removeprefix(f"{output_stem}-")
+    return f"dnascape_data_{output_stem}_{source_stem}"
 
 
 def _source_format_label(source_format: str) -> str:
@@ -232,46 +254,11 @@ def _file_size_text(size: int) -> str:
 def _build_generated_files_archive(
     artifacts: Sequence[ExportArtifact],
 ) -> ExportArtifact:
-    """Bundle generated artifacts into one safe, deterministic ZIP download."""
+    """Backward-compatible Data Manager wrapper around the shared helper."""
 
-    if not artifacts:
-        raise ValueError("There are no generated files to download.")
-
-    used_names: set[str] = set()
-    output = io.BytesIO()
-    with zipfile.ZipFile(output, mode="w") as archive:
-        for artifact in artifacts:
-            basename = (
-                PurePath(str(artifact.filename).replace("\\", "/"))
-                .name.replace("\x00", "")
-                .strip()
-                or "dnascape_data"
-            )
-            suffixes = "".join(PurePath(basename).suffixes)
-            stem = basename[: -len(suffixes)] if suffixes else basename
-            candidate = basename
-            duplicate = 2
-            while candidate.casefold() in used_names:
-                candidate = f"{stem}_{duplicate}{suffixes}"
-                duplicate += 1
-            used_names.add(candidate.casefold())
-
-            # NumPy and gzip artifacts are already compressed, so store them
-            # directly while ordinary text profiles get ZIP compression.
-            compression = (
-                zipfile.ZIP_STORED
-                if candidate.casefold().endswith((".gz", ".npz", ".zip"))
-                else zipfile.ZIP_DEFLATED
-            )
-            info = zipfile.ZipInfo(candidate, date_time=(1980, 1, 1, 0, 0, 0))
-            info.compress_type = compression
-            info.external_attr = 0o600 << 16
-            archive.writestr(info, artifact.data, compress_type=compression)
-
-    return ExportArtifact(
-        data=output.getvalue(),
-        filename="dnascape_generated_files.zip",
-        media_type="application/zip",
+    return build_artifact_archive(
+        artifacts,
+        filename="dnascape_data_outputs.zip",
     )
 
 
@@ -593,12 +580,10 @@ def render(_navigate: Callable[[str], None]) -> None:
                                 navigate_to="data-management",
                             )
                             feature = str(settings["feature"])
-                            suffix = (
-                                "converted"
-                                if feature == "generic"
-                                else _FEATURE_VALUE_NAMES[feature]
+                            settings["output_name"] = _automatic_output_name(
+                                candidate.name,
+                                feature,
                             )
-                            settings["output_name"] = f"{_source_stem(candidate.name)}_{suffix}"
                             if candidate_track is not None:
                                 region = candidate_track.regions[0]
                                 settings.update(
@@ -646,13 +631,9 @@ def render(_navigate: Callable[[str], None]) -> None:
                             settings["feature"] = feature
                             settings["value_name"] = _FEATURE_VALUE_NAMES[feature]
                             if inspection is not None:
-                                suffix = (
-                                    "converted"
-                                    if feature == "generic"
-                                    else _FEATURE_VALUE_NAMES[feature]
-                                )
-                                settings["output_name"] = (
-                                    f"{_source_stem(inspection.name)}_{suffix}"
+                                settings["output_name"] = _automatic_output_name(
+                                    inspection.name,
+                                    feature,
                                 )
                                 render_conversion_settings.refresh()
                                 render_export_settings.refresh()
