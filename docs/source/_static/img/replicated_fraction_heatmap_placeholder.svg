@@ -1,0 +1,26 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="960" height="420" viewBox="0 0 960 420" role="img" aria-labelledby="title desc">
+  <title id="title">Placeholder replicated fraction heatmap</title>
+  <desc id="desc">A placeholder heatmap for replicated fraction over space and time.</desc>
+  <rect width="960" height="420" fill="#f7f8fa"/>
+  <rect x="64" y="42" width="832" height="322" rx="8" fill="#ffffff" stroke="#cfd6df"/>
+  <text x="84" y="78" font-family="Arial, sans-serif" font-size="22" fill="#22313f">Replicated fraction heatmap</text>
+  <text x="84" y="105" font-family="Arial, sans-serif" font-size="13" fill="#5c6773">Placeholder: replace with replicated_fraction_xt from rsim or rmap.</text>
+  <g transform="translate(126 132)">
+    <rect width="660" height="190" fill="#eef2f5" stroke="#cfd6df"/>
+    <g opacity="0.95">
+      <rect x="0" y="0" width="66" height="190" fill="#253494"/>
+      <rect x="66" y="0" width="66" height="190" fill="#2c7fb8"/>
+      <rect x="132" y="0" width="66" height="190" fill="#41b6c4"/>
+      <rect x="198" y="0" width="66" height="190" fill="#7fcdbb"/>
+      <rect x="264" y="0" width="66" height="190" fill="#c7e9b4"/>
+      <rect x="330" y="0" width="66" height="190" fill="#edf8b1"/>
+      <rect x="396" y="0" width="66" height="190" fill="#fee391"/>
+      <rect x="462" y="0" width="66" height="190" fill="#fec44f"/>
+      <rect x="528" y="0" width="66" height="190" fill="#fe9929"/>
+      <rect x="594" y="0" width="66" height="190" fill="#d95f0e"/>
+    </g>
+    <path d="M0 174 C120 154 190 120 300 98 S520 54 660 26" fill="none" stroke="#ffffff" stroke-width="4" opacity="0.85"/>
+  </g>
+  <text x="372" y="348" font-family="Arial, sans-serif" font-size="13" fill="#5c6773">S-phase time (min)</text>
+  <text x="86" y="244" font-family="Arial, sans-serif" font-size="13" fill="#5c6773" transform="rotate(-90 86 244)">genomic position (kb)</text>
+</svg>

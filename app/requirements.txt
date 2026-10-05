@@ -1,0 +1,4 @@
+# Install the project and the declared NiceGUI interface dependencies.
+# Run from the repository root:
+# python -m pip install -r app/requirements.txt
+-e .[app]

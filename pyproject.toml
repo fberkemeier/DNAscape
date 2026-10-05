@@ -1,0 +1,88 @@
+[build-system]
+requires = ["setuptools>=61"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "dnascape"
+version = "1.0.0"
+description = "DNAscape: tools for modelling and simulating DNA replication kinetics."
+readme = "README.md"
+requires-python = ">=3.9"
+license = { file = "LICENSE" }
+authors = [
+  { name = "Francisco Berkemeier" },
+]
+
+dependencies = [
+  # Fitting uses numpy.trapezoid, introduced in NumPy 2.0.
+  "numpy>=2.0",
+  "pandas",
+  "matplotlib",
+  "scipy",
+]
+
+[project.optional-dependencies]
+genomics = [
+  "pyBigWig",
+]
+app = [
+  "nicegui>=3.12,<4",
+  "py7zr>=1,<2",
+  # Preserve ECharts paths and text when converting SVG previews to PDF.
+  "svglib>=1.5,<2",
+  # BigWig wheels are available through Python 3.13. Newer Python versions
+  # can run the app with tables, NumPy profiles, and bedGraph tracks.
+  "pybigtools>=0.3,<0.4; python_version < '3.14'",
+]
+test = [
+  "pytest>=8",
+  # Exercise the local NiceGUI interface with its real component tree.
+  "nicegui>=3.12,<4",
+  "py7zr>=1,<2",
+  "svglib>=1.5,<2",
+  "pybigtools>=0.3,<0.4; python_version < '3.14'",
+]
+
+[project.urls]
+Documentation = "https://dnascape.readthedocs.io/en/latest/"
+Repository = "https://github.com/fberkemeier/DNAscape"
+Issues = "https://github.com/fberkemeier/DNAscape/issues"
+
+[project.scripts]
+dnascape = "dnascape.cli:main"
+
+[tool.setuptools]
+packages = ["dnascape"]
+
+[tool.setuptools.package-data]
+dnascape = ["_inverse_transport.c"]
+
+[tool.pytest.ini_options]
+testpaths = ["dnascape/tests", "app/tests"]
+addopts = "-ra"
+
+[tool.pyright]
+# The local front end is the typed application boundary.  The historical
+# scientific modules remain dynamically typed and are covered by numerical
+# regression tests instead of being hidden among hundreds of low-signal union
+# diagnostics.
+include = ["app"]
+exclude = [".venv", ".pytest_cache"]
+venvPath = "."
+venv = ".venv"
+pythonVersion = "3.10"
+typeCheckingMode = "basic"
+reportMissingTypeStubs = "none"
+
+[tool.ruff]
+target-version = "py39"
+line-length = 100
+extend-exclude = [".venv", ".pytest_cache", ".ruff_cache"]
+
+[tool.ruff.lint]
+# Keep editor diagnostics focused on correctness, unsafe defaults, and imports.
+select = ["E9", "F", "I", "B"]
+
+[tool.ruff.lint.per-file-ignores]
+# This compatibility facade intentionally re-exports the legacy public API.
+"dnascape/core.py" = ["F403"]

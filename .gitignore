@@ -1,0 +1,49 @@
+# Python
+.venv/
+.vscode/
+__pycache__/
+*.pyc
+*.egg-info/
+.pytest_cache/
+.ruff_cache/
+build/
+dist/
+htmlcov/
+.coverage
+.coverage.*
+coverage.xml
+
+# Local tooling and temporary browser profiles
+/.agents/
+/.codex/
+/.tmp*/
+
+
+docs/build/
+
+# Local benchmarks, experiment results, and engineering reports
+/benchmarks/
+/docs/mapping-*.md
+/docs/weibull-forward-backends.md
+
+# Local data
+data/
+
+# Jupyter checkpoints
+**/.ipynb_checkpoints/
+
+# Local example outputs
+examples/figures/
+/figures/
+
+# Keep only minimal example dataset
+examples/data/*
+!examples/data/example/
+!examples/data/example/**
+ROADMAP.md
+
+# Private paper workspace
+paper/
+
+# Local backups
+backup/

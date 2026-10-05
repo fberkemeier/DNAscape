@@ -1,0 +1,42 @@
+/* DNAscape overrides for the Read the Docs theme. */
+
+:root {
+  --dnascape-red: #b03412;
+  --dnascape-red-dark: #8c2a0e;
+  --dnascape-red-light: #d1495b;
+}
+
+.wy-side-nav-search,
+.wy-nav-top {
+  background: var(--dnascape-red);
+}
+
+.wy-side-nav-search > a,
+.wy-side-nav-search .wy-dropdown > a,
+.wy-nav-top a {
+  color: #ffffff;
+}
+
+.wy-side-nav-search input[type="text"] {
+  border-color: var(--dnascape-red-dark);
+}
+
+.wy-menu-vertical a:active {
+  background-color: var(--dnascape-red);
+}
+
+.wy-menu-vertical li.toctree-l1.current > a,
+.wy-menu-vertical li.toctree-l2.current > a,
+.wy-menu-vertical li.toctree-l3.current > a {
+  border-left-color: var(--dnascape-red);
+}
+
+.rst-content a,
+.rst-content a:visited,
+.rst-content .toc-backref {
+  color: var(--dnascape-red);
+}
+
+.rst-content a:hover {
+  color: var(--dnascape-red-dark);
+}

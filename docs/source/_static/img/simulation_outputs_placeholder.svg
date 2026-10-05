@@ -1,0 +1,28 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="960" height="420" viewBox="0 0 960 420" role="img" aria-labelledby="title desc">
+  <title id="title">Placeholder simulation outputs</title>
+  <desc id="desc">A placeholder dashboard-like arrangement of simulated replication outputs.</desc>
+  <rect width="960" height="420" fill="#f7f8fa"/>
+  <rect x="56" y="40" width="848" height="324" rx="8" fill="#ffffff" stroke="#cfd6df"/>
+  <text x="78" y="76" font-family="Arial, sans-serif" font-size="22" fill="#22313f">Simulation outputs</text>
+  <text x="78" y="103" font-family="Arial, sans-serif" font-size="13" fill="#5c6773">Placeholder: timing, efficiency, replicated fraction, and fork counts.</text>
+  <g transform="translate(92 130)">
+    <rect width="340" height="90" rx="5" fill="#eef6ff" stroke="#c4d7ee"/>
+    <path d="M24 66 C84 28 122 70 174 44 S272 48 316 28" fill="none" stroke="#2d6cdf" stroke-width="4"/>
+    <text x="20" y="24" font-family="Arial, sans-serif" font-size="13" fill="#22313f">replication timing</text>
+  </g>
+  <g transform="translate(512 130)">
+    <rect width="340" height="90" rx="5" fill="#fff4f1" stroke="#efcbc4"/>
+    <path d="M24 72 C86 64 116 36 170 42 S250 80 316 30" fill="none" stroke="#b03412" stroke-width="4"/>
+    <text x="20" y="24" font-family="Arial, sans-serif" font-size="13" fill="#22313f">origin efficiency</text>
+  </g>
+  <g transform="translate(92 244)">
+    <rect width="340" height="90" rx="5" fill="#f1fbf5" stroke="#c9e4d1"/>
+    <path d="M24 74 C100 70 140 58 190 42 S274 22 316 18" fill="none" stroke="#2e8b57" stroke-width="4"/>
+    <text x="20" y="24" font-family="Arial, sans-serif" font-size="13" fill="#22313f">replicated fraction</text>
+  </g>
+  <g transform="translate(512 244)">
+    <rect width="340" height="90" rx="5" fill="#f5f0ff" stroke="#d7cdec"/>
+    <path d="M24 74 C92 24 138 78 196 40 S274 44 316 66" fill="none" stroke="#6f4aa8" stroke-width="4"/>
+    <text x="20" y="24" font-family="Arial, sans-serif" font-size="13" fill="#22313f">active forks</text>
+  </g>
+</svg>
