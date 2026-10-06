@@ -515,6 +515,12 @@ def index() -> None:
                 .classes("dn-settings-wide-control")
                 .mark("settings-show-help")
             )
+            dev_mode_setting = (
+                ui.checkbox("Dev Mode")
+                .bind_value(export_settings, "dev_mode")
+                .classes("dn-settings-wide-control")
+                .mark("settings-dev-mode")
+            )
 
         def update_plot_dpi() -> None:
             value = int(plot_dpi_setting.value or 150)
@@ -651,6 +657,7 @@ def index() -> None:
         preserve_page_setting.value = defaults.preserve_page_state
         show_examples_setting.value = defaults.show_examples
         show_help_setting.value = defaults.show_help
+        dev_mode_setting.value = defaults.dev_mode
         memory_limit_setting.value = defaults.conversion_memory_limit_mb
         body.classes(
             add="dn-field-help-enabled" if defaults.show_help else None,
@@ -665,6 +672,7 @@ def index() -> None:
             preserve_page_setting,
             show_examples_setting,
             show_help_setting,
+            dev_mode_setting,
             memory_limit_setting,
         ):
             control.update()

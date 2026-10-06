@@ -41,6 +41,7 @@ class ExportSettings:
     preserve_page_state: bool = True
     show_examples: bool = True
     show_help: bool = False
+    dev_mode: bool = False
     conversion_memory_limit_mb: int = DEFAULT_CONVERSION_MEMORY_LIMIT_MB
 
 
@@ -65,6 +66,7 @@ def reset_export_settings() -> ExportSettings:
     _EXPORT_SETTINGS.preserve_page_state = defaults.preserve_page_state
     _EXPORT_SETTINGS.show_examples = defaults.show_examples
     _EXPORT_SETTINGS.show_help = defaults.show_help
+    _EXPORT_SETTINGS.dev_mode = defaults.dev_mode
     _EXPORT_SETTINGS.conversion_memory_limit_mb = defaults.conversion_memory_limit_mb
     return _EXPORT_SETTINGS
 

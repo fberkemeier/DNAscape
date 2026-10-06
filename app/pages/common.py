@@ -12,7 +12,7 @@ from typing import Any
 
 from nicegui import background_tasks, events, helpers, ui
 
-from app.export_settings import DATA_FILE_FORMAT_OPTIONS
+from app.export_settings import DATA_FILE_FORMAT_OPTIONS, get_export_settings
 from app.icons import DATA_ICON, DATA_ICON_SVG, PLOT_ICON_SVG
 from app.mapping_uploads import MAX_DECOMPRESSED_BYTES, MAX_UPLOAD_BYTES
 
@@ -247,6 +247,13 @@ def action_dock() -> Iterator[None]:
 
     with ui.element("div").classes("dn-action-dock").mark("scientific-action-dock"):
         yield
+        (
+            ui.button("Code", color="#2596be")
+            .props('no-caps icon-right="arrow_drop_down"')
+            .classes("dn-action-primary dn-action-code")
+            .mark("action-code")
+            .bind_visibility_from(get_export_settings(), "dev_mode")
+        )
 
 
 def set_data_upload_locked(uploader: Any, locked: bool) -> None:
