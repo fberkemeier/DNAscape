@@ -190,6 +190,56 @@ def test_csv_upload_auto_selects_chr1_and_map_renders_progress_and_result(
         release.set()
 
 
+def test_mapping_rejects_empty_rows_then_fills_them_without_moving_bins(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from app.pages import mapping as mapping_page
+
+    requests: list[MappingRequest] = []
+
+    def fake_run(request: MappingRequest, _report: Any, _cancel: Any) -> MappingResult:
+        requests.append(request)
+        values = np.asarray(request.inputs["replication_timing"], dtype=float)
+        return _mapped_result(request, values)
+
+    monkeypatch.setattr(mapping_page, "run_mapping", fake_run)
+
+    async def scenario() -> None:
+        async with user_simulation(index) as user:
+            await user.open("/")
+            user.find(marker="nav-mapping").click()
+            await user.should_see(marker="source-replication-timing-upload", retries=60)
+            uploader = cast(
+                Upload, next(iter(user.find(marker="source-replication-timing-upload").elements))
+            )
+            await uploader.handle_uploads(
+                [
+                    Upload.SmallFileUpload(
+                        "timing.tsv", "text/tab-separated-values", b'chr1\n""\n100\n""\n200\n""\n'
+                    )
+                ]
+            )
+            await user.should_see(marker="mapping-input-replication-timing-detected-data")
+            missing = cast(
+                Select, next(iter(user.find(marker="mapping-region-missing").elements))
+            )
+            assert missing.value == "error"
+            user.find(marker="action-map").click()
+            await user.should_see("The selected data contain missing values", retries=60)
+            assert requests == []
+
+            missing.set_value("zero")
+            await asyncio.sleep(0)
+            user.find(marker="action-map").click()
+            await user.should_see(marker="mapping-result-plot", retries=60)
+            assert len(requests) == 1
+            np.testing.assert_array_equal(
+                requests[0].inputs["replication_timing"], [0, 100, 0, 200, 0]
+            )
+
+    asyncio.run(scenario())
+
+
 def test_mapping_all_value_columns_expands_one_table_into_profile_batch(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

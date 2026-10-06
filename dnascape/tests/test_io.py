@@ -3,11 +3,22 @@ import tempfile
 import unittest
 from io import BytesIO
 from pathlib import Path
+from unittest.mock import patch
 
 import numpy as np
 import pandas as pd
 
-from dnascape.io import csv_to_tsv, inspect_genomic_track, rdata, rload, rsave, rtrack
+from dnascape.io import (
+    csv_to_tsv,
+    inspect_genomic_track,
+    load,
+    loadcsv,
+    loadtxt,
+    rdata,
+    rload,
+    rsave,
+    rtrack,
+)
 
 
 class IOTests(unittest.TestCase):
@@ -345,6 +356,65 @@ class IOTests(unittest.TestCase):
             self.assertEqual(values.shape, (3,))
             self.assertTrue(np.isnan(values[1]))
             np.testing.assert_allclose(values[[0, 2]], np.array([1.0, 2.0]))
+
+    def test_single_chromosome_loaders_keep_empty_rows_at_every_position(self):
+        expected = [np.nan, 10, np.nan, 20, np.nan]
+        with tempfile.TemporaryDirectory() as tmpdir:
+            source = Path(tmpdir) / "profile.tsv"
+            source.write_text('chr1\n""\n10\n\n20\n""\n', encoding="utf-8")
+            np.testing.assert_allclose(rload(source, chromosome="chr1"), expected, equal_nan=True)
+            np.testing.assert_allclose(rload(source, value_column="chr1"), expected, equal_nan=True)
+            with patch("dnascape.io._resolve_data_path", return_value=source):
+                np.testing.assert_allclose(loadcsv(chr_number=1), expected, equal_nan=True)
+            copied = Path(tmpdir) / "copied.tsv"
+            rdata(source, target=copied)
+            np.testing.assert_allclose(rload(copied, chromosome="chr1"), expected, equal_nan=True)
+            converted = csv_to_tsv(source, Path(tmpdir) / "converted.tsv")
+            np.testing.assert_allclose(rload(converted, chromosome="chr1"), expected, equal_nan=True)
+
+    def test_numeric_text_loaders_keep_blank_bins(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            source = Path(tmpdir) / "profile.txt"
+            source.write_text("\n10\n\n20\n\n", encoding="utf-8")
+            expected = [np.nan, 10, np.nan, 20, np.nan]
+            np.testing.assert_allclose(rload(source), expected, equal_nan=True)
+            with patch("dnascape.io._resolve_data_path", return_value=source):
+                np.testing.assert_allclose(loadtxt(), expected, equal_nan=True)
+                np.testing.assert_allclose(load(), expected, equal_nan=True)
+
+    def test_wide_chromosome_load_keeps_leading_and_internal_empty_bins(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            source = Path(tmpdir) / "timing.csv"
+            source.write_text("chr1,chr2\n,100\n10,200\n,300\n20,400\n,500\n", encoding="utf-8")
+            np.testing.assert_allclose(
+                rload(source, chromosome="chr1"), [np.nan, 10, np.nan, 20], equal_nan=True
+            )
+
+    def test_track_drop_policies_are_rejected(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            source = Path(tmpdir) / "signal.bedgraph"
+            source.write_text("chr1\t0\t10\t10\nchr1\t20\t30\t20\n", encoding="utf-8")
+            for missing in ("drop", "dropna"):
+                with self.subTest(missing=missing):
+                    with self.assertRaisesRegex(ValueError, "Dropping missing bins"):
+                        rtrack(source, chromosome="chr1", bin_size=10, missing=missing)
+
+    def test_track_fill_values_are_applied_after_smoothing_and_normalization(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            source = Path(tmpdir) / "signal.bedgraph"
+            source.write_text("chr1\t0\t10\t10\nchr1\t20\t30\t20\n", encoding="utf-8")
+            for missing, value in (("zero", 0.0), ("fill", 7.0), ("nan", np.nan)):
+                with self.subTest(missing=missing):
+                    values = rtrack(
+                        source,
+                        chromosome="chr1",
+                        bin_size=10,
+                        missing=missing,
+                        fill_value=value,
+                        smooth_window=3,
+                        normalize="center",
+                    )
+                    np.testing.assert_allclose(values, [-5, value, 5], equal_nan=True)
 
     def test_rload_can_enforce_time_row_array(self):
         with tempfile.TemporaryDirectory() as tmpdir:

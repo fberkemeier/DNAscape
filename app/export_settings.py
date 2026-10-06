@@ -25,6 +25,9 @@ DATA_FILE_FORMAT_OPTIONS = {
 # separate object so callers cannot accidentally mutate the canonical mapping.
 CACHE_FILE_FORMAT_OPTIONS = dict(DATA_FILE_FORMAT_OPTIONS)
 
+DEFAULT_CONVERSION_MEMORY_LIMIT_MB = 64
+MAX_CONVERSION_MEMORY_LIMIT_MB = 4096
+
 
 @dataclass(slots=True)
 class ExportSettings:
@@ -38,6 +41,7 @@ class ExportSettings:
     preserve_page_state: bool = True
     show_examples: bool = True
     show_help: bool = False
+    conversion_memory_limit_mb: int = DEFAULT_CONVERSION_MEMORY_LIMIT_MB
 
 
 _EXPORT_SETTINGS = ExportSettings()
@@ -61,6 +65,7 @@ def reset_export_settings() -> ExportSettings:
     _EXPORT_SETTINGS.preserve_page_state = defaults.preserve_page_state
     _EXPORT_SETTINGS.show_examples = defaults.show_examples
     _EXPORT_SETTINGS.show_help = defaults.show_help
+    _EXPORT_SETTINGS.conversion_memory_limit_mb = defaults.conversion_memory_limit_mb
     return _EXPORT_SETTINGS
 
 
@@ -92,6 +97,8 @@ __all__ = [
     "CACHE_FILE_FORMAT_OPTIONS",
     "COMPRESSION_OPTIONS",
     "DATA_FILE_FORMAT_OPTIONS",
+    "DEFAULT_CONVERSION_MEMORY_LIMIT_MB",
+    "MAX_CONVERSION_MEMORY_LIMIT_MB",
     "ExportSettings",
     "get_export_settings",
     "normalize_compression",

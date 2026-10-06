@@ -1612,6 +1612,8 @@ def materialize_track_upload(
         from dnascape.io import rtrack
 
         selected_column: str | int | None = value_column
+        if source_format == "bedgraph" and selected_column is None:
+            selected_column = getattr(upload, "default_column", None)
         if (
             source_format == "bedgraph"
             and isinstance(selected_column, str)

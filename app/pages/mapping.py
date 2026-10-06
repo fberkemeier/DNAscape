@@ -2074,7 +2074,6 @@ def _render_upload_input(
                                     "nan": "Keep missing",
                                     "zero": "Replace with zero",
                                     "fill": "Replace with value",
-                                    "drop": "Drop missing bins",
                                 },
                                 value="nan",
                                 label="Missing values",

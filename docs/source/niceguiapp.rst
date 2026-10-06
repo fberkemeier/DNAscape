@@ -31,7 +31,15 @@ Data Manager
    Z-score, or maximum absolute. A target interval is defined explicitly by its
    target minimum and target maximum. Thresholds are evaluated before smoothing
    and value scaling.
-   Thresholded samples remain on the original coordinate grid as missing values.
+   Empty bins default to Fill with zero, including for the ENCODE example.
+   Thresholded samples remain on the original coordinate grid. Zero and custom
+   fills are applied after smoothing and value scaling; Keep empty bins preserves
+   missing values. Fill with minimum and Fill with maximum instead use each
+   chromosome's finite values after thresholding and smoothing, fill empty bins
+   before scaling, and participate in the scaling calculation. They report an
+   error if no finite values remain. Mapping reports remaining missing values by
+   default and
+   never drops leading or internal bins. Dropping missing bins is unsupported.
    The same polishing operations are available for selected space, time, and
    space-time profiles. Generated files contain regularly spaced DNAscape profile
    values, not source
@@ -47,6 +55,19 @@ Data Manager
    source. Its wavelet signal is a relative timing score (larger values are
    earlier), not an absolute replication time in minutes; the Data Manager does
    not silently change that scientific meaning.
+
+   The K562 SNS-seq BED example selects column 4 (average enrichment ratio),
+   excluding IGV display scores and coordinates. Prepare as Firing rate uses
+   1 kb bins, maximum aggregation to retain peak heights, zero background,
+   no interpolation, and no smoothing. Its enrichment values represent relative
+   origin activity; a firing-rate calibration remains an explicit scaling choice.
+   Scored BED peaks offer maximum, mean, integrated signal, and coverage;
+   BED3 calls offer presence, covered bases, and coverage. Continuous bedGraph
+   and BigWig retain their supported signal aggregations. Interpolation is
+   unavailable between called peaks, and firing-rate scaling excludes centre
+   and Z-score. BED peak previews retain local extrema at their original
+   coordinates within the 500-point limit. Repli-seq BigWig conversion and
+   preview behavior are unchanged.
 
 Mapping
    Configure ``rmap`` inputs, regions, routes, and preview settings, then run
@@ -75,6 +96,13 @@ Simulation
    Plot previews can be enlarged and exported as PNG, SVG, or PDF. Selected
    raw arrays can be downloaded as CSV, TSV, TXT, NPY, or NPZ. The application
    Settings menu controls plot DPI and raw compression; GZIP is the default.
+   Conversion memory limit (MB) sets the estimated working-memory budget for
+   BigWig and bedGraph preparation, from 64 MB (default) to 4096 MB. Choosing
+   512 MB allows the K562 example at 1 kb bins for all chromosomes (about
+   322 MB estimated). Related track array and download limits scale with the
+   budget. It does not reserve RAM, cap actual process RAM use, or change upload
+   limits. Settings changes take effect immediately. Application restart and
+   Reset everything restore the 64 MB default.
    Histogram views expose synchronized bin-count, exact bin-size, and editable
    X-range controls. Changing the range preserves the requested bin width and
    updates the count, while the reset action restores the full data range. Bars

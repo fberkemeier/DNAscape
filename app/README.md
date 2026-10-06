@@ -14,6 +14,35 @@ positive exact bin size synchronized, can draw touching or spaced bars, and let
 the user choose whether an internal edge belongs to the left or right bin;
 incomplete numeric edits leave the last valid preview in place. Application
 Settings controls plot DPI and the compression format, with GZIP selected by default.
+**Conversion memory limit (MB)** sets the estimated working-memory budget for
+BigWig and bedGraph preparation, from 64 MB (default) to 4096 MB. The K562 ENCODE
+example at 1 kb bins for all chromosomes needs about 322 MB; choosing 512 MB
+allows that conversion. Related track array and download limits scale with the
+budget. This setting does not reserve RAM, cap actual RAM use, or change upload
+limits. Settings changes take effect immediately. Application restart and
+Reset everything restore the 64 MB default.
+Data Manager fills empty genomic bins with zero by default, including for the
+ENCODE example. Zero and custom-value fills are applied after thresholding,
+smoothing, and value scaling, so the requested fill is unchanged in the output.
+Fill with minimum and Fill with maximum use each chromosome's finite values
+after thresholding and smoothing and fill empty bins before value scaling.
+These fills participate in the scaling calculation. If no finite values remain,
+the conversion reports an error because the requested minimum/maximum is undefined.
+Mapping preserves blank rows and leading bins and reports remaining missing
+values by default. Interpolation and explicit fills retain bin positions;
+dropping missing bins is unsupported in the interface and `rtrack`. Only trailing
+padding of shorter columns in wide chromosome tables is removed. Existing files
+with missing bins must be filled or regenerated before mapping.
+The SNS-seq K562 BED example selects its declared enrichment-ratio column and
+prepares Firing rate with 1 kb bins, maximum peak aggregation, zero background,
+and no interpolation or smoothing. IGV display scores and coordinates are
+excluded from the signal picker. Peak previews retain local maxima and background
+at their original positions within the 500-point limit. Aggregation choices
+distinguish scored BED peaks, unit-valued BED3 calls, and continuous bedGraph or
+BigWig signals; peak-call gaps cannot be interpolated. Firing rate excludes centre
+and Z-score scaling. SNS enrichment is relative origin activity and needs a
+chosen calibration to express a firing rate. Repli-seq BigWig retains mean
+aggregation and its existing continuous-signal operations and preview.
 Mapping raw downloads start with TSV (the first format option) and compression
 disabled, for both individual and batch outputs.
 Simulation accepts up to 50,000 replicates. One-dimensional time courses and
@@ -79,6 +108,9 @@ python -m app
 
 DNAscape does not launch a browser automatically. Set `DNASCAPE_APP_SHOW=true`
 only when an automatic browser window is wanted.
+
+Workflow pages load their modules when first opened. Starting the server does
+not import every mapping, simulation, plotting, and conversion dependency.
 
 The logos are served directly from `docs/source/_static/`; they are not copied
 or duplicated in this folder.

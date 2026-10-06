@@ -40,16 +40,13 @@ def _resolve_data_path(relative_path, for_write=False):
 
 def load(d='replication_timing', cell_line='H1', chr_number=1, example='hESC'):
     if d != 'example':
-        data = np.loadtxt(_resolve_data_path(f"{mapt[d]}/{mapt[d]}_{cell_line}_chr{chr_number}.txt"), dtype=float)
+        data = _read_numeric_text(_resolve_data_path(f"{mapt[d]}/{mapt[d]}_{cell_line}_chr{chr_number}.txt"))
     else:
-        data = np.loadtxt(_resolve_data_path(f"{mapt[d]}/{example}_chr{chr_number}.txt"), dtype=float)
+        data = _read_numeric_text(_resolve_data_path(f"{mapt[d]}/{example}_chr{chr_number}.txt"))
     return data
 
 def loadtxt(stitle='save_example', outpath="output"):
-    arr = np.loadtxt(
-        _resolve_data_path(f"{outpath}/{stitle}.txt"),
-        dtype=float
-    )
+    arr = _read_numeric_text(_resolve_data_path(f"{outpath}/{stitle}.txt"))
     return arr
 
 def loadcsv(d='replication_timing', cell_line='H1', chr_number=1, example='hESC', region='region'):
@@ -59,11 +56,13 @@ def loadcsv(d='replication_timing', cell_line='H1', chr_number=1, example='hESC'
         fname = _resolve_data_path(f"{mapt[d]}/{region}.csv")
     else:
         fname = _resolve_data_path(f"{mapt[d]}/{mapt[d]}_{cell_line}.csv")
-    df = pd.read_csv(fname)
+    df = _read_rdata_table(fname, "csv")
     col = f"chr{chr_number}"
     if col not in df.columns:
         raise KeyError(f"Column {col} not found in {fname}")
-    data = df[col].dropna().to_numpy(dtype=float)
+    data = _selected_profile_values(
+        df[col], trim_tail_padding=df.attrs.get("_wide_chromosome_table", False)
+    )
     return data
 
 def savetxt(arr, stitle='save_example', outpath="output"):
@@ -76,7 +75,7 @@ def savecsv(arr, chr_number, stitle='save_example', outpath="output"):
     fname = _resolve_data_path(f"{outpath}/{stitle}.csv", for_write=True)
     col = f"chr{chr_number}"
     arr = np.asarray(arr, float)
-    df = pd.read_csv(fname) if fname.exists() else pd.DataFrame()
+    df = pd.read_csv(fname, skip_blank_lines=False) if fname.exists() else pd.DataFrame()
     if len(df) < len(arr):
         df = df.reindex(range(len(arr)))
     df[col] = pd.Series(arr, index=range(len(arr)))
@@ -101,13 +100,10 @@ def csv_to_tsv(input_path, output_path=None, decimal_places=2, encoding="utf-8",
             raise ValueError("decimal_places must be non-negative or None.")
         float_format = f"%.{decimal_places}f"
 
-    read_kwargs = {"encoding": encoding}
-    if input_sep is None:
-        read_kwargs.update({"sep": None, "engine": "python"})
-    else:
-        read_kwargs["sep"] = input_sep
-
-    df = pd.read_csv(input_path, **read_kwargs)
+    source_format = "tsv" if ".tsv" in input_path.suffixes else "csv"
+    df = _read_rdata_table(
+        input_path, source_format, encoding=encoding, input_sep=input_sep
+    )
     if decimal_places is not None:
         numeric_cols = df.select_dtypes(include=["number"]).columns
         df[numeric_cols] = df[numeric_cols].astype(float)
@@ -416,8 +412,6 @@ _TRACK_MISSING_ALIASES = {
     "zeros": "zero",
     "fill": "fill",
     "value": "fill",
-    "drop": "drop",
-    "dropna": "drop",
 }
 
 _TRACK_INTERPOLATION_ALIASES = {
@@ -462,6 +456,11 @@ def _normalise_track_aggregation(aggregation):
 
 
 def _normalise_track_missing(missing):
+    if str(missing).strip().casefold() in {"drop", "dropna"}:
+        raise ValueError(
+            "Dropping missing bins would change genomic positions. "
+            "Keep missing bins, interpolate, or fill them with zero/a value instead."
+        )
     return _normalise_alias(missing, _TRACK_MISSING_ALIASES, "missing-value policy")
 
 
@@ -864,19 +863,13 @@ def _postprocess_track_table(
     for column in value_columns:
         series = pd.to_numeric(result[column], errors="coerce").astype(float)
         series = _apply_track_interpolation(series, interpolation)
+        empty = series.isna()
+        series = _smooth_track_series(series, smooth_window).mask(empty)
+        series = _normalize_track_series(series, normalize)
         if missing == "zero":
             series = series.fillna(0.0)
         elif missing == "fill":
             series = series.fillna(float(fill_value))
-        result[column] = series
-
-    if missing == "drop":
-        result = result.dropna(subset=value_columns).reset_index(drop=True)
-
-    for column in value_columns:
-        series = pd.to_numeric(result[column], errors="coerce").astype(float)
-        series = _smooth_track_series(series, smooth_window)
-        series = _normalize_track_series(series, normalize)
         result[column] = series
 
     return result
@@ -1101,12 +1094,38 @@ def _read_rdata_table(
         sep = input_sep
     else:
         sep = _sniff_rdata_separator(path, source_format, encoding=encoding)
-    kwargs = {"encoding": encoding, "usecols": usecols}
+    kwargs = {"encoding": encoding, "usecols": usecols, "skip_blank_lines": False}
     if sep is None:
         kwargs.update({"sep": None, "engine": "python"})
     else:
         kwargs["sep"] = sep
-    return pd.read_csv(path, **kwargs)
+    header_kwargs = {key: value for key, value in kwargs.items() if key != "usecols"}
+    columns = pd.read_csv(path, nrows=0, **header_kwargs).columns
+    table = pd.read_csv(path, **kwargs)
+    table.attrs["_wide_chromosome_table"] = len(columns) > 1 and all(
+        re.fullmatch(r"chr(?:omosome)?\s*(?:\d+|x|y|m|mt)", str(column).strip().casefold())
+        for column in columns
+    )
+    return table
+
+
+def _read_numeric_text(path, encoding="utf-8"):
+    """Read headerless numeric text without deleting blank genomic bins."""
+
+    opener = gzip.open if str(path).lower().endswith(".gz") else open
+    with opener(path, "rt", encoding=encoding) as handle:
+        width = 1
+        for line in handle:
+            data = line.split("#", 1)[0].strip()
+            if data:
+                width = len(data.split())
+                break
+        handle.seek(0)
+        lines = (
+            line if line.strip() else " ".join(["nan"] * width) + "\n"
+            for line in handle
+        )
+        return np.loadtxt(lines, dtype=float)
 
 
 def _read_rdata_npz(path, array_key=None, data_form="auto"):
@@ -1131,12 +1150,15 @@ def _read_rdata_npz(path, array_key=None, data_form="auto"):
     return values, table, labels, data_form
 
 
-def _selected_profile_values(series):
-    """Preserve genomic gaps while removing only wide-table tail padding."""
+def _selected_profile_values(series, *, trim_tail_padding=False):
+    """Preserve every genomic bin; optionally crop wide-table tail padding."""
 
     values = series.to_numpy(dtype=float)
-    present = np.flatnonzero(~np.isnan(values))
-    return values[: present[-1] + 1] if present.size else values
+    if trim_tail_padding:
+        present = np.flatnonzero(~np.isnan(values))
+        if present.size:
+            return values[: present[-1] + 1]
+    return values
 
 
 def _rdata_payload_from_source(
@@ -1177,13 +1199,19 @@ def _rdata_payload_from_source(
             if chromosome is not None:
                 if chromosome not in table.columns:
                     raise KeyError(f"Column {chromosome!r} not found in {source_path}.")
-                values = _selected_profile_values(table[chromosome])
+                values = _selected_profile_values(
+                    table[chromosome],
+                    trim_tail_padding=table.attrs.get("_wide_chromosome_table", False),
+                )
                 labels = [str(chromosome)]
                 table = None
             elif value_column is not None:
                 if value_column not in table.columns:
                     raise KeyError(f"Column {value_column!r} not found in {source_path}.")
-                values = _selected_profile_values(table[value_column])
+                values = _selected_profile_values(
+                    table[value_column],
+                    trim_tail_padding=table.attrs.get("_wide_chromosome_table", False),
+                )
                 labels = [str(value_column)]
                 table = None
             else:
@@ -1191,7 +1219,7 @@ def _rdata_payload_from_source(
                 labels = [str(col) for col in table.columns]
                 data_form = "table" if data_form == "auto" else data_form
         elif inferred_format == "txt":
-            values = np.loadtxt(source_path, dtype=float)
+            values = _read_numeric_text(source_path, encoding=encoding)
         elif inferred_format in {"npy", "npv"}:
             if str(source_path).lower().endswith(".gz"):
                 with gzip.open(source_path, "rb") as source_file:
@@ -1468,6 +1496,7 @@ def rtrack(
     sources are returned as a space-time matrix with shape ``(space, tracks)``.
     Use ``as_table=True`` to preserve chromosome and coordinate columns.
     """
+    missing = _normalise_track_missing(missing)
     sources = list(source) if _is_track_source_collection(source) else [source]
     label_list = None
     if labels is not None:

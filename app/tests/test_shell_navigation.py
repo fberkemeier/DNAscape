@@ -80,6 +80,7 @@ def test_export_preferences_live_in_the_application_settings_menu() -> None:
         settings.preserve_page_state,
         settings.show_examples,
         settings.show_help,
+        settings.conversion_memory_limit_mb,
     )
 
     async def scenario() -> None:
@@ -118,6 +119,11 @@ def test_export_preferences_live_in_the_application_settings_menu() -> None:
                 Checkbox,
                 next(iter(user.find(marker="settings-show-help").elements)),
             )
+            memory_limit = cast(
+                Number,
+                next(iter(user.find(marker="settings-conversion-memory-limit").elements)),
+            )
+            assert memory_limit.value == previous[8]
             assert dpi.value == previous[0]
             assert compression.options == COMPRESSION_OPTIONS
             assert compression.value == previous[1]
@@ -140,6 +146,7 @@ def test_export_preferences_live_in_the_application_settings_menu() -> None:
                 preserve_page_state.set_value(False)
                 show_examples.set_value(False)
                 show_help.set_value(True)
+                memory_limit.set_value(512)
             await asyncio.sleep(0)
             assert settings.plot_dpi == 240
             assert settings.raw_compression == "zip"
@@ -149,6 +156,13 @@ def test_export_preferences_live_in_the_application_settings_menu() -> None:
             assert settings.preserve_page_state is False
             assert settings.show_examples is False
             assert settings.show_help is True
+            assert settings.conversion_memory_limit_mb == 512
+            assert memory_limit.validate() is True
+            with user.client:
+                memory_limit.set_value(None)
+            await asyncio.sleep(0)
+            assert settings.conversion_memory_limit_mb == 512
+            assert memory_limit.validate() is False
             with user.client:
                 result_name_style.set_value("short")
             await asyncio.sleep(0)
@@ -166,6 +180,7 @@ def test_export_preferences_live_in_the_application_settings_menu() -> None:
             settings.preserve_page_state,
             settings.show_examples,
             settings.show_help,
+            settings.conversion_memory_limit_mb,
         ) = previous
 
 
@@ -247,6 +262,7 @@ def test_reset_menu_restores_defaults_and_clears_the_client_workspace() -> None:
         settings.preserve_page_state,
         settings.show_examples,
         settings.show_help,
+        settings.conversion_memory_limit_mb,
     )
     settings.plot_dpi = 288
     settings.raw_compression = "zip"
@@ -256,6 +272,7 @@ def test_reset_menu_restores_defaults_and_clears_the_client_workspace() -> None:
     settings.preserve_page_state = False
     settings.show_examples = False
     settings.show_help = True
+    settings.conversion_memory_limit_mb = 1024
 
     async def scenario() -> None:
         async with user_simulation(index) as user:
@@ -280,6 +297,7 @@ def test_reset_menu_restores_defaults_and_clears_the_client_workspace() -> None:
             assert settings.result_name_style == "short"
             assert settings.show_examples is True
             assert settings.show_help is False
+            assert settings.conversion_memory_limit_mb == 64
             name_style = cast(
                 Select,
                 next(iter(user.find(marker="settings-result-name-style").elements)),
@@ -292,9 +310,14 @@ def test_reset_menu_restores_defaults_and_clears_the_client_workspace() -> None:
                 Checkbox,
                 next(iter(user.find(marker="settings-show-help").elements)),
             )
+            memory_limit = cast(
+                Number,
+                next(iter(user.find(marker="settings-conversion-memory-limit").elements)),
+            )
             assert name_style.value == "short"
             assert show_examples.value is True
             assert show_help.value is False
+            assert memory_limit.value == 64
             with user.client:
                 assert current_session_cache().count() == 0
 
@@ -310,7 +333,8 @@ def test_reset_menu_restores_defaults_and_clears_the_client_workspace() -> None:
             settings.preserve_page_state,
             settings.show_examples,
             settings.show_help,
-        ) = previous
+            settings.conversion_memory_limit_mb,
+            ) = previous
 
 
 def test_browser_launch_is_opt_in(monkeypatch: pytest.MonkeyPatch) -> None:

@@ -1,25 +1,25 @@
-"""Page registry for the DNAscape NiceGUI prototype."""
+"""Load workflow pages when opened instead of during server startup."""
 
 from __future__ import annotations
 
-from app.pages import (
-    cached_files,
-    data_management,
-    mapping,
-    overview,
-    plotting,
-    resources,
-    simulation,
-)
+from collections.abc import Callable
+from importlib import import_module
+
+
+def _lazy_renderer(module_name: str) -> Callable[[Callable[[str], None]], None]:
+    def render(navigate: Callable[[str], None]) -> None:
+        import_module(f"{__name__}.{module_name}").render(navigate)
+
+    return render
 
 PAGE_RENDERERS = {
-    "overview": overview.render,
-    "data-management": data_management.render,
-    "mapping": mapping.render,
-    "simulation": simulation.render,
-    "plotting": plotting.render,
-    "cached-files": cached_files.render,
-    "resources": resources.render,
+    "overview": _lazy_renderer("overview"),
+    "data-management": _lazy_renderer("data_management"),
+    "mapping": _lazy_renderer("mapping"),
+    "simulation": _lazy_renderer("simulation"),
+    "plotting": _lazy_renderer("plotting"),
+    "cached-files": _lazy_renderer("cached_files"),
+    "resources": _lazy_renderer("resources"),
 }
 
 __all__ = ["PAGE_RENDERERS"]

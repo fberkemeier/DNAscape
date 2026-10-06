@@ -160,12 +160,18 @@ Cleanup
 
 ``rtrack`` supports:
 
-* ``missing="nan"``, ``"zero"``, ``"fill"``, or ``"drop"``;
+* ``missing="nan"``, ``"zero"``, or ``"fill"``;
 * ``interpolation="linear"``, ``"ffill"``, or ``"bfill"``;
 * ``smooth_window`` for rolling mean smoothing;
 * ``normalize="minmax"``, ``"zscore"``, ``"center"``, or ``"maxabs"``.
 
 Use the lightest cleanup that makes the assay usable, and record it.
+Zero and custom-value fills are applied after smoothing and normalization.
+Missing bins retain their positions; dropping them is rejected. Text and CSV
+loaders preserve empty rows, leading bins, and internal gaps. Only trailing
+padding in wide chromosome tables is cropped when selecting a chromosome.
+The Data Manager defaults to filling empty bins with zero and applies fills
+after value scaling. Mapping reports remaining missing values by default.
 
 App Page
 --------

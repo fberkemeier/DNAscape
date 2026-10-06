@@ -50,6 +50,8 @@ _COORDINATE_NAMES = {
     "pos",
     "start",
     "start bp",
+    "thick start",
+    "thick end",
     "t",
     "time",
     "time min",
@@ -61,6 +63,12 @@ _METADATA_NAMES = {
     "name",
     "region",
     "sample",
+    "strand",
+    "igv score",
+    "item rgb",
+    "block count",
+    "block sizes",
+    "block starts",
 }
 _VALUE_NAME_PARTS = (
     "value",
@@ -72,6 +80,7 @@ _VALUE_NAME_PARTS = (
     "density",
     "fraction",
     "directionality",
+    "enrichment",
 )
 _NPZ_METADATA_KEYS = {
     "columns",
@@ -119,6 +128,7 @@ class UploadInspection:
     missing_count: int = 0
     semantic_form: str | None = None
     region_names: tuple[str, ...] = ()
+    track_kind: str | None = None
     _table_data: Mapping[str, np.ndarray] = field(
         default_factory=lambda: MappingProxyType({}),
         repr=False,
@@ -234,7 +244,17 @@ def _decode_text(payload: bytes) -> str:
 
 def _sniff_delimiter(text: str, source_format: str) -> str | None:
     default = {"csv": ",", "tsv": "\t"}.get(source_format)
-    sample = "\n".join(line for line in text.splitlines()[:40] if line.strip())[:16_384]
+    lines = [
+        line for line in text.splitlines()[:40]
+        if line.strip() and not (source_format == "bedgraph" and _is_bedgraph_directive(line))
+    ]
+    if source_format == "bedgraph" and lines:
+        # Commas in BED RGB/block fields are contents, not table delimiters.
+        if "\t" in lines[0]:
+            return "\t"
+        if len(lines[0].split()) >= 3:
+            return None
+    sample = "\n".join(lines)[:16_384]
     if not sample:
         return default
     try:
@@ -302,7 +322,7 @@ def _iter_table_rows(
     *,
     source_format: str,
 ) -> Iterator[list[str]]:
-    """Yield normalized non-empty rows directly from bounded source bytes."""
+    """Yield every numeric-table row, including entirely missing bins."""
 
     if b"\x00" in payload[:4096]:
         raise UploadInspectionError("The selected table appears to be a binary file.")
@@ -311,22 +331,22 @@ def _iter_table_rows(
         lines = (
             line
             for line in stream
-            if line.strip()
-            and not (
+            if not (
                 source_format == "bedgraph"
-                and _is_bedgraph_directive(line)
+                and (not line.strip() or _is_bedgraph_directive(line))
             )
         )
         if delimiter is None:
             raw_rows: Iterator[Sequence[str]] = (
-                re.split(r"\s+", line.strip()) for line in lines
+                re.split(r"\s+", line.strip()) if line.strip() else [""]
+                for line in lines
             )
         else:
             raw_rows = csv.reader(lines, delimiter=delimiter)
         for raw_row in raw_rows:
             row = [str(cell).strip() for cell in raw_row]
-            if row and any(row):
-                yield row
+            if source_format != "bedgraph" or (row and any(row)):
+                yield row or [""]
     except UnicodeDecodeError as exc:
         raise UploadInspectionError("Text uploads must use UTF-8 encoding.") from exc
     except csv.Error as exc:
@@ -423,9 +443,65 @@ def _deduplicate_columns(values: Sequence[str]) -> tuple[str, ...]:
     return tuple(columns)
 
 
+def _bed_interval_columns(payload: bytes, width: int, source_name: str) -> tuple[str, ...]:
+    """Use declared BED fields before treating numeric display fields as signals."""
+
+    declared: dict[int, str] = {}
+    first_values: list[str] = []
+    for line in io.TextIOWrapper(io.BytesIO(payload), encoding="utf-8-sig"):
+        if not line.strip():
+            continue
+        if not _is_bedgraph_directive(line):
+            first_values = re.split(r"\s+", line.strip())
+            break
+        match = re.match(r"\s*#\s*Column\s+(\d+)\s*:\s*(.+)", line, re.IGNORECASE)
+        if match:
+            description = match.group(2).strip().casefold()
+            if "enrichment ratio" in description:
+                label = "enrichment_ratio"
+            elif "score" in description and "igv" in description:
+                label = "igv_score"
+            elif "thick" in description and "start" in description:
+                label = "thick_start"
+            elif "thick" in description and ("stop" in description or "end" in description):
+                label = "thick_end"
+            elif "strand" in description:
+                label = "strand"
+            elif "red, green, and blue" in description or "rgb" in description:
+                label = "item_rgb"
+            else:
+                label = re.sub(r"[^a-z0-9]+", "_", description).strip("_")
+            declared[int(match.group(1)) - 1] = label
+
+    base_name = source_name.casefold().removesuffix(".gz")
+    if base_name.endswith(".bed") and width >= 5 and not declared:
+        try:
+            quantitative_name = np.isfinite(float(first_values[3]))
+        except (IndexError, ValueError):
+            quantitative_name = False
+        names = (
+            "chromosome", "start", "end",
+            "value" if quantitative_name else "name",
+            "igv_score" if quantitative_name else "score", "strand",
+            "thick_start", "thick_end", "item_rgb", "block_count", "block_sizes", "block_starts",
+        )
+    else:
+        names = ("chromosome", "start", "end", "value")
+    return _deduplicate_columns(
+        [
+            ("chromosome", "start", "end")[index]
+            if index < 3
+            else declared.get(index, names[index] if index < len(names) else f"Column {index + 1}")
+            for index in range(width)
+        ]
+    )
+
+
 def _table_layout(
     payload: bytes,
     source_format: str,
+    *,
+    source_name: str = "",
 ) -> tuple[str | None, bool, tuple[str, ...], int, int]:
     """Inspect table structure in constant auxiliary memory.
 
@@ -457,7 +533,9 @@ def _table_layout(
                 "The table contains more than eight million values and cannot be kept safely "
                 "in this local session. Split it into smaller files or use NPY/NPZ."
             )
-        if len(samples) < 25:
+        # Empty bins count towards the shape without hiding the numeric
+        # samples needed to distinguish chromosome headers from data.
+        if len(samples) < 25 and (not samples or any(row)):
             samples.append(row)
     if not row_count:
         raise UploadInspectionError("The selected file is empty.")
@@ -480,16 +558,7 @@ def _table_layout(
     if has_header:
         columns = _deduplicate_columns(first)
     elif source_format == "bedgraph" and width >= 3:
-        track_columns = ("chromosome", "start", "end")
-        if width >= 4:
-            track_columns += ("value",)
-        columns = _deduplicate_columns(
-            track_columns
-            + tuple(
-                f"Column {index}"
-                for index in range(len(track_columns) + 1, width + 1)
-            )
-        )
+        columns = _bed_interval_columns(payload, width, source_name)
     else:
         columns = tuple(f"Column {index}" for index in range(1, width + 1))
     return delimiter, has_header, columns, data_rows, width
@@ -598,14 +667,13 @@ def _pandas_numeric_columns(
             engine="c",
             keep_default_na=True,
             low_memory=False,
-            skip_blank_lines=True,
+            skip_blank_lines=False,
             skiprows=skipped_rows or None,
         )
     except (UnicodeDecodeError, ValueError, pd.errors.ParserError) as exc:
         raise UploadInspectionError("The selected table is not valid delimited text.") from exc
     if len(frame) != data_rows:
-        # Unusual delimiter-only rows are skipped by the stdlib semantics but
-        # retained by pandas.  Fall back rather than silently changing axes.
+        # Fall back to the row-preserving parser rather than changing axes.
         return None
 
     result: dict[str, np.ndarray] = {}
@@ -632,8 +700,12 @@ def _stream_table_parts(
     payload: bytes,
     source_format: str,
     expected_form: str,
+    *,
+    source_name: str = "",
 ) -> tuple[str | None, bool, tuple[str, ...], int, dict[str, np.ndarray]]:
-    delimiter, has_header, columns, data_rows, _ = _table_layout(payload, source_format)
+    delimiter, has_header, columns, data_rows, _ = _table_layout(
+        payload, source_format, source_name=source_name
+    )
     numeric = _pandas_numeric_columns(
         payload,
         delimiter,
@@ -840,6 +912,7 @@ def _inspect_table(
         payload,
         source_format,
         expected_form,
+        source_name=name,
     )
     # BED3 origin/feature calls contain positions but no explicit signal.
     # Treat every interval as value 1 so the existing track-binning pipeline
@@ -885,6 +958,13 @@ def _inspect_table(
         missing_columns=missing_columns,
         missing_count=sum(
             int(np.count_nonzero(np.isnan(numeric[column]))) for column in selectable
+        ),
+        track_kind=(
+            "intervals" if presence_track else "peaks"
+            if source_format == "bedgraph" and (
+                name.casefold().removesuffix(".gz").endswith(".bed")
+                or "enrichment_ratio" in columns
+            ) else "signal" if source_format == "bedgraph" else None
         ),
         _table_data=_frozen_arrays(numeric),
     )
@@ -1267,6 +1347,7 @@ def _materialize_table(
             payload,
             inspection.source_format,
             inspection.expected_form,
+            source_name=inspection.name,
         )
     if not numeric:
         raise UploadInspectionError("No numeric data column was detected in the selected table.")
@@ -1313,13 +1394,20 @@ def _materialize_table(
         assert selected is not None
         values = numeric[selected]
     values_array = np.asarray(values)
-    if inspection.expected_form.casefold() == "x" and values_array.ndim == 1:
+    if (
+        inspection.expected_form.casefold() == "x"
+        and values_array.ndim == 1
+        and len(inspection.numeric_columns) > 1
+        and all(
+            re.fullmatch(r"chr(?:omosome)?\s*(?:\d+|x|y|m|mt)", _normalized_column_name(name))
+            for name in inspection.numeric_columns
+        )
+    ):
         present = np.flatnonzero(~np.isnan(values_array))
         if present.size:
-            # Wide chromosome tables conventionally pad shorter tracks at the
-            # edges. Match rload's selected-column behavior without dropping
-            # internal gaps or shifting their genomic bins.
-            values_array = values_array[present[0] : present[-1] + 1]
+            # Only trailing padding in a wide chromosome table can be cropped.
+            # Leading and internal empty bins keep their original positions.
+            values_array = values_array[: present[-1] + 1]
     resolved = _resolve_missing_values(
         values_array,
         policy=missing_policy,

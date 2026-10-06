@@ -509,7 +509,7 @@ def test_mapping_import_controls_follow_rdata_forms_and_track_semantics() -> Non
                 "std",
             )
             missing = _select(user, "mapping-input-replication-timing-track-missing")
-            assert _option_keys(missing) == ("nan", "zero", "fill", "drop")
+            assert _option_keys(missing) == ("nan", "zero", "fill")
             await user.should_not_see(marker="mapping-input-replication-timing-track-fill-value")
             await _set_select(
                 user,

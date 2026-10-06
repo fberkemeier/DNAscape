@@ -215,6 +215,84 @@ def test_missing_value_policies_preserve_vector_rows_and_matrix_shape() -> None:
     np.testing.assert_array_equal(recovered, [[1.0, 1.0], [2.0, 2.0], [3.0, 3.0]])
 
 
+@pytest.mark.parametrize(
+    ("filename", "payload"),
+    (
+        ("profile.tsv", b'chr1\n""\n10\n""\n20\n""\n'),
+        ("profile.tsv", b"chr1\n\n10\n\n20\n\n"),
+        ("profile.csv", b'chr1\n""\n10\n""\n20\n""\n'),
+        ("profile.txt", b"chr1\n\n10\n\n20\n\n"),
+        ("profile.csv", b"chr1\nNaN\n10\nNaN\n20\nNaN\n"),
+    ),
+)
+@pytest.mark.parametrize("streaming", (False, True))
+def test_empty_single_column_rows_never_collapse_genomic_bins(
+    filename: str,
+    payload: bytes,
+    streaming: bool,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    if streaming:
+        monkeypatch.setattr(uploads, "_pandas_numeric_columns", lambda *_args, **_kwargs: None)
+    inspection = inspect_upload(filename, payload, expected_form="x")
+    assert inspection.shape == (5, 1)
+    assert inspection.missing_count == 3
+    with pytest.raises(UploadInspectionError, match="contain missing values"):
+        materialize_upload(inspection)
+    np.testing.assert_allclose(
+        materialize_upload(inspection, missing_policy="ignore"),
+        [np.nan, 10, np.nan, 20, np.nan],
+        equal_nan=True,
+    )
+    np.testing.assert_array_equal(
+        materialize_upload(inspection, missing_policy="zero"), [0, 10, 0, 20, 0]
+    )
+    np.testing.assert_array_equal(
+        materialize_upload(inspection, missing_policy="interpolate"), [10, 10, 15, 20, 20]
+    )
+
+
+def test_long_empty_prefix_does_not_hide_a_chromosome_header() -> None:
+    payload = b"chr1\n" + b'""\n' * 40 + b"10\n20\n"
+    inspection = inspect_upload("profile.tsv", payload, expected_form="x")
+    assert inspection.columns == ("chr1",)
+    assert inspection.shape == (42, 1)
+    assert inspection.missing_count == 40
+    with pytest.raises(UploadInspectionError, match="contain missing values"):
+        materialize_upload(inspection)
+
+
+def test_wide_chromosome_padding_never_removes_leading_or_internal_bins() -> None:
+    inspection = inspect_upload(
+        "chromosomes.tsv",
+        b"chr1\tchr2\n\t100\n10\t200\n\t300\n20\t400\n\t500\n",
+        expected_form="x",
+    )
+    with pytest.raises(UploadInspectionError, match="contain missing values"):
+        materialize_upload(inspection, column="chr1")
+    np.testing.assert_allclose(
+        materialize_upload(inspection, column="chr1", missing_policy="ignore"),
+        [np.nan, 10, np.nan, 20],
+        equal_nan=True,
+    )
+    np.testing.assert_array_equal(
+        materialize_upload(inspection, column="chr1", missing_policy="zero"), [0, 10, 0, 20]
+    )
+
+
+def test_completely_empty_wide_table_rows_keep_their_bin_indices() -> None:
+    inspection = inspect_upload(
+        "chromosomes.tsv", b"chr1\tchr2\n10\t100\n\t\n20\t200\n", expected_form="x"
+    )
+    assert inspection.shape == (3, 2)
+    assert inspection.missing_count == 2
+    np.testing.assert_allclose(
+        materialize_upload(inspection, column="chr1", missing_policy="ignore"),
+        [10, np.nan, 20],
+        equal_nan=True,
+    )
+
+
 def test_nonnumeric_signal_typo_never_falls_back_to_position_column() -> None:
     with pytest.raises(UploadInspectionError, match="'chr1'.*nonnumeric"):
         inspect_upload(
@@ -396,6 +474,8 @@ def test_bed9_sns_peaks_use_the_quantitative_fourth_column() -> None:
     assert inspection.source_format == "bedgraph"
     assert inspection.columns[:4] == ("chromosome", "start", "end", "value")
     assert inspection.default_column == "value"
+    assert inspection.numeric_columns == ("value",)
+    assert inspection.track_kind == "peaks"
     np.testing.assert_allclose(
         materialize_track_upload(
             inspection,
@@ -406,6 +486,38 @@ def test_bed9_sns_peaks_use_the_quantitative_fourth_column() -> None:
             aggregation="mean",
         ),
         [4.27529],
+    )
+
+
+@pytest.mark.parametrize("streaming", (False, True))
+def test_declared_sns_columns_exclude_igv_scores_and_coordinates(
+    sns_peak_payload: bytes, streaming: bool, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    if streaming:
+        monkeypatch.setattr(uploads, "_pandas_numeric_columns", lambda *_args, **_kwargs: None)
+    inspection = inspect_upload("K562_Peaks_FDR15.bed.gz", gzip.compress(sns_peak_payload))
+    assert inspection.columns == (
+        "chromosome", "start", "end", "enrichment_ratio", "igv_score", "strand",
+        "thick_start", "thick_end", "item_rgb",
+    )
+    assert inspection.default_column == "enrichment_ratio"
+    assert inspection.numeric_columns == ("enrichment_ratio",)
+    assert inspection.track_kind == "peaks"
+    np.testing.assert_array_equal(inspection._table_data["enrichment_ratio"], [10, 2, 20])
+
+
+def test_standard_bed_names_and_coordinates_cannot_be_selected_as_signal() -> None:
+    inspection = inspect_upload(
+        "peaks.bed",
+        b"chr1\t100\t200\torigin_a\t75\t.\t100\t200\t255,0,0\n",
+    )
+    assert inspection.numeric_columns == ("score",)
+    assert inspection.default_column == "score"
+    np.testing.assert_allclose(
+        materialize_track_upload(
+            inspection, chromosome="chr1", start=100, end=200, bin_size=100,
+        ),
+        [75],
     )
 
 

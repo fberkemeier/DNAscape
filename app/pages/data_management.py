@@ -100,6 +100,8 @@ _TRACK_MISSING = {
     "nan": "Keep empty bins",
     "zero": "Fill with zero",
     "fill": "Fill with a value",
+    "min": "Fill with minimum",
+    "max": "Fill with maximum",
 }
 _TRACK_INTERPOLATION = {
     "none": "None",
@@ -404,7 +406,7 @@ def _unique_conversion_output_names(
 
 def _selection_options(inspection: UploadInspection) -> Mapping[str, str]:
     if inspection.source_format in {"bigwig", "bedgraph"}:
-        if len(inspection.numeric_columns) > 1:
+        if inspection.numeric_columns:
             return {f"{_COLUMN_PREFIX}{column}": column for column in inspection.numeric_columns}
         return {_NATURAL: "Binned profile"}
 
@@ -505,7 +507,12 @@ def _selected_data(inspection: UploadInspection, token: str) -> _SelectedData:
     return _SelectedData(form, tuple(inspection.shape or ()))
 
 
-def _apply_feature_defaults(settings: dict[str, Any], feature: str) -> None:
+def _apply_feature_defaults(
+    settings: dict[str, Any],
+    feature: str,
+    inspection: UploadInspection | None = None,
+    backend: str | None = None,
+) -> None:
     """Apply the value-domain defaults implied by a biological profile type."""
 
     selected = feature if feature in _FEATURES else "generic"
@@ -516,6 +523,30 @@ def _apply_feature_defaults(settings: dict[str, Any], feature: str) -> None:
         threshold_min=minimum,
         threshold_max=maximum,
     )
+    _apply_track_defaults(settings, selected, inspection, backend)
+
+
+def _apply_track_defaults(
+    settings: dict[str, Any],
+    selected: str,
+    inspection: UploadInspection | None,
+    backend: str | None,
+) -> None:
+    """Set source-aware binning without resetting user-edited timing bounds."""
+
+    if inspection is not None and inspection.source_format in {"bigwig", "bedgraph"}:
+        settings["aggregation"] = _default_track_aggregation(inspection, selected, backend)
+        if selected == "firing_rate" and inspection.source_format == "bedgraph":
+            settings.update(
+                bin_size=1_000,
+                track_missing="zero",
+                interpolation="none",
+                smoothing_mode="none",
+                smooth_window=1,
+                value_scaling="none",
+                scale=1.0,
+                rescale_invert=False,
+            )
 
 
 def _resolved_feature_bounds(
@@ -561,11 +592,54 @@ def _selected_value_name(
     return "value"
 
 
-def _track_aggregation_options(backend: str | None) -> dict[str, str]:
+def _track_aggregation_options(
+    backend: str | None,
+    inspection: UploadInspection | None = None,
+) -> dict[str, str]:
     options = dict(_TRACK_AGGREGATIONS)
+    if inspection is not None and inspection.track_kind == "intervals":
+        options = {"max": "Presence", "sum": "Covered bases", "coverage": "Coverage"}
+    elif inspection is not None and inspection.track_kind == "peaks":
+        options = {
+            "max": "Maximum peak signal",
+            "mean": "Mean peak signal",
+            "sum": "Integrated signal (signal × bp)",
+            "coverage": "Coverage",
+        }
     if backend == "gwseq_io_pp":
         options.pop("min", None)
         options.pop("max", None)
+    return options
+
+
+def _default_track_aggregation(
+    inspection: UploadInspection,
+    feature: str,
+    backend: str | None,
+) -> str:
+    options = _track_aggregation_options(backend, inspection)
+    preferred = "max" if (
+        inspection.track_kind in {"peaks", "intervals"}
+        or (feature == "firing_rate" and inspection.source_format == "bedgraph")
+    ) else "mean"
+    if feature == "replication_timing" and "mean" in options:
+        preferred = "mean"
+    return preferred if preferred in options else next(iter(options))
+
+
+def _track_interpolation_options(inspection: UploadInspection) -> dict[str, str]:
+    # Empty space between called origins is background, not a missing segment
+    # of a continuous signal that can be reconstructed by interpolation.
+    if inspection.track_kind in {"peaks", "intervals"}:
+        return {"none": "None"}
+    return dict(_TRACK_INTERPOLATION)
+
+
+def _value_scaling_options(feature: str) -> dict[str, str]:
+    options = dict(_VALUE_SCALING)
+    if feature == "firing_rate":
+        options.pop("center")
+        options.pop("zscore")
     return options
 
 
@@ -666,7 +740,7 @@ def render(_navigate: Callable[[str], None]) -> None:
         "end": 1,
         "bin_size": 10_000,
         "aggregation": "mean",
-        "track_missing": "nan",
+        "track_missing": "zero",
         "fill_value": 0.0,
         "interpolation": "none",
         "smoothing_mode": "none",
@@ -908,6 +982,10 @@ def render(_navigate: Callable[[str], None]) -> None:
                                 chromosome=region.chromosome,
                                 start=region.start,
                                 end=region.end,
+                            )
+                            _apply_track_defaults(
+                                settings, str(settings["feature"]), candidate,
+                                candidate_track.backend,
                             )
                         await refresh_active_source_views()
                         return True
@@ -1368,14 +1446,14 @@ def render(_navigate: Callable[[str], None]) -> None:
                                     url=_ENCODE_EXAMPLE_URL,
                                     feature="replication_timing",
                                     aggregation="mean",
-                                    track_missing="nan",
+                                    track_missing="zero",
                                 )
 
                             async def use_bedgraph_example() -> None:
                                 await use_link_example(
                                     url=_SNS_EXAMPLE_URL,
-                                    feature="generic",
-                                    aggregation="mean",
+                                    feature="firing_rate",
+                                    aggregation="max",
                                     track_missing="zero",
                                 )
 
@@ -1561,7 +1639,13 @@ def render(_navigate: Callable[[str], None]) -> None:
 
                         def feature_changed() -> None:
                             feature = str(controls["feature"].value or "generic")
-                            _apply_feature_defaults(settings, feature)
+                            current = active_source()
+                            _apply_feature_defaults(
+                                settings, feature,
+                                current.inspection if current else None,
+                                current.track_inspection.backend
+                                if current and current.track_inspection else None,
+                            )
                             for source in retained_sources:
                                 if not source.output_name_customized:
                                     source.output_name = _automatic_output_name(
@@ -1664,6 +1748,11 @@ def render(_navigate: Callable[[str], None]) -> None:
                                             .classes("dn-field")
                                             .mark("data-manager-track-missing")
                                         )
+                                        controls["track_missing"].tooltip(
+                                            "Minimum and maximum use each chromosome's values "
+                                            "after thresholding and smoothing, before value scaling. "
+                                            "Zero and custom-value fills are applied after scaling."
+                                        )
                                         controls["fill_value"] = (
                                             ui.number(
                                                 label="Fill value",
@@ -1740,9 +1829,14 @@ def render(_navigate: Callable[[str], None]) -> None:
                                         .mark("data-manager-smooth-window")
                                     )
                                     if missing_kind == "track":
+                                        interpolation_options = _track_interpolation_options(
+                                            current_source.inspection
+                                        )
+                                        if settings["interpolation"] not in interpolation_options:
+                                            settings["interpolation"] = "none"
                                         controls["interpolation"] = (
                                             ui.select(
-                                                _TRACK_INTERPOLATION,
+                                                interpolation_options,
                                                 value=settings["interpolation"],
                                                 label="Interpolation",
                                             )
@@ -1750,6 +1844,12 @@ def render(_navigate: Callable[[str], None]) -> None:
                                             .classes("dn-field")
                                             .mark("data-manager-interpolation")
                                         )
+                                        if len(interpolation_options) == 1:
+                                            controls["interpolation"].disable()
+                                            controls["interpolation"].tooltip(
+                                                "Gaps between called peaks are background. "
+                                                "Interpolation would create activity between origins."
+                                            )
                                         controls["interpolation"].on_value_change(
                                             lambda: store_control("interpolation")
                                         )
@@ -1759,9 +1859,12 @@ def render(_navigate: Callable[[str], None]) -> None:
                                     .classes("dn-data-manager-polishing-column")
                                     .mark("data-manager-scaling-column")
                                 ):
+                                    scaling_options = _value_scaling_options(str(settings["feature"]))
+                                    if settings["value_scaling"] not in scaling_options:
+                                        settings["value_scaling"] = "none"
                                     controls["value_scaling"] = (
                                         ui.select(
-                                            _VALUE_SCALING,
+                                            scaling_options,
                                             value=settings["value_scaling"],
                                             label="Value scaling",
                                         )
@@ -1922,12 +2025,14 @@ def render(_navigate: Callable[[str], None]) -> None:
                             return
 
                         if current_source.inspection.source_format == "bedgraph":
-                            ui.label("bedGraph input").classes(
+                            is_peak_track = current_source.inspection.track_kind in {"peaks", "intervals"}
+                            ui.label("BED intervals" if is_peak_track else "bedGraph input").classes(
                                 "dn-setting-group-title dn-data-manager-setting-heading"
                             )
-                            bedgraph_options = _selection_options(
-                                current_source.inspection
-                            )
+                            bedgraph_options = {
+                                f"{_COLUMN_PREFIX}{column}": column.replace("_", " ").capitalize()
+                                for column in current_source.inspection.numeric_columns
+                            }
                             controls["bedgraph_value_column"] = (
                                 ui.select(
                                     dict(bedgraph_options),
@@ -1954,6 +2059,15 @@ def render(_navigate: Callable[[str], None]) -> None:
                                 bedgraph_column_changed
                             )
                             ui.label(
+                                "BED3 calls have unit signal. Presence marks bins containing "
+                                "origins; coverage measures the fraction overlapped. "
+                                "Smaller bins separate nearby origins."
+                                if current_source.inspection.track_kind == "intervals" else
+                                "Use enrichment to retain peak heights. Maximum keeps the "
+                                "strongest peak in each bin; coverage measures peak width. "
+                                "Smaller bins separate nearby origins. SNS-seq enrichment "
+                                "is relative activity; calibrate its scale for firing-rate units."
+                                if is_peak_track else
                                 "Intervals use standard 0-based, half-open bedGraph "
                                 "coordinates. Bin aggregation below controls how interval "
                                 "coverage is combined."
@@ -1972,10 +2086,13 @@ def render(_navigate: Callable[[str], None]) -> None:
                             chromosome = next(iter(regions))
                         region = regions[chromosome]
                         aggregation_options = _track_aggregation_options(
-                            current_source.track_inspection.backend
+                            current_source.track_inspection.backend, current_source.inspection
                         )
                         if settings["aggregation"] not in aggregation_options:
-                            settings["aggregation"] = "mean"
+                            settings["aggregation"] = _default_track_aggregation(
+                                current_source.inspection, str(settings["feature"]),
+                                current_source.track_inspection.backend,
+                            )
                         with ui.element("div").classes("dn-data-manager-binning-grid"):
                             controls["chromosome_scope"] = (
                                 ui.select(
@@ -2443,12 +2560,13 @@ def render(_navigate: Callable[[str], None]) -> None:
                 )
             chromosome_scope = str(controls["chromosome_scope"].value or "single")
             aggregation = str(controls["aggregation"].value)
-            if aggregation not in _track_aggregation_options(track_summary.backend):
+            if aggregation not in _track_aggregation_options(track_summary.backend, current):
                 raise ValueError(
                     f"{current.name} does not support the {aggregation} aggregation."
                 )
             kwargs.update(
                 chromosome_scope=chromosome_scope,
+                memory_limit_mb=get_export_settings().conversion_memory_limit_mb,
                 bin_size=_integer(controls["bin_size"], "Bin size", minimum=1),
                 aggregation=aggregation,
                 track_missing=str(controls["track_missing"].value),

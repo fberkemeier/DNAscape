@@ -8,6 +8,7 @@ from concurrent.futures import CancelledError
 from dataclasses import replace
 from pathlib import Path
 from types import SimpleNamespace
+from typing import Any
 
 import numpy as np
 import pandas as pd
@@ -653,6 +654,62 @@ def test_ucsc_bedgraph_directives_survive_the_full_track_pipeline() -> None:
     np.testing.assert_allclose(prepared.values, np.array([240.0, 40.0]))
 
 
+def test_sns_enrichment_maximum_keeps_peak_heights_and_zero_background(
+    sns_peak_payload: bytes,
+) -> None:
+    inspection = inspect_upload("K562_Peaks_FDR15.bed.gz", gzip.compress(sns_peak_payload))
+    request = DataConversionRequest(
+        inspection=inspection,
+        input_form="track",
+        chromosome="chr1",
+        start=0,
+        end=2300,
+        bin_size=1000,
+        aggregation="max",
+        value_column="enrichment_ratio",
+        biological_role="firing_rate",
+    )
+    prepared = prepare_data(request)
+    np.testing.assert_array_equal(prepared.values, [10, 0, 20])
+    mean = prepare_data(replace(request, aggregation="mean"))
+    np.testing.assert_allclose(mean.values, [3.6, 0, 20])
+    result = convert_data(request)
+    reloaded = inspect_upload(result.artifact.filename, result.artifact.data, expected_form="x")
+    np.testing.assert_array_equal(materialize_upload(reloaded), [10, 0, 20])
+    with pytest.raises(ValueError, match="not a selectable numeric signal column"):
+        prepare_data(replace(request, value_column="thick_start"))
+
+
+def test_sns_preview_keeps_isolated_peaks_at_their_original_coordinates() -> None:
+    inspection = inspect_upload(
+        "sns_peaks.bed",
+        b"chr1\t137000\t137100\t20\nchr1\t1999000\t2000000\t1\n",
+    )
+    result = convert_data(DataConversionRequest(
+        inspection=inspection, input_form="track", target_format="npy",
+        chromosome="chr1", start=0, end=2000000, bin_size=1000, aggregation="max",
+        biological_role="firing_rate",
+    ))
+    assert result.preview is not None
+    preview = result.preview
+    assert preview.total_count == 2000
+    assert preview.values.size <= 500
+    assert preview.maximum == 20
+    assert np.max(preview.values) == 20
+    assert preview.x[np.argmax(preview.values)] == 137.5
+    values = np.load(io.BytesIO(result.artifact.data), allow_pickle=False)
+    assert values.shape == (2000,)
+    assert values[137] == 20
+    assert np.count_nonzero(values) == 2
+    indices = (preview.x - 0.5).astype(int)
+    np.testing.assert_array_equal(preview.values, values[indices])
+    assert np.all(np.diff(indices) > 0)
+    # The continuous-track preview remains unchanged for Repli-seq BigWig.
+    continuous = conversion_service._preview(values, preserve_peaks=False)
+    assert continuous is not None
+    np.testing.assert_array_equal(continuous.values, values[np.linspace(0, 1999, 500, dtype=int)])
+
+
 def test_coordinate_tsv_round_trips_as_a_mapping_profile() -> None:
     inspection = inspect_upload(
         "signal.bedgraph",
@@ -837,7 +894,7 @@ def test_single_chromosome_npz_preserves_the_chromosome_label() -> None:
         np.testing.assert_array_equal(archive["columns"], np.array(["chr1"]))
 
 
-def test_track_default_origin_includes_missing_leading_chromosome_bins() -> None:
+def test_track_default_origin_keeps_leading_bins_and_fills_them_with_zero() -> None:
     inspection = inspect_upload(
         "signal.bedgraph",
         b"chr1\t10\t20\t2\nchr1\t20\t30\t4\n",
@@ -854,7 +911,7 @@ def test_track_default_origin_includes_missing_leading_chromosome_bins() -> None
     )
 
     assert track.regions[0].start == 0
-    assert np.isnan(prepared.values[0])
+    assert prepared.values[0] == 0
     np.testing.assert_allclose(prepared.values[1:], np.array([2.0, 4.0]))
     np.testing.assert_allclose(prepared.coordinates["position_kb"], [0.005, 0.015, 0.025])
 
@@ -999,7 +1056,7 @@ def test_track_threshold_and_custom_rescale_preserve_genomic_bins() -> None:
     )
 
     assert prepared.shape == (3,)
-    np.testing.assert_allclose(prepared.values, np.array([4.0, 2.0, np.nan]), equal_nan=True)
+    np.testing.assert_allclose(prepared.values, np.array([4.0, 2.0, 0.0]))
     np.testing.assert_allclose(prepared.coordinates["position_kb"], [0.005, 0.015, 0.025])
 
 
@@ -1024,6 +1081,153 @@ def test_track_smoothing_preserves_unfilled_source_gaps() -> None:
     )
 
     np.testing.assert_allclose(prepared.values, np.array([1.0, np.nan, 3.0]), equal_nan=True)
+
+
+@pytest.mark.parametrize(("missing", "fill_value"), (("zero", 0.0), ("fill", 7.0)))
+@pytest.mark.parametrize(
+    ("scaling", "extra", "scaled_values"),
+    (
+        ("none", {}, [10.0, 20.0]),
+        ("multiplier", {"scale": 3.0}, [30.0, 60.0]),
+        ("center", {}, [-5.0, 5.0]),
+        ("zscore", {}, [-1.0, 1.0]),
+        ("maxabs", {}, [0.5, 1.0]),
+        ("interval", {"rescale_min": 2.0, "rescale_max": 4.0}, [2.0, 4.0]),
+        (
+            "interval",
+            {"rescale_min": 2.0, "rescale_max": 4.0, "rescale_invert": True},
+            [4.0, 2.0],
+        ),
+    ),
+)
+def test_track_fills_are_written_after_smoothing_and_every_scaling_mode(
+    missing: str,
+    fill_value: float,
+    scaling: str,
+    extra: dict[str, Any],
+    scaled_values: list[float],
+) -> None:
+    inspection = inspect_upload("signal.bedgraph", b"chr1\t0\t10\t10\nchr1\t20\t30\t20\n")
+    prepared = prepare_data(
+        DataConversionRequest(
+            inspection=inspection,
+            input_form="track",
+            bin_size=10,
+            track_missing=missing,
+            fill_value=fill_value,
+            smooth_window=3,
+            scaling_mode=scaling,
+            **extra,
+        )
+    )
+    np.testing.assert_allclose(prepared.values, [scaled_values[0], fill_value, scaled_values[1]])
+    np.testing.assert_allclose(prepared.coordinates["position_kb"], [0.005, 0.015, 0.025])
+
+
+@pytest.mark.parametrize("missing", ("min", "max"))
+@pytest.mark.parametrize(
+    ("scaling", "extra", "minimum_result", "maximum_result"),
+    (
+        ("none", {}, [10, 10, 20], [10, 20, 20]),
+        ("multiplier", {"scale": 3}, [30, 30, 60], [30, 60, 60]),
+        ("multiplier", {"scale": -2}, [-20, -20, -40], [-20, -40, -40]),
+        ("center", {}, [-10 / 3, -10 / 3, 20 / 3], [-20 / 3, 10 / 3, 10 / 3]),
+        (
+            "zscore", {},
+            [-np.sqrt(0.5), -np.sqrt(0.5), np.sqrt(2)],
+            [-np.sqrt(2), np.sqrt(0.5), np.sqrt(0.5)],
+        ),
+        ("maxabs", {}, [0.5, 0.5, 1], [0.5, 1, 1]),
+        ("interval", {"rescale_min": 2, "rescale_max": 4}, [2, 2, 4], [2, 4, 4]),
+        (
+            "interval", {"rescale_min": 2, "rescale_max": 4, "rescale_invert": True},
+            [4, 4, 2], [4, 2, 2],
+        ),
+    ),
+)
+def test_minimum_and_maximum_fills_participate_in_every_scaling_mode(
+    missing: str,
+    scaling: str,
+    extra: dict[str, Any],
+    minimum_result: list[float],
+    maximum_result: list[float],
+) -> None:
+    inspection = inspect_upload("signal.bedgraph", b"chr1\t0\t10\t10\nchr1\t20\t30\t20\n")
+    prepared = prepare_data(DataConversionRequest(
+        inspection=inspection, input_form="track", bin_size=10,
+        track_missing=missing, smooth_window=3, scaling_mode=scaling, **extra,
+    ))
+    np.testing.assert_allclose(prepared.values, minimum_result if missing == "min" else maximum_result)
+    np.testing.assert_allclose(prepared.coordinates["position_kb"], [0.005, 0.015, 0.025])
+
+
+@pytest.mark.parametrize(
+    ("missing", "expected"),
+    (("min", [0, 0, 0.5, 1, 0]), ("max", [1, 0, 0.5, 1, 1])),
+)
+def test_extreme_fills_use_values_after_thresholding_and_smoothing(
+    missing: str, expected: list[float],
+) -> None:
+    inspection = inspect_upload(
+        "signal.bedgraph",
+        b"chr1\t0\t10\t0\nchr1\t10\t20\t10\nchr1\t20\t30\t30\n"
+        b"chr1\t30\t40\t50\nchr1\t40\t50\t100\n",
+    )
+    prepared = prepare_data(DataConversionRequest(
+        inspection=inspection, input_form="track", bin_size=10, track_missing=missing,
+        threshold_enabled=True, threshold_min=10, threshold_max=50, smooth_window=3,
+        scaling_mode="interval", rescale_min=0, rescale_max=1,
+    ))
+    np.testing.assert_allclose(prepared.values, expected)
+
+
+@pytest.mark.parametrize(
+    ("missing", "expected"),
+    (("min", [[10, 100], [10, 100], [20, 300]]), ("max", [[10, 100], [20, 300], [20, 300]])),
+)
+def test_extreme_fills_are_calculated_independently_for_each_chromosome(
+    missing: str, expected: list[list[float]],
+) -> None:
+    inspection = inspect_upload(
+        "signal.bedgraph",
+        b"chr1\t0\t10\t10\nchr1\t20\t30\t20\nchr2\t0\t10\t100\nchr2\t20\t30\t300\n",
+    )
+    prepared = prepare_data(DataConversionRequest(
+        inspection=inspection, input_form="track", chromosome_scope="all",
+        bin_size=10, track_missing=missing, scaling_mode="none",
+    ))
+    np.testing.assert_array_equal(prepared.values, expected)
+
+
+@pytest.mark.parametrize("missing", ("min", "max"))
+@pytest.mark.parametrize("threshold_all", (False, True))
+def test_extreme_fills_report_an_error_when_no_finite_values_remain(
+    missing: str, threshold_all: bool,
+) -> None:
+    inspection = inspect_upload("signal.bedgraph", b"chr1\t0\t10\t10\nchr1\t20\t30\t20\n")
+    request = DataConversionRequest(
+        inspection=inspection, input_form="track", chromosome="chr1", bin_size=10,
+        start=0 if threshold_all else 10, end=30 if threshold_all else 20,
+        track_missing=missing, threshold_enabled=threshold_all, threshold_min=100,
+        scaling_mode="interval", rescale_min=2, rescale_max=4,
+    )
+    with pytest.raises(ValueError, match="Cannot fill empty bins.*no finite values remain"):
+        convert_data(request)
+
+
+def test_plain_profile_zero_fill_is_written_after_scaling_without_losing_rows() -> None:
+    request = DataConversionRequest(
+        inspection=inspect_upload("profile.tsv", b'chr1\n10\n""\n20\n'),
+        input_form="x",
+        missing_policy="zero",
+        scaling_mode="interval",
+        rescale_min=2.0,
+        rescale_max=4.0,
+    )
+    np.testing.assert_allclose(prepare_data(request).values, [2.0, 0.0, 4.0])
+    result = convert_data(request)
+    frame = pd.read_csv(io.BytesIO(result.artifact.data), sep="\t")
+    np.testing.assert_allclose(frame["chr1"], [2.0, 0.0, 4.0])
 
 
 @pytest.mark.parametrize(
@@ -1099,20 +1303,114 @@ def test_track_bin_limit_is_checked_before_rasterization(monkeypatch: pytest.Mon
 def test_track_memory_estimate_is_checked_before_dataframe_allocation(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    inspection = inspect_upload("signal.bedgraph", b"chr1\t0\t100\t1\n")
-    monkeypatch.setattr(conversion_service, "MAX_DECOMPRESSED_BYTES", 200)
+    inspection = inspect_upload("signal.bedgraph", b"chr1\t0\t750000\t1\n")
 
-    with pytest.raises(ValueError, match="would require about"):
+    def unexpected_rasterization(*_args: object, **_kwargs: object) -> None:
+        pytest.fail("Memory validation must run before rasterizing the track.")
+
+    monkeypatch.setattr(conversion_service, "rtrack", unexpected_rasterization)
+
+    with pytest.raises(ValueError, match="Conversion memory limit.*Settings"):
         prepare_data(
             DataConversionRequest(
                 inspection=inspection,
                 input_form="track",
                 chromosome="chr1",
                 start=0,
-                end=100,
-                bin_size=10,
+                end=750000,
+                bin_size=1,
             )
         )
+
+
+@pytest.mark.parametrize("target_format", ("tsv", "npz"))
+def test_raising_memory_budget_allows_all_chromosome_bigwig_conversion(
+    monkeypatch: pytest.MonkeyPatch,
+    target_format: str,
+) -> None:
+    inspection = inspect_upload("signal.bw", b"&\xfc\x8f\x88fake-bigwig")
+    monkeypatch.setattr(
+        conversion_service,
+        "inspect_track",
+        lambda _inspection, _cancel=None: conversion_service.TrackInspection(
+            source_format="bigwig",
+            regions=(
+                conversion_service.TrackRegion("chr1", 0, 30),
+                conversion_service.TrackRegion("chr2", 0, 20),
+            ),
+            backend="test",
+        ),
+    )
+    # Exercise a large estimate using tiny profiles to keep the regression fast.
+    monkeypatch.setattr(conversion_service, "_TRACK_ESTIMATED_BYTES_PER_BIN", 40 * 1024**2)
+    read_chromosomes: list[str] = []
+
+    def read_bins(_path: Path, **kwargs: Any) -> np.ndarray:
+        chromosome = kwargs["chromosome"]
+        read_chromosomes.append(chromosome)
+        return np.array([1.0, 2.0, 3.0] if chromosome == "chr1" else [4.0, 5.0])
+
+    monkeypatch.setattr(conversion_service, "read_bigwig_bins", read_bins)
+    request = DataConversionRequest(
+        inspection=inspection,
+        input_form="track",
+        chromosome_scope="all",
+        target_format=target_format,
+        bin_size=10,
+    )
+    with pytest.raises(ValueError, match="conversion memory limit is 64 MB"):
+        convert_data(request)
+    assert read_chromosomes == []
+
+    result = convert_data(replace(request, memory_limit_mb=512))
+    assert read_chromosomes == ["chr1", "chr2"]
+    assert result.labels == ("chr1", "chr2")
+    if target_format == "tsv":
+        frame = pd.read_csv(io.BytesIO(result.artifact.data), sep="\t")
+        np.testing.assert_allclose(frame["chr1"], [1.0, 2.0, 3.0])
+        np.testing.assert_allclose(frame["chr2"], [4.0, 5.0, np.nan])
+    else:
+        with np.load(io.BytesIO(result.artifact.data), allow_pickle=False) as archive:
+            np.testing.assert_allclose(archive["chr1"], [1.0, 2.0, 3.0])
+            np.testing.assert_allclose(archive["chr2"], [4.0, 5.0])
+
+
+@pytest.mark.parametrize("memory_limit_mb", (0, 63, 4097, 64.5, float("nan"), float("inf"), True))
+def test_conversion_memory_budget_rejects_invalid_values(memory_limit_mb: Any) -> None:
+    inspection = inspect_upload("signal.bedgraph", b"chr1\t0\t10\t1\n")
+    with pytest.raises(ValueError, match="Conversion memory limit"):
+        prepare_data(
+            DataConversionRequest(
+                inspection=inspection,
+                input_form="track",
+                memory_limit_mb=memory_limit_mb,
+            )
+        )
+
+
+def test_higher_memory_budget_scales_track_array_and_download_guards(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # Tiny guards expose secondary limits without allocating large test arrays.
+    monkeypatch.setattr(conversion_service, "MAX_ARRAY_ELEMENTS", 5)
+    monkeypatch.setattr(conversion_service, "_MAX_TRACK_BINS", 2)
+    monkeypatch.setattr(conversion_service, "_MAX_CONVERTED_BYTES", 10)
+    inspection = inspect_upload(
+        "signal.bedgraph", b"chr1\t0\t30\t1\nchr2\t0\t20\t2\n"
+    )
+    request = DataConversionRequest(
+        inspection=inspection,
+        input_form="track",
+        chromosome_scope="all",
+        bin_size=10,
+    )
+    with pytest.raises(ValueError, match="creates 3 bins"):
+        convert_data(request)
+    result = convert_data(replace(request, memory_limit_mb=512))
+    frame = pd.read_csv(io.BytesIO(result.artifact.data), sep="\t")
+    np.testing.assert_allclose(frame["chr1"], [1.0, 1.0, 1.0])
+    np.testing.assert_allclose(frame["chr2"], [2.0, 2.0, np.nan])
+    assert len(result.artifact.data) > 10
 
 
 def test_provenance_is_retained_without_url_credentials_or_query_tokens() -> None:

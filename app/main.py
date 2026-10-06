@@ -14,13 +14,14 @@ from app import __version__
 from app.export_settings import (
     CACHE_FILE_FORMAT_OPTIONS,
     COMPRESSION_OPTIONS,
+    DEFAULT_CONVERSION_MEMORY_LIMIT_MB,
+    MAX_CONVERSION_MEMORY_LIMIT_MB,
     get_export_settings,
     reset_export_settings,
 )
 from app.icons import OUTLINE_ICON_SVGS, PLOT_ICON_SVG
 from app.pages import PAGE_RENDERERS
 from app.result_naming import NAME_STYLE_OPTIONS, normalize_name_style
-from app.session_cache import current_session_cache
 
 APP_DIR = Path(__file__).resolve().parent
 ROOT_DIR = APP_DIR.parent
@@ -72,6 +73,8 @@ def _handler(callback, *args):
 @ui.page("/")
 def index() -> None:
     """Build one isolated, client-local prototype shell."""
+
+    from app.session_cache import current_session_cache
 
     ui.add_css(STYLE_PATH.read_text(encoding="utf-8"))
     ui.add_body_html(
@@ -461,6 +464,33 @@ def index() -> None:
                 .classes("dn-field")
                 .mark("settings-result-name-style")
             )
+            memory_limit_setting = (
+                ui.number(
+                    label="Conversion memory limit (MB)",
+                    value=export_settings.conversion_memory_limit_mb,
+                    min=DEFAULT_CONVERSION_MEMORY_LIMIT_MB,
+                    max=MAX_CONVERSION_MEMORY_LIMIT_MB,
+                    step=64,
+                    validation={
+                        f"Enter a whole number from {DEFAULT_CONVERSION_MEMORY_LIMIT_MB} "
+                        f"to {MAX_CONVERSION_MEMORY_LIMIT_MB:,}.": lambda value: (
+                            value is not None
+                            and DEFAULT_CONVERSION_MEMORY_LIMIT_MB
+                            <= value
+                            <= MAX_CONVERSION_MEMORY_LIMIT_MB
+                            and float(value).is_integer()
+                        ),
+                    },
+                )
+                .props("dense")
+                .classes("dn-field")
+                .mark("settings-conversion-memory-limit")
+            )
+            memory_limit_setting.tooltip(
+                "Estimated working-memory budget for BigWig and bedGraph preparation. "
+                "The all-chromosome K562 example at 1 kb needs about 322 MB; "
+                "choose 512 MB to allow it. This does not reserve RAM or cap actual RAM use."
+            )
             preserve_page_setting = (
                 ui.checkbox(
                     "Keep page controls and outputs",
@@ -506,6 +536,11 @@ def index() -> None:
             for slug in tuple(built_pages):
                 current_session_cache().refresh_page(slug)
 
+        def update_conversion_memory_limit() -> None:
+            if memory_limit_setting.value is None or not memory_limit_setting.validate():
+                return
+            export_settings.conversion_memory_limit_mb = int(memory_limit_setting.value)
+
         def update_page_preservation() -> None:
             export_settings.preserve_page_state = bool(preserve_page_setting.value)
             if export_settings.preserve_page_state:
@@ -531,6 +566,7 @@ def index() -> None:
         cached_format_setting.on_value_change(update_cached_format)
         cached_compression_setting.on_value_change(update_cached_compression)
         name_style_setting.on_value_change(update_name_style)
+        memory_limit_setting.on_value_change(update_conversion_memory_limit)
         preserve_page_setting.on_value_change(update_page_preservation)
         show_examples_setting.on_value_change(update_show_examples)
         show_help_setting.on_value_change(update_show_help)
@@ -615,6 +651,7 @@ def index() -> None:
         preserve_page_setting.value = defaults.preserve_page_state
         show_examples_setting.value = defaults.show_examples
         show_help_setting.value = defaults.show_help
+        memory_limit_setting.value = defaults.conversion_memory_limit_mb
         body.classes(
             add="dn-field-help-enabled" if defaults.show_help else None,
             remove=None if defaults.show_help else "dn-field-help-enabled",
@@ -628,6 +665,7 @@ def index() -> None:
             preserve_page_setting,
             show_examples_setting,
             show_help_setting,
+            memory_limit_setting,
         ):
             control.update()
 

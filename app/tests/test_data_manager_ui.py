@@ -22,7 +22,9 @@ from nicegui.elements.tabs import Tabs
 from nicegui.elements.upload import Upload
 from nicegui.testing import user_simulation
 
-from app.data_conversion_service import DataConversionRequest, DataConversionResult
+from app.data_conversion_service import (
+    DataConversionRequest, DataConversionResult, TrackInspection, TrackRegion, inspect_track,
+)
 from app.export_settings import get_export_settings
 from app.main import index
 from app.mapping_uploads import inspect_upload
@@ -151,6 +153,115 @@ def test_gwseq_backend_hides_known_broken_minimum_and_maximum_aggregations() -> 
     )
     assert "min" in _track_aggregation_options("pyBigWig")
     assert "max" in _track_aggregation_options("pyBigWig")
+
+
+def test_aggregation_choices_follow_peak_and_presence_inputs(sns_peak_payload: bytes) -> None:
+    peaks = inspect_upload("SNS.bed", sns_peak_payload)
+    presence = inspect_upload("origins.bed", b"chr1\t100\t200\n")
+    continuous = inspect_upload("signal.bedgraph", b"chr1\t100\t200\t10\n")
+    assert tuple(_track_aggregation_options("pandas", peaks)) == ("max", "mean", "sum", "coverage")
+    assert tuple(_track_aggregation_options("pandas", presence)) == ("max", "sum", "coverage")
+    assert tuple(_track_aggregation_options("pandas", continuous)) == (
+        "mean", "sum", "min", "max", "coverage", "std",
+    )
+
+
+def test_sns_firing_preset_and_switch_back_to_repliseq_bigwig(
+    sns_peak_payload: bytes, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    requests: list[DataConversionRequest] = []
+
+    def fake_fetch(url: str) -> RemoteSource:
+        bigwig = url.endswith(".bigWig")
+        return RemoteSource(
+            requested_url=url, final_url=url,
+            filename="RepliSeq.bigWig" if bigwig else "K562_Peaks_FDR15.bed.gz",
+            content=b"\x26\xfc\x8f\x88fake" if bigwig else gzip.compress(sns_peak_payload),
+            content_type="application/octet-stream", etag=None, last_modified=None,
+            accept_ranges=False, redirects=(),
+        )
+
+    def fake_inspect(inspection: Any) -> TrackInspection:
+        if inspection.source_format == "bigwig":
+            return TrackInspection(
+                source_format="bigwig", regions=(TrackRegion("chr1", 0, 3000),),
+                value_columns=("value",), size_bytes=len(inspection.content), backend="pyBigWig",
+            )
+        return inspect_track(inspection)
+
+    def fake_convert(request: DataConversionRequest, *_args: Any, **_kwargs: Any) -> DataConversionResult:
+        requests.append(request)
+        return _converted_result(request)
+
+    monkeypatch.setattr("app.pages.data_management.fetch_remote_source", fake_fetch)
+    monkeypatch.setattr("app.pages.data_management.inspect_track", fake_inspect)
+    monkeypatch.setattr("app.pages.data_management.convert_data", fake_convert)
+
+    async def scenario() -> None:
+        async with user_simulation(index) as user:
+            def control(marker: str) -> Any:
+                return next(iter(user.find(marker=marker).elements))
+
+            await user.open("/")
+            user.find(marker="nav-data-management").click()
+            control("data-manager-source-tabs").set_value("url")
+            await user.should_see(marker="use-bedgraph-data-example")
+            user.find(marker="use-bedgraph-data-example").click()
+            await asyncio.sleep(0.1)
+            user.find(marker="action-inspect-data-link-1").click()
+            await user.should_see("K562_Peaks_FDR15.bed.gz is ready.", retries=80)
+            assert control("data-manager-feature").value == "firing_rate"
+            assert control("data-manager-aggregation").value == "max"
+            assert control("data-manager-bin-size").value == 1000
+            column = control("data-manager-bedgraph-value-column")
+            assert column.value == "column:enrichment_ratio"
+            assert tuple(column.options) == ("column:enrichment_ratio",)
+            assert column.enabled is False
+            assert control("data-manager-track-missing").value == "zero"
+            assert tuple(control("data-manager-interpolation").options) == ("none",)
+            assert control("data-manager-interpolation").enabled is False
+            assert control("data-manager-smoothing").value == "none"
+            assert "zscore" not in control("data-manager-value-scaling").options
+
+            # Selecting Firing rate also repairs a manually changed generic preset.
+            control("data-manager-feature").set_value("generic")
+            await asyncio.sleep(0.1)
+            control("data-manager-aggregation").set_value("mean")
+            control("data-manager-smoothing").set_value("moving_average")
+            control("data-manager-value-scaling").set_value("zscore")
+            control("data-manager-feature").set_value("firing_rate")
+            await asyncio.sleep(0.1)
+            assert control("data-manager-aggregation").value == "max"
+            assert control("data-manager-smoothing").value == "none"
+            assert control("data-manager-value-scaling").value == "none"
+            user.find(marker="action-convert").click()
+            await _wait_for(lambda: len(requests) == 1)
+            await user.should_see(marker="data-manager-result-1", retries=80)
+            assert requests[0].value_column == "enrichment_ratio"
+            assert requests[0].aggregation == "max"
+            assert requests[0].smooth_window == 1
+            assert requests[0].interpolation == "none"
+            assert requests[0].biological_role == "firing_rate"
+
+            user.find(marker="use-encode-data-example").click()
+            await asyncio.sleep(0.1)
+            user.find(marker="action-inspect-data-link-1").click()
+            await user.should_see("RepliSeq.bigWig is ready.", retries=80)
+            assert control("data-manager-feature").value == "replication_timing"
+            aggregation = control("data-manager-aggregation")
+            assert aggregation.value == "mean"
+            assert tuple(aggregation.options) == ("mean", "sum", "min", "max", "coverage", "std")
+            assert tuple(control("data-manager-interpolation").options) == ("none", "linear", "ffill", "bfill")
+            assert control("data-manager-interpolation").enabled is True
+            assert "zscore" in control("data-manager-value-scaling").options
+            await user.should_not_see(marker="data-manager-bedgraph-value-column")
+            user.find(marker="action-convert").click()
+            await _wait_for(lambda: len(requests) == 2)
+            assert requests[1].inspection.source_format == "bigwig"
+            assert requests[1].aggregation == "mean"
+            assert requests[1].biological_role == "replication_timing"
+
+    asyncio.run(scenario())
 
 
 def test_all_wide_chromosome_headers_remain_spatial_profiles() -> None:
@@ -297,6 +408,61 @@ def test_data_manager_starts_with_auto_detection_and_an_explicit_url_source() ->
     asyncio.run(scenario())
 
 
+def test_empty_bin_fills_have_their_requested_order_in_data_manager(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from app.data_conversion_service import convert_data
+
+    results: list[DataConversionResult] = []
+
+    def convert_and_capture(*args: Any, **kwargs: Any) -> DataConversionResult:
+        result = convert_data(*args, **kwargs)
+        results.append(result)
+        return result
+
+    monkeypatch.setattr("app.pages.data_management.convert_data", convert_and_capture)
+
+    async def scenario() -> None:
+        async with user_simulation(index) as user:
+            def control(marker: str) -> Any:
+                return next(iter(user.find(marker=marker).elements))
+
+            await user.open("/")
+            user.find(marker="nav-data-management").click()
+            uploader = cast(Upload, control("data-manager-upload"))
+            await uploader.handle_uploads([Upload.SmallFileUpload(
+                "signal.bedgraph", "text/plain", b"chr1\t0\t10\t10\nchr1\t20\t30\t20\n",
+            )])
+            await user.should_see(marker="data-manager-track-missing", retries=60)
+            missing = cast(Select, control("data-manager-track-missing"))
+            assert missing.options["min"] == "Fill with minimum"
+            assert missing.options["max"] == "Fill with maximum"
+            assert missing.value == "zero"
+            control("data-manager-bin-size").set_value(10)
+            control("data-manager-value-scaling").set_value("interval")
+            await user.should_see(marker="data-manager-target-minimum")
+            control("data-manager-target-minimum").set_value(2)
+            control("data-manager-target-maximum").set_value(4)
+            for expected_count, (policy, expected) in enumerate((
+                ("min", [2, 2, 4]), ("max", [2, 4, 4]),
+                ("zero", [2, 0, 4]), ("fill", [2, 7, 4]),
+            ), start=1):
+                missing.set_value(policy)
+                if policy == "fill":
+                    await user.should_see(marker="data-manager-fill-value")
+                    control("data-manager-fill-value").set_value(7)
+                else:
+                    await user.should_not_see(marker="data-manager-fill-value")
+                user.find(marker="action-convert").click()
+                await _wait_for(lambda: len(results) == expected_count)
+                await _wait_for(lambda: control("action-convert").text == "Convert")
+                payload = results[-1].artifact.data.decode("utf-8").splitlines()
+                assert payload[0] == "chr1"
+                np.testing.assert_allclose([float(value) for value in payload[1:]], expected)
+
+    asyncio.run(scenario())
+
+
 def test_bedgraph_reveals_track_polishing_controls_and_defaults_to_plain_tsv() -> None:
     async def scenario() -> None:
         async with user_simulation(index) as user:
@@ -318,6 +484,10 @@ def test_bedgraph_reveals_track_polishing_controls_and_defaults_to_plain_tsv() -
 
             await user.should_see("Format: bedGraph", retries=30)
             await user.should_see("Chromosomes: 2")
+            missing = cast(
+                Select, next(iter(user.find(marker="data-manager-track-missing").elements))
+            )
+            assert missing.value == "zero"
             for marker in (
                 "data-manager-chromosome-scope",
                 "data-manager-chromosome",
@@ -471,6 +641,60 @@ def test_bedgraph_reveals_track_polishing_controls_and_defaults_to_plain_tsv() -
             await user.should_see(marker="data-manager-empty-result")
 
     asyncio.run(scenario())
+
+
+def test_track_conversion_can_be_retried_after_increasing_settings_memory_limit(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from app import data_conversion_service
+
+    monkeypatch.setattr(data_conversion_service, "_TRACK_ESTIMATED_BYTES_PER_BIN", 40 * 1024**2)
+    settings = get_export_settings()
+    previous_limit = settings.conversion_memory_limit_mb
+    settings.conversion_memory_limit_mb = 64
+
+    async def scenario() -> None:
+        async with user_simulation(index) as user:
+            await user.open("/")
+            user.find(marker="nav-data-management").click()
+            uploader = cast(
+                Upload, next(iter(user.find(marker="data-manager-upload").elements))
+            )
+            await uploader.handle_uploads(
+                [
+                    Upload.SmallFileUpload(
+                        "signal.bedgraph",
+                        "text/plain",
+                        b"chr1\t0\t30000\t1\nchr2\t0\t20000\t2\n",
+                    )
+                ]
+            )
+            await user.should_see("Chromosomes: 2", retries=30)
+            scope = cast(
+                Select, next(iter(user.find(marker="data-manager-chromosome-scope").elements))
+            )
+            scope.set_value("all")
+            user.find(marker="action-convert").click()
+            await user.should_see("conversion memory limit is 64 MB", retries=60)
+            await user.should_not_see(marker="data-manager-result-1")
+
+            user.find(marker="app-menu-toggle").click()
+            user.find(marker="menu-settings").click()
+            memory_limit = cast(
+                Number, next(iter(user.find(marker="settings-conversion-memory-limit").elements))
+            )
+            memory_limit.set_value(512)
+            await asyncio.sleep(0)
+            assert settings.conversion_memory_limit_mb == 512
+            assert scope.value == "all"
+            user.find(marker="action-convert").click()
+            await user.should_see(marker="data-manager-result-1", retries=60)
+            await user.should_see(marker="download-all-converted-data")
+
+    try:
+        asyncio.run(scenario())
+    finally:
+        settings.conversion_memory_limit_mb = previous_limit
 
 
 def test_plain_profile_reveals_the_same_polishing_controls() -> None:

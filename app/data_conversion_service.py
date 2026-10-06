@@ -17,7 +17,11 @@ import numpy as np
 import pandas as pd
 
 from app.bigwig_service import inspect_bigwig, read_bigwig_bins
-from app.export_settings import DATA_FILE_FORMAT_OPTIONS
+from app.export_settings import (
+    DATA_FILE_FORMAT_OPTIONS,
+    DEFAULT_CONVERSION_MEMORY_LIMIT_MB,
+    MAX_CONVERSION_MEMORY_LIMIT_MB,
+)
 from app.mapping_uploads import (
     MAX_ARCHIVE_MEMBERS,
     MAX_ARRAY_ELEMENTS,
@@ -54,7 +58,7 @@ _MEDIA_TYPES = {
     "csv": "text/csv; charset=utf-8",
 }
 _AGGREGATIONS = frozenset({"mean", "sum", "min", "max", "coverage", "std"})
-_TRACK_MISSING = frozenset({"nan", "zero", "fill"})
+_TRACK_MISSING = frozenset({"nan", "zero", "fill", "min", "max"})
 _INTERPOLATIONS = frozenset({"none", "linear", "ffill", "bfill"})
 _LEGACY_NORMALIZATIONS = frozenset(
     {"none", "minmax", "zscore", "center", "maxabs", "rescale"}
@@ -95,6 +99,13 @@ class _TrackSlice:
     start: int
     end: int
     bins: int
+
+
+@dataclass(frozen=True, slots=True)
+class _TrackLimits:
+    max_bytes: int
+    max_values: int
+    max_chromosome_bins: int
 
 
 @dataclass(frozen=True, slots=True)
@@ -155,7 +166,7 @@ class DataConversionRequest:
     end: int | None = None
     bin_size: int = 1_000
     aggregation: str = "mean"
-    track_missing: str = "nan"
+    track_missing: str = "zero"
     fill_value: float = 0.0
     interpolation: str = "none"
     smooth_window: int = 1
@@ -178,6 +189,21 @@ class DataConversionRequest:
     source_url: str | None = None
     biological_role: str | None = None
     semantic_note: str | None = None
+    memory_limit_mb: int = DEFAULT_CONVERSION_MEMORY_LIMIT_MB
+
+
+def _track_limits(request: DataConversionRequest) -> _TrackLimits:
+    """Scale track allocation guards with this conversion's memory budget."""
+
+    return _TrackLimits(
+        max_bytes=request.memory_limit_mb * 1024**2,
+        max_values=(
+            MAX_ARRAY_ELEMENTS * request.memory_limit_mb // DEFAULT_CONVERSION_MEMORY_LIMIT_MB
+        ),
+        max_chromosome_bins=(
+            _MAX_TRACK_BINS * request.memory_limit_mb // DEFAULT_CONVERSION_MEMORY_LIMIT_MB
+        ),
+    )
 
 
 @dataclass(frozen=True, slots=True)
@@ -212,7 +238,7 @@ class PreparedData:
 
 @dataclass(frozen=True, slots=True)
 class DataPreview:
-    """At most 500 evenly sampled points and full-series summary statistics."""
+    """At most 500 display points and full-series summary statistics."""
 
     x: np.ndarray = field(repr=False, compare=False)
     values: np.ndarray = field(repr=False, compare=False)
@@ -459,6 +485,15 @@ def _polishing_active(
 
 
 def _normalized_request(request: DataConversionRequest) -> DataConversionRequest:
+    memory_limit_mb = _integer(
+        request.memory_limit_mb,
+        "Conversion memory limit (MB)",
+        minimum=DEFAULT_CONVERSION_MEMORY_LIMIT_MB,
+    )
+    if memory_limit_mb > MAX_CONVERSION_MEMORY_LIMIT_MB:
+        raise ValueError(
+            f"Conversion memory limit (MB) cannot exceed {MAX_CONVERSION_MEMORY_LIMIT_MB:,}."
+        )
     input_form = _choice(request.input_form, "input dependence", _INPUT_FORMS)
     chromosome_scope = _choice(
         request.chromosome_scope,
@@ -637,15 +672,18 @@ def _normalized_request(request: DataConversionRequest) -> DataConversionRequest
         source_url=source_url,
         biological_role=biological_role,
         semantic_note=semantic_note,
+        memory_limit_mb=memory_limit_mb,
     )
 
 
-def _readonly(values: Any) -> np.ndarray:
+def _readonly(values: Any, *, limits: _TrackLimits | None = None) -> np.ndarray:
     array = np.asarray(values)
-    if array.size > MAX_ARRAY_ELEMENTS or array.nbytes > MAX_DECOMPRESSED_BYTES:
+    max_values = MAX_ARRAY_ELEMENTS if limits is None else limits.max_values
+    max_bytes = MAX_DECOMPRESSED_BYTES if limits is None else limits.max_bytes
+    if array.size > max_values or array.nbytes > max_bytes:
         raise ValueError(
-            f"Prepared data exceed the local limit of {MAX_ARRAY_ELEMENTS:,} values / "
-            f"{MAX_DECOMPRESSED_BYTES / 1024**2:.0f} MB."
+            f"Prepared data exceed the local limit of {max_values:,} values / "
+            f"{max_bytes / 1024**2:.0f} MB."
         )
     if np.issubdtype(array.dtype, np.number) and np.any(np.isinf(array)):
         raise ValueError("Prepared data contain infinite values.")
@@ -662,7 +700,9 @@ def _readonly_coordinates(values: Mapping[str, Any]) -> Mapping[str, np.ndarray]
     return MappingProxyType(result)
 
 
-def _readonly_profiles(values: Mapping[str, Any]) -> Mapping[str, np.ndarray]:
+def _readonly_profiles(
+    values: Mapping[str, Any], *, limits: _TrackLimits
+) -> Mapping[str, np.ndarray]:
     result: dict[str, np.ndarray] = {}
     total_values = 0
     total_bytes = 0
@@ -674,12 +714,32 @@ def _readonly_profiles(values: Mapping[str, Any]) -> Mapping[str, np.ndarray]:
         result[str(key)] = array
         total_values += int(array.size)
         total_bytes += int(array.nbytes)
-    if total_values > MAX_ARRAY_ELEMENTS or total_bytes > MAX_DECOMPRESSED_BYTES:
+    if total_values > limits.max_values or total_bytes > limits.max_bytes:
         raise ValueError(
-            f"Prepared chromosome profiles exceed {MAX_ARRAY_ELEMENTS:,} values / "
-            f"{MAX_DECOMPRESSED_BYTES / 1024**2:.0f} MB. Increase the bin size."
+            f"Prepared chromosome profiles exceed {limits.max_values:,} values / "
+            f"{limits.max_bytes / 1024**2:.0f} MB. Increase the bin size."
         )
     return MappingProxyType(result)
+
+
+def _peak_preview_indices(series: np.ndarray, max_points: int) -> np.ndarray:
+    """Keep local maxima and background at their real positions in a small preview."""
+
+    if series.size <= max_points or max_points < 4:
+        return np.linspace(0, series.size - 1, min(series.size, max_points), dtype=np.int64)
+    edges = np.linspace(1, series.size - 1, (max_points - 2) // 2 + 1, dtype=np.int64)
+    selected = {0, series.size - 1}
+    for start, stop in zip(edges[:-1], edges[1:]):
+        segment = series[start:stop]
+        finite = np.flatnonzero(np.isfinite(segment))
+        missing = np.flatnonzero(~np.isfinite(segment))
+        if finite.size:
+            selected.add(int(start + finite[np.argmax(segment[finite])]))
+            if not missing.size:
+                selected.add(int(start + finite[np.argmin(segment[finite])]))
+        if missing.size:
+            selected.add(int(start + missing[0]))
+    return np.asarray(sorted(selected), dtype=np.int64)
 
 
 def _preview(
@@ -689,6 +749,7 @@ def _preview(
     coordinates: Mapping[str, np.ndarray] | None = None,
     table: Any = None,
     max_points: int = 500,
+    preserve_peaks: bool = False,
 ) -> DataPreview | None:
     """Build a bounded display series without retaining prepared full arrays."""
 
@@ -755,7 +816,10 @@ def _preview(
     finite_mask = np.isfinite(series)
     finite = series[finite_mask]
     sample_count = min(max(1, int(max_points)), series.size)
-    indices = np.linspace(0, series.size - 1, sample_count, dtype=np.int64)
+    indices = (
+        _peak_preview_indices(series, sample_count)
+        if preserve_peaks else np.linspace(0, series.size - 1, sample_count, dtype=np.int64)
+    )
     sampled_x = np.array(x_values[indices], dtype=float, copy=True)
     sampled_values = np.array(series[indices], dtype=float, copy=True)
     sampled_x.setflags(write=False)
@@ -822,6 +886,8 @@ def _bedgraph_value_column(
     """Translate an inspector label to rtrack's headerless column index."""
 
     column = selected or inspection.default_column
+    if column is not None and column not in inspection.numeric_columns:
+        raise ValueError(f"Column {column!r} is not a selectable numeric signal column.")
     if column in inspection.columns:
         return inspection.columns.index(column)
     return column
@@ -989,23 +1055,27 @@ def _resolved_track_request(
         )
         resolved = replace(request, chromosome=chromosome, start=start, end=end)
 
+    limits = _track_limits(request)
     largest = max(item.bins for item in slices)
-    if largest > _MAX_TRACK_BINS:
+    if largest > limits.max_chromosome_bins:
         raise ValueError(
             f"The selected region creates {largest:,} bins; the local limit is "
-            f"{_MAX_TRACK_BINS:,}. Increase the bin size or choose a smaller region."
+            f"{limits.max_chromosome_bins:,}. Increase Conversion memory limit (MB) in "
+            "Settings, increase the bin size, or choose a smaller region."
         )
     total_bins = sum(item.bins for item in slices)
-    if total_bins > MAX_ARRAY_ELEMENTS:
+    if total_bins > limits.max_values:
         raise ValueError(
             f"The selected chromosomes create {total_bins:,} bins; increase the bin size "
-            f"to stay below {MAX_ARRAY_ELEMENTS:,} values."
+            f"to stay below {limits.max_values:,} values, or increase Conversion memory "
+            "limit (MB) in Settings."
         )
     padded_cells = largest * len(slices)
-    if request.chromosome_scope == "all" and padded_cells > MAX_ARRAY_ELEMENTS:
+    if request.chromosome_scope == "all" and padded_cells > limits.max_values:
         raise ValueError(
             f"The wide chromosome view would contain {padded_cells:,} padded cells; "
-            "increase the bin size or export fewer chromosomes."
+            "increase Conversion memory limit (MB) in Settings, increase the bin size, "
+            "or export fewer chromosomes."
         )
     if request.chromosome_scope == "all" and request.target_format == "npz":
         max_profiles = MAX_ARCHIVE_MEMBERS - 3
@@ -1017,11 +1087,13 @@ def _resolved_track_request(
     estimated_bytes = total_bins * _TRACK_ESTIMATED_BYTES_PER_BIN
     if request.chromosome_scope == "all":
         estimated_bytes += padded_cells * np.dtype(float).itemsize
-    if estimated_bytes > MAX_DECOMPRESSED_BYTES:
+    if estimated_bytes > limits.max_bytes:
         raise ValueError(
             f"Preparing {total_bins:,} chromosome bins would require about "
-            f"{estimated_bytes / 1024**2:.0f} MB; increase the bin size or choose a "
-            "smaller region."
+            f"{estimated_bytes / 1024**2:.0f} MB; the conversion memory limit is "
+            f"{request.memory_limit_mb:,} MB. Increase Conversion memory limit (MB) "
+            f"in Settings to at least {math.ceil(estimated_bytes / 1024**2):,} MB, "
+            "increase the bin size, or choose a smaller region."
         )
     _check_cancelled(cancel)
     return resolved, summary, slices
@@ -1072,6 +1144,35 @@ def _polish_series(series: pd.Series, request: DataConversionRequest) -> pd.Seri
         series = pd.Series(smoothed, index=series.index, dtype=float)
         series = series.mask(missing)
 
+    if (
+        request.input_form == "track"
+        and request.track_missing in {"min", "max"}
+        and series.isna().any()
+    ):
+        finite_values = series[np.isfinite(series)]
+        if finite_values.empty:
+            name = "minimum" if request.track_missing == "min" else "maximum"
+            raise ValueError(
+                f"Cannot fill empty bins with the {name}: no finite values remain "
+                "after thresholding and smoothing."
+            )
+        fill = finite_values.min() if request.track_missing == "min" else finite_values.max()
+        series = series.fillna(float(fill))
+
+    series = _scale_series(series, request)
+    if request.input_form == "track":
+        if request.track_missing == "zero":
+            series = series.fillna(0.0)
+        elif request.track_missing == "fill":
+            series = series.fillna(request.fill_value)
+    elif request.missing_policy == "zero":
+        series = series.fillna(0.0)
+    return series
+
+
+def _scale_series(series: pd.Series, request: DataConversionRequest) -> pd.Series:
+    """Scale values including minimum/maximum fills, before zero/custom fills."""
+
     numeric = series.to_numpy(dtype=float)
     finite_values = numeric[np.isfinite(numeric)]
     if request.scaling_mode == "none" or not finite_values.size:
@@ -1109,7 +1210,7 @@ def _postprocess_profile_values(
     """Polish an x/t/xt DNAscape profile while preserving its exact shape."""
 
     _check_cancelled(cancel)
-    if not _polishing_active(
+    if request.missing_policy != "zero" and not _polishing_active(
         smooth_window=request.smooth_window,
         scaling_mode=str(request.scaling_mode),
         threshold_enabled=request.threshold_enabled,
@@ -1169,10 +1270,6 @@ def _postprocess_track_table(
         series = series.ffill()
     elif request.interpolation == "bfill":
         series = series.bfill()
-    if request.track_missing == "zero":
-        series = series.fillna(0.0)
-    elif request.track_missing == "fill":
-        series = series.fillna(request.fill_value)
     _check_cancelled(cancel)
     result[request.value_name] = _polish_series(series, request)
     _check_cancelled(cancel)
@@ -1316,8 +1413,9 @@ def _combine_track_profiles(
 ) -> PreparedData:
     _check_cancelled(cancel)
     labels = tuple(item.chromosome for item in slices)
-    profiles = _readonly_profiles(profile_values)
-    profile_x = _readonly_profiles(profile_coordinates)
+    limits = _track_limits(request)
+    profiles = _readonly_profiles(profile_values, limits=limits)
+    profile_x = _readonly_profiles(profile_coordinates, limits=limits)
     if request.chromosome_scope == "single":
         values = profiles[labels[0]]
         data_form = "space"
@@ -1328,7 +1426,7 @@ def _combine_track_profiles(
             _check_cancelled(cancel)
             profile = profiles[label]
             matrix[: profile.size, column] = profile
-        values = _readonly(matrix)
+        values = _readonly(matrix, limits=limits)
         data_form = "table"
     first_label = labels[0]
     result = PreparedData(
@@ -1479,7 +1577,11 @@ def prepare_data(request: DataConversionRequest) -> PreparedData:
         data_form="x" if request.input_form == "table" else request.input_form,
         value_column=request.value_column,
         array_key=request.array_key,
-        missing_policy=request.missing_policy,
+        missing_policy=(
+            "ignore"
+            if request.input_form in {"x", "t", "xt"} and request.missing_policy == "zero"
+            else request.missing_policy
+        ),
     )
     if request.input_form in {"x", "t", "xt"}:
         values = _postprocess_profile_values(values, request)
@@ -1535,7 +1637,7 @@ def _plain_source(
         data_form=request.input_form,
         value_column=request.value_column,
         array_key=request.array_key,
-        missing_policy=request.missing_policy,
+        missing_policy=("ignore" if request.missing_policy == "zero" else request.missing_policy),
         cancel=cancel,
     )
     labels = _source_labels(request, values)
@@ -1544,7 +1646,12 @@ def _plain_source(
     return result, labels
 
 
-def _read_output(path: Path, cancel: _CancelChecker | None = None) -> bytes:
+def _read_output(
+    path: Path,
+    cancel: _CancelChecker | None = None,
+    *,
+    max_bytes: int | None = None,
+) -> bytes:
     _check_cancelled(cancel)
     try:
         size = path.stat().st_size
@@ -1552,8 +1659,12 @@ def _read_output(path: Path, cancel: _CancelChecker | None = None) -> bytes:
         raise RuntimeError("rdata did not create the requested output file.") from exc
     if size <= 0:
         raise RuntimeError("rdata created an empty output file.")
-    if size > _MAX_CONVERTED_BYTES:
-        raise ValueError("The converted file exceeds the 128 MB download limit.")
+    if max_bytes is None:
+        max_bytes = _MAX_CONVERTED_BYTES
+    if size > max_bytes:
+        raise ValueError(
+            f"The converted file exceeds the {max_bytes / 1024**2:g} MB download limit."
+        )
     chunks: list[bytes] = []
     with path.open("rb") as source:
         while True:
@@ -1722,7 +1833,11 @@ def _convert_track(
     _check_cancelled(cancel)
     _emit_track_progress(callback, request, "complete", "done", 1.0, output_path)
     _check_cancelled(cancel)
-    return prepared, _read_output(output_path, cancel)
+    return prepared, _read_output(
+        output_path,
+        cancel,
+        max_bytes=max(_MAX_CONVERTED_BYTES, _track_limits(request).max_bytes),
+    )
 
 
 def convert_data(
@@ -1779,6 +1894,13 @@ def convert_data(
                 prepared.profile_values[preview_label],
                 labels=(request.value_name,),
                 coordinates={"position_kb": prepared.profile_coordinates[preview_label]},
+                preserve_peaks=(
+                    request.inspection.track_kind in {"peaks", "intervals"}
+                    or (
+                        request.inspection.source_format == "bedgraph"
+                        and request.biological_role == "firing_rate"
+                    )
+                ),
             )
             _check_cancelled(cancel)
         else:
