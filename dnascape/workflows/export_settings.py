@@ -1,0 +1,108 @@
+"""Application-wide export preferences for the local NiceGUI interface."""
+
+from __future__ import annotations
+
+from dataclasses import dataclass
+
+COMPRESSION_OPTIONS = {
+    "gzip": "GZIP (.gz)",
+    "zip": "ZIP (.zip)",
+    "7z": "7-Zip (.7z)",
+    "xz": "XZ (.xz)",
+    "none": "None",
+}
+
+DATA_FILE_FORMAT_OPTIONS = {
+    "tsv": "TSV",
+    "txt": "TXT",
+    "csv": "CSV",
+    "npy": "NPY",
+    "npv": "NPV",
+    "npz": "NPZ",
+}
+
+# Cache and workflow downloads deliberately share one public order.  Keep this
+# separate object so callers cannot accidentally mutate the canonical mapping.
+CACHE_FILE_FORMAT_OPTIONS = dict(DATA_FILE_FORMAT_OPTIONS)
+
+DEFAULT_CONVERSION_MEMORY_LIMIT_MB = 64
+MAX_CONVERSION_MEMORY_LIMIT_MB = 4096
+
+
+@dataclass(slots=True)
+class ExportSettings:
+    """Mutable preferences shared by every workflow in the local app."""
+
+    plot_dpi: int = 150
+    raw_compression: str = "gzip"
+    cached_file_format: str = "tsv"
+    cached_compression: str = "gzip"
+    result_name_style: str = "short"
+    preserve_page_state: bool = True
+    show_examples: bool = True
+    show_help: bool = False
+    dev_mode: bool = False
+    conversion_memory_limit_mb: int = DEFAULT_CONVERSION_MEMORY_LIMIT_MB
+
+
+_EXPORT_SETTINGS = ExportSettings()
+
+
+def get_export_settings() -> ExportSettings:
+    """Return the process-local export preferences."""
+
+    return _EXPORT_SETTINGS
+
+
+def reset_export_settings() -> ExportSettings:
+    """Restore every application-wide export preference to its default."""
+
+    defaults = ExportSettings()
+    _EXPORT_SETTINGS.plot_dpi = defaults.plot_dpi
+    _EXPORT_SETTINGS.raw_compression = defaults.raw_compression
+    _EXPORT_SETTINGS.cached_file_format = defaults.cached_file_format
+    _EXPORT_SETTINGS.cached_compression = defaults.cached_compression
+    _EXPORT_SETTINGS.result_name_style = defaults.result_name_style
+    _EXPORT_SETTINGS.preserve_page_state = defaults.preserve_page_state
+    _EXPORT_SETTINGS.show_examples = defaults.show_examples
+    _EXPORT_SETTINGS.show_help = defaults.show_help
+    _EXPORT_SETTINGS.dev_mode = defaults.dev_mode
+    _EXPORT_SETTINGS.conversion_memory_limit_mb = defaults.conversion_memory_limit_mb
+    return _EXPORT_SETTINGS
+
+
+def normalize_compression(value: str | None) -> str:
+    """Normalize one menu value to a supported archive format."""
+
+    normalized = str(value or "none").strip().casefold().lstrip(".")
+    aliases = {
+        "gz": "gzip",
+        "gzip": "gzip",
+        "zip": "zip",
+        "7zip": "7z",
+        "7-zip": "7z",
+        "7z": "7z",
+        "lzma": "xz",
+        "xz": "xz",
+        "none": "none",
+        "off": "none",
+        "": "none",
+    }
+    try:
+        return aliases[normalized]
+    except KeyError as exc:
+        choices = ", ".join(COMPRESSION_OPTIONS)
+        raise ValueError(f"Unsupported compression {value!r}; choose {choices}.") from exc
+
+
+__all__ = [
+    "CACHE_FILE_FORMAT_OPTIONS",
+    "COMPRESSION_OPTIONS",
+    "DATA_FILE_FORMAT_OPTIONS",
+    "DEFAULT_CONVERSION_MEMORY_LIMIT_MB",
+    "MAX_CONVERSION_MEMORY_LIMIT_MB",
+    "ExportSettings",
+    "get_export_settings",
+    "normalize_compression",
+    "reset_export_settings",
+]

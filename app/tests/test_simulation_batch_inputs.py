@@ -3,11 +3,13 @@
 from __future__ import annotations
 
 import asyncio
+import io
 from typing import Any, cast
 
 import numpy as np
 import pytest
 from nicegui.elements.echart import EChart
+from nicegui.elements.number import Number
 from nicegui.elements.select import Select
 from nicegui.elements.upload import Upload
 from nicegui.testing import user_simulation
@@ -100,7 +102,11 @@ def test_simulation_accepts_different_spatial_lengths_per_paired_dataset(
                     ),
                 ]
             )
-            await asyncio.sleep(0.35)
+            for factor in ("firing-rate", "fork-speed"):
+                marker = f"source-{factor}-detected-data"
+                await user.should_see(marker=marker, retries=60)
+                with user.scope(marker=marker):
+                    await user.should_see("Files: 2", retries=60)
             # A sole unambiguous signal is selected automatically and needs no
             # redundant value-column field.
             await user.should_not_see(marker="source-firing-rate-value-column")
@@ -231,5 +237,60 @@ def test_simulation_rejects_a_spatial_mismatch_inside_one_pair(
             user.find(marker="action-simulate").click()
             await user.should_see("axes disagree", retries=40)
             assert requests == []
+
+    asyncio.run(scenario())
+
+
+@pytest.mark.parametrize("spacetime", [False, True])
+def test_simulation_preserves_edited_end_and_trims_spatial_profiles(
+    monkeypatch: pytest.MonkeyPatch, spacetime: bool,
+) -> None:
+    from app.pages import simulation as simulation_page
+
+    requests: list[ConstantSimulationRequest] = []
+    real_run = simulation_page.run_constant_simulation
+    firing = np.full((6, 4), 0.1) if spacetime else np.arange(1, 7, dtype=float) / 10
+    speed = np.full((1, 4), 1.4) if spacetime else np.arange(1, 7, dtype=float)
+
+    def record_run(request: ConstantSimulationRequest, report: Any, cancel: Any):
+        requests.append(request)
+        return real_run(request, report, cancel)
+
+    monkeypatch.setattr(simulation_page, "run_constant_simulation", record_run)
+
+    async def scenario() -> None:
+        async with user_simulation(index) as user:
+            await user.open("/")
+            user.find(marker="nav-simulation").click()
+            await user.should_see("Simulate DNA replication", retries=60)
+            assert user.client is not None
+            for factor, values in (("firing-rate", firing), ("fork-speed", speed)):
+                with user.client:
+                    _select(user, f"source-{factor}-mode").set_value("profile")
+                await user.should_see(marker=f"source-{factor}-upload")
+                payload = io.BytesIO()
+                np.save(payload, values, allow_pickle=False)
+                await _upload(user, f"source-{factor}-upload").handle_uploads([
+                    Upload.SmallFileUpload(f"{factor}.npy", "application/octet-stream", payload.getvalue())
+                ])
+                await user.should_see(marker=f"source-{factor}-upload-file", retries=60)
+            resolution = cast(Number, next(iter(user.find(marker="simulation-resolution-x").elements)))
+            end = cast(Number, next(iter(user.find(marker="simulation-region-end").elements)))
+            with user.client:
+                resolution.set_value(0.1)
+            assert end.value == pytest.approx(0.6)
+            with user.client:
+                end.set_value(0.3)
+
+            user.find(marker="action-simulate").click()
+            await user.should_see(marker="simulation-result-plot", retries=60)
+            await user.should_not_see(marker="simulation-error")
+            assert end.value == pytest.approx(0.3)
+            assert len(requests) == 1
+            assert requests[0].region_end_kb == pytest.approx(0.3)
+            np.testing.assert_array_equal(requests[0].firing_rate, firing[:3])
+            np.testing.assert_array_equal(requests[0].fork_speed, speed if spacetime else speed[:3])
+            chart = cast(EChart, next(iter(user.find(marker="simulation-result-plot").elements)))
+            assert len(chart.options["series"][0]["data"]) == 3
 
     asyncio.run(scenario())

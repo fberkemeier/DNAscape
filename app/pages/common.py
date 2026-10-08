@@ -242,18 +242,22 @@ def plot_toolbar(
 
 
 @contextmanager
-def action_dock() -> Iterator[None]:
+def action_dock(*, code_menu: Callable[[], None] | None = None) -> Iterator[None]:
     """Keep a workflow's primary action in a predictable card footer."""
 
     with ui.element("div").classes("dn-action-dock").mark("scientific-action-dock"):
         yield
-        (
+        code_button = (
             ui.button("Code", color="#2596be")
             .props('no-caps icon-right="arrow_drop_down"')
             .classes("dn-action-primary dn-action-code")
             .mark("action-code")
             .bind_visibility_from(get_export_settings(), "dev_mode")
         )
+        if code_menu is not None:
+            with code_button:
+                with ui.menu().props('anchor="bottom right" self="top right"').mark("mapping-code-menu"):
+                    code_menu()
 
 
 def set_data_upload_locked(uploader: Any, locked: bool) -> None:

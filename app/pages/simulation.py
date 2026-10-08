@@ -1228,6 +1228,32 @@ def _simulation_spatial_size(value: float | np.ndarray) -> int | None:
     return None
 
 
+def _trim_simulation_profile(
+    value: float | np.ndarray,
+    *,
+    start: float,
+    end: float,
+    resolution: float,
+) -> float | np.ndarray:
+    """Keep the spatial bins requested by an explicitly edited region end."""
+
+    if _simulation_spatial_size(value) is None:
+        return value
+    if not math.isfinite(resolution) or resolution <= 0:
+        raise ValueError("Spatial resolution must be finite and greater than zero.")
+    if not math.isfinite(start) or not math.isfinite(end):
+        raise ValueError("Region start and end must be finite.")
+    if end <= start:
+        raise ValueError("Region end must be greater than region start.")
+    ratio = (end - start) / resolution
+    if not math.isfinite(ratio):
+        raise ValueError("The requested spatial grid is not finite.")
+    nearest = round(ratio)
+    if math.isclose(ratio, nearest, rel_tol=1e-12, abs_tol=1e-12):
+        ratio = float(nearest)
+    return np.asarray(value)[:math.ceil(ratio)]
+
+
 def _source_batch_summary(
     controls: _SimulationSourceControls,
     values: Sequence[float | np.ndarray],
@@ -2017,7 +2043,10 @@ def render(_navigate: Callable[[str], None]) -> None:
                             .mark("simulation-region-end")
                         )
 
+                    automatic_region_end: float | None = None
+
                     def sync_region_to_profiles() -> None:
+                        nonlocal automatic_region_end
                         sizes: set[int] = set()
                         for source, source_label in (
                             (firing_source, "Firing rate"),
@@ -2055,8 +2084,9 @@ def render(_navigate: Callable[[str], None]) -> None:
                             return
                         if not math.isfinite(spatial_resolution) or spatial_resolution <= 0:
                             return
+                        automatic_region_end = sizes.pop() * spatial_resolution
                         region_start.set_value(0.0)
-                        region_end.set_value(sizes.pop() * spatial_resolution)
+                        region_end.set_value(automatic_region_end)
 
                     source_region_refresh["call"] = sync_region_to_profiles
                     resolution_x.on_value_change(sync_region_to_profiles)
@@ -2930,6 +2960,10 @@ def render(_navigate: Callable[[str], None]) -> None:
                         resolution_x_value = _number(resolution_x, "Spatial resolution")
                         region_start_value = _number(region_start, "Region start")
                         configured_region_end = _number(region_end, "Region end")
+                        use_selected_end = (
+                            configured_region_end != automatic_region_end
+                            or region_start_value != 0.0
+                        )
                         paired_values: list[
                             tuple[float | np.ndarray, float | np.ndarray, float]
                         ] = []
@@ -2960,29 +2994,21 @@ def render(_navigate: Callable[[str], None]) -> None:
                             region_end_value = (
                                 region_start_value
                                 + next(iter(paired_sizes)) * resolution_x_value
-                                if paired_sizes
+                                if paired_sizes and not use_selected_end
                                 else configured_region_end
                             )
+                            if use_selected_end:
+                                firing_rate = _trim_simulation_profile(
+                                    firing_rate, start=region_start_value,
+                                    end=configured_region_end, resolution=resolution_x_value,
+                                )
+                                fork_speed = _trim_simulation_profile(
+                                    fork_speed, start=region_start_value,
+                                    end=configured_region_end, resolution=resolution_x_value,
+                                )
                             paired_values.append(
                                 (firing_rate, fork_speed, region_end_value)
                             )
-                        spatial_region_ends = {
-                            request_region_end
-                            for firing_rate, fork_speed, request_region_end in paired_values
-                            if any(
-                                size is not None
-                                for size in (
-                                    _simulation_spatial_size(firing_rate),
-                                    _simulation_spatial_size(fork_speed),
-                                )
-                            )
-                        }
-                        # Keep the editable Region field helpful for a uniform
-                        # batch. A mixed-length batch has no single end value,
-                        # so each request retains its own derived region.
-                        if len(spatial_region_ends) == 1:
-                            region_end.value = spatial_region_ends.pop()
-                            region_end.update()
                         shared_request = dict(
                             resolution_x=resolution_x_value,
                             resolution_t=_number(resolution_t, "Time step"),

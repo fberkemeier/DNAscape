@@ -81,6 +81,34 @@ Same-quantity reductions identify their source as space-time data so they cannot
 be mistaken for a route that simply returns its target unchanged. Exact
 same-quantity, same-form routes are excluded from the Mapping catalogue.
 
+## Mapping code downloads
+
+Enable **Dev Mode** in Settings to show the **Code** button beside the workflow
+action. Mapping's menu exports the current controls as a Python script or a
+runnable ZIP. The other Code buttons remain placeholders.
+
+The ZIP contains `mapping.py`, the original input files (or an NPZ prepared
+result), the current DNAscape package source, and pinned dependencies. Extract
+it and run `python -m pip install -r requirements.txt`, then `python mapping.py`.
+With uv installed, `uv run mapping.py` handles the script's declared dependencies.
+Use Python 3.10 or newer. A script-only download uses the same relative input
+paths and needs the package and inputs supplied by the ZIP.
+
+Edit `MAPPING` for route, domain, input paths, selected columns/array keys,
+constants, track processing, combinations, and optional setting overrides.
+`RAW_EXPORT` includes the selected output, filename, format, compression switch,
+compression format, and individual batch choices. `EXPORT_RAW` defaults to true.
+Set `PLOT = True` for optional HTML plots using the app's ECharts specifications;
+`PLOTTING` exposes the preview settings, colors, layout, and export DPI. The
+bundle includes the installed ECharts renderer for offline plots, with PNG and
+SVG downloads available in the HTML. A stochastic route with no fixed seed
+produces a new realization on each run.
+
+The shared Python workflows live in `dnascape.workflows`. The app's existing
+service imports remain compatible and use the same implementations, validators,
+scientific defaults, limits, and serializers. Code export snapshots controls
+without running Mapping or replacing its displayed results.
+
 ## Install and launch
 
 From the repository root:

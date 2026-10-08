@@ -114,6 +114,7 @@ _SUBMODULES = (
     "fitting",
     "routing",
     "core",
+    "workflows",
 )
 
 _PUBLIC_MODULE_FOR_NAME = {

@@ -69,7 +69,7 @@ def test_all_seven_page_modules_exist_and_define_render() -> None:
         assert "render" in definitions, file_name
 
 
-def test_ui_only_imports_scientific_package_through_service_boundaries() -> None:
+def test_ui_only_imports_scientific_package_through_shared_workflows() -> None:
     scientific_imports: list[tuple[str, str]] = []
     for path in APP_DIR.rglob("*.py"):
         if "tests" in path.relative_to(APP_DIR).parts:
@@ -84,12 +84,12 @@ def test_ui_only_imports_scientific_package_through_service_boundaries() -> None
                 if module == "dnascape" or module.startswith("dnascape."):
                     scientific_imports.append((path.name, module))
     assert scientific_imports
-    assert {file_name for file_name, _module in scientific_imports} == {
-        "data_conversion_service.py",
-        "mapping_catalog.py",
-        "mapping_service.py",
-        "simulation_service.py",
-    }
+    # Pages and compatibility services consume shared package workflows; the
+    # low-level numerical engines remain behind that headless boundary.
+    assert all(
+        module == "dnascape.workflows" or module.startswith("dnascape.workflows.")
+        for _file_name, module in scientific_imports
+    ), scientific_imports
 
 
 def test_shell_exposes_complete_navigation_and_local_entrypoint() -> None:
@@ -177,7 +177,7 @@ def test_workflow_copy_and_data_sections_use_updated_ui_semantics() -> None:
         assert 'expansion("Export plot"' not in ui_sources[page]
     for page in ("mapping.py", "simulation.py"):
         assert "action_dock" in ui_sources[page]
-        assert "with action_dock():" in ui_sources[page]
+        assert "with action_dock(" in ui_sources[page]
         assert "stat_strip(" in ui_sources[page]
         assert "raw_output_controls(" in ui_sources[page]
         workflow = page.removesuffix(".py")
@@ -187,7 +187,7 @@ def test_workflow_copy_and_data_sections_use_updated_ui_semantics() -> None:
         raw_output = ui_sources[page].index("raw_output_controls(")
         assert preview_title < result_plot < plotting_settings < raw_output
     plotting_source = ui_sources["plotting.py"]
-    assert "with action_dock():" in plotting_source
+    assert "with action_dock(" in plotting_source
     assert "stat_strip(" not in plotting_source
     assert "raw_output_controls(" not in plotting_source
     assert 'expansion("Region"' not in plotting_source
@@ -380,7 +380,7 @@ def test_scientific_layout_hooks_keep_controls_aligned_and_actions_clear() -> No
     common = (APP_DIR / "pages" / "common.py").read_text(encoding="utf-8")
     for page_name in ("data_management.py", "mapping.py", "simulation.py", "plotting.py"):
         page = (APP_DIR / "pages" / page_name).read_text(encoding="utf-8")
-        assert "with action_dock():" in page
+        assert "with action_dock(" in page
     assert 'classes("dn-action-dock")' in common
 
 

@@ -73,6 +73,17 @@ Mapping
    Configure ``rmap`` inputs, regions, routes, and preview settings, then run
    the resolved route in a cancellable background worker.
 
+   Enable **Dev Mode** in Settings and use **Code** to download the current
+   Mapping configuration as Python or a runnable ZIP. The ZIP includes original
+   inputs, the current DNAscape package source and dependency requirements.
+   Extract it, install ``requirements.txt``, and run ``python mapping.py`` with
+   Python 3.10 or newer; alternatively use ``uv run mapping.py``.
+   Edit ``MAPPING`` for inputs and scientific settings and ``RAW_EXPORT`` for
+   output selection, filenames, formats, compression and individual batch
+   choices. Plotting is optional: set ``PLOT = True`` and edit ``PLOTTING`` to
+   generate the same ECharts views as standalone HTML with PNG/SVG downloads.
+   Exporting code does not start Mapping or replace its results.
+
 Simulation
    Run bounded constant or uploaded firing-rate and fork-speed fields through ``rsim``.
    Progress appears in Preview while the scientific worker runs. Completion
