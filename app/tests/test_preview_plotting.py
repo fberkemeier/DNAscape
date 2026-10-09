@@ -46,8 +46,8 @@ class _CaptureChart:
 
 
 def test_preview_setting_markers_cover_every_shared_control_consistently() -> None:
-    expected = set(PreviewSettingsControls.__dataclass_fields__).difference(
-        {"primary_color_surface", "secondary_color_surface"}
+    expected = {name for name in PreviewSettingsControls.__dataclass_fields__ if not name.startswith("_")}.difference(
+        {"primary_color_surface", "secondary_color_surface", "title"}
     )
     expected.add("container")
 
@@ -380,20 +380,19 @@ def test_heatmap_automatic_axes_meet_the_raster_edges_without_margins(
 
 
 @pytest.mark.parametrize(
-    ("requested", "displayed"),
+    "requested",
     (
-        ((-100.0, 1_100.0), (0.0, 1_000.0)),
-        ((100.0, 900.0), (100.0, 900.0)),
-        ((-100.0, 900.0), (0.0, 900.0)),
-        ((100.0, 1_100.0), (100.0, 1_000.0)),
+        (-100.0, 1_100.0),
+        (100.0, 900.0),
+        (-100.0, 900.0),
+        (100.0, 1_100.0),
     ),
 )
 def test_heatmap_explicit_limits_crop_without_rescaling_the_raster(
     requested: tuple[float, float],
-    displayed: tuple[float, float],
 ) -> None:
     options = _heatmap_options(y_limits=requested)
-    assert (options["yAxis"]["min"], options["yAxis"]["max"]) == displayed
+    assert (options["yAxis"]["min"], options["yAxis"]["max"]) == requested
     # The raster and hover coordinates retain their original physical extent;
     # ECharts clips it at the selected domain rather than stretching rows.
     assert options["series"][0]["data"] == [[0.0, 0.0, 9_999.0, 1_000.0]]
@@ -402,9 +401,11 @@ def test_heatmap_explicit_limits_crop_without_rescaling_the_raster(
 
 
 @pytest.mark.parametrize("limits", ((1_100.0, 1_200.0), (-200.0, -100.0), (1_000.0, 1_100.0)))
-def test_heatmap_disjoint_limits_report_the_unavailable_domain(limits: tuple[float, float]) -> None:
-    with pytest.raises(ValueError, match="do not overlap the available data range"):
-        _heatmap_options(y_limits=limits)
+def test_heatmap_limits_outside_the_data_preserve_the_requested_view(limits: tuple[float, float]) -> None:
+    options = _heatmap_options(y_limits=limits)
+    assert (options["yAxis"]["min"], options["yAxis"]["max"]) == limits
+    assert options["series"][0]["data"] == [[0.0, 0.0, 9_999.0, 1_000.0]]
+    assert options["series"][0]["clip"] is True
 
 
 def test_heatmap_downsampling_keeps_full_original_axis_extents_and_missing_values() -> None:
@@ -426,6 +427,83 @@ def test_heatmap_downsampling_keeps_full_original_axis_extents_and_missing_value
     assert np.all(raster[0, :, 3] == 255)
     assert np.all(raster[:, -1, 3] == 255)
     assert raster[-1, 0, 3] == 0  # genuine NaNs remain transparent, including at an edge
+
+
+@pytest.mark.parametrize("log_z", (False, True))
+def test_heatmap_sampling_averages_each_block_without_losing_missing_cells(log_z: bool) -> None:
+    from dnascape.workflows.preview import _sample_heatmap
+
+    values = np.arange(1.0, 64.0).reshape(7, 9)
+    values[:3, :4] = np.nan
+    values[3, 4] = np.inf
+    values[4, 5] = 0.0
+    values[5, 6] = -1.0
+    x_axis, y_axis = np.arange(9.0), np.arange(7.0)
+    x, y, sampled, _, _ = _sample_heatmap(values, x_axis, y_axis, limit=4, log_z=log_z)
+    assert sampled.shape == (1, 2)
+    edges = np.linspace(0, 9, 3, dtype=int)
+    for column, (lower, upper) in enumerate(zip(edges[:-1], edges[1:], strict=True)):
+        block = values[:, lower:upper]
+        finite = block[np.isfinite(block) & ((block > 0) if log_z else True)]
+        expected = np.mean(np.log10(finite) if log_z else finite)
+        assert sampled[0, column] == pytest.approx(expected)
+    np.testing.assert_array_equal(x, x_axis)
+    np.testing.assert_array_equal(y, y_axis)
+
+
+@pytest.mark.parametrize("shape", ((1000, 1), (1, 1000), (301, 721)))
+def test_heatmap_sampling_handles_narrow_inputs_with_a_one_cell_budget(shape: tuple[int, int]) -> None:
+    from dnascape.workflows.preview import _sample_heatmap
+
+    values = np.ones(shape)
+    _, _, sampled, _, _ = _sample_heatmap(values, np.arange(shape[1]), np.arange(shape[0]), limit=1)
+    assert sampled.shape == (1, 1)
+    assert sampled[0, 0] == 1.0
+
+
+@pytest.mark.parametrize("log_z", (False, True))
+def test_heatmap_sampling_has_bounded_working_memory_for_large_views(log_z: bool) -> None:
+    import tracemalloc
+    from dnascape.workflows.preview import _sample_heatmap, MAX_HEATMAP_CELLS
+
+    # A temporal profile broadcast across a long chromosome represents 160 MB
+    # of heatmap data without allocating it. Sampling must preserve that saving.
+    values = np.broadcast_to(np.linspace(1.0, 10.0, 4000)[:, None], (4000, 5000))
+    tracemalloc.start()
+    try:
+        _, _, sampled, _, _ = _sample_heatmap(values, np.arange(5000), np.arange(4000), log_z=log_z)
+        _, peak = tracemalloc.get_traced_memory()
+    finally:
+        tracemalloc.stop()
+    assert sampled.size <= MAX_HEATMAP_CELLS
+    assert peak < 20_000_000
+    assert np.all(np.isfinite(sampled))
+
+
+def test_heatmap_sampling_averages_cells_across_work_tile_boundaries() -> None:
+    from dnascape.workflows.preview import _sample_heatmap, MAX_HEATMAP_WORK_CELLS
+
+    width = MAX_HEATMAP_WORK_CELLS + 1000
+    values = np.arange(width, dtype=np.float32)[None, :]
+    _, _, sampled, _, _ = _sample_heatmap(values, np.arange(width), [0.0])
+    edges = np.linspace(0, width, sampled.shape[1] + 1, dtype=int)
+    expected = (edges[:-1] + edges[1:] - 1) / 2.0
+    np.testing.assert_allclose(sampled[0], expected)
+
+
+def test_heatmap_custom_xyz_ranges_preserve_data_coordinates_and_clip_colours() -> None:
+    options = _heatmap_options(x_limits=(-1000.0, 12_000.0), y_limits=(-20.0, 1200.0), z_limits=(0.2, 0.8))
+    assert (options["xAxis"]["min"], options["xAxis"]["max"]) == (-1000.0, 12_000.0)
+    assert (options["yAxis"]["min"], options["yAxis"]["max"]) == (-20.0, 1200.0)
+    assert (options["visualMap"]["min"], options["visualMap"]["max"]) == (0.2, 0.8)
+    assert options["series"][0]["data"] == [[0.0, 0.0, 9999.0, 1000.0]]
+
+
+def test_heatmap_log_z_limits_are_entered_as_original_values() -> None:
+    options = _heatmap_options(log_z=True, z_limits=(0.01, 100.0))
+    assert (options["visualMap"]["min"], options["visualMap"]["max"]) == (-2.0, 2.0)
+    with pytest.raises(ValueError, match="Log Z"):
+        _heatmap_options(log_z=True, z_limits=(0.0, 100.0))
 
 
 def test_heatmap_narrow_nonzero_domains_are_not_expanded_as_singletons() -> None:
@@ -765,8 +843,9 @@ def test_line_layout_uses_actual_aligned_ticks_without_double_reserving_space() 
     assert options["yAxis"]["axisLabel"]["customValues"] == [20.0, 25.0, 30.0, 35.0]
     assert options["yAxis"]["nameGap"] <= 30
     assert options["grid"]["left"] >= options["yAxis"]["nameGap"] + 9
-    assert options["grid"]["left"] <= 40
+    assert options["grid"]["left"] <= 43
     assert options["grid"]["containLabel"] is False
+    assert options["grid"]["outerBoundsMode"] == "none"
 
 
 def test_five_character_y_ticks_receive_extra_title_clearance() -> None:
@@ -790,12 +869,13 @@ def test_five_character_y_ticks_receive_extra_title_clearance() -> None:
     )
 
     assert "0.002" in [f"{value:.5g}" for value in options["yAxis"]["axisLabel"]["customValues"]]
-    assert options["yAxis"]["nameGap"] >= 48
+    assert 42 <= options["yAxis"]["nameGap"] < 48
     assert options["grid"]["left"] >= options["yAxis"]["nameGap"] + 9
     assert options["grid"]["left"] <= 60
 
 
-def test_bottom_line_legend_is_below_axes_with_dedicated_grid_clearance() -> None:
+@pytest.mark.parametrize("side", ("left", "right"))
+def test_bottom_line_legend_stays_inside_axes_without_changing_plot_margins(side: str) -> None:
     common = {
         "plot_type": "Line",
         "title": "Curves",
@@ -815,11 +895,13 @@ def test_bottom_line_legend_is_below_axes_with_dedicated_grid_clearance() -> Non
         "x_axis": np.asarray([0.0, 1.0, 2.0]),
     }
     top = build_preview_plot_options(legend_position="Top right", **common)
-    bottom = build_preview_plot_options(legend_position="Bottom right", **common)
+    bottom = build_preview_plot_options(legend_position=f"Bottom {side}", **common)
 
-    assert bottom["legend"]["bottom"] == 8
-    assert bottom["legend"]["orient"] == "horizontal"
-    assert bottom["grid"]["bottom"] == top["grid"]["bottom"] + 48
+    assert bottom["legend"]["bottom"] > bottom["grid"]["bottom"]
+    assert "top" not in bottom["legend"]
+    assert side in bottom["legend"]
+    assert bottom["legend"]["orient"] == top["legend"]["orient"] == "vertical"
+    assert bottom["grid"] == top["grid"]
 
 
 def test_every_interactive_plot_uses_two_decimal_tooltip_formatting() -> None:

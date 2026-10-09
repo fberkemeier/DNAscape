@@ -12,16 +12,13 @@ from nicegui.elements.tooltip import Tooltip
 
 from app import __version__
 from app.export_settings import (
-    CACHE_FILE_FORMAT_OPTIONS,
-    COMPRESSION_OPTIONS,
-    DEFAULT_CONVERSION_MEMORY_LIMIT_MB,
-    MAX_CONVERSION_MEMORY_LIMIT_MB,
     get_export_settings,
     reset_export_settings,
 )
 from app.icons import OUTLINE_ICON_SVGS, PLOT_ICON_SVG
+from app.page_activity import current_page_activity
 from app.pages import PAGE_RENDERERS
-from app.result_naming import NAME_STYLE_OPTIONS, normalize_name_style
+from app.settings_dialog import settings_dialog as create_settings_dialog
 
 APP_DIR = Path(__file__).resolve().parent
 ROOT_DIR = APP_DIR.parent
@@ -207,11 +204,15 @@ def index() -> None:
     page_state = {"active": "overview"}
     page_hosts: dict[str, object] = {}
     built_pages: set[str] = set()
+    page_activity = current_page_activity()
+    page_activity.is_page_active = lambda slug: page_state["active"] == slug
     export_settings = get_export_settings()
     if export_settings.show_help:
         body.classes("dn-field-help-enabled")
 
     def discard_page(slug: str) -> None:
+        if page_activity.retain_page(slug):
+            return
         host = page_hosts.get(slug)
         if host is None:
             return
@@ -238,17 +239,24 @@ def index() -> None:
         current_session_cache().refresh_page(slug)
 
     def navigate(slug: str) -> None:
-        if slug not in PAGE_RENDERERS or slug == page_state["active"]:
+        if slug not in PAGE_RENDERERS:
+            return
+        if slug == page_state["active"]:
+            page_activity.acknowledge(slug)
             return
         previous = page_state["active"]
         restore_requested = current_session_cache().has_active(slug)
         if not export_settings.preserve_page_state:
             discard_page(previous)
         if restore_requested:
+            # An explicit cached-result choice replaces unread output, while
+            # the retention guard still protects a job which is running.
+            page_activity.acknowledge(slug)
             discard_page(slug)
         page_state["active"] = slug
         render_navigation.refresh()
         show_page(slug)
+        page_activity.acknowledge(slug)
 
     drawer_collapse_button: Button
     drawer_collapse_tooltip: Tooltip
@@ -307,6 +315,20 @@ def index() -> None:
 
             @ui.refreshable
             def render_navigation() -> None:
+                def render_activity(slug: str, label: str) -> None:
+                    indicator = page_activity.indicator(slug)
+                    if indicator is None:
+                        return
+                    with ui.element("span").classes("dn-nav-status").props("role=status"):
+                        if indicator == "running":
+                            ui.spinner(size="14px", color="primary").props(
+                                f'aria-label="{label} running"'
+                            ).mark(f"nav-{slug}-running")
+                        else:
+                            ui.icon("check", size="1em", color="primary").props(
+                                f'aria-label="{label} complete"'
+                            ).mark(f"nav-{slug}-complete")
+
                 with ui.column().classes("dn-nav-list"):
                     for slug, label, icon in NAV_ITEMS:
                         if slug == "plotting":
@@ -317,6 +339,7 @@ def index() -> None:
                             ) as button:
                                 ui.html(PLOT_ICON_SVG).classes("dn-nav-plot-icon dn-plot-icon-wrap")
                                 ui.label(label).classes("dn-nav-label")
+                                render_activity(slug, label)
                         else:
                             assert icon is not None
                             with (
@@ -326,12 +349,14 @@ def index() -> None:
                             ) as button:
                                 ui.html(icon).classes("dn-nav-symbol dn-nav-outline-icon")
                                 ui.label(label).classes("dn-nav-label")
+                                render_activity(slug, label)
                         button.classes(
                             "dn-nav-button dn-nav-active"
                             if page_state["active"] == slug
                             else "dn-nav-button"
                         )
 
+            page_activity.on_change = render_navigation.refresh
             render_navigation()
             ui.space()
             with ui.row().classes("dn-sidebar-links"):
@@ -401,181 +426,18 @@ def index() -> None:
             with ui.item_section():
                 ui.label(label)
 
-    with (
-        ui.dialog().props("persistent") as settings_dialog,
-        ui.card().classes("dn-settings-dialog"),
-    ):
-        with ui.row().classes("dn-settings-dialog-head"):
-            ui.label("Settings").classes("dn-panel-title")
-            ui.space()
-            ui.button(icon="close", on_click=settings_dialog.close).props(
-                'flat round dense aria-label="Close settings"'
-            )
-        with ui.element("div").classes("dn-settings-grid"):
-            plot_dpi_setting = (
-                ui.number(
-                    label="Plot export DPI",
-                    value=export_settings.plot_dpi,
-                    min=72,
-                    max=384,
-                    step=24,
-                )
-                .props("dense")
-                .classes("dn-field")
-                .mark("settings-plot-dpi")
-            )
-            compression_setting = (
-                ui.select(
-                    COMPRESSION_OPTIONS,
-                    value=export_settings.raw_compression,
-                    label="Raw data compression",
-                )
-                .props("dense options-dense")
-                .classes("dn-field")
-                .mark("settings-raw-compression")
-            )
-            cached_format_setting = (
-                ui.select(
-                    CACHE_FILE_FORMAT_OPTIONS,
-                    value=export_settings.cached_file_format,
-                    label="Cached result file type",
-                )
-                .props("dense options-dense")
-                .classes("dn-field")
-                .mark("settings-cached-file-format")
-            )
-            cached_compression_setting = (
-                ui.select(
-                    COMPRESSION_OPTIONS,
-                    value=export_settings.cached_compression,
-                    label="Cached result compression",
-                )
-                .props("dense options-dense")
-                .classes("dn-field")
-                .mark("settings-cached-compression")
-            )
-            name_style_setting = (
-                ui.select(
-                    NAME_STYLE_OPTIONS,
-                    value=export_settings.result_name_style,
-                    label="Result and file names",
-                )
-                .props("dense options-dense")
-                .classes("dn-field")
-                .mark("settings-result-name-style")
-            )
-            memory_limit_setting = (
-                ui.number(
-                    label="Conversion memory limit (MB)",
-                    value=export_settings.conversion_memory_limit_mb,
-                    min=DEFAULT_CONVERSION_MEMORY_LIMIT_MB,
-                    max=MAX_CONVERSION_MEMORY_LIMIT_MB,
-                    step=64,
-                    validation={
-                        f"Enter a whole number from {DEFAULT_CONVERSION_MEMORY_LIMIT_MB} "
-                        f"to {MAX_CONVERSION_MEMORY_LIMIT_MB:,}.": lambda value: (
-                            value is not None
-                            and DEFAULT_CONVERSION_MEMORY_LIMIT_MB
-                            <= value
-                            <= MAX_CONVERSION_MEMORY_LIMIT_MB
-                            and float(value).is_integer()
-                        ),
-                    },
-                )
-                .props("dense")
-                .classes("dn-field")
-                .mark("settings-conversion-memory-limit")
-            )
-            memory_limit_setting.tooltip(
-                "Estimated working-memory budget for BigWig and bedGraph preparation. "
-                "The all-chromosome K562 example at 1 kb needs about 322 MB; "
-                "choose 512 MB to allow it. This does not reserve RAM or cap actual RAM use."
-            )
-            preserve_page_setting = (
-                ui.checkbox(
-                    "Keep page controls and outputs",
-                    value=export_settings.preserve_page_state,
-                )
-                .classes("dn-settings-wide-control")
-                .mark("settings-preserve-page-state")
-            )
-            show_examples_setting = (
-                ui.checkbox(
-                    "Show example source links",
-                    value=export_settings.show_examples,
-                )
-                .classes("dn-settings-wide-control")
-                .mark("settings-show-examples")
-            )
-            show_help_setting = (
-                ui.checkbox(
-                    "Show field help",
-                    value=export_settings.show_help,
-                )
-                .classes("dn-settings-wide-control")
-                .mark("settings-show-help")
-            )
-            dev_mode_setting = (
-                ui.checkbox("Dev Mode")
-                .bind_value(export_settings, "dev_mode")
-                .classes("dn-settings-wide-control")
-                .mark("settings-dev-mode")
-            )
-
-        def update_plot_dpi() -> None:
-            value = int(plot_dpi_setting.value or 150)
-            export_settings.plot_dpi = max(72, min(384, value))
-
-        def update_compression() -> None:
-            export_settings.raw_compression = str(compression_setting.value or "gzip")
-
-        def update_cached_format() -> None:
-            export_settings.cached_file_format = str(cached_format_setting.value or "tsv")
-
-        def update_cached_compression() -> None:
-            export_settings.cached_compression = str(cached_compression_setting.value or "gzip")
-
-        def update_name_style() -> None:
-            export_settings.result_name_style = normalize_name_style(
-                str(name_style_setting.value or "short")
-            )
-            for slug in tuple(built_pages):
+    def apply_application_settings() -> None:
+        body.classes(
+            add="dn-field-help-enabled" if export_settings.show_help else None,
+            remove=None if export_settings.show_help else "dn-field-help-enabled",
+        )
+        for slug in tuple(built_pages):
+            if not export_settings.preserve_page_state and slug != page_state["active"]:
+                discard_page(slug)
+            else:
                 current_session_cache().refresh_page(slug)
 
-        def update_conversion_memory_limit() -> None:
-            if memory_limit_setting.value is None or not memory_limit_setting.validate():
-                return
-            export_settings.conversion_memory_limit_mb = int(memory_limit_setting.value)
-
-        def update_page_preservation() -> None:
-            export_settings.preserve_page_state = bool(preserve_page_setting.value)
-            if export_settings.preserve_page_state:
-                return
-            for slug in tuple(built_pages):
-                if slug != page_state["active"]:
-                    discard_page(slug)
-
-        def update_show_examples() -> None:
-            export_settings.show_examples = bool(show_examples_setting.value)
-            if "data-management" in built_pages:
-                current_session_cache().refresh_page("data-management")
-
-        def update_show_help() -> None:
-            export_settings.show_help = bool(show_help_setting.value)
-            body.classes(
-                add="dn-field-help-enabled" if export_settings.show_help else None,
-                remove=None if export_settings.show_help else "dn-field-help-enabled",
-            )
-
-        plot_dpi_setting.on_value_change(update_plot_dpi)
-        compression_setting.on_value_change(update_compression)
-        cached_format_setting.on_value_change(update_cached_format)
-        cached_compression_setting.on_value_change(update_cached_compression)
-        name_style_setting.on_value_change(update_name_style)
-        memory_limit_setting.on_value_change(update_conversion_memory_limit)
-        preserve_page_setting.on_value_change(update_page_preservation)
-        show_examples_setting.on_value_change(update_show_examples)
-        show_help_setting.on_value_change(update_show_help)
+    settings_dialog = create_settings_dialog(on_apply=apply_application_settings)
 
     with (
         ui.dialog() as about_dialog,
@@ -644,38 +506,17 @@ def index() -> None:
         """Return the client-local workspace and shared preferences to defaults."""
 
         cache = current_session_cache()
+        page_activity.reset()
         removed = cache.reset()
         for slug in tuple(built_pages):
             discard_page(slug)
 
         defaults = reset_export_settings()
-        plot_dpi_setting.value = defaults.plot_dpi
-        compression_setting.value = defaults.raw_compression
-        cached_format_setting.value = defaults.cached_file_format
-        cached_compression_setting.value = defaults.cached_compression
-        name_style_setting.value = defaults.result_name_style
-        preserve_page_setting.value = defaults.preserve_page_state
-        show_examples_setting.value = defaults.show_examples
-        show_help_setting.value = defaults.show_help
-        dev_mode_setting.value = defaults.dev_mode
-        memory_limit_setting.value = defaults.conversion_memory_limit_mb
+        settings_dialog.load(defaults)
         body.classes(
             add="dn-field-help-enabled" if defaults.show_help else None,
             remove=None if defaults.show_help else "dn-field-help-enabled",
         )
-        for control in (
-            plot_dpi_setting,
-            compression_setting,
-            cached_format_setting,
-            cached_compression_setting,
-            name_style_setting,
-            preserve_page_setting,
-            show_examples_setting,
-            show_help_setting,
-            dev_mode_setting,
-            memory_limit_setting,
-        ):
-            control.update()
 
         dark_mode.auto()
         drawer.show()

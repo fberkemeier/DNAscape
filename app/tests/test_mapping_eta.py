@@ -27,7 +27,7 @@ def test_explicit_eta_counts_down_and_overrun_returns_to_estimating(clock):
     clock[0] = 2
     eta.report(.49, "Mapping... 1/2 - ETA 00:00:20 - MSE 1.00e-2")
     clock[0] = 7
-    assert eta.text() == "ETA ≈ 00:00:15 (current stage) · Elapsed 00:00:07"
+    assert eta.text() == "ETA ≈ 00:00:15 · Elapsed 00:00:07"
     clock[0] = 25
     assert eta.text() == "ETA estimating… · Elapsed 00:00:25"
     eta.report(.94, "Mapping... 2/2 - ETA 00:00:00")
@@ -40,7 +40,7 @@ def test_generic_solver_progress_estimates_stage_and_preview_resets_it(clock):
     eta.report(.04, "Mapping...")
     clock[0] = 10
     eta.report(.49, "Fitting target profile...")
-    assert eta.text() == "ETA ≈ 00:00:10 (current stage) · Elapsed 00:00:10"
+    assert eta.text() == "ETA ≈ 00:00:10 · Elapsed 00:00:10"
     eta.report(.98, "Preparing mapped preview...")
     assert "estimating" in eta.text()
 
@@ -54,7 +54,7 @@ def test_completed_quiet_cases_inform_the_batch_without_leaking_stage_eta(clock)
     clock[0] = 12
     assert eta.text() == "ETA ≈ 00:00:18 (batch) · Elapsed 00:00:12"
     eta.report(.49, "Fitting... ETA 00:00:04")
-    assert "00:00:04 (current stage)" in eta.text()
+    assert "00:00:04" in eta.text()
     clock[0] = 15
     eta.complete_case()
     eta.start_case(3)

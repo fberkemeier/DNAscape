@@ -20,7 +20,14 @@ from .mapping import (
     map_replicated_fraction_xt,
 )
 from .simulation import _resolve_stall_probability, rsim
-from .utils import _report_progress, check_cancelled, etaferr, mean_squared_error, smoothf
+from .utils import (
+    _fit_progress_enabled,
+    _report_progress,
+    check_cancelled,
+    etaferr,
+    mean_squared_error,
+    smoothf,
+)
 
 # Dense timing diagnostics create several arrays over the complete position-time
 # grid. Keep exact recomputation bounded while retaining exact optimisation on
@@ -446,7 +453,7 @@ def map_timing_firing(
         fit_history.append(best_mse if stabilize and historical_linear else mse)
 
         done = it == maxiter0 or _error_reached(mse, error)
-        if verbose and (it % print_every == 0 or done):
+        if _fit_progress_enabled(verbose) and (it % print_every == 0 or done):
             reported_mse = fit_history[-1]
             etaferr(it=it, maxiter=maxiter0, start_time=start_time, err=reported_mse, done=done)
             mse_list.append(reported_mse)
@@ -532,7 +539,7 @@ def map_timing_firing(
             np.clip(rates, rate_min, rate_max, out=rates)
     
             done = (k + 1) == iterations or _error_reached(mse, error)
-            if verbose and ((k + 1) % print_every == 0 or done):
+            if _fit_progress_enabled(verbose) and ((k + 1) % print_every == 0 or done):
                 etaferr(it=k+1, maxiter=iterations, start_time=start_time, err=mse, done=done)
                 mse_list.append(mse)
             if done and (k + 1) != iterations:
@@ -601,7 +608,7 @@ def _refine_spatial_firing_descent(
         history.append(best_mse)
         iteration = first_iteration + len(history) - 1
         done = iteration == maxiter or _error_reached(best_mse, error)
-        if verbose and (iteration % print_every == 0 or done):
+        if _fit_progress_enabled(verbose) and (iteration % print_every == 0 or done):
             etaferr(it=iteration, maxiter=maxiter, start_time=start_time, err=best_mse, done=done)
         if done and iteration != maxiter:
             raise _FitConverged
@@ -623,7 +630,7 @@ def _refine_spatial_firing_descent(
         # A better trial may be retained even if the line search stopped before
         # accepting it. Keep history, reported MSE and the returned rates aligned.
         history.append(best_mse)
-    if verbose and first_iteration + len(history) - 1 < maxiter:
+    if _fit_progress_enabled(verbose) and first_iteration + len(history) - 1 < maxiter:
         etaferr(it=first_iteration + len(history) - 1, maxiter=maxiter,
                 start_time=start_time, err=best_mse, done=True)
     return best_rates, best_mse, best_prediction, history
@@ -1641,7 +1648,7 @@ def _fit_weibull_survival_firing(
             best["fields"] = fields
         maxiter_display = max(1, maxiter)
         done = calls >= maxiter_display or _error_reached(mse, error)
-        if verbose and calls <= maxiter_display:
+        if _fit_progress_enabled(verbose) and calls <= maxiter_display:
             etaferr(
                 it=maxiter_display if done else min(calls, maxiter_display),
                 maxiter=maxiter_display,
@@ -1693,7 +1700,7 @@ def _fit_weibull_survival_firing(
                 best["fields"] = fields
             maxiter_display = max(1, maxiter)
             done = calls >= maxiter_display or _error_reached(data_mse, error)
-            if verbose and calls <= maxiter_display:
+            if _fit_progress_enabled(verbose) and calls <= maxiter_display:
                 etaferr(
                     it=maxiter_display if done else min(calls, maxiter_display),
                     maxiter=maxiter_display,
@@ -1737,7 +1744,7 @@ def _fit_weibull_survival_firing(
             if loss < best["loss"]:
                 best["loss"] = loss
                 best["fields"] = fields
-            if verbose and calls <= max(1, maxiter):
+            if _fit_progress_enabled(verbose) and calls <= max(1, maxiter):
                 etaferr(
                     it=calls, maxiter=max(1, maxiter), start_time=start_time,
                     err=mse, done=calls >= maxiter or _error_reached(mse, error),
@@ -1770,7 +1777,7 @@ def _fit_weibull_survival_firing(
         result = _EarlyStopResult()
 
     maxiter_display = max(1, maxiter)
-    if verbose and 0 < calls < maxiter_display and best["fields"] is not None:
+    if _fit_progress_enabled(verbose) and 0 < calls < maxiter_display and best["fields"] is not None:
         etaferr(
             it=maxiter_display,
             maxiter=maxiter_display,
@@ -1902,7 +1909,7 @@ def _refine_temporal_firing(
         np.maximum(rates, floor, out=rates)
 
         done = it == maxiter or _error_reached(err, error)
-        if verbose:
+        if _fit_progress_enabled(verbose):
             etaferr(it=it, maxiter=maxiter, start_time=start_time, err=err, done=done)
         if done and it != maxiter:
             break
@@ -2022,7 +2029,7 @@ def _refine_spacetime_firing(
         np.maximum(rates, floor, out=rates)
 
         done = it == maxiter or _error_reached(err, error)
-        if verbose:
+        if _fit_progress_enabled(verbose):
             etaferr(it=it, maxiter=maxiter, start_time=start_time, err=err, done=done)
         if done and it != maxiter:
             break
@@ -2526,7 +2533,7 @@ def map_timing_constant_firing(
         rate *= ratio ** fit_step
         rate = float(np.clip(rate, low, high))
         done = it == maxiter or _error_reached(mse, error)
-        if verbose and (it % print_every == 0 or done):
+        if _fit_progress_enabled(verbose) and (it % print_every == 0 or done):
             etaferr(it=it, maxiter=maxiter, start_time=start_time, err=mse, done=done)
         if done and it != maxiter:
             break
@@ -2629,10 +2636,18 @@ def map_timing_firing_spatial_speed(
     """Fit effective spatial speed by iterating the deterministic timing map.
 
     A late prediction increases local speed; an early prediction decreases it.
+    Smooth the log-speed correction, rather than repeatedly flattening the
+    accumulated profile. Accept only updates that improve timing MSE, falling
+    back to a local, damped correction when smoothing prevents improvement.
     The best evaluated profile is retained. Firing uses the legacy per-bin
     hazard convention here; the public rmap wrapper converts rate densities.
+
+    For a linear subregion, ``refine_edge_kb`` limits reflected endpoint
+    context and a narrow update taper, as in spatial firing-rate fitting.
+    Every supplied position remains refinable. Pass zero for true chromosome
+    ends; periodic fits already have flanking context and are unaffected.
     """
-    del resolution_time, time_grid, refine_edge_kb
+    del resolution_time, time_grid
     resolution = _normalise_resolution_x(resolution, resolution_x=resolution_x)
     target_shape = _canonical_speed_target_shape(target_shape)
     error = _normalise_error_threshold(error)
@@ -2712,6 +2727,22 @@ def map_timing_firing_spatial_speed(
             raise ValueError("speed_bounds must satisfy 0 < min_speed < max_speed.")
     speed = np.clip(speed, low, high)
 
+    fit_mask, update_weights, edge_bins, taper_bins = _spatial_firing_edge_controls(
+        T.size,
+        resolution,
+        observed_timing=relative_timing,
+        fork_speed=reference_speed,
+        neighbourhood_range=neighbourhood_range,
+        perQ=perQ,
+        refine_edge_kb=refine_edge_kb,
+    )
+    # Reflection needs an explicit spatial firing profile even when the
+    # supplied firing rate is constant. Keep the unprotected path unchanged.
+    context_firing = (
+        np.full(T.size, firing_rate, dtype=float)
+        if edge_bins and np.asarray(firing_rate).size == 1 else firing_rate
+    )
+
     maxiter = int(maxiter)
     print_every = max(1, int(print_every))
     best_speed = speed.copy()
@@ -2724,28 +2755,42 @@ def map_timing_firing_spatial_speed(
         if maxiter == 0 else "Maximum spatial-speed updates reached."
     )
     start_time = time.time()
+    predicted = None
+    evaluations = 0
+
+    def predict(candidate):
+        nonlocal evaluations
+        check_cancelled()
+        values = _map_spatial_firing_timing_with_context(
+            context_firing,
+            fork_speed=candidate,
+            resolution=resolution,
+            neighbourhood_range=neighbourhood_range,
+            perQ=perQ,
+            edge_bins=edge_bins,
+        )
+        evaluations += 1
+        check_cancelled()
+        return values
 
     # Evaluate the initial profile and every update, including the last one.
-    # The page has already selected Start/End; fit all supplied positions.
+    # Fit all supplied positions; score the core where flanking data are known.
     for it in range(maxiter + 1):
         _report_progress(
             .04 + .90 * it / (maxiter + 1),
             f"Fitting fork speed... iteration {it}/{maxiter}",
         )
         check_cancelled()
-        predicted = map_firing_timing(
-            firing_rate,
-            fork_speed=speed,
-            resolution=resolution,
-            neighbourhood_range=neighbourhood_range,
-            perQ=perQ,
-            n_bins=T.size,
-        )
+        if predicted is None:
+            predicted = predict(speed)
         check_cancelled()
         ok = valid & np.isfinite(predicted) & (predicted > 0)
         if not np.any(ok):
             raise ValueError("The supplied firing rate produced no finite timing predictions.")
-        mse = mean_squared_error(relative_timing[ok], predicted[ok])
+        score_ok = ok & fit_mask
+        if not np.any(score_ok):
+            score_ok = ok
+        mse = mean_squared_error(relative_timing[score_ok], predicted[score_ok])
         history.append(mse)
         if mse < best_mse:
             best_mse = mse
@@ -2753,7 +2798,7 @@ def map_timing_firing_spatial_speed(
             best_timing_fit = predicted + anchor
         converged = _error_reached(mse, error)
         done = it == maxiter or converged
-        if verbose and (it % print_every == 0 or done):
+        if _fit_progress_enabled(verbose) and (it % print_every == 0 or done):
             etaferr(
                 it=it + 1, maxiter=maxiter + 1, start_time=start_time,
                 err=mse, done=done, label="Fitting fork speed",
@@ -2764,21 +2809,46 @@ def map_timing_firing_spatial_speed(
             break
         ratio = np.ones(T.size, dtype=float)
         ratio[ok] = predicted[ok] / relative_timing[ok]
-        # Clipping in log space avoids overflow for very small positive times.
-        candidate = np.exp(np.clip(
-            np.log(speed) + fit_step * np.log(ratio), np.log(low), np.log(high),
-        ))
+        if edge_bins:
+            ratio[~fit_mask] = np.clip(ratio[~fit_mask], .5, 2.)
+        correction = np.log(ratio)
+        directions = []
         if smoothw is not None and int(smoothw) > 1:
-            candidate = uniform_filter1d(
-                candidate, size=min(int(smoothw), T.size),
+            smoothed = uniform_filter1d(
+                correction, size=min(int(smoothw), T.size),
                 mode="wrap" if perQ else "nearest",
             )
-        candidate = np.clip(candidate, low, high)
-        if np.array_equal(candidate, speed):
+            directions.append((smoothed, 1))
+        directions.append((correction, 8))
+        accepted = False
+        for direction, attempts in directions:
+            for attempt in range(attempts):
+                # Clipping in log space avoids overflow for very small times.
+                candidate = np.exp(np.clip(
+                    np.log(speed) + fit_step * .5 ** attempt * direction * update_weights,
+                    np.log(low), np.log(high),
+                ))
+                candidate = np.clip(candidate, low, high)
+                if np.array_equal(candidate, speed):
+                    continue
+                candidate_prediction = predict(candidate)
+                candidate_ok = valid & np.isfinite(candidate_prediction) & (candidate_prediction > 0)
+                if not np.array_equal(candidate_ok, ok):
+                    continue
+                candidate_mse = mean_squared_error(
+                    relative_timing[score_ok], candidate_prediction[score_ok],
+                )
+                if candidate_mse < mse:
+                    speed = candidate
+                    predicted = candidate_prediction
+                    accepted = True
+                    break
+            if accepted:
+                break
+        if not accepted:
             converged = True
-            convergence_message = "Spatial-speed update is unchanged within the supplied bounds."
+            convergence_message = "No improving spatial-speed update within the supplied bounds."
             break
-        speed = candidate
 
     _report_progress(.94, "Fork-speed fitting complete")
 
@@ -2806,23 +2876,18 @@ def map_timing_firing_spatial_speed(
             "fork_speed_bounds": (float(low), float(high)),
             "fit_mse": None if not np.isfinite(best_mse) else float(best_mse),
             "fit_history": np.asarray(history),
+            "fit_edge_bins": edge_bins,
+            "fit_taper_bins": taper_bins,
             "converged": converged,
             "convergence_message": convergence_message,
-            "optimizer_evaluations": len(history),
+            "optimizer_evaluations": evaluations,
             "forward_model": "deterministic local effective-speed timing map",
             "speed_form": "space",
         }
         timing_fit = (
             best_timing_fit
             if best_timing_fit is not None
-            else anchor + map_firing_timing(
-                firing_rate,
-                fork_speed=best_speed,
-                resolution=resolution,
-                neighbourhood_range=neighbourhood_range,
-                perQ=perQ,
-                n_bins=T.size,
-            )
+            else anchor + predict(best_speed)
         )
         info["replication_timing_fit"] = timing_fit
         info["residual"] = timing_fit - T
@@ -3414,7 +3479,7 @@ def _fit_exponential_speed_shape(
             best["params"] = values.copy()
             best["predicted"] = predicted.copy()
         done = calls >= maxiter_display or _error_reached(mse, error)
-        if verbose and calls <= maxiter_display:
+        if _fit_progress_enabled(verbose) and calls <= maxiter_display:
             etaferr(
                 it=maxiter_display if done else min(calls, maxiter_display),
                 maxiter=maxiter_display,
@@ -3627,7 +3692,7 @@ def _fit_weibull_speed_shape(
             best["mse"] = mse
             best["params"] = np.asarray(values, dtype=float).copy()
         done = calls >= maxiter_display or _error_reached(mse, error)
-        if verbose and calls <= maxiter_display:
+        if _fit_progress_enabled(verbose) and calls <= maxiter_display:
             etaferr(
                 it=maxiter_display if done else min(calls, maxiter_display),
                 maxiter=maxiter_display,
@@ -3894,7 +3959,7 @@ def _fit_constant_speed_with_general_firing(
             best_speed = speed
             best_timing_fit = predicted.copy()
         done = it == max(1, maxiter) or _error_reached(mse, error)
-        if verbose and (it % print_every == 0 or done):
+        if _fit_progress_enabled(verbose) and (it % print_every == 0 or done):
             etaferr(it=it, maxiter=max(1, maxiter), start_time=start_time, err=mse, done=done)
         if done or maxiter <= 0:
             break
@@ -4027,7 +4092,7 @@ def _fit_spatial_speed_with_general_firing(
             best_speed = speed.copy()
             best_timing_fit = predicted.copy()
         done = it == max(1, maxiter) or _error_reached(mse, error)
-        if verbose and (it % print_every == 0 or done):
+        if _fit_progress_enabled(verbose) and (it % print_every == 0 or done):
             etaferr(it=it, maxiter=max(1, maxiter), start_time=start_time, err=mse, done=done)
         if done or maxiter <= 0:
             break
@@ -4176,7 +4241,7 @@ def _fit_spatial_component_for_separable_speed(
             best_speed = speed.copy()
             best_predicted = predicted.copy()
         done = it == maxiter_display or _error_reached(mse, error)
-        if verbose and (it % print_every == 0 or done):
+        if _fit_progress_enabled(verbose) and (it % print_every == 0 or done):
             etaferr(it=it, maxiter=maxiter_display, start_time=start_time, err=mse, done=done)
         if done or maxiter <= 0:
             break
@@ -4349,7 +4414,7 @@ def _fit_temporal_factor_for_separable_speed(
             best["mse"] = float(mse)
             best["predicted"] = predicted.copy()
         done = best["calls"] >= maxiter_display or _error_reached(mse, error)
-        if verbose and best["calls"] <= maxiter_display:
+        if _fit_progress_enabled(verbose) and best["calls"] <= maxiter_display:
             etaferr(
                 it=maxiter_display if done else min(best["calls"], maxiter_display),
                 maxiter=maxiter_display,
@@ -4388,7 +4453,7 @@ def _fit_temporal_factor_for_separable_speed(
     best_mse = best["mse"]
     best_predicted = best["predicted"]
     params = best["params"]
-    if verbose and 0 < best["calls"] < maxiter_display and best_predicted is not None:
+    if _fit_progress_enabled(verbose) and 0 < best["calls"] < maxiter_display and best_predicted is not None:
         etaferr(
             it=maxiter_display,
             maxiter=maxiter_display,
@@ -4541,7 +4606,7 @@ def _fit_linear_increasing_temporal_factor_for_separable_speed(
             best_slope = float(slope)
             accepted = best_slope > 0
         done = i == slopes.size or _error_reached(best_mse, error)
-        if verbose and (i % print_every == 0 or done):
+        if _fit_progress_enabled(verbose) and (i % print_every == 0 or done):
             etaferr(it=i, maxiter=slopes.size, start_time=start_time, err=best_mse, done=done)
         if done and i != slopes.size:
             break
@@ -4615,6 +4680,7 @@ def _fit_mixed_intercept_slope_spacetime_speed(
         target_shape="best",
         smoothw=smoothw,
         error=error,
+        refine_edge_kb=refine_edge_kb,
         perQ=perQ,
         n_bins=T.size,
         verbose=verbose,
@@ -4760,7 +4826,7 @@ def _fit_mixed_intercept_slope_spacetime_speed(
             slope_step *= 0.5
 
         done = it == maxiter or _error_reached(best_mse, error) or no_improvement >= 3
-        if verbose and (it % print_every == 0 or done):
+        if _fit_progress_enabled(verbose) and (it % print_every == 0 or done):
             etaferr(it=it, maxiter=maxiter, start_time=start_time, err=best_mse, done=done)
         if done and it != maxiter:
             break
@@ -4997,7 +5063,7 @@ def _fit_crossed_spacetime_speed(
         )
 
         done = it == maxiter or _error_reached(best_mse, error)
-        if verbose and (it % print_every == 0 or done):
+        if _fit_progress_enabled(verbose) and (it % print_every == 0 or done):
             etaferr(it=it, maxiter=maxiter, start_time=start_time, err=best_mse, done=done)
         if done and it != maxiter:
             break
@@ -5230,7 +5296,7 @@ def _fit_best_spacetime_speed_shape(
     best_speed_fit = speed_fit.copy()
 
     if maxiter <= 0:
-        if verbose:
+        if _fit_progress_enabled(verbose):
             etaferr(it=1, maxiter=1, start_time=start_time, err=best_mse, done=True)
     else:
         for it in range(1, maxiter + 1):
@@ -5249,7 +5315,7 @@ def _fit_best_spacetime_speed_shape(
                 speed_fit = smoothf(speed_fit, window=smooth_window)
                 speed_fit = np.clip(speed_fit, low, high)
             done = it == maxiter or _error_reached(best_mse, error)
-            if verbose:
+            if _fit_progress_enabled(verbose):
                 etaferr(
                     it=it,
                     maxiter=maxiter_display,
@@ -5443,7 +5509,7 @@ def _refine_temporal_speed(
         np.clip(speed, low_speed, high_speed, out=speed)
 
         done = it == maxiter or _error_reached(err, error)
-        if verbose:
+        if _fit_progress_enabled(verbose):
             etaferr(it=it, maxiter=maxiter, start_time=start_time, err=err, done=done)
         if done and it != maxiter:
             break
@@ -5576,7 +5642,7 @@ def _refine_spacetime_speed(
         np.clip(speed, low_speed, high_speed, out=speed)
 
         done = it == maxiter or _error_reached(err, error)
-        if verbose:
+        if _fit_progress_enabled(verbose):
             etaferr(it=it, maxiter=maxiter, start_time=start_time, err=err, done=done)
         if done and it != maxiter:
             break
@@ -5706,6 +5772,7 @@ def map_timing_firing_temporal_speed(
         weibull_delay=weibull_delay,
         smoothw=smoothw,
         error=error,
+        refine_edge_kb=refine_edge_kb,
         perQ=perQ,
         n_bins=n_bins,
         verbose=verbose,
@@ -5959,6 +6026,7 @@ def _fit_spacetime_speed_components(
                 target_shape="best",
                 smoothw=smoothw,
                 error=error,
+                refine_edge_kb=refine_edge_kb,
                 perQ=perQ,
                 n_bins=T.size,
                 verbose=verbose,
@@ -6245,6 +6313,7 @@ def map_timing_firing_spacetime_speed(
         weibull_delay=weibull_delay,
         smoothw=smoothw,
         error=error,
+        refine_edge_kb=refine_edge_kb,
         perQ=perQ,
         n_bins=n_bins,
         verbose=verbose,
@@ -6694,7 +6763,7 @@ def map_timing_firing_constant_speed_simulated(
             break
         speed = float(np.clip(speed * ratio ** fit_step, low, high))
         done = it == maxiter or _error_reached(mse, error)
-        if verbose and (it % print_every == 0 or done):
+        if _fit_progress_enabled(verbose) and (it % print_every == 0 or done):
             etaferr(it=it, maxiter=maxiter, start_time=start_time, err=mse, done=done)
         if done and it != maxiter:
             break
@@ -6818,7 +6887,7 @@ def map_timing_firing_spatial_speed_simulated(
         speed = np.clip(speed, low, high)
         speed = _fill_nonperiodic_profile_edges(speed, crop, perQ=perQ)
         done = it == maxiter or _error_reached(mse, error)
-        if verbose and (it % print_every == 0 or done):
+        if _fit_progress_enabled(verbose) and (it % print_every == 0 or done):
             etaferr(it=it, maxiter=maxiter, start_time=start_time, err=mse, done=done)
         if done and it != maxiter:
             break
@@ -7569,7 +7638,7 @@ def map_timing_joint_spacetime_kinetics(
         np.clip(fork_speed, low_speed, high_speed, out=fork_speed)
 
         done = it == maxiter or _error_reached(err, error)
-        if verbose and (it % print_every == 0 or done):
+        if _fit_progress_enabled(verbose) and (it % print_every == 0 or done):
             etaferr(it=it, maxiter=maxiter, start_time=start_time, err=err, done=done)
         if done and it != maxiter:
             break

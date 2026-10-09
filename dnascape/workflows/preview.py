@@ -28,6 +28,7 @@ MAX_HEATMAP_ROWS = 300
 MAX_HEATMAP_COLUMNS = 720
 MAX_HEATMAP_CELLS = MAX_HEATMAP_ROWS * MAX_HEATMAP_COLUMNS
 MAX_HEATMAP_TOOLTIP_CELLS = 2_400
+MAX_HEATMAP_WORK_CELLS = 262_144
 # Dense overlays remain fast and readable without a per-point hover surface.
 # Six curves is the largest combined view where the tooltip still helps more
 # than it obscures the data.
@@ -50,7 +51,7 @@ _PLOT_GRID_RIGHT = 24
 _PLOT_GRID_TOP = 24
 _PLOT_GRID_BOTTOM = 58
 _HEATMAP_GRID_RIGHT = 86
-_X_AXIS_NAME_GAP = 32
+_X_AXIS_NAME_GAP = 28
 _Y_AXIS_NAME_GAP_MIN = 28
 _Y_AXIS_NAME_GAP_MAX = 82
 _AXIS_LABEL_FONT_SIZE = 10
@@ -259,6 +260,17 @@ def finite_values(values: Any) -> np.ndarray:
 
     flattened = np.asarray(values, dtype=float).reshape(-1)
     return flattened[np.isfinite(flattened)]
+
+
+def has_finite_values(values: Any) -> bool:
+    """Check a large array without allocating a mask for its full extent."""
+
+    matrix = np.asarray(values)
+    for start in range(0, matrix.size, MAX_HEATMAP_WORK_CELLS):
+        block = np.asarray(matrix.flat[start : start + MAX_HEATMAP_WORK_CELLS], dtype=float)
+        if np.isfinite(block).any():
+            return True
+    return False
 
 
 def _validate_log_axis(values: Any, label: str, *, bounds: bool = False) -> None:
@@ -529,10 +541,10 @@ def _y_axis_name_gap(
 ) -> int:
     """Reserve enough space between the axis and its rotated title.
 
-    ECharts measures ``nameGap`` from the axis line, not from the outside edge
-    of its tick labels.  The widest formatted tick therefore has to be part of
-    this value; otherwise a five-character tick such as ``32.16`` can collide
-    with the title even though the chart itself still fits its container.
+    ECharts measures ``nameGap`` from the axis line to the nearest edge of the
+    title, not from its tick labels. The widest formatted tick therefore has
+    to be part of this value; the title's own width belongs in the outer grid
+    margin rather than in the space between the title and ticks.
     """
 
     candidates = (
@@ -544,12 +556,11 @@ def _y_axis_name_gap(
     widest = max((len(label) for label in labels), default=1)
     # At the explicit 10 px axis-label font, six pixels per glyph is a safe
     # upper estimate for tabular digits and scientific notation. Include the
-    # label margin, half the rotated title width, and a visible clearance.
+    # label margin and a visible clearance.
     estimated = int(
         math.ceil(
             widest * 6.0
             + _AXIS_LABEL_MARGIN
-            + _AXIS_NAME_FONT_SIZE / 2
             + _Y_AXIS_TITLE_TICK_CLEARANCE
         )
     )
@@ -566,13 +577,12 @@ def _cartesian_grid(
     """Return deterministic outer chart margins shared by every plot type."""
 
     if has_y_name:
-        left = math.ceil(y_name_gap + _AXIS_NAME_FONT_SIZE / 2 + _PLOT_OUTER_GUTTER)
+        left = math.ceil(y_name_gap + _AXIS_NAME_FONT_SIZE + _PLOT_OUTER_GUTTER)
     else:
         # ``y_name_gap`` also encodes the estimated tick width. Remove the
         # title-specific allowance when there is no visible Y-axis name.
         left = math.ceil(
             y_name_gap
-            - _AXIS_NAME_FONT_SIZE / 2
             - _Y_AXIS_TITLE_TICK_CLEARANCE
             + _PLOT_OUTER_GUTTER
         )
@@ -585,6 +595,49 @@ def _cartesian_grid(
         # With explicit pixel geometry, asking ECharts to contain the labels
         # would add their width a second time and create the large left pad.
         "containLabel": False,
+        # ECharts 6 otherwise adjusts this explicit geometry a second time
+        # to contain axis names. Keep the same pixel spacing in every panel.
+        "outerBoundsMode": "none",
+    }
+
+
+def build_legend_options(
+    names: Sequence[str],
+    *,
+    grid: dict[str, Any],
+    position: str = "Top right",
+    show: bool = True,
+    interactive: bool = True,
+    item_width: int = 20,
+    item_height: int = 3,
+) -> dict[str, Any]:
+    """Anchor a scrollable legend inside the selected corner of the axes."""
+
+    normalized_position = str(position or "Top right").strip().casefold()
+    vertical_edge = "bottom" if normalized_position.startswith("bottom") else "top"
+    horizontal_edge = "left" if normalized_position.endswith("left") else "right"
+    return {
+        "show": bool(show),
+        "type": "scroll",
+        "selectedMode": bool(interactive),
+        "orient": "vertical",
+        # ECharts offsets refer to the chart container. Include the axis
+        # gutter so bottom legends stay above the X axis and its labels.
+        vertical_edge: int(grid["bottom"]) + 8 if vertical_edge == "bottom" else 24,
+        horizontal_edge: (
+            max(84, int(grid["left"]) + 8)
+            if horizontal_edge == "left"
+            else int(grid["right"]) + 4
+        ),
+        "itemWidth": item_width,
+        "itemHeight": item_height,
+        "backgroundColor": "rgba(255,255,255,0.84)",
+        "borderColor": "#ddd7d1",
+        "borderWidth": 1,
+        "borderRadius": 4,
+        "padding": [4, 6],
+        "textStyle": {"color": "#625c57", "fontSize": 11},
+        "data": list(names),
     }
 
 
@@ -760,6 +813,8 @@ def _heatmap_data_uri(
     z_minimum: float,
     z_maximum: float,
     invert_y: bool,
+    invert_x: bool = False,
+    invert_z: bool = False,
 ) -> str:
     """Encode a bounded heatmap raster using the same nearest-image model as plotf."""
 
@@ -771,6 +826,8 @@ def _heatmap_data_uri(
     scale /= z_maximum - z_minimum
     np.clip(scale, 0.0, 1.0, out=scale)
     anchors = _palette_rgb(palette)
+    if invert_z:
+        anchors = anchors[::-1]
     positions = scale * (anchors.shape[0] - 1)
     lower = np.floor(positions).astype(int)
     upper = np.minimum(lower + 1, anchors.shape[0] - 1)
@@ -781,6 +838,8 @@ def _heatmap_data_uri(
     rgba[..., 3] = np.where(finite, 255, 0).astype(np.uint8)
     if not invert_y:
         rgba = np.flipud(rgba)
+    if invert_x:
+        rgba = np.fliplr(rgba)
     output = io.BytesIO()
     Image.fromarray(rgba, mode="RGBA").save(output, format="PNG", compress_level=3)
     payload = base64.b64encode(output.getvalue()).decode("ascii")
@@ -918,7 +977,8 @@ def _sample_heatmap(
     log_y: bool = False,
     log_z: bool = False,
 ) -> tuple[np.ndarray, np.ndarray, np.ndarray, float, float]:
-    matrix = np.asarray(values, dtype=float)
+    """Adaptively average a heatmap into a bounded raster using small tiles."""
+    matrix = np.asarray(values)
     x_values = np.asarray(x_axis, dtype=float).reshape(-1)
     y_values = np.asarray(y_axis, dtype=float).reshape(-1)
     if matrix.ndim == 1 and y_values.size == 1 and matrix.size == x_values.size:
@@ -933,57 +993,83 @@ def _sample_heatmap(
     if log_x:
         _validate_log_axis(x_values, "Log X")
         positive_x = x_values > 0
-        x_values = x_values[positive_x]
-        matrix = matrix[:, positive_x]
+        positions = np.flatnonzero(positive_x)
+        selection = (
+            slice(positions[0], positions[-1] + 1)
+            if np.all(np.diff(positions) == 1)
+            else positive_x
+        )
+        x_values = x_values[selection]
+        matrix = matrix[:, selection]
     if log_y:
         _validate_log_axis(y_values, "Log Y")
         positive_y = y_values > 0
-        y_values = y_values[positive_y]
-        matrix = matrix[positive_y, :]
-
-    if log_z:
-        positive = np.isfinite(matrix) & (matrix > 0)
-        if not np.any(positive):
-            raise ValueError("Log Z requires at least one positive heatmap value.")
-        logarithmic = np.full(matrix.shape, np.nan, dtype=float)
-        np.log10(matrix, out=logarithmic, where=positive)
-        matrix = logarithmic
-
-    z_values = finite_values(matrix)
-    if z_values.size == 0:
-        raise ValueError("The selected output contains no finite values.")
-    if log_z:
-        z_minimum = float(math.floor(float(np.min(z_values))))
-        z_maximum = float(math.ceil(float(np.max(z_values))))
-        if math.isclose(z_minimum, z_maximum):
-            z_maximum = z_minimum + 1.0
-    else:
-        z_minimum, z_maximum = _nice_axis_limits(
-            float(np.min(z_values)),
-            float(np.max(z_values)),
-            floor_at_zero=bool(np.min(z_values) >= 0),
-            intervals=5,
+        positions = np.flatnonzero(positive_y)
+        selection = (
+            slice(positions[0], positions[-1] + 1)
+            if np.all(np.diff(positions) == 1)
+            else positive_y
         )
+        y_values = y_values[selection]
+        matrix = matrix[selection, :]
 
     rows, columns = matrix.shape
-    if rows <= MAX_HEATMAP_ROWS and columns <= MAX_HEATMAP_COLUMNS and rows * columns <= limit:
-        return x_values, y_values, matrix, z_minimum, z_maximum
-
+    if not rows or not columns or limit < 1:
+        raise ValueError("The selected heatmap has no displayable cells.")
     sampled_rows = min(rows, MAX_HEATMAP_ROWS)
     sampled_columns = min(columns, MAX_HEATMAP_COLUMNS)
     if sampled_rows * sampled_columns > limit:
-        sampled_columns = max(1, min(sampled_columns, limit // sampled_rows))
+        scale = math.sqrt(limit / (sampled_rows * sampled_columns))
+        sampled_rows = max(1, min(int(sampled_rows * scale), limit))
+        sampled_columns = max(1, min(int(sampled_columns * scale), limit // sampled_rows))
 
     y_edges = np.linspace(0, rows, sampled_rows + 1, dtype=int)
     x_edges = np.linspace(0, columns, sampled_columns + 1, dtype=int)
-    y_starts = y_edges[:-1]
-    x_starts = x_edges[:-1]
-    finite = np.isfinite(matrix)
-    weighted = np.where(finite, matrix, 0.0)
-    row_sums = np.add.reduceat(weighted, y_starts, axis=0)
-    row_counts = np.add.reduceat(finite.astype(np.int64), y_starts, axis=0)
-    sums = np.add.reduceat(row_sums, x_starts, axis=1)
-    counts = np.add.reduceat(row_counts, x_starts, axis=1)
+    sums = np.zeros((sampled_rows, sampled_columns), dtype=float)
+    counts = np.zeros(sums.shape, dtype=np.int64)
+    data_minimum, data_maximum = math.inf, -math.inf
+    # Reduce bounded tiles, never allocating masks or float/log copies of the
+    # full mapping matrix. Broadcast time-only fields remain cheap views too.
+    for column_start in range(0, columns, MAX_HEATMAP_WORK_CELLS):
+        column_stop = min(columns, column_start + MAX_HEATMAP_WORK_CELLS)
+        width = column_stop - column_start
+        local_starts = np.r_[
+            0, x_edges[(x_edges > column_start) & (x_edges < column_stop)] - column_start,
+        ]
+        output_columns = np.searchsorted(x_edges, column_start + local_starts, side="right") - 1
+        row_chunk = max(1, MAX_HEATMAP_WORK_CELLS // width)
+        for output_row, (row_start, row_stop) in enumerate(zip(y_edges[:-1], y_edges[1:], strict=True)):
+            for start in range(int(row_start), int(row_stop), row_chunk):
+                block = np.asarray(
+                    matrix[start : min(start + row_chunk, row_stop), column_start:column_stop],
+                    dtype=float,
+                )
+                finite = np.isfinite(block)
+                if log_z:
+                    finite &= block > 0
+                    transformed = np.zeros(block.shape, dtype=float)
+                    np.log10(block, out=transformed, where=finite)
+                else:
+                    transformed = np.where(finite, block, 0.0)
+                finite_values_block = transformed[finite]
+                if finite_values_block.size:
+                    data_minimum = min(data_minimum, float(np.min(finite_values_block)))
+                    data_maximum = max(data_maximum, float(np.max(finite_values_block)))
+                sums[output_row, output_columns] += np.add.reduceat(transformed.sum(axis=0), local_starts)
+                counts[output_row, output_columns] += np.add.reduceat(finite.sum(axis=0), local_starts)
+    if not np.isfinite(data_minimum):
+        raise ValueError(
+            "Log Z requires at least one positive heatmap value."
+            if log_z else "The selected output contains no finite values."
+        )
+    if log_z:
+        z_minimum, z_maximum = float(math.floor(data_minimum)), float(math.ceil(data_maximum))
+        if z_minimum == z_maximum:
+            z_maximum += 1.0
+    else:
+        z_minimum, z_maximum = _nice_axis_limits(
+            data_minimum, data_maximum, floor_at_zero=data_minimum >= 0, intervals=5,
+        )
     sampled = np.full(sums.shape, np.nan, dtype=float)
     np.divide(sums, counts, out=sampled, where=counts > 0)
 
@@ -1047,6 +1133,23 @@ def _heatmap_tooltip_data(
     return data
 
 
+def _plot_axis_limits(
+    limits: tuple[float, float] | None,
+    automatic: tuple[float, float] | None,
+    *,
+    label: str,
+    log_axis: bool = False,
+) -> tuple[float, float] | None:
+    if limits is None:
+        return automatic
+    lower, upper = map(float, limits)
+    if not np.isfinite(lower) or not np.isfinite(upper) or upper <= lower:
+        raise ValueError(f"{label} maximum must be greater than its finite minimum.")
+    if log_axis:
+        _validate_log_axis((lower, upper), f"Log {label}", bounds=True)
+    return lower, upper
+
+
 def build_preview_plot_options(
     *,
     plot_type: str,
@@ -1083,11 +1186,13 @@ def build_preview_plot_options(
     histogram_x_limits: tuple[float, float] | None = None,
     histogram_touching: bool = True,
     histogram_boundary: str = "left",
+    x_limits: tuple[float, float] | None = None,
+    z_limits: tuple[float, float] | None = None,
 ) -> dict[str, Any]:
     """Build bounded ECharts options for a line, histogram, boxplot, or heatmap."""
 
     title_options = {"show": False, "text": title}
-    axis_line = {"lineStyle": {"color": "#a69e98"}}
+    axis_line = {"onZero": False, "lineStyle": {"color": "#a69e98"}}
     axis_tick = {
         "show": True,
         "inside": False,
@@ -1114,25 +1219,27 @@ def build_preview_plot_options(
             log_y=log_y,
             log_z=log_z,
         )
+        if z_limits is not None:
+            z_minimum, z_maximum = _plot_axis_limits(z_limits, None, label="Z", log_axis=log_z)
+            if log_z:
+                z_minimum, z_maximum = math.log10(z_minimum), math.log10(z_maximum)
         image_uri = _heatmap_data_uri(
             sampled,
             palette=palette,
             z_minimum=z_minimum,
             z_maximum=z_maximum,
             invert_y=bool(invert_y),
+            invert_x=bool(invert_x),
+            invert_z=bool(invert_z),
         )
         x_data_minimum, x_data_maximum = _data_axis_bounds(x_values, log_axis=log_x)
         y_data_minimum, y_data_maximum = _data_axis_bounds(y_values, log_axis=log_y)
-        x_minimum, x_maximum = x_data_minimum, x_data_maximum
-        if y_limits is None:
-            y_minimum, y_maximum = y_data_minimum, y_data_maximum
-        else:
-            # Crop at the requested coordinates without stretching the image
-            # or inventing values beyond the available simulation horizon.
-            y_minimum = max(float(y_limits[0]), y_data_minimum)
-            y_maximum = min(float(y_limits[1]), y_data_maximum)
-            if y_minimum >= y_maximum:
-                raise ValueError("Heatmap Y limits do not overlap the available data range.")
+        x_minimum, x_maximum = _plot_axis_limits(
+            x_limits, (x_data_minimum, x_data_maximum), label="X", log_axis=log_x,
+        )
+        y_minimum, y_maximum = _plot_axis_limits(
+            y_limits, (y_data_minimum, y_data_maximum), label="Y", log_axis=log_y,
+        )
         if log_y:
             _validate_log_axis((y_minimum, y_maximum), "Log Y", bounds=True)
         heatmap_tick_lower = float(y_minimum)
@@ -1149,6 +1256,7 @@ def build_preview_plot_options(
             tick_values=heatmap_y_ticks,
         )
         heatmap_y_axis: dict[str, Any] = {
+            "z": 5,
             "type": "log" if log_y else "value",
             "min": y_minimum,
             "max": y_maximum,
@@ -1270,10 +1378,11 @@ def build_preview_plot_options(
             else []
         )
         heatmap_x_axis: dict[str, Any] = {
+            "z": 5,
             "type": "log" if log_x else "value",
             "min": x_minimum,
             "max": x_maximum,
-            **({} if log_x else {"interval": _nice_tick_step(x_data_maximum - x_data_minimum)}),
+            **({} if log_x else {"interval": _nice_tick_step(x_maximum - x_minimum)}),
             "splitNumber": 6,
             "position": "bottom",
             "inverse": bool(invert_x),
@@ -1291,6 +1400,8 @@ def build_preview_plot_options(
             data_lower=x_data_minimum,
             data_upper=x_data_maximum,
             log_axis=log_x,
+            tick_lower=x_minimum,
+            tick_upper=x_maximum,
         )
         return {
             "animation": False,
@@ -1330,6 +1441,7 @@ def build_preview_plot_options(
                 {
                     "name": series_label or title,
                     "type": "custom",
+                    "z": 0,
                     "coordinateSystem": "cartesian2d",
                     "data": [
                         [
@@ -1636,6 +1748,7 @@ def build_preview_plot_options(
             tick_lower=box_tick_lower,
             tick_upper=box_tick_upper,
         )
+        box_x_limits = _plot_axis_limits(x_limits, None, label="X")
         return {
             "animation": False,
             "title": title_options,
@@ -1647,6 +1760,7 @@ def build_preview_plot_options(
             "xAxis": {
                 "type": "category",
                 "data": [series_label or title],
+                **({"min": box_x_limits[0], "max": box_x_limits[1]} if box_x_limits else {}),
                 "inverse": bool(invert_x),
                 "name": x_label,
                 "nameLocation": "middle",
@@ -1753,11 +1867,13 @@ def build_preview_plot_options(
         _validate_log_axis(finite_x, "Log X")
     x_data_lower = float(np.min(finite_x[finite_x > 0])) if log_x else float(np.min(finite_x))
     x_data_upper = float(np.max(finite_x))
-    x_limits = (
+    automatic_x_limits = (
         _logarithmic_data_limits(x_data_lower, x_data_upper)
         if log_x
         else nice_linear_limits(x_data_lower, x_data_upper)
     )
+    custom_x_limits = x_limits is not None
+    x_limits = _plot_axis_limits(x_limits, automatic_x_limits, label="X", log_axis=log_x)
     finite_y_parts = [part for part in all_y_values if part.size]
     finite_y = np.concatenate(finite_y_parts) if finite_y_parts else np.asarray([], dtype=float)
     if finite_y.size == 0:
@@ -1842,8 +1958,6 @@ def build_preview_plot_options(
         tick_lower=line_tick_lower,
         tick_upper=line_tick_upper,
     )
-    normalized_legend = str(legend_position or "Top right").strip().casefold()
-    bottom_legend = bool(show_legend) and normalized_legend.startswith("bottom")
     legend_names: list[str] = []
     for item in (
         *(line.name for line in lines if line.show_in_legend),
@@ -1851,31 +1965,21 @@ def build_preview_plot_options(
     ):
         if item not in legend_names:
             legend_names.append(item)
-    legend_options: dict[str, Any] = {
-        "show": bool(show_legend),
-        "type": "scroll",
-        "selectedMode": bool(interactive),
-        "orient": "horizontal" if bottom_legend else "vertical",
-        "top": 24 if normalized_legend.startswith("top") else None,
-        "bottom": 8 if bottom_legend else None,
-        "left": 84 if normalized_legend.endswith("left") else None,
-        "right": 28 if normalized_legend.endswith("right") else None,
-        "itemWidth": 20,
-        "itemHeight": 3,
-        "backgroundColor": "rgba(255,255,255,0.84)",
-        "borderColor": "#ddd7d1",
-        "borderWidth": 1,
-        "borderRadius": 4,
-        "padding": [4, 6],
-        "textStyle": {"color": "#625c57", "fontSize": 11},
-        "data": legend_names,
-    }
-    legend_options = {key: value for key, value in legend_options.items() if value is not None}
+    grid = _cartesian_grid(y_name_gap=y_name_gap, has_y_name=bool(y_label))
+    legend_options = build_legend_options(
+        legend_names,
+        grid=grid,
+        position=legend_position,
+        show=show_legend,
+        interactive=interactive,
+    )
     x_axis_options: dict[str, Any] = {
         "type": "log" if log_x else "value",
         "min": x_limits[0],
         "max": x_limits[1],
-        **({} if log_x else {"interval": _nice_tick_step(x_data_upper - x_data_lower)}),
+        **({} if log_x else {"interval": _nice_tick_step(
+            x_limits[1] - x_limits[0] if custom_x_limits else x_data_upper - x_data_lower,
+        )}),
         "splitNumber": 6,
         "position": "bottom",
         "inverse": bool(invert_x),
@@ -1886,8 +1990,8 @@ def build_preview_plot_options(
         "axisLine": {"onZero": False, **axis_line},
         "axisTick": axis_tick,
         "axisLabel": _axis_label_options(
-            hide_padded_minimum=x_limits[0] < x_data_lower,
-            hide_padded_maximum=x_limits[1] > x_data_upper,
+            hide_padded_minimum=not custom_x_limits and x_limits[0] < x_data_lower,
+            hide_padded_maximum=not custom_x_limits and x_limits[1] > x_data_upper,
         ),
         "splitLine": split_line,
     }
@@ -1895,6 +1999,8 @@ def build_preview_plot_options(
         x_axis_options,
         data_lower=x_data_lower,
         data_upper=x_data_upper,
+        tick_lower=x_limits[0] if custom_x_limits else None,
+        tick_upper=x_limits[1] if custom_x_limits else None,
         log_axis=log_x,
     )
     return limit_curve_hover({
@@ -1907,11 +2013,7 @@ def build_preview_plot_options(
             ),
         },
         "legend": legend_options,
-        "grid": _cartesian_grid(
-            y_name_gap=y_name_gap,
-            has_y_name=bool(y_label),
-            bottom_legend=bottom_legend,
-        ),
+        "grid": grid,
         "xAxis": x_axis_options,
         "yAxis": y_axis_options,
         "series": line_options,

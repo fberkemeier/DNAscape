@@ -298,9 +298,9 @@ def test_mapping_target_dependence_route_and_form_selectors_follow_the_catalog()
                     await _assert_family_surface(user, families[0])
 
                     if target_key == "firing_rate" and dependence in {"time", "spacetime"}:
-                        await user.should_see(marker="mapping-target-shape-field")
+                        await user.should_not_see(marker="mapping-target-shape-field")
                         shape_control = _select(user, "mapping-target-shape")
-                        assert _option_keys(shape_control) == ("free", "weibull")
+                        assert _option_keys(shape_control) == ("weibull",)
                         assert shape_control.value == "weibull"
                     else:
                         await user.should_not_see(marker="mapping-target-shape-field")
@@ -807,21 +807,15 @@ def test_firing_target_shape_only_exposes_compatible_weibull_settings() -> None:
             for marker in ("weibull-shape", "weibull-delay", "fit-weibull-shape"):
                 await user.should_see(marker=f"mapping-setting-{marker}")
 
-            await _set_select(user, "mapping-target-shape", "free")
-            for marker in ("weibull-shape", "weibull-delay", "fit-weibull-shape"):
-                await user.should_not_see(marker=f"mapping-setting-{marker}")
-
-            await _set_select(user, "mapping-target-shape", "weibull")
-            for marker in ("weibull-shape", "weibull-delay", "fit-weibull-shape"):
-                await user.should_see(marker=f"mapping-setting-{marker}")
+            await user.should_not_see(marker="mapping-target-shape-field")
 
             for form in ("t", "xt"):
                 await _set_select(user, "mapping-input-fork-speed-form", form)
-                assert shape.options == {"free": "Free", "weibull": "Weibull"}
+                assert shape.options == {"weibull": "Weibull"}
                 assert shape.value == "weibull"
                 await user.should_see(marker="mapping-setting-weibull-shape")
             await _set_select(user, "mapping-input-fork-speed-form", "x")
-            assert shape.options == {"free": "Free", "weibull": "Weibull"}
+            assert shape.options == {"weibull": "Weibull"}
 
     asyncio.run(scenario())
 
@@ -845,10 +839,7 @@ def test_mapping_preview_and_raw_filename_follow_the_selected_output() -> None:
                 ),
             )
             await user.should_not_see(marker="raw-output-row")
-            title = cast(
-                Input,
-                next(iter(user.find(marker="mapping-preview-title").elements)),
-            )
+            await user.should_not_see("Title")
             y_label = cast(
                 Input,
                 next(iter(user.find(marker="mapping-preview-y-label").elements)),
@@ -877,7 +868,6 @@ def test_mapping_preview_and_raw_filename_follow_the_selected_output() -> None:
                 "comparison:replication_timing_fit",
             )
             assert view.enabled is False
-            assert title.value == "Replication timing: observed vs fitted"
             assert x_label.value == "Position (kb)"
             assert y_label.value == "Replication timing"
             assert raw_name.value == "rmap_rt-cmp"
@@ -886,7 +876,6 @@ def test_mapping_preview_and_raw_filename_follow_the_selected_output() -> None:
             await _set_select(user, "mapping-target-form", "spacetime")
             assert output.value == "replicated_fraction_xt"
             assert raw_name.value == "rmap_rf-xt"
-            assert title.value == "Replicated fraction (space-time)"
             assert x_label.value == "Chromosome position (kb)"
             assert y_label.value == "Time (min)"
             assert view.value == "Default"
@@ -894,9 +883,8 @@ def test_mapping_preview_and_raw_filename_follow_the_selected_output() -> None:
             await _set_select(user, "mapping-target-form", "time")
             assert output.value == "replicated_fraction"
             assert raw_name.value == "rmap_rf"
-            assert title.value == "Replicated fraction"
-            assert x_label.value == "Chromosome position (kb)"
-            assert y_label.value == "Time (min)"
+            assert x_label.value == "Time (min)"
+            assert y_label.value == "Replicated fraction"
             assert view.value == "Default"
 
             await _set_select(user, "mapping-target", "kinetic_fields")
@@ -911,11 +899,9 @@ def test_mapping_preview_and_raw_filename_follow_the_selected_output() -> None:
             assert output.enabled is True
             await _set_select(user, "mapping-preview-output", "fit_diagnostic")
             assert raw_name.value == "rmap_res"
-            assert title.value == "Residual"
             assert view.value == "Default"
 
             await _set_select(user, "mapping-preview-output", "mse_diagnostic")
             assert raw_name.value == "rmap_mse"
-            assert title.value == "MSE"
 
     asyncio.run(scenario())

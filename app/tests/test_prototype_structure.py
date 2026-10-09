@@ -149,7 +149,7 @@ def test_workflow_copy_and_data_sections_use_updated_ui_semantics() -> None:
     assert 'DATA_ICON = "dnascape_data"' in icons
     assert 'DATA_ICON_SVG = OUTLINE_ICON_SVGS["data"]' in icons
     assert (
-        "from app.icons import DATA_ICON, DATA_ICON_SVG, PLOT_ICON_SVG" in ui_sources["common.py"]
+        "from app.icons import DATA_ICON, DATA_ICON_SVG, OUTLINE_ICON_SVGS, PLOT_ICON_SVG" in ui_sources["common.py"]
     )
     assert 'section.add_slot("header")' in ui_sources["common.py"]
     assert '"data-outline-icon"' in ui_sources["common.py"]
@@ -200,8 +200,8 @@ def test_workflow_copy_and_data_sections_use_updated_ui_semantics() -> None:
     assert '"Curves"' in plotting_source
     assert "dn-preview-settings-section" in preview_source
     assert "dn-preview-settings-grid" in preview_source
+    assert 'label="Title"' not in preview_source
     for label in (
-        "Title",
         "X-axis label",
         "Y-axis label",
         "Heatmap palette",
@@ -298,7 +298,7 @@ def test_styles_include_theme_and_responsive_breakpoints() -> None:
     assert uploader_dnd["background"] == "transparent !important"
     assert uploader_dnd["outline"] == "0 !important"
     assert 'content: "check"' not in styles
-    assert 'content: "Choose a file"' in styles
+    assert 'content: "Choose file"' in styles
     assert 'content: " or drag it here"' in styles
     assert 'content: "cloud_upload"' in styles
     assert ".dn-upload-formats" in styles

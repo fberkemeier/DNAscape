@@ -681,6 +681,7 @@ def plotf(*arrays, labels=None, x_array=None, dual_axis=False, resolution=1, reg
         image_options = {"norm": norm} if norm is not None else {"vmin": vmin, "vmax": vmax}
         im = ax.imshow(
             image_data,
+            rasterized=True,
             aspect='auto',
             origin='lower',
             interpolation='nearest',

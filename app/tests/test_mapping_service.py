@@ -200,7 +200,7 @@ def test_optional_feature_assumption_is_omitted_until_overridden() -> None:
 
 @pytest.mark.parametrize(
     ("target_shape", "settings"),
-    (("weibull", {"temporal_sim_number": 20}), ("free", {"alpha_smooth": 0.1})),
+    (("weibull", {"temporal_sim_number": 20}), ("weibull", {"spacetime_order": "crossed"})),
 )
 def test_request_rejects_inactive_settings_left_over_from_another_shape(
     target_shape: str, settings: dict[str, Any]
@@ -307,7 +307,7 @@ def test_prepared_bundle_preserves_nonzero_origin_resolution_and_time_axis(
     assert prepared.resolution_x == 2.5
     retained = prepared.source["fork_densities_xt"]
     np.testing.assert_array_equal(retained["time_grid"], times)
-    expected_x = axis if whole_region else axis[1:3]
+    expected_x = np.arange(4) * 2.5 if whole_region else axis[1:3]
     np.testing.assert_array_equal(retained["x_array"], expected_x)
     assert retained["right_fork_density_xt"].shape == (len(expected_x), 4)
 
@@ -337,7 +337,7 @@ def test_request_rejects_an_explicit_time_axis_conflicting_with_a_prepared_bundl
         )
 
 
-def test_shorter_prepared_bundle_uses_its_own_origin_with_a_longer_global_speed_profile() -> None:
+def test_shorter_prepared_bundle_starts_at_first_bin_with_a_longer_global_speed_profile() -> None:
     from dnascape.mapping import map_coalescence_events_xt
 
     times = np.asarray([0.0, 2.0, 5.0])
@@ -364,21 +364,21 @@ def test_shorter_prepared_bundle_uses_its_own_origin_with_a_longer_global_speed_
     prepared = validate_mapping_request(request)
     bundle = prepared.source["fork_densities_xt"]
     np.testing.assert_array_equal(bundle["x_array"], np.arange(22.0, 26.0))
-    np.testing.assert_array_equal(bundle["right_fork_density_xt"], right[2:6])
+    np.testing.assert_array_equal(bundle["right_fork_density_xt"], right[:4])
     np.testing.assert_array_equal(prepared.source["fork_speed"], speed[22:26])
 
     result = run_mapping(request)
     expected = map_coalescence_events_xt(
-        speed[22:26], fraction[2:6], right[2:6], left[2:6], time_grid=times
+        speed[22:26], fraction[:4], right[:4], left[:4], time_grid=times
     )
     np.testing.assert_allclose(result.outputs["coalescence_events_xt"], expected)
     np.testing.assert_array_equal(result.x_axis, np.arange(22.0, 26.0))
     np.testing.assert_array_equal(result.time_axis, times)
 
 
-def test_free_spacetime_firing_rejects_unimplemented_phase_order_before_dispatch() -> None:
+def test_free_spacetime_firing_is_unavailable_before_dispatch() -> None:
     with pytest.raises(
-        ValueError, match="Spacetime order must be one of: space_then_time, time_then_space"
+        ValueError, match="Target shape must be one of: weibull"
     ):
         validate_mapping_request(
             MappingRequest(
@@ -967,7 +967,7 @@ def test_iod_mapping_preserves_total_count_and_truncation_metadata(
     np.testing.assert_array_equal(result.outputs[result.primary_output], [1.0, 2.0, 3.0])
 
 
-def test_mixed_length_inputs_use_the_longest_axis_and_cap_to_the_shortest() -> None:
+def test_mixed_length_whole_region_uses_the_shortest_length_from_zero() -> None:
     route = mapping_route("timing_and_firing_to_spatial_fork_speed")
     timing = np.arange(30, dtype=float)
     local_firing = np.arange(10, dtype=float) + 100
@@ -982,12 +982,13 @@ def test_mixed_length_inputs_use_the_longest_axis_and_cap_to_the_shortest() -> N
             region_start_kb=12,
             region_end_kb=28,
             resolution_x=1,
+            whole_genome=True,
         )
     )
 
-    np.testing.assert_array_equal(prepared.source["replication_timing"], timing[12:22])
+    np.testing.assert_array_equal(prepared.source["replication_timing"], timing[:10])
     np.testing.assert_array_equal(prepared.source["firing_rate"], local_firing)
-    assert prepared.start_kb == 12
+    assert prepared.start_kb == 0
     assert prepared.spatial_size == 10
 
 
@@ -1032,7 +1033,7 @@ def test_mixed_length_alignment_reaches_rmap_at_the_reference_location(
             inputs={"replication_timing": timing, "firing_rate": local_firing},
             input_forms={"replication_timing": "x", "firing_rate": "x"},
             region_start_kb=12,
-            region_end_kb=28,
+            region_end_kb=22,
             resolution_x=1,
         )
     )

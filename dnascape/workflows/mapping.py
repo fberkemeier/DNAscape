@@ -66,6 +66,7 @@ _DIAGNOSTIC_KEYS = {
     "convergence_message", "optimizer_evaluations", "unreplicated_at_end",
     "identifiability", "forward_model", "firing_form", "speed_form",
     "regularization", "speed_anchor", "fit_objective", "fit_mse", "fit_used_descent",
+    "fit_edge_bins", "fit_taper_bins",
     "terminal_survival", "extrapolated_tail", "tail_policy", "initial_policy",
     "timing_is_restricted_mean", "clipped_derivative_count", "derivative_method",
     "monotonic_policy", "temporal_smoothw", "density_floor", "unreplicated_floor",
@@ -591,9 +592,10 @@ def _crop_spatial_inputs(
 ) -> tuple[dict[str, Any], _SpatialSelection | None]:
     """Align spatial inputs to one interval before validation and rmap.
 
-    The longest ordinary upload defines genomic coordinates. Shorter uploads
-    are treated as local profiles beginning at the selected genomic start, and
-    the effective interval is capped to the shortest available spatial input.
+    The longest ordinary upload defines genomic coordinates. Shorter profiles
+    begin at the selected Start and must cover the complete selected width.
+    Whole region uses the first bins of every input, from zero to the shortest
+    profile's length. Mixed-length inputs never silently shorten a window.
     """
 
     resolution_x = _request_resolution_x(request, route)
@@ -626,7 +628,15 @@ def _crop_spatial_inputs(
 
     coordinate_inputs = tuple(item for item in spatial_inputs if not item[4])
     shortest_bins = min(item[3] for item in spatial_inputs)
-    if coordinate_inputs:
+    mixed_lengths = len({item[3] for item in spatial_inputs}) > 1
+    reference_bins = max(item[3] for item in coordinate_inputs or spatial_inputs)
+    if request.whole_genome:
+        selected_bins = shortest_bins
+        selection = _SpatialSelection(
+            start_kb=0., end_kb=shortest_bins * resolution_x,
+            start_index=0, stop_index=shortest_bins, source_bins=reference_bins,
+        )
+    elif coordinate_inputs:
         reference_bins = max(item[3] for item in coordinate_inputs)
         reference_key = next(item[0] for item in coordinate_inputs if item[3] == reference_bins)
         reference_label = labels.get(reference_key, _friendly_input_key(reference_key))
@@ -638,7 +648,14 @@ def _crop_spatial_inputs(
             source_start_kb=source_origins.get(reference_key, 0.0),
         )
         requested_bins = requested.stop_index - requested.start_index
-        selected_bins = min(requested_bins, shortest_bins)
+        if mixed_lengths and request.region_end_kb is not None:
+            # Validate the complete entered width before considering the
+            # longest profile's end, rather than accepting a clipped window.
+            end = _finite_number(request.region_end_kb, "Region end")
+            reference_origin = source_origins.get(reference_key, 0.0)
+            stop_index = int(math.ceil((end - reference_origin) / resolution_x - 1e-12))
+            requested_bins = stop_index - requested.start_index
+        selected_bins = requested_bins
         selection = _SpatialSelection(
             start_kb=requested.start_kb,
             end_kb=requested.start_kb + selected_bins * resolution_x,
@@ -655,7 +672,7 @@ def _crop_spatial_inputs(
         )
         if start < 0:
             raise ValueError(f"Region start must be at least 0 kb; received {start:g} kb.")
-        if request.whole_genome or request.region_end_kb is None:
+        if request.region_end_kb is None:
             requested_bins = shortest_bins
         else:
             end = _finite_number(request.region_end_kb, "Region end")
@@ -665,7 +682,7 @@ def _crop_spatial_inputs(
                     f"{start:g} kb and End {end:g} kb."
                 )
             requested_bins = int(math.ceil((end - start) / resolution_x))
-        selected_bins = min(requested_bins, shortest_bins)
+        selected_bins = requested_bins
         selection = _SpatialSelection(
             start_kb=start,
             end_kb=start + selected_bins * resolution_x,
@@ -674,11 +691,37 @@ def _crop_spatial_inputs(
             source_bins=reference_bins,
         )
 
-    # A prepared bundle has explicit coordinates even when another input is
-    # longer. Its first row is not necessarily the selected region's start.
+    if selected_bins > shortest_bins:
+        shortest_key = next(item[0] for item in spatial_inputs if item[3] == shortest_bins)
+        shortest_label = labels.get(shortest_key, _friendly_input_key(shortest_key))
+        raise ValueError(
+            f"The selected region requires {selected_bins:,} bins "
+            f"({selected_bins * resolution_x:g} kb), but {shortest_label}, the shortest "
+            f"spatial profile, contains only {shortest_bins:,} bins "
+            f"({shortest_bins * resolution_x:g} kb). Start and End are chromosome "
+            f"coordinates; choose a width of at most {shortest_bins * resolution_x:g} kb "
+            f"or select Whole region."
+        )
+    if mixed_lengths and not request.whole_genome and coordinate_inputs:
+        source_start = source_origins.get(reference_key, 0.0)
+        source_end = source_start + reference_bins * resolution_x
+        if selection.end_kb > source_end:
+            raise ValueError(
+                f"Region end {selection.end_kb:g} kb is outside {reference_label}, "
+                f"the longest uploaded spatial input "
+                f"({source_start:g}-{source_end:g} kb at {resolution_x:g} kb/bin). "
+                f"Choose an End at or below {source_end:g} kb."
+            )
+
+    # Shorter prepared profiles are local too. Rebase their position axes to
+    # the selected chromosome start; retain their data and intrinsic bin width.
+    relocated_inputs = {
+        key for key, _value, _form, source_bins, prewindowed in spatial_inputs
+        if request.whole_genome or (not prewindowed and source_bins < reference_bins)
+    }
     coordinated_offsets: dict[str, int] = {}
     for key, _value, _form, source_bins, _prewindowed in spatial_inputs:
-        if key not in source_origins:
+        if key not in source_origins or key in relocated_inputs:
             continue
         offset = (selection.start_kb - source_origins[key]) / resolution_x
         start_index = int(round(offset))
@@ -687,15 +730,8 @@ def _crop_spatial_inputs(
                 "The selected region must start on the prepared result's position axis."
             )
         coordinated_offsets[key] = start_index
-        selected_bins = min(selected_bins, source_bins - start_index)
-    if selection.stop_index - selection.start_index != selected_bins:
-        selection = _SpatialSelection(
-            start_kb=selection.start_kb,
-            end_kb=selection.start_kb + selected_bins * resolution_x,
-            start_index=selection.start_index,
-            stop_index=selection.start_index + selected_bins,
-            source_bins=selection.source_bins,
-        )
+        if start_index + selected_bins > source_bins:
+            raise ValueError("The selected region must end within the prepared result's position axis.")
 
     cropped = dict(values)
     for key, value, form, source_bins, prewindowed in spatial_inputs:
@@ -709,7 +745,7 @@ def _crop_spatial_inputs(
                 stop_index=start_index + selected_bins,
                 source_bins=source_bins,
             )
-        elif prewindowed or source_bins < reference_bins:
+        elif request.whole_genome or prewindowed or source_bins < reference_bins:
             input_selection = _SpatialSelection(
                 start_kb=selection.start_kb,
                 end_kb=selection.end_kb,
@@ -720,6 +756,10 @@ def _crop_spatial_inputs(
         else:
             input_selection = selection
         cropped[key] = _slice_spatial_value(value, form, input_selection)
+        if key in relocated_inputs and key in source_origins:
+            cropped[key]["x_array"] = (
+                selection.start_kb + np.arange(selected_bins, dtype=float) * resolution_x
+            )
     cancel()
     return cropped, selection
 

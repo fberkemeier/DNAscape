@@ -61,7 +61,8 @@ def test_cancelling_at_first_iteration_releases_the_app_for_another_mapping():
     assert result.outputs["fork_speed"].shape == (32,)
 
 
-def test_mapping_button_completes_the_real_restored_route_with_page_defaults(monkeypatch):
+@pytest.mark.parametrize("firing_profile", [False, True])
+def test_mapping_button_completes_the_real_restored_route_with_page_defaults(monkeypatch, firing_profile):
     from nicegui.elements.upload import Upload
 
     from app.pages import mapping as mapping_page
@@ -96,6 +97,14 @@ def test_mapping_button_completes_the_real_restored_route_with_page_defaults(mon
             await set_value("mapping-region-start", 2.)
             await set_value("mapping-region-end", 10.)
             await set_value("mapping-input-firing-rate-constant", .001)
+            await user.should_not_see(marker="mapping-match-smallest-profile")
+            if firing_profile:
+                await set_value("mapping-input-firing-rate-type", "profile")
+                firing_content = "value\n" + "\n".join(str(x) for x in np.linspace(.0008, .0016, 8)) + "\n"
+                await control("source-firing-rate-upload").handle_uploads([
+                    Upload.SmallFileUpload("firing.tsv", "text/tab-separated-values", firing_content.encode()),
+                ])
+                await user.should_see(marker="mapping-input-firing-rate-detected-data", retries=40)
             content = "value\n" + "\n".join(str(x) for x in np.linspace(20., 40., 16)) + "\n"
             await control("source-replication-timing-upload").handle_uploads([
                 Upload.SmallFileUpload("timing.tsv", "text/tab-separated-values", content.encode()),
@@ -103,12 +112,19 @@ def test_mapping_button_completes_the_real_restored_route_with_page_defaults(mon
             await user.should_see(marker="mapping-input-replication-timing-detected-data", retries=40)
             assert control("mapping-setting-fit-step").value == .4
             assert control("mapping-setting-maxiter").value == 10
+            assert control("mapping-setting-refine-edge-kb").value == 1000
+            if firing_profile:
+                await set_value("mapping-setting-refine-edge-kb", 0.)
             user.find(marker="action-map").click()
             await user.should_see(marker="mapping-result-plot", retries=60)
             await user.should_not_see(marker="mapping-error")
             assert len(results) == 1
             result = results[0]
+            assert result.diagnostics["fit_edge_bins"] == (0 if firing_profile else 1)
             assert requests[0].route.method == "timing_and_firing_to_spatial_fork_speed"
+            assert requests[0].settings["refine_edge_kb"] == (0. if firing_profile else 1000.)
+            assert control("mapping-region-start").value == 2.
+            assert control("mapping-region-end").value == 10.
             assert not {"spatial_knots", "regularization", "time_grid"} & requests[0].settings.keys()
             np.testing.assert_array_equal(result.x_axis, np.arange(2., 10.))
             assert result.fit_mse < result.outputs["fit_history"][0]

@@ -30,6 +30,7 @@ from xml.etree import ElementTree
 import numpy as np
 
 from dnascape.workflows.export_settings import normalize_compression
+from dnascape.workflows.preview import has_finite_values
 from dnascape.workflows.result_naming import RSIM_FILE_PREFIX, output_file_token
 from dnascape.workflows.simulation import ConstantSimulationResult
 
@@ -425,7 +426,7 @@ def build_plot_export(
     series_label: str | None = None,
     x_label: str | None = None,
     y_label: str | None = None,
-    color: str = "#2c7f77",
+    color: str = "#b03412",
     cmap: str = "viridis",
     invert_y: bool = False,
     y_limits: tuple[float, float] | None = None,
@@ -452,7 +453,7 @@ def build_plot_export(
         selected.key in _DISTRIBUTION_OUTPUTS or normalized_view == "histogram"
     )
     normalized_bins = _validated_histogram_bins(histogram_bins)
-    if not np.any(np.isfinite(selected.values)):
+    if not has_finite_values(selected.values):
         raise ValueError("The selected output does not contain any finite values to plot.")
 
     # Matplotlib is deliberately absent from module-level imports. Opening an
@@ -476,12 +477,6 @@ def build_plot_export(
         position_indices = _sample_indices(selected.x.size, MAX_PLOT_XT_COLUMNS)
         image_values = selected.values[np.ix_(time_indices, position_indices)]
         image_extent = _image_extent(selected.x, selected.y)
-        if normalized_limits is not None:
-            lower = max(normalized_limits[0], image_extent[2])
-            upper = min(normalized_limits[1], image_extent[3])
-            if lower >= upper:
-                raise ValueError("Heatmap Y limits do not overlap the available data range.")
-            normalized_limits = (lower, upper)
         image = axes.imshow(
             image_values,
             aspect="auto",
@@ -489,6 +484,7 @@ def build_plot_export(
             extent=image_extent,
             cmap=cmap,
             interpolation="nearest",
+            rasterized=True,
         )
         if show_colorbar:
             figure.colorbar(image, ax=axes, label=selected.label)
@@ -624,7 +620,7 @@ def _decode_chart_data_uri(data_uri: str) -> tuple[str, bytes]:
 
 
 def _validated_vector_svg_root(svg_data: bytes) -> ElementTree.Element:
-    """Parse a vector-only SVG capture and return its document root."""
+    """Parse a chart SVG with vector axes and optional embedded PNG heatmaps."""
 
     try:
         root = ElementTree.fromstring(svg_data)
@@ -632,17 +628,25 @@ def _validated_vector_svg_root(svg_data: bytes) -> ElementTree.Element:
         raise ValueError("The preview returned an invalid SVG capture.") from exc
     if root.tag.rsplit("}", 1)[-1].casefold() != "svg":
         raise ValueError("The preview capture is not an SVG document.")
-    raster_elements = {"canvas", "foreignobject", "image", "video"}
+    raster_elements = {"canvas", "foreignobject", "video"}
     for element in root.iter():
         if element.tag.rsplit("}", 1)[-1].casefold() in raster_elements:
             raise ValueError("The SVG preview contains an embedded raster surface.")
-        if any("data:image/" in str(value).casefold() for value in element.attrib.values()):
-            raise ValueError("The SVG preview contains embedded raster image data.")
+        if element.tag.rsplit("}", 1)[-1].casefold() == "image":
+            href = next(
+                (value for key, value in element.attrib.items() if key.rsplit("}", 1)[-1] == "href"),
+                "",
+            )
+            if not href.startswith("data:image/png;base64,"):
+                raise ValueError("Heatmap SVG images must contain embedded PNG data.")
+            mime, payload = _decode_chart_data_uri(href)
+            if mime != "image/png" or not payload.startswith(b"\x89PNG\r\n\x1a\n"):
+                raise ValueError("The heatmap SVG contains an invalid PNG image.")
     return root
 
 
 def _validated_vector_svg(svg_data: bytes) -> bytes:
-    """Validate that an SVG capture contains vector primitives only."""
+    """Validate an SVG chart, retaining its raster heatmap and vector axes."""
 
     _validated_vector_svg_root(svg_data)
     return svg_data
@@ -825,11 +829,13 @@ def _compacted_echarts_svg_for_pdf(svg_data: bytes) -> bytes:
 
 
 def _svg_capture_to_pdf(svg_data: bytes) -> bytes:
-    """Convert an ECharts SVG capture to a PDF made of paths and text."""
+    """Convert a chart SVG, preserving vector labels and embedded heatmaps."""
 
     vector_svg = _compacted_echarts_svg_for_pdf(svg_data)
     try:
         from reportlab.graphics import renderPDF
+        from reportlab.lib.utils import ImageReader
+        from reportlab.pdfgen.canvas import Canvas
         from svglib.svglib import svg2rlg
     except ImportError as exc:
         raise RuntimeError(
@@ -838,6 +844,15 @@ def _svg_capture_to_pdf(svg_data: bytes) -> bytes:
         ) from exc
 
     try:
+        class HeatmapCanvas(Canvas):
+            def drawInlineImage(self, image, x, y, width=None, height=None, **kwargs):
+                # The default inline-image renderer discards PNG alpha. Keep
+                # missing heatmap cells transparent while drawing all axes and
+                # labels through the normal vector renderer.
+                return self.drawImage(
+                    ImageReader(image), x, y, width, height, mask="auto", **kwargs,
+                )
+
         drawing = svg2rlg(io.BytesIO(vector_svg))
         if drawing is None:
             raise ValueError("The preview SVG could not be converted to PDF.")
@@ -847,12 +862,16 @@ def _svg_capture_to_pdf(svg_data: bytes) -> bytes:
         drawing.scale(scale, scale)
         drawing.width *= scale
         drawing.height *= scale
-        pdf_data = bytes(renderPDF.drawToString(drawing))
+        pdf_data = bytes(renderPDF.drawToString(drawing, canvasMaker=HeatmapCanvas))
     except (OSError, TypeError, ValueError) as exc:
         raise ValueError("The vector preview could not be converted to PDF.") from exc
     if not pdf_data.startswith(b"%PDF"):
         raise ValueError("The vector PDF renderer returned an invalid document.")
-    if b"/Subtype /Image" in pdf_data:
+    has_heatmap = any(
+        element.tag.rsplit("}", 1)[-1].casefold() == "image"
+        for element in _validated_vector_svg_root(vector_svg).iter()
+    )
+    if not has_heatmap and b"/Subtype /Image" in pdf_data:
         raise ValueError("The PDF renderer rasterized part of the preview unexpectedly.")
     return pdf_data
 

@@ -32,7 +32,7 @@ async def _until(predicate: Any) -> None:
     raise AssertionError("Mapping did not reach the expected state")
 
 
-@pytest.mark.parametrize("mode", ["quiet", "progress", "batch", "stop", "error", "disconnect"])
+@pytest.mark.parametrize("mode", ["quiet", "progress", "mse", "batch", "stop", "error", "disconnect"])
 def test_eta_lifecycle_through_real_mapping_action(monkeypatch, mode):
     """Pause the actual conversion worker to exercise long callbacks reliably."""
     clock = [0.0]
@@ -65,6 +65,9 @@ def test_eta_lifecycle_through_real_mapping_action(monkeypatch, mode):
                 entered.append(case_index)
                 if mode == "progress":
                     report(.49, "Mapping... 1/2 - ETA 00:00:20 - MSE 1e-2")
+                elif mode == "mse":
+                    report(.49, "Mapping... 1/2 - ETA 00:00:20 - MSE 1.234e-02")
+                    report(.50, "Fitting fork speed... iteration 1/2")
                 deadline = time.monotonic() + 15
                 while not release[case_index].wait(.01):
                     cancel()
@@ -108,9 +111,11 @@ def test_eta_lifecycle_through_real_mapping_action(monkeypatch, mode):
             allow_preparation.set()
             await _until(lambda: len(entered) == 1)
             if mode == "progress":
-                await _until(lambda: "00:00:20 (current stage)" in label.text)
+                await _until(lambda: "00:00:20" in label.text)
                 clock[0] = 15
-                await _until(lambda: "00:00:15 (current stage)" in label.text)
+                await _until(lambda: "00:00:15" in label.text)
+            elif mode == "mse":
+                await _until(lambda: "iteration 1/2 - MSE 1.234e-02" in _element(user, "mapping-status").text)
             else:
                 clock[0] = 20
                 await _until(lambda: "Elapsed 00:00:20" in label.text)

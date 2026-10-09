@@ -36,9 +36,12 @@ from app.mapping_uploads import (
     inspect_upload,
     inspect_upload_event,
 )
+from app.page_activity import current_page_activity
 from app.pages.common import (
     DATA_ICON,
     action_dock,
+    workflow_action_button,
+    workflow_action_icon,
     data_upload,
     expansion,
     page_intro,
@@ -164,6 +167,10 @@ _ENCODE_EXAMPLE_URL = (
 _SNS_EXAMPLE_URL = (
     "https://ftp.ncbi.nlm.nih.gov/geo/samples/GSM716nnn/GSM716435/"
     "suppl/GSM716435_K562_Peaks_FDR15.bed.gz"
+)
+_OKSEQ_EXAMPLE_URL = (
+    "https://raw.githubusercontent.com/CL-CHEN-Lab/OK-Seq/master/"
+    "published_results/K562/K562_merged_hmm_RFD_cutoff10_bs1kb_sorted.bw"
 )
 _MAX_RETAINED_SOURCE_COUNT = 128
 _MAX_RETAINED_SOURCE_BYTES = DEFAULT_BATCH_ARCHIVE_SOURCE_BYTES
@@ -662,7 +669,7 @@ def _preview_options(preview: Any) -> dict[str, Any]:
         title="Prepared profile",
         x_label=str(preview.x_label),
         y_label=value_label,
-        color="#2c7f77",
+        color="#b03412",
         palette="viridis",
         histogram_bins=40,
         density=False,
@@ -719,6 +726,7 @@ def render(_navigate: Callable[[str], None]) -> None:
     generated_file_preferences: dict[int, _GeneratedFilePreference] = {}
     next_result_id = 0
     conversion_running = False
+    page_activity = current_page_activity()
     active_cancel: Event | None = None
     upload_inspection_running = False
     result_chart: Any | None = None
@@ -1457,6 +1465,14 @@ def render(_navigate: Callable[[str], None]) -> None:
                                     track_missing="zero",
                                 )
 
+                            async def use_okseq_example() -> None:
+                                await use_link_example(
+                                    url=_OKSEQ_EXAMPLE_URL,
+                                    feature="fork_directionality",
+                                    aggregation="mean",
+                                    track_missing="nan",
+                                )
+
                             with (
                                 ui.column()
                                 .classes("dn-data-manager-example-links")
@@ -1488,9 +1504,24 @@ def render(_navigate: Callable[[str], None]) -> None:
                                         "GEO GSE28911 K562 hg19 SNS/control enrichment peaks"
                                     )
                                 )
+                                okseq_example_button = (
+                                    ui.button(
+                                        "Example: OKseqHMM OK-seq (bigWig) - K562",
+                                        icon="science",
+                                        on_click=use_okseq_example,
+                                    )
+                                    .props("flat dense no-caps")
+                                    .classes("dn-data-manager-example-link")
+                                    .mark("use-okseq-data-example")
+                                    .tooltip(
+                                        "OKseqHMM K562 hg19 fork directionality, 1 kb bins, "
+                                        "read-count cutoff 10; uncovered bins remain missing"
+                                    )
+                                )
                             link_examples.visible = get_export_settings().show_examples
                             source_controls["encode-example"] = encode_example_button
                             source_controls["bedgraph-example"] = bedgraph_example_button
+                            source_controls["okseq-example"] = okseq_example_button
 
                     @ui.refreshable
                     def render_source_details() -> None:
@@ -2217,7 +2248,7 @@ def render(_navigate: Callable[[str], None]) -> None:
 
                 with action_dock():
                     convert_button = (
-                        ui.button("Convert", icon="sync_alt")
+                        workflow_action_button("Convert", symbol="data")
                         .props("no-caps")
                         .classes("dn-action-primary")
                         .mark("action-convert")
@@ -2404,7 +2435,7 @@ def render(_navigate: Callable[[str], None]) -> None:
                             )
 
                         with ui.element("div").classes("dn-download-file-list"):
-                            for result_id, result in converted_results:
+                            for result_id, result in reversed(converted_results):
                                 preference = retained_generated_preference(
                                     result_id,
                                     result,
@@ -2732,6 +2763,7 @@ def render(_navigate: Callable[[str], None]) -> None:
         nonlocal active_cancel, conversion_running, next_result_id
         if conversion_running:
             if active_cancel is not None and not active_cancel.is_set():
+                page_activity.stop("data-management")
                 active_cancel.set()
                 conversion_status.text = "Stopping conversion..."
                 convert_button.disable()
@@ -2750,6 +2782,8 @@ def render(_navigate: Callable[[str], None]) -> None:
 
         conversion_running = True
         active_cancel = cancel_event
+        page_run = page_activity.begin("data-management", cancel=cancel_event.set)
+        completed_successfully = False
         convert_button.set_text("Stop")
         convert_button.set_icon("stop")
         lock_request_controls(True)
@@ -2872,6 +2906,7 @@ def render(_navigate: Callable[[str], None]) -> None:
                     "workspace responsive.",
                     type="warning",
                 )
+            completed_successfully = bool(completed) and not failures
         except CancelledError:
             conversion_progress.visible = False
             conversion_status.text = "Conversion stopped"
@@ -2883,9 +2918,10 @@ def render(_navigate: Callable[[str], None]) -> None:
             conversion_running = False
             active_cancel = None
             convert_button.set_text("Convert")
-            convert_button.set_icon("sync_alt")
+            convert_button.set_icon(workflow_action_icon("data"))
             lock_request_controls(False)
             set_convert_enabled()
+            page_activity.finish("data-management", page_run, success=completed_successfully)
 
     convert_button.on_click(convert)
 

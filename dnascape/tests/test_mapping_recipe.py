@@ -68,6 +68,45 @@ def test_recipe_matches_the_exact_page_mapping_request() -> None:
     assert progress == sorted(progress)
 
 
+@pytest.mark.parametrize("whole_region", [False, True])
+def test_recipe_matches_shorter_firing_profile_at_chromosome_coordinates(
+    tmp_path: Path, whole_region: bool,
+) -> None:
+    timing = np.linspace(20., 60., 40)
+    firing = np.linspace(.001, .002, 10)
+    np.save(tmp_path / "timing.npy", timing)
+    np.save(tmp_path / "firing.npy", firing)
+    recipe = _recipe()
+    recipe["method"] = "timing_and_firing_to_spatial_fork_speed"
+    recipe["target_shape"] = "best"
+    recipe["settings"] = {"resolution": 1., "maxiter": 2, "smoothw": None, "refine_edge_kb": 3.}
+    recipe["region"].update(start_kb=24., end_kb=30., whole_genome=whole_region)
+    recipe["inputs"] = {
+        "replication_timing": {"form": "x", "mode": "upload", "files": [{"path": "timing.npy"}]},
+        "firing_rate": {"form": "x", "mode": "upload", "files": [{"path": "firing.npy"}]},
+    }
+    (_, request), = prepare_mapping_recipe(recipe, base_path=tmp_path)
+    assert request.settings["refine_edge_kb"] == 3.
+    expected = run_mapping(MappingRequest(
+        route=mapping_route(recipe["method"]),
+        inputs={"replication_timing": timing, "firing_rate": firing},
+        input_forms={"replication_timing": "x", "firing_rate": "x"},
+        settings=recipe["settings"], target_shape="best",
+        region_start_kb=24., region_end_kb=30., resolution_x=1.,
+        whole_genome=whole_region,
+    ))
+    (completed,) = run_mapping_recipe(recipe, base_path=tmp_path)
+    _assert_same_results(completed.result, expected)
+    expected_axis = np.arange(10.) if whole_region else np.arange(24., 30.)
+    expected_timing = timing[:10] if whole_region else timing[24:30]
+    np.testing.assert_array_equal(completed.result.x_axis, expected_axis)
+    np.testing.assert_array_equal(completed.result.comparisons["replication_timing_fit"].observed, expected_timing)
+
+    recipe["region"].update(whole_genome=False, end_kb=35.)
+    with pytest.raises(ValueError, match="choose a width of at most 10 kb"):
+        run_mapping_recipe(recipe, base_path=tmp_path)
+
+
 @pytest.mark.parametrize("mode", ("pairwise", "all"))
 def test_constants_match_page_combination_order_names_and_override_controls(mode: str) -> None:
     from app.pages.mapping import _plan_mapping_cases, _PreparedBatchInput

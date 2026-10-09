@@ -996,6 +996,61 @@ def _map_firing_timing_legacy_linear(
     return timing
 
 
+def _constant_firing_timing(rate, speed_per_bin, n, radius, perQ):
+    """Evaluate homogeneous timing once per distinct boundary distance.
+
+    Interior bins and mirrored endpoints have identical origin-arrival sums.
+    This keeps the original discrete survival integral and its finite horizon,
+    while avoiding a chromosome-sized calculation at every integration step.
+    """
+    last_distance = min(radius, n // 2 if perQ else n - 1)
+    positions = np.arange(1 if perQ else min(last_distance, n // 2) + 1)
+    timing = np.zeros(positions.size)
+    exponent = np.zeros_like(timing)
+    survival = np.ones_like(timing)
+    active_rates = np.full_like(timing, rate)
+
+    def expand():
+        if perQ:
+            return np.full(n, timing[0])
+        result = np.full(n, timing[-1])
+        edges = min(timing.size, n // 2)
+        if edges:
+            result[:edges] = timing[:edges]
+            result[-edges:] = timing[:edges][::-1]
+        return result
+
+    for distance in range(last_distance + 1):
+        if distance % 32 == 0:
+            check_cancelled()
+        if distance:
+            if perQ:
+                active_rates += rate
+                if 2 * distance != n:
+                    active_rates += rate
+            else:
+                active_rates[positions >= distance] += rate
+                active_rates[positions < n - distance] += rate
+        if perQ and distance == n // 2:
+            timing += survival / active_rates if rate > 0 else np.inf
+            return expand()
+        increment = survival * (-np.expm1(-active_rates / speed_per_bin))
+        np.divide(increment, active_rates, out=increment, where=active_rates > 0)
+        increment[active_rates <= 0] = survival[active_rates <= 0] / speed_per_bin
+        timing += increment
+        exponent += active_rates / speed_per_bin
+        survival = np.exp(-exponent)
+        if not np.any(survival):
+            return expand()
+    if not perQ and radius > last_distance:
+        duration = (radius - last_distance) / speed_per_bin
+        increment = survival * (-np.expm1(-active_rates * duration))
+        np.divide(increment, active_rates, out=increment, where=active_rates > 0)
+        increment[active_rates <= 0] = survival[active_rates <= 0] * duration
+        timing += increment
+    return expand()
+
+
 def map_firing_timing(
     firing_rate,
     fork_speed=1.4,
@@ -1026,6 +1081,7 @@ def map_firing_timing(
     )
 
     x = np.asarray(firing_rate, dtype=float)
+    constant_firing = x.size == 1
     if x.size == 1:
         if n_bins is None:
             raise ValueError(
@@ -1074,6 +1130,8 @@ def map_firing_timing(
 
     # Requested neighbourhood radius in bins
     L_req = max(1, int(neighbourhood_range / resolution))
+    if constant_firing and np.ndim(fork_speed_per_bin) == 0:
+        return _constant_firing_timing(float(x[0]), fork_speed_per_bin, n, L_req, perQ)
 
     # Each origin enters a periodic neighbourhood once. Even circles have
     # one antipodal bin, not two. Once the whole circle is reachable the

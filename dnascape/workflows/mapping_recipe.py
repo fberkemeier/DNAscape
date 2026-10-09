@@ -252,8 +252,8 @@ def _validate_mapping_case_axes(
         elif prepared.form == "xt" and array.ndim == 2:
             temporal[prepared.label] = int(array.shape[1])
     # Uploaded chromosome profiles and shorter local outputs can have different
-    # spatial lengths. The service applies Start/End and caps every input to
-    # their shortest usable length before validating the resulting grid.
+    # spatial lengths. The service applies chromosome Start/End and requires
+    # every input to cover the selected width before validating the grid.
     if len(set(temporal.values())) > 1:
         detail = ", ".join(f"{label}: {size:,}" for label, size in temporal.items())
         raise ValueError(f"Dataset {dataset_name!r} has inconsistent time points ({detail}).")

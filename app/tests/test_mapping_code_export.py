@@ -174,7 +174,10 @@ def test_raw_batch_settings_remain_independent_and_optional_plot_matches_page(tm
     assert '"color": "#2596be"' in specification[1]
 
 
-def test_mapping_code_menu_downloads_current_controls_without_running_map(monkeypatch: pytest.MonkeyPatch) -> None:
+@pytest.mark.parametrize("target", ["firing_rate", "fork_speed"])
+def test_mapping_code_menu_downloads_current_controls_without_running_map(
+    monkeypatch: pytest.MonkeyPatch, target: str,
+) -> None:
     from nicegui.elements.upload import Upload
     from nicegui.testing import user_simulation
 
@@ -213,6 +216,8 @@ def test_mapping_code_menu_downloads_current_controls_without_running_map(monkey
             await user.open("/")
             user.find(marker="nav-mapping").click()
             await user.should_see(marker="source-replication-timing-upload", retries=60)
+            await set_value("mapping-target", target)
+            await set_value("mapping-target-form", "space")
             await control("source-replication-timing-upload").handle_uploads([
                 Upload.SmallFileUpload("timing.csv", "text/csv", b"first,second\n8,9\n7,8\n9,10\n")
             ])
@@ -221,11 +226,14 @@ def test_mapping_code_menu_downloads_current_controls_without_running_map(monkey
             await set_value("mapping-region-start", 1.0)
             await set_value("mapping-region-end", 3.0)
             await set_value("mapping-setting-resolution", 0.5)
-            await set_value("mapping-input-fork-speed-constant", 1.8)
+            constant_key = "fork_speed" if target == "firing_rate" else "firing_rate"
+            constant_value = 1.8 if target == "firing_rate" else .0018
+            await set_value(f"mapping-input-{constant_key.replace('_', '-')}-constant", constant_value)
+            await set_value("mapping-setting-refine-edge-kb", 23.)
             await set_value("mapping-raw-filename", "user_chosen_name")
             await set_value("mapping-raw-file-type", "CSV")
             await set_value("raw-output-compression", False)
-            await set_value("mapping-preview-title", "Code test plot")
+            await set_value("mapping-preview-x-label", "Genomic position")
             status = control("mapping-status").text
             button = control("action-map")
             user.find(marker="action-code").click()
@@ -235,14 +243,16 @@ def test_mapping_code_menu_downloads_current_controls_without_running_map(monkey
             snapshot = snapshots[0]
             assert snapshot.recipe["region"]["start_kb"] == 1.0
             assert snapshot.recipe["region"]["end_kb"] == 3.0
+            assert "match_smallest_profile" not in snapshot.recipe["region"]
             assert snapshot.recipe["settings"]["resolution"] == 0.5
+            assert snapshot.recipe["settings"]["refine_edge_kb"] == 23.
             assert snapshot.recipe["inputs"]["replication_timing"]["files"][0]["column"] == "second"
-            assert snapshot.recipe["inputs"]["fork_speed"]["values"] == 1.8
+            assert snapshot.recipe["inputs"][constant_key]["values"] == constant_value
             assert snapshot.raw_export["filename"] == "user_chosen_name"
             assert snapshot.raw_export["file_format"] == "CSV"
             assert snapshot.raw_export["compress"] is False
             assert snapshot.raw_export["compression"] == "xz"
-            assert snapshot.plotting["settings"]["title"] == "Code test plot"
+            assert snapshot.plotting["settings"]["x_label"] == "Genomic position"
             assert "PLOT = False" in download.content.decode("utf-8")
             assert control("mapping-status").text == status
             assert control("action-map") is button

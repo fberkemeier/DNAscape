@@ -3367,7 +3367,7 @@ rmap.register(
     method="timing_and_firing_to_spatial_fork_speed",
     optional_assumptions=(
         "resolution", "T0", "neighbourhood_range", "fit_step", "maxiter",
-        "speed_bounds", "initial_fork_speed", "smoothw", "error", "perQ",
+        "speed_bounds", "initial_fork_speed", "smoothw", "refine_edge_kb", "error", "perQ",
         "n_bins", "verbose", "print_every", "target_form", "target_shape",
     ),
     default_assumptions={"verbose": False, "target_form": "space", "target_shape": "best"},
@@ -4620,4 +4620,3 @@ rmap.register(
     ),
     description="Symmetric fork-speed reconstruction from df/dt divided by total active fork density.",
 )
-

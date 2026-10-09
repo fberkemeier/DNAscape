@@ -1324,6 +1324,8 @@ def _target_output(spec: Any) -> tuple[DataForm, str]:
 
 
 def _target_shapes(spec: Any) -> tuple[str, ...]:
+    if spec.target == "firing_rate" and dict(spec.default_assumptions).get("target_form") in {"time", "spacetime"}:
+        return ("weibull",)
     for name, values in spec.assumption_values:
         if name == "target_shape":
             return tuple(str(value) for value in values)

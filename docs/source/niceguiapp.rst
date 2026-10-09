@@ -13,6 +13,12 @@ launch a browser automatically; set ``DNASCAPE_APP_SHOW=true`` to opt in.
 Use the app for inspection and short interactive runs; use Python scripts or
 notebooks for reproducible analyses, sweeps, and publication pipelines.
 
+Switching pages leaves conversions, mapping, simulations, and plot preparation
+running. A sidebar spinner marks each active job and becomes a check if it finishes
+while another page is open. Selecting that page clears the check; Stop clears the
+indicator immediately.
+Active jobs and unread results are retained even when preserving page state is off.
+
 Pages
 -----
 
@@ -69,9 +75,40 @@ Data Manager
    coordinates within the 500-point limit. Repli-seq BigWig conversion and
    preview behavior are unchanged.
 
+   The OKseqHMM K562 OK-seq BigWig example provides hg19 fork directionality
+   at 1 kb resolution, with read-count cutoff 10 and no 15 kb smoothing. It
+   selects Fork directionality, mean aggregation and Keep empty bins, retaining
+   uncovered bins as missing. The track is hosted in the authors'
+   `published K562 results <https://github.com/CL-CHEN-Lab/OK-Seq/tree/master/published_results/K562>`_.
+
 Mapping
    Configure ``rmap`` inputs, regions, routes, and preview settings, then run
    the resolved route in a cancellable background worker.
+
+   **Show Plot** in Mapping options is enabled by default. Turn it off to skip
+   rendering the preview while still computing and retaining all results and
+   raw downloads. Turning it back on displays the result without rerunning.
+
+   Fitting routes keep their latest MSE visible between progress updates,
+   including directionality fits and refinement with console verbosity disabled. Spatial
+   fork-speed fitting smooths corrections and accepts only updates that improve
+   timing MSE, including when firing is supplied as a spatial profile.
+
+   Spatial fork-speed fitting offers **Maximum edge context (kb)** with the same
+   1000 kb default as spatial firing-rate fitting. Linear subregions use reflected
+   firing and speed with an adaptive context cap and a narrow endpoint update
+   taper to reduce artificial speed spikes. Every bin remains refinable; timing
+   MSE scores the core outside that context. Set the value to 0 for true chromosome
+   ends. Periodic fits are unaffected, and downloaded code keeps the chosen value.
+
+   Profiles of different lengths align automatically. Start/End and plot positions
+   refer to the longest profile's chromosome coordinates: at 1 kb/bin,
+   30,000–35,000 kb selects that chromosome window and the first 5,000 points of a
+   shorter profile. The requested width must fit the shortest profile, and End
+   must lie within the longest profile; invalid selections produce an error.
+   **Whole region** uses the first points of every profile, from 0 to the shortest
+   profile's length. Prepared profiles retain their bin width and shorter position
+   axes align to Start. Downloaded Mapping code follows the same rules.
 
    Enable **Dev Mode** in Settings and use **Code** to download the current
    Mapping configuration as Python or a runnable ZIP. The ZIP includes original
@@ -112,7 +149,9 @@ Simulation
    512 MB allows the K562 example at 1 kb bins for all chromosomes (about
    322 MB estimated). Related track array and download limits scale with the
    budget. It does not reserve RAM, cap actual process RAM use, or change upload
-   limits. Settings changes take effect immediately. Application restart and
+   limits. Settings uses grouped switches and draft preferences; **Apply** saves
+   changes. **Restore defaults** fills the draft without clearing data or results.
+   Application restart and
    Reset everything restore the 64 MB default.
    Histogram views expose synchronized bin-count, exact bin-size, and editable
    X-range controls. Changing the range preserves the requested bin width and
@@ -127,6 +166,15 @@ Plotting
    Upload one or more profiles and create profile, heatmap, histogram, or
    box-plot previews with the same plotting controls used by Mapping and
    Simulation.
+
+   X and Y limits remain editable in every view, with Z (colour) limits for
+   heatmaps. Reset restores the automatic range, including after an incomplete
+   edit. Heatmap ranges can crop or extend the displayed axes without changing
+   the original data coordinates. Enabled grid lines appear over the heatmap.
+   Large heatmaps are automatically averaged into at most 300 time rows by
+   720 position columns using bounded working tiles; raw exports retain the
+   original resolution. PDF and SVG exports embed only the heatmap as a PNG,
+   keeping axes, grid lines, colour scales and labels as vectors.
 
 Cached Files
    Search, sort, download, reopen, or remove uploads, prepared datasets,

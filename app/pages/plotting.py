@@ -13,6 +13,7 @@ from nicegui import run, ui
 
 from app.export_settings import get_export_settings
 from app.mapping_uploads import UploadInspection, inspect_upload_event, materialize_upload
+from app.page_activity import current_page_activity
 from app.pages.common import (
     DATA_ICON,
     action_dock,
@@ -25,6 +26,7 @@ from app.pages.common import (
     preview_plot,
 )
 from app.preview_plotting import (
+    axis_limits_from_controls,
     HistogramBinSynchronizer,
     PreviewLine,
     automatic_y_limits,
@@ -55,8 +57,8 @@ _DEPENDENCE_LABELS = {
 _NATURAL_SELECTION = "__natural_profile__"
 _MATRIX_SELECTION = "__all_columns__"
 _LINE_COLOURS = (
-    "#2c7f77",
     "#b03412",
+    "#2c7f77",
     "#3f6da8",
     "#8b6f37",
     "#6f5b8f",
@@ -109,6 +111,7 @@ class _SeparatePlotSettingsSnapshot:
     y_limits_automatic: bool = True
     histogram_basis: str = "bins"
     histogram_x_limits_automatic: bool = True
+    automatic_axes: frozenset[str] = frozenset({"x", "z"})
 
 
 _SEPARATE_SETTING_VALUE_FIELDS = (
@@ -144,6 +147,7 @@ _SEPARATE_SETTING_VALUE_FIELDS = (
     "invert_y",
     "y_minimum",
     "y_maximum",
+    "x_minimum", "x_maximum", "z_minimum", "z_maximum",
 )
 
 
@@ -157,7 +161,6 @@ def _plotting_setting_markers(*, separate_index: int | None = None) -> dict[str,
         ),
         overrides={
             "container": "plotting-settings",
-            "title": "plotting-title",
             "primary_color": "plotting-primary-color",
             "secondary_color": "plotting-secondary-color",
         },
@@ -491,6 +494,7 @@ def render(_navigate: Callable[[str], None]) -> None:
     """Render staged profile controls and an explicitly committed preview."""
 
     sources: list[_ProfileSourceState] = []
+    page_activity = current_page_activity()
     next_source_id = 1
     latest_series: tuple[_PlotSeries, ...] = ()
     result_charts: list[Any] = []
@@ -791,7 +795,7 @@ def render(_navigate: Callable[[str], None]) -> None:
                         if item.form in {"x", "t"}
                         and str(plot_settings.view.value or "Default") == "Default"
                     ]
-                    if not curve_series:
+                    if len(curve_series) < 2:
                         return
                     with expansion(
                         "Curves",
@@ -956,9 +960,9 @@ def render(_navigate: Callable[[str], None]) -> None:
             allow_histogram=not multiple and form != "xt",
             allow_boxplot=not multiple and form != "xt",
         )
-        # Plotting owns per-curve color and thickness controls in the adjacent
-        # Curves section, avoiding ambiguous "first" and "second" fields.
-        if plot_type == "Line" and latest_series:
+        # Multiple curves have individual styles in Curves; a single profile
+        # uses the shared Style controls, as it does in Mapping.
+        if plot_type == "Line" and len(latest_series) > 1:
             plot_settings.primary_color_surface.visible = False
             plot_settings.secondary_color_surface.visible = False
             plot_settings.line_width.visible = False
@@ -1086,7 +1090,7 @@ def render(_navigate: Callable[[str], None]) -> None:
         if first is None:
             raise ValueError("Upload and select at least one profile.")
         plot_type = group_plot_type(group, active_controls)
-        profile = np.asarray(first.values, dtype=float)
+        profile = np.asarray(first.values)
         values: Any = profile
         x_axis: Any = None
         y_axis: Any = None
@@ -1096,6 +1100,7 @@ def render(_navigate: Callable[[str], None]) -> None:
             x_axis = np.arange(profile.shape[0], dtype=float)
             y_axis = np.arange(profile.shape[1], dtype=float)
         elif plot_type == "Line":
+            individual_styles = use_curve_styles and len(group) > 1
             lines = tuple(
                 PreviewLine(
                     name=item.name,
@@ -1103,12 +1108,12 @@ def render(_navigate: Callable[[str], None]) -> None:
                     y=np.asarray(item.values, dtype=float).reshape(-1),
                     color=(
                         curve_styles[item.series_id].color
-                        if use_curve_styles
+                        if individual_styles
                         else str(active_controls.primary_color.value or _LINE_COLOURS[0])
                     ),
                     width=(
                         curve_styles[item.series_id].width
-                        if use_curve_styles
+                        if individual_styles
                         else _numeric_value(active_controls.line_width, "Curve thickness")
                     ),
                 )
@@ -1159,6 +1164,8 @@ def render(_navigate: Callable[[str], None]) -> None:
             histogram_touching=bool(active_controls.histogram_touching.value),
             histogram_boundary=str(active_controls.histogram_boundary.value or "left"),
             y_limits=current_y_limits(active_controls),
+            x_limits=axis_limits_from_controls(active_controls, "x"),
+            z_limits=axis_limits_from_controls(active_controls, "z"),
             series_label=first.name,
             values=values,
             x_axis=x_axis,
@@ -1259,6 +1266,7 @@ def render(_navigate: Callable[[str], None]) -> None:
         """Update one committed chart without rebuilding its settings controls."""
 
         controls = context.controls
+        context.chart.attach_settings(controls)
         plot_type = group_plot_type(context.group, controls)
         if not plotting_settings_ready(
             controls,
@@ -1291,6 +1299,7 @@ def render(_navigate: Callable[[str], None]) -> None:
         first = context.group[0]
         synchronizer = context.histogram_bin_sync
         separate_plot_settings[first.series_id] = _SeparatePlotSettingsSnapshot(
+            automatic_axes=frozenset(context.controls._automatic_axes),
             values={
                 field_name: getattr(context.controls, field_name).value
                 for field_name in _SEPARATE_SETTING_VALUE_FIELDS
@@ -1311,6 +1320,8 @@ def render(_navigate: Callable[[str], None]) -> None:
         snapshot: _SeparatePlotSettingsSnapshot,
     ) -> None:
         """Restore saved primitive values before wiring live callbacks."""
+        controls._automatic_axes.clear()
+        controls._automatic_axes.update(snapshot.automatic_axes)
 
         for field_name, value in snapshot.values.items():
             control = getattr(controls, field_name)
@@ -1539,6 +1550,8 @@ def render(_navigate: Callable[[str], None]) -> None:
                             on_download=download_current,
                         )
                         result_charts.append(chart)
+                        if not separate:
+                            chart.attach_settings(plot_settings)
                         if separate:
                             separate_plot_contexts.append(
                                 render_separate_settings(
@@ -1565,6 +1578,13 @@ def render(_navigate: Callable[[str], None]) -> None:
                 return
             for group, chart in zip(groups, result_charts):
                 options = plot_options(group)
+                if len(latest_series) == 1 and latest_series[0].form in {"x", "t"}:
+                    # Retain edits from Style if this profile later joins a
+                    # combined plot with per-curve controls.
+                    curve_styles[latest_series[0].series_id] = _CurveStyle(
+                        str(plot_settings.primary_color.value or _LINE_COLOURS[0]),
+                        _numeric_value(plot_settings.line_width, "Curve thickness"),
+                    )
                 chart.options.clear()
                 chart.options.update(options)
                 chart.update()
@@ -1578,6 +1598,8 @@ def render(_navigate: Callable[[str], None]) -> None:
     async def plot_profiles() -> None:
         nonlocal latest_series
         plot_button.disable()
+        page_run = page_activity.begin("plotting")
+        completed_successfully = False
         try:
             selected = await run.io_bound(_collect_plot_series, tuple(sources))
             if selected is None:
@@ -1588,6 +1610,12 @@ def render(_navigate: Callable[[str], None]) -> None:
             latest_series = selected
             multiple = len(selected) > 1
             previous_styles = dict(curve_styles)
+            if not multiple and first.form in {"x", "t"}:
+                if first.series_id not in previous_styles:
+                    previous_styles[first.series_id] = _CurveStyle(
+                        str(plot_settings.primary_color.value or _LINE_COLOURS[0]),
+                        _numeric_value(plot_settings.line_width, "Curve thickness"),
+                    )
             curve_styles.clear()
             curve_styles.update(
                 {
@@ -1599,6 +1627,10 @@ def render(_navigate: Callable[[str], None]) -> None:
                     if item.form in {"x", "t"}
                 }
             )
+            if not multiple and first.form in {"x", "t"}:
+                style = curve_styles[first.series_id]
+                plot_settings.primary_color.set_value(style.color)
+                plot_settings.line_width.set_value(style.width)
             sync_presentation_options(sync_action=False)
             histogram_bin_sync.sync_to_data(redraw=False)
             sync_staged_controls(reset_axes=False)
@@ -1609,10 +1641,12 @@ def render(_navigate: Callable[[str], None]) -> None:
             if y_limits_automatic:
                 populate_automatic_y_limits()
             render_latest_plot()
+            completed_successfully = True
         except (OSError, RuntimeError, TypeError, ValueError) as exc:
             ui.notify(str(exc), type="negative")
         finally:
             sync_presentation_options()
+            page_activity.finish("plotting", page_run, success=completed_successfully)
 
     def view_changed() -> None:
         clear_automatic_y_limits()

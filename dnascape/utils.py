@@ -56,6 +56,17 @@ def _report_progress(value, message):
         report(float(value), str(message))
 
 
+def _fit_progress_enabled(verbose=False):
+    """Keep silent workflow fits observable without enabling console output."""
+    return bool(verbose) or (
+        bool(getattr(_PROGRESS_STATE, "suppress_output", False))
+        and (
+            callable(getattr(_PROGRESS_STATE, "report", None))
+            or callable(getattr(_PROGRESS_STATE, "metric_report", None))
+        )
+    )
+
+
 def _progress_update(it, maxiter, eta_sec, label=None, err=None):
     check_cancelled()
 

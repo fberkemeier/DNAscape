@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from app.pages.common import workflow_action_icon
+
 import asyncio
 import gzip
 import io
@@ -32,6 +34,7 @@ from app.icons import DATA_ICON_SVG
 from app.main import index
 from app.mapping_catalog import mapping_route_families
 from app.mapping_service import MappingResult
+from app.page_activity import current_page_activity
 from app.session_cache import current_session_cache
 from app.simulation_exports import ExportArtifact
 from app.simulation_service import ConstantSimulationResult
@@ -284,6 +287,7 @@ def test_cached_mapping_result_reopens_in_the_mapping_preview() -> None:
         async with user_simulation(index) as user:
             await user.open("/")
             assert user.client is not None
+            user.find(marker="nav-mapping").click()
             result = MappingResult(
                 target="firing_rate",
                 target_key="firing_rate",
@@ -312,11 +316,17 @@ def test_cached_mapping_result_reopens_in_the_mapping_preview() -> None:
 
             user.find(marker="nav-cached-files").click()
             await user.should_see("Session files and results")
+            with user.client:
+                activity = current_page_activity()
+                completed_run = activity.begin("mapping")
+                activity.finish("mapping", completed_run, success=True)
+            await user.should_see(marker="nav-mapping-complete", retries=30)
             user.find("Workflow results").click()
             await user.should_see("Mapping: Firing rate")
             user.find(marker=f"cache-open-{workflow.id}").click()
             await user.should_see("Map replication kinetic landscapes")
             await user.should_see("Restored from Cached Files")
+            await user.should_not_see(marker="nav-mapping-complete")
             await user.should_see(marker="mapping-result-plot")
             chart = cast(
                 EChart,
@@ -500,7 +510,7 @@ def test_upload_fields_share_clear_copy_and_route_aware_mapping_defaults() -> No
 
             user.find(marker="nav-mapping").click()
             await user.should_see(marker="source-replication-timing-upload")
-            await user.should_see("Choose files or drag them here")
+            await user.should_see("Choose file or drag it here")
             await user.should_not_see(
                 "Accepted: CSV, TSV, TXT, NPY, NPV, NPZ, bedGraph, BigWig, GZ"
             )
@@ -646,7 +656,7 @@ def test_plotting_commits_data_once_then_updates_plot_settings_live() -> None:
                     )
                 ]
             )
-            await user.should_see("Dependence: Space")
+            await user.should_see("Dependence: Space", retries=30)
             await user.should_see("Array size: 3")
             await user.should_see(marker="plotting-data-upload")
             assert uploader._props.get("multiple") is True
@@ -676,23 +686,18 @@ def test_plotting_commits_data_once_then_updates_plot_settings_live() -> None:
             assert chart().options["xAxis"]["name"] == "Position (bin)"
 
             user.find("Plotting settings").click()
-            user.find("Curves").click()
-            curves_expansion = next(
-                expansion
-                for expansion in user.find(kind=Expansion).elements
-                if expansion._props.get("label") == "Curves"
-            )
-            assert "dn-preview-settings-section" in curves_expansion._classes
-            assert "dn-plot-curve-settings" in curves_expansion._classes
+            await user.should_not_see("Curves")
+            await user.should_see(marker="plotting-primary-color")
+            await user.should_see(marker="plotting-line-width")
             assert user.client is not None
-            title = cast(Input, next(iter(user.find(marker="plotting-title").elements)))
+            title = cast(Input, next(iter(user.find(marker="plotting-x-axis-label").elements)))
             thickness = cast(
                 Number,
-                next(iter(user.find(marker="plotting-curve-width-1").elements)),
+                next(iter(user.find(marker="plotting-line-width").elements)),
             )
             curve_color = cast(
                 Input,
-                next(iter(user.find(marker="plotting-curve-color-1").elements)),
+                next(iter(user.find(marker="plotting-primary-color").elements)),
             )
             grid = cast(
                 Checkbox,
@@ -715,7 +720,14 @@ def test_plotting_commits_data_once_then_updates_plot_settings_live() -> None:
             assert curve_color.parent_slot is not None
             color_surface = curve_color.parent_slot.parent
             assert color_surface.parent_slot is not None
-            assert thickness.parent_slot.parent is color_surface.parent_slot.parent
+            color_grid = color_surface.parent_slot.parent
+            assert color_grid.parent_slot is not None
+            style_group = color_grid.parent_slot.parent
+            assert thickness.parent_slot.parent is style_group
+            assert any(
+                isinstance(child, Label) and child.text == "Style"
+                for child in style_group.default_slot.children
+            )
             with user.client:
                 title.set_value("Edited profile")
                 thickness.set_value(3.2)
@@ -723,11 +735,28 @@ def test_plotting_commits_data_once_then_updates_plot_settings_live() -> None:
                 grid.set_value(False)
             await asyncio.sleep(0)
             await asyncio.sleep(0)
-            await wait_for_chart(lambda options: options["title"]["text"] == "Edited profile")
-            assert chart().options["title"]["text"] == "Edited profile"
+            await wait_for_chart(lambda options: options["xAxis"]["name"] == "Edited profile")
+            assert chart().options["xAxis"]["name"] == "Edited profile"
             assert chart().options["series"][0]["lineStyle"]["width"] == pytest.approx(3.2)
             assert chart().options["series"][0]["lineStyle"]["color"] == "#8b6f37"
             assert chart().options["xAxis"]["splitLine"]["show"] is False
+
+            legend_position = cast(
+                Select,
+                next(iter(user.find(marker="plotting-legend-position").elements)),
+            )
+            original_grid = dict(chart().options["grid"])
+            for side in ("left", "right"):
+                with user.client:
+                    legend_position.set_value(f"Bottom {side}")
+                await wait_for_chart(
+                    lambda options: "bottom" in options["legend"] and side in options["legend"]
+                )
+                assert chart().options["legend"]["bottom"] > chart().options["grid"]["bottom"]
+                assert chart().options["grid"] == original_grid
+            with user.client:
+                legend_position.set_value("Top right")
+            await wait_for_chart(lambda options: "top" in options["legend"])
 
             profile_view = cast(
                 Select,
@@ -825,6 +854,8 @@ def test_plotting_commits_data_once_then_updates_plot_settings_live() -> None:
             with user.client:
                 profile_view.set_value("Default")
             await wait_for_chart(lambda options: options["series"][0]["type"] == "line")
+            assert chart().options["series"][0]["lineStyle"]["color"] == "#8b6f37"
+            assert chart().options["series"][0]["lineStyle"]["width"] == pytest.approx(3.2)
 
             user.find(marker="plotting-data-upload-remove").click()
             await user.should_not_see("signal.csv")
@@ -851,7 +882,9 @@ def test_plotting_commits_data_once_then_updates_plot_settings_live() -> None:
             # merely staging a heatmap must not relabel the visible line plot.
             await user.should_not_see(marker="plotting-heatmap-palette")
             await user.should_not_see(marker="plotting-colorbar")
-            await user.should_see("Curves")
+            await user.should_not_see("Curves")
+            await user.should_see(marker="plotting-primary-color")
+            await user.should_see(marker="plotting-line-width")
 
             user.find(marker="action-plot").click()
             await wait_for_chart(lambda options: options["series"][0]["type"] == "custom")
@@ -883,12 +916,19 @@ def test_plotting_commits_data_once_then_updates_plot_settings_live() -> None:
             user.find(marker="action-plot").click()
             await wait_for_chart(lambda options: len(options["series"]) == 2)
             user.find("Curves").click()
+            curves_expansion = next(
+                expansion
+                for expansion in user.find(kind=Expansion).elements
+                if expansion._props.get("label") == "Curves"
+            )
+            assert "dn-preview-settings-section" in curves_expansion._classes
+            assert "dn-plot-curve-settings" in curves_expansion._classes
             await user.should_see(marker="plotting-curve-color-1")
             await user.should_see(marker="plotting-curve-color-2")
             assert [series["name"] for series in chart().options["series"]] == ["t0", "t1"]
             assert [series["type"] for series in chart().options["series"]] == ["line", "line"]
-            assert chart().options["series"][0]["lineStyle"]["color"] == "#2c7f77"
-            assert chart().options["series"][1]["lineStyle"]["color"] == "#b03412"
+            assert chart().options["series"][0]["lineStyle"]["color"] == "#b03412"
+            assert chart().options["series"][1]["lineStyle"]["color"] == "#2c7f77"
 
             await uploader.handle_uploads(
                 [
@@ -940,6 +980,128 @@ def test_plotting_commits_data_once_then_updates_plot_settings_live() -> None:
             UserInteraction(user, {remove_button}, None).click()
             await user.should_not_see("other.csv", retries=30)
             assert len(chart().options["series"]) == 3
+
+    asyncio.run(scenario())
+
+
+def test_plotting_preserves_styles_when_switching_between_one_and_multiple_profiles() -> None:
+    async def scenario() -> None:
+        async with user_simulation(index) as user:
+            await user.open("/")
+            user.find(marker="nav-plotting").click()
+            uploader = cast(
+                Upload,
+                next(iter(user.find(marker="plotting-data-upload").elements)),
+            )
+            await uploader.handle_uploads(
+                [
+                    Upload.SmallFileUpload(
+                        "first.csv",
+                        "text/csv",
+                        b"position,first\n0,1\n1,3\n2,2\n",
+                    )
+                ]
+            )
+            await user.should_see("Dependence: Space", retries=30)
+            user.find("Plotting settings").click()
+            color = cast(
+                Input,
+                next(iter(user.find(marker="plotting-primary-color").elements)),
+            )
+            thickness = cast(
+                Number,
+                next(iter(user.find(marker="plotting-line-width").elements)),
+            )
+            assert color.value == "#b03412"
+            assert user.client is not None
+            with user.client:
+                color.set_value("#8b6f37")
+                thickness.set_value(3.2)
+            user.find(marker="action-plot").click()
+            await user.should_see(marker="plotting-result-plot", retries=30)
+            await user.should_not_see("Curves")
+
+            def chart() -> EChart:
+                return cast(
+                    EChart,
+                    next(iter(user.find(marker="plotting-result-plot").elements)),
+                )
+
+            async def wait_for_chart(predicate: Any) -> None:
+                for _ in range(60):
+                    if predicate(chart().options):
+                        return
+                    await asyncio.sleep(0.1)
+                raise AssertionError("plot did not reach the expected committed state")
+
+            assert chart().options["series"][0]["lineStyle"]["color"] == "#8b6f37"
+            assert chart().options["series"][0]["lineStyle"]["width"] == pytest.approx(3.2)
+            # Live shared Style edits must also survive adding another curve.
+            with user.client:
+                thickness.set_value(3.6)
+            await wait_for_chart(
+                lambda options: options["series"][0]["lineStyle"]["width"] == 3.6
+            )
+            await uploader.handle_uploads(
+                [
+                    Upload.SmallFileUpload(
+                        "second.csv",
+                        "text/csv",
+                        b"position,second\n0,4\n1,6\n2,5\n",
+                    )
+                ]
+            )
+            await user.should_see("second.csv", retries=30)
+            await user.should_not_see("Curves")
+            user.find(marker="action-plot").click()
+            await wait_for_chart(lambda options: len(options["series"]) == 2)
+            user.find("Curves").click()
+            await user.should_not_see(marker="plotting-primary-color")
+            await user.should_not_see(marker="plotting-line-width")
+            first_color = cast(
+                Input,
+                next(iter(user.find(marker="plotting-curve-color-1").elements)),
+            )
+            first_thickness = cast(
+                Number,
+                next(iter(user.find(marker="plotting-curve-width-1").elements)),
+            )
+            assert first_color.value == "#8b6f37"
+            assert first_thickness.value == pytest.approx(3.6)
+            second_color = cast(
+                Input,
+                next(iter(user.find(marker="plotting-curve-color-2").elements)),
+            )
+            second_thickness = cast(
+                Number,
+                next(iter(user.find(marker="plotting-curve-width-2").elements)),
+            )
+            with user.client:
+                second_color.set_value("#6f5b8f")
+                second_thickness.set_value(4.4)
+            await wait_for_chart(
+                lambda options: options["series"][1]["lineStyle"]["color"] == "#6f5b8f"
+                and options["series"][1]["lineStyle"]["width"] == 4.4
+            )
+            remove_first = next(
+                button
+                for button in user.find(marker="plotting-data-upload-remove").elements
+                if button._props.get("data-upload-name") == "first.csv"
+            )
+            UserInteraction(user, {remove_first}, None).click()
+            await user.should_not_see("first.csv", retries=30)
+            # Removing a staged upload does not change the committed controls.
+            await user.should_see("Curves")
+            user.find(marker="action-plot").click()
+            await wait_for_chart(lambda options: len(options["series"]) == 1)
+            await user.should_not_see("Curves")
+            await user.should_see(marker="plotting-primary-color")
+            await user.should_see(marker="plotting-line-width")
+            assert color.value == "#6f5b8f"
+            assert thickness.value == pytest.approx(4.4)
+            assert chart().options["series"][0]["name"] == "second"
+            assert chart().options["series"][0]["lineStyle"]["color"] == "#6f5b8f"
+            assert chart().options["series"][0]["lineStyle"]["width"] == pytest.approx(4.4)
 
     asyncio.run(scenario())
 
@@ -1022,7 +1184,7 @@ def test_plotting_separates_spatial_curves_and_heatmaps_and_blocks_time_heatmaps
 
             first_title = cast(
                 Input,
-                next(iter(user.find(marker="plotting-title-separate-1").elements)),
+                next(iter(user.find(marker="plotting-x-axis-label-separate-1").elements)),
             )
             first_color = cast(
                 Input,
@@ -1032,7 +1194,7 @@ def test_plotting_separates_spatial_curves_and_heatmaps_and_blocks_time_heatmaps
             )
             second_title = cast(
                 Input,
-                next(iter(user.find(marker="plotting-title-separate-2").elements)),
+                next(iter(user.find(marker="plotting-x-axis-label-separate-2").elements)),
             )
             second_palette = cast(
                 Select,
@@ -1051,8 +1213,8 @@ def test_plotting_separates_spatial_curves_and_heatmaps_and_blocks_time_heatmaps
                 second_palette.set_value("magma")
             for _ in range(40):
                 if (
-                    first_chart.options["title"]["text"] == "Edited spatial profile"
-                    and second_chart.options["title"]["text"] == "Edited space-time map"
+                    first_chart.options["xAxis"]["name"] == "Edited spatial profile"
+                    and second_chart.options["xAxis"]["name"] == "Edited space-time map"
                     and first_chart.options["series"][0]["lineStyle"]["color"]
                     == "#8b6f37"
                     and second_chart.options["visualMap"]["inRange"]["color"]
@@ -1062,6 +1224,26 @@ def test_plotting_separates_spatial_curves_and_heatmaps_and_blocks_time_heatmaps
                 await asyncio.sleep(0.1)
             else:
                 raise AssertionError("separate plotting controls did not update independently")
+
+            # Each independent plot owns editable axes and resets, including
+            # the colour range of its heatmap.
+            for axis, limits in (("x", (-1.0, 3.0)), ("y", (-2.0, 4.0)), ("z", (0.0, 1.0))):
+                lower = cast(Number, next(iter(user.find(marker=f"plotting-{axis}-minimum-separate-2").elements)))
+                upper = cast(Number, next(iter(user.find(marker=f"plotting-{axis}-maximum-separate-2").elements)))
+                reset = next(iter(user.find(marker=f"plotting-reset-{axis}-limits-separate-2").elements))
+                assert lower.enabled and upper.enabled and reset.enabled
+                key = "visualMap" if axis == "z" else f"{axis}Axis"
+                original = (second_chart.options[key]["min"], second_chart.options[key]["max"])
+                with user.client:
+                    lower.set_value(limits[0])
+                    upper.set_value(limits[1])
+                await asyncio.sleep(0)
+                assert (second_chart.options[key]["min"], second_chart.options[key]["max"]) == limits
+                with user.client:
+                    upper.set_value(None)
+                user.find(marker=f"plotting-reset-{axis}-limits-separate-2").click()
+                await asyncio.sleep(0)
+                assert (second_chart.options[key]["min"], second_chart.options[key]["max"]) == original
 
             user.find(marker="plotting-data-upload-delete-all").click()
             await user.should_see(marker="plotting-data-upload")
@@ -1164,7 +1346,7 @@ def test_plotting_preserves_independent_settings_across_layout_toggles() -> None
 
             first_title = cast(
                 Input,
-                next(iter(user.find(marker="plotting-title-separate-1").elements)),
+                next(iter(user.find(marker="plotting-x-axis-label-separate-1").elements)),
             )
             first_color = cast(
                 Input,
@@ -1172,7 +1354,7 @@ def test_plotting_preserves_independent_settings_across_layout_toggles() -> None
             )
             second_title = cast(
                 Input,
-                next(iter(user.find(marker="plotting-title-separate-2").elements)),
+                next(iter(user.find(marker="plotting-x-axis-label-separate-2").elements)),
             )
             second_color = cast(
                 Input,
@@ -1189,6 +1371,8 @@ def test_plotting_preserves_independent_settings_across_layout_toggles() -> None
                 second_color.set_value("#6f5b8f")
                 second_view.set_value("Histogram")
             await asyncio.sleep(0)
+            with user.client:
+                second_title.set_value("Second distribution")
             second_bins = cast(
                 Number,
                 next(iter(user.find(marker="plotting-histogram-bins-separate-2").elements)),
@@ -1207,7 +1391,7 @@ def test_plotting_preserves_independent_settings_across_layout_toggles() -> None
 
             restored_first_title = cast(
                 Input,
-                next(iter(user.find(marker="plotting-title-separate-1").elements)),
+                next(iter(user.find(marker="plotting-x-axis-label-separate-1").elements)),
             )
             restored_first_color = cast(
                 Input,
@@ -1215,7 +1399,7 @@ def test_plotting_preserves_independent_settings_across_layout_toggles() -> None
             )
             restored_second_title = cast(
                 Input,
-                next(iter(user.find(marker="plotting-title-separate-2").elements)),
+                next(iter(user.find(marker="plotting-x-axis-label-separate-2").elements)),
             )
             restored_second_color = cast(
                 Input,
@@ -1240,9 +1424,9 @@ def test_plotting_preserves_independent_settings_across_layout_toggles() -> None
                 cast(EChart, next(iter(user.find(marker=marker).elements)))
                 for marker in ("plotting-result-plot", "plotting-result-plot-2")
             ]
-            assert charts[0].options["title"]["text"] == "First custom plot"
+            assert charts[0].options["xAxis"]["name"] == "First custom plot"
             assert charts[0].options["series"][0]["lineStyle"]["color"] == "#8b6f37"
-            assert charts[1].options["title"]["text"] == "Second distribution"
+            assert charts[1].options["xAxis"]["name"] == "Second distribution"
             assert charts[1].options["series"][0]["type"] == "custom"
             assert len(charts[1].options["series"][0]["data"]) == 3
 
@@ -1586,12 +1770,12 @@ def test_plot_controls_only_show_options_relevant_to_the_selected_view() -> None
             )
             assert dependence.value == "time"
             for marker in ("mapping-heatmap-palette", "mapping-colorbar", "mapping-log-z"):
-                await user.should_see(marker=marker)
+                await user.should_not_see(marker=marker)
             await user.should_not_see(marker="mapping-histogram-bins")
             await user.should_not_see(marker="mapping-histogram-bin-size")
             await user.should_not_see(marker="mapping-histogram-x-minimum")
             await user.should_not_see(marker="mapping-histogram-x-maximum")
-            await user.should_not_see(marker="mapping-line-width")
+            await user.should_see(marker="mapping-line-width")
             with user.client:
                 dependence.set_value("spacetime")
             await asyncio.sleep(0)
@@ -1904,7 +2088,7 @@ def test_simulate_button_becomes_stop_and_cancels_the_worker(
             user.find(marker="action-simulate").click()
             await user.should_see("Simulation stopped", retries=40)
             assert button.text == "Simulate"
-            assert button.icon == "play_arrow"
+            assert button.icon == workflow_action_icon("simulation")
             assert button.enabled
             await user.should_not_see(marker="simulation-error")
 
@@ -2381,6 +2565,27 @@ def test_detailed_simulation_switch_exposes_xt_plot_and_live_downloads(
             assert chart.options["tooltip"]["show"] is False
             assert chart.options["xAxis"]["position"] == "bottom"
 
+            for axis, limits in (("x", (-1.0, 3.0)), ("y", (-10.0, 40.0)), ("z", (0.2, 0.8))):
+                lower = cast(Number, next(iter(user.find(marker=f"simulation-{axis}-minimum").elements)))
+                upper = cast(Number, next(iter(user.find(marker=f"simulation-{axis}-maximum").elements)))
+                reset = next(iter(user.find(marker=f"simulation-reset-{axis}-limits").elements))
+                assert lower.enabled and upper.enabled and reset.enabled
+                key = "visualMap" if axis == "z" else f"{axis}Axis"
+                original = (chart.options[key]["min"], chart.options[key]["max"])
+                with simulation_client:
+                    lower.set_value(limits[0])
+                    upper.set_value(limits[1])
+                await asyncio.sleep(0)
+                current = cast(EChart, next(iter(user.find(marker="simulation-result-plot").elements)))
+                assert (current.options[key]["min"], current.options[key]["max"]) == limits
+                with simulation_client:
+                    upper.set_value(None)
+                user.find(marker=f"simulation-reset-{axis}-limits").click()
+                await asyncio.sleep(0)
+                current = cast(EChart, next(iter(user.find(marker="simulation-result-plot").elements)))
+                assert (current.options[key]["min"], current.options[key]["max"]) == original
+            assert len(requests) == 1
+
             user.find(marker="action-download-plot").click()
             user.find(marker="download-plot-svg").click()
             for _ in range(30):
@@ -2524,7 +2729,7 @@ def test_uploaded_firing_rate_and_fork_speed_reach_simulation_worker(
                     )
                 ]
             )
-            await user.should_see(marker="source-firing-rate-detected-data")
+            await user.should_see(marker="source-firing-rate-detected-data", retries=30)
             await user.should_see(marker="source-fork-speed-detected-data")
             await user.should_see(marker="source-firing-rate-upload-file")
             await user.should_see(marker="source-fork-speed-upload-file")
@@ -2750,7 +2955,7 @@ def test_simulation_profile_headers_select_arrays_and_resize_region() -> None:
                     )
                 ]
             )
-            await user.should_see(marker="source-firing-rate-detected-data")
+            await user.should_see(marker="source-firing-rate-detected-data", retries=30)
             column = cast(
                 Select,
                 next(iter(user.find(marker="source-firing-rate-value-column").elements)),
@@ -2764,7 +2969,10 @@ def test_simulation_profile_headers_select_arrays_and_resize_region() -> None:
             assert region_end.value == pytest.approx(3.0)
 
             column.set_value("chr2")
-            await asyncio.sleep(0)
+            for _ in range(40):
+                if region_end.value == 2.0:
+                    break
+                await asyncio.sleep(0.1)
             assert region_end.value == pytest.approx(2.0)
 
             user.find(marker="source-firing-rate-upload-remove").click()
@@ -2781,7 +2989,7 @@ def test_simulation_profile_headers_select_arrays_and_resize_region() -> None:
                     )
                 ]
             )
-            await user.should_see(marker="source-firing-rate-detected-data")
+            await user.should_see(marker="source-firing-rate-detected-data", retries=30)
             column = cast(
                 Select,
                 next(iter(user.find(marker="source-firing-rate-value-column").elements)),
@@ -2792,8 +3000,13 @@ def test_simulation_profile_headers_select_arrays_and_resize_region() -> None:
                 "sample_b": "sample_b",
             }
             column.set_value("sample_b")
-            await asyncio.sleep(0)
-            assert region_end.value == pytest.approx(2.0)
+            for _ in range(40):
+                if region_end.value == 3.0:
+                    break
+                await asyncio.sleep(0.1)
+            # Ordinary profile tables preserve missing bins at their genomic
+            # positions; only padding in chromosome tables is trimmed.
+            assert region_end.value == pytest.approx(3.0)
 
     asyncio.run(scenario())
 

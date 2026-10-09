@@ -2,9 +2,13 @@
 
 from __future__ import annotations
 
+import time
+
 import numpy as np
 from scipy.optimize import least_squares
 from scipy.sparse.linalg import LinearOperator
+
+from .utils import _progress_update, check_cancelled
 
 
 def integrated_directionality(increments, *, periodic=False, centered=False):
@@ -55,6 +59,9 @@ def fit_spatial_directionality_speed(
     penalty = regularization * max(step_scale, np.sqrt(noise * signal_scale)) / reference_speed
     smooth_count = count if periodic else count - 1
     ramp = np.arange(count) / count
+    max_evaluations = 100
+    evaluations = 0
+    started = time.perf_counter()
 
     def integrate(values):
         return integrated_directionality(values, periodic=periodic, centered=centered)
@@ -92,8 +99,18 @@ def fit_spatial_directionality_speed(
         return result
 
     def residual(speed):
+        nonlocal evaluations
+        check_cancelled()
+        timing_residual = integrate(forcing / edges(speed)) - observed
+        evaluations += 1
+        elapsed = time.perf_counter() - started
+        _progress_update(
+            evaluations, max_evaluations,
+            elapsed * max(0, max_evaluations - evaluations) / evaluations,
+            label="Fitting fork speed", err=float(np.mean(timing_residual ** 2)),
+        )
         return (
-            np.concatenate((integrate(forcing / edges(speed)) - observed, penalty * smooth(speed)))
+            np.concatenate((timing_residual, penalty * smooth(speed)))
             / signal_scale
         )
 
@@ -126,7 +143,7 @@ def fit_spatial_directionality_speed(
         bounds=bounds,
         method="trf",
         tr_solver="lsmr",
-        max_nfev=100,
+        max_nfev=max_evaluations,
         ftol=1e-6,
         xtol=1e-6,
         gtol=1e-6,
@@ -134,4 +151,9 @@ def fit_spatial_directionality_speed(
     )
     if not solution.success or np.any(~np.isfinite(solution.x)):
         raise RuntimeError("Fork-speed reconstruction did not converge to a finite profile.")
+    final_residual = integrate(forcing / edges(solution.x)) - observed
+    _progress_update(
+        evaluations, evaluations, 0., label="Fitting fork speed",
+        err=float(np.mean(final_residual ** 2)),
+    )
     return np.asarray(solution.x, dtype=float)

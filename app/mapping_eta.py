@@ -102,7 +102,7 @@ class MappingEta:
                     remaining = work_elapsed * (1 - self._fraction) / self._fraction
             # A stage which overran its estimate must not appear complete.
             if remaining is not None and remaining > 0:
-                return f"ETA ≈ {_duration(remaining)} (current stage) · {elapsed}"
+                return f"ETA ≈ {_duration(remaining)} · {elapsed}"
             if self._case_seconds and self._case_started is not None:
                 average = sum(self._case_seconds) / len(self._case_seconds)
                 current_elapsed = now - self._case_started

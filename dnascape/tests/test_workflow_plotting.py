@@ -12,12 +12,14 @@ from html.parser import HTMLParser
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
+from xml.etree import ElementTree
 
 import numpy as np
 import pytest
 
 from dnascape.workflows.mapping import MappingResult
 from dnascape.workflows.plotting import (
+    combined_mapping_plot_options,
     mapping_plot_options,
     prepare_echarts_runtime,
     write_plot_html,
@@ -304,3 +306,168 @@ console.log(JSON.stringify({version: context.echarts.version, valid: svg.include
     observed = json.loads(completed.stdout)
     assert observed["version"]
     assert observed["valid"] is True
+
+
+@pytest.mark.parametrize("side", ("left", "right"))
+@pytest.mark.parametrize("kind", ("single", "combined", "histogram"))
+def test_rendered_bottom_legends_stay_inside_axes_after_resize(
+    tmp_path: Path, side: str, kind: str,
+) -> None:
+    node = shutil.which("node")
+    if node is None:
+        pytest.skip("Node is needed to exercise the app's ECharts renderer.")
+    import nicegui
+
+    settings = {
+        **_settings(), "legend_position": f"Bottom {side}",
+        "plot_type": "Histogram" if kind == "histogram" else "Line",
+        "show_histogram_statistics": False,
+    }
+    result = _result()
+    if kind == "single":
+        options = mapping_plot_options(result, **settings)
+    else:
+        named = tuple(
+            SimpleNamespace(key=f"case-{index}", name=f"Dataset {index}", result=result)
+            for index in (1, 2)
+        )
+        options = combined_mapping_plot_options(named, **settings)
+    entry = Path(nicegui.__file__).resolve().parent / "elements" / "echart" / "dist" / "index.js"
+    runtime = tmp_path / "echarts.js"
+    runtime.write_text(prepare_echarts_runtime(entry), encoding="utf-8")
+    specification = tmp_path / "specification.json"
+    specification.write_text(json.dumps(options), encoding="utf-8")
+    renderer = tmp_path / "legend.cjs"
+    renderer.write_text(
+        """const fs = require('node:fs');
+const vm = require('node:vm');
+const context = {setTimeout, clearTimeout};
+vm.runInNewContext(fs.readFileSync(process.argv[2], 'utf8'), context);
+function revive(value) {
+  if (Array.isArray(value)) return value.map(revive);
+  if (!value || typeof value !== 'object') return value;
+  return Object.fromEntries(Object.entries(value).map(([key, item]) =>
+    key.startsWith(':') ? [key.slice(1), vm.runInNewContext('(' + item + ')', context)] : [key, revive(item)]));
+}
+const chart = context.echarts.init(null, null, {renderer: 'svg', ssr: true, width: 800, height: 360});
+chart.setOption(revive(JSON.parse(fs.readFileSync(process.argv[3], 'utf8'))));
+const layouts = [];
+for (const [width, height] of [[800, 360], [360, 240], [1200, 540]]) {
+  chart.resize({width, height});
+  chart.renderToSVGString();
+  const model = chart.getModel();
+  const grid = model.getComponent('grid').coordinateSystem.getRect();
+  const group = chart.getViewOfComponentModel(model.getComponent('legend')).group;
+  const rect = group.getBoundingRect();
+  const [x, y] = group.transformCoordToGlobal(rect.x, rect.y);
+  layouts.push({grid, legend: {x, y, width: rect.width, height: rect.height}});
+}
+console.log(JSON.stringify(layouts));
+chart.dispose();
+""",
+        encoding="utf-8",
+    )
+    completed = subprocess.run(
+        [node, str(renderer), str(runtime), str(specification)],
+        capture_output=True, text=True,
+    )
+    assert completed.returncode == 0, completed.stderr[-2500:]
+    for layout in json.loads(completed.stdout):
+        grid, legend = layout["grid"], layout["legend"]
+        assert legend["y"] >= grid["y"]
+        assert legend["y"] + legend["height"] < grid["y"] + grid["height"]
+        assert legend["x"] >= grid["x"]
+        assert legend["x"] + legend["width"] <= grid["x"] + grid["width"]
+        grid_center = grid["x"] + grid["width"] / 2
+        legend_center = legend["x"] + legend["width"] / 2
+        assert (legend_center < grid_center) if side == "left" else (legend_center > grid_center)
+
+
+@pytest.mark.parametrize("show_grid", (False, True))
+def test_heatmap_renderer_keeps_grid_above_raster_and_exports_vector_axes(
+    tmp_path: Path, show_grid: bool,
+) -> None:
+    node = shutil.which("node")
+    if node is None:
+        pytest.skip("Node is needed to exercise the app's ECharts renderer.")
+    import nicegui
+    import base64
+    from dnascape.workflows.exports import build_chart_capture_export
+
+    result = replace(
+        _result(), output_form="xt", output_dependence="spacetime",
+        outputs={"replication_timing": np.asarray([[2.0, 3.0], [4.0, 5.0], [3.0, 4.0]])},
+        output_forms={"replication_timing": "xt"}, time_axis=np.asarray([0.0, 5.0]),
+    )
+    options = mapping_plot_options(result, **{
+        **_settings(), "plot_type": "Heatmap", "y_limits": None,
+        "show_grid": show_grid, "show_colorbar": False,
+    })
+    entry = Path(nicegui.__file__).resolve().parent / "elements" / "echart" / "dist" / "index.js"
+    runtime = tmp_path / "echarts.js"
+    runtime.write_text(prepare_echarts_runtime(entry), encoding="utf-8")
+    specification = tmp_path / "specification.json"
+    specification.write_text(json.dumps(options), encoding="utf-8")
+    renderer = tmp_path / "heatmap.js"
+    renderer.write_text(
+        """const fs = require('node:fs');
+const vm = require('node:vm');
+const context = {setTimeout, clearTimeout};
+vm.runInNewContext(fs.readFileSync(process.argv[2], 'utf8'), context);
+function revive(value) {
+  if (Array.isArray(value)) return value.map(revive);
+  if (!value || typeof value !== 'object') return value;
+  return Object.fromEntries(Object.entries(value).map(([key, item]) =>
+    key.startsWith(':') ? [key.slice(1), vm.runInNewContext('(' + item + ')', context)] : [key, revive(item)]));
+}
+const chart = context.echarts.init(null, null, {renderer: 'svg', ssr: true, width: 800, height: 360});
+chart.setOption(revive(JSON.parse(fs.readFileSync(process.argv[3], 'utf8'))));
+fs.writeFileSync(process.argv[4], chart.renderToSVGString());
+chart.dispose();
+""",
+        encoding="utf-8",
+    )
+    svg_path = tmp_path / "heatmap.svg"
+    completed = subprocess.run(
+        [node, str(renderer), str(runtime), str(specification), str(svg_path)],
+        capture_output=True, text=True,
+    )
+    assert completed.returncode == 0, completed.stderr[-2500:]
+    svg = svg_path.read_bytes()
+    elements = list(ElementTree.fromstring(svg).iter())
+    images = [element for element in elements if element.tag.endswith("}image")]
+    assert len(images) == 1
+    assert any(value.startswith("data:image/png;base64,") for value in images[0].attrib.values())
+    assert any(element.tag.endswith("}text") and element.text == "Position (kb)" for element in elements)
+    grid_lines = [element for element in elements if element.attrib.get("stroke") == "#e8e3de"]
+    if show_grid:
+        assert grid_lines
+        assert all(elements.index(line) > elements.index(images[0]) for line in grid_lines)
+    else:
+        assert not grid_lines
+    data_uri = "data:image/svg+xml;base64," + base64.b64encode(svg).decode("ascii")
+    exported = build_chart_capture_export(data_uri, "pdf")
+    assert exported.data.startswith(b"%PDF")
+
+
+def test_large_temporal_mapping_heatmap_is_bounded_before_and_during_sampling() -> None:
+    import tracemalloc
+
+    result = replace(
+        _result(), output_form="t", output_dependence="time",
+        outputs={"replication_timing": np.linspace(1.0, 10.0, 4000)},
+        output_forms={"replication_timing": "t"},
+        x_axis=np.arange(5000.0), time_axis=np.arange(4000.0), assumptions={},
+    )
+    tracemalloc.start()
+    try:
+        options = mapping_plot_options(result, **{
+            **_settings(), "plot_type": "Heatmap", "y_limits": None,
+            "log_z": True,
+        })
+        _, peak = tracemalloc.get_traced_memory()
+    finally:
+        tracemalloc.stop()
+    assert peak < 40_000_000  # Broadcasting would otherwise allocate 160 MB.
+    assert options["series"][0]["data"] == [[0.0, 0.0, 4999.0, 3999.0]]
+    assert len(options["series"]) == 1  # Temporal fields do not need a hover grid.

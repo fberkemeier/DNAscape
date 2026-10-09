@@ -570,7 +570,7 @@ def test_dependence_shape_region_and_bundle_semantics_are_not_generalized() -> N
         routes = tuple(route for route in mapping_routes("firing_rate", dependence)
                        if "replication_timing" in route.source_keys)
         assert routes
-        assert all(route.target_shapes == ("free", "weibull") for route in routes)
+        assert all(route.target_shapes == ("weibull",) for route in routes)
         assert all(route.default_target_shape == "weibull" for route in routes)
     assert all(route.target_shapes == ("best",) for route in mapping_routes("fork_speed"))
 
@@ -721,6 +721,10 @@ def test_setting_defaults_follow_exact_delegated_optimizer_and_preserve_inherita
     assert spatial.setting("fit_step").default == .4
     assert spatial.setting("smoothw").default == 100
     assert spatial.setting("neighbourhood_range").default == 2000
+    edge_context = spatial.setting("refine_edge_kb")
+    assert edge_context.default == mapping_route("timing_and_speed_to_firing_rate").setting("refine_edge_kb").default == 1000
+    assert edge_context.label == "Maximum edge context"
+    assert edge_context.unit == "kb"
     assert spatial.setting("perQ").default is False
     assert not {"regularization", "tolerance", "spatial_knots", "time_grid", "resolution_time"} & {
         setting.key for setting in spatial.active_settings()
@@ -773,9 +777,9 @@ def test_active_settings_follow_shape_and_implemented_scientific_branch() -> Non
     assert next(
         item for item in firing.active_settings("free") if item.key == "spacetime_order"
     ).allowed_values == ("space_then_time", "time_then_space")
-    assert firing.shapes_for({"fork_speed": "x"}) == ("free", "weibull")
-    assert firing.shapes_for({"fork_speed": "t"}) == ("free", "weibull")
-    assert firing.shapes_for({"fork_speed": "xt"}) == ("free", "weibull")
+    assert firing.shapes_for({"fork_speed": "x"}) == ("weibull",)
+    assert firing.shapes_for({"fork_speed": "t"}) == ("weibull",)
+    assert firing.shapes_for({"fork_speed": "xt"}) == ("weibull",)
 
     temporal = mapping_route("timing_and_firing_to_time_fork_speed")
     active = {item.key for item in temporal.active_settings()}

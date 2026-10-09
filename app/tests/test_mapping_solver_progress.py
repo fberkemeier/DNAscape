@@ -79,7 +79,43 @@ def test_real_speed_route_reports_before_its_first_forward_evaluation(
 
     assert calls == 1
     assert "Fitting fork speed... evaluation 1/1 (50%)" in messages
+    assert any("MSE" in message for message in messages)
     assert [value for value, _message in progress] == sorted(value for value, _message in progress)
+    assert capsys.readouterr().out == ""
+
+
+def test_directionality_speed_reports_mse_before_the_optimizer_returns(monkeypatch, capsys):
+    from dnascape import directionality_inverse
+    from dnascape.mapping import map_timing_directionality
+
+    n = 24
+    timing = 7. + np.cumsum(np.linspace(.03, .09, n))
+    speed = 1.1 + .25 * np.sin(np.linspace(0., np.pi, n)) ** 2
+    directionality = map_timing_directionality(timing, speed, resolution=2., T0=6.)
+    original = directionality_inverse.least_squares
+    returned = False
+    reported = []
+
+    def record_return(*args, **kwargs):
+        nonlocal returned
+        result = original(*args, **kwargs)
+        returned = True
+        return result
+
+    def report(value, message):
+        if "MSE" in message:
+            reported.append((returned, value, message))
+
+    monkeypatch.setattr(directionality_inverse, "least_squares", record_return)
+    result = run_mapping(MappingRequest(
+        route=mapping_route("timing_and_directionality_to_spatial_fork_speed"),
+        inputs={"replication_timing": timing, "fork_directionality": directionality},
+        input_forms={"replication_timing": "x", "fork_directionality": "x"},
+        settings={"T0": 6.}, resolution_x=2.,
+    ), report=report)
+    assert any(not already_returned for already_returned, _, _ in reported)
+    assert reported[-1][0] is True
+    assert result.fit_mse == pytest.approx(result.outputs["fit_history"][-1])
     assert capsys.readouterr().out == ""
 
 

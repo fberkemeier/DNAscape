@@ -46,16 +46,18 @@ def test_restored_speed_routes_keep_selected_region_time_axis_and_firing_forms(
         method = ("timing_and_firing_to_spacetime_fork_speed" if firing_form == "xt"
                   else "timing_and_general_firing_to_spacetime_fork_speed")
     options = {"time_grid": grid, "T0": anchor, "temporal_maxiter": 2,
-               "refine_edge_kb": 0., "speed_bounds": (.2, 6.), "perQ": periodic}
+               "refine_edge_kb": 0., "speed_bounds": (.2, 6.), "perQ": periodic,
+               "refine_verbose": False}
     if dependence == "spacetime":
         options.update(space_maxiter=2, smoothw=None)
+    messages = []
     result = run_mapping(MappingRequest(
         route=mapping_route(method),
         inputs={"replication_timing": full_timing, "firing_rate": firing},
         input_forms={"replication_timing": "x", "firing_rate": firing_form},
         settings=options, resolution_x=dx, resolution_t=5.,
         region_start_kb=96., region_end_kb=160.,
-    ))
+    ), report=lambda _, message: messages.append(message))
     speed = result.outputs["fork_speed"]
     assert speed.shape == ((grid.size,) if dependence == "time" else (n, grid.size))
     assert np.all(np.isfinite(speed))
@@ -67,3 +69,4 @@ def test_restored_speed_routes_keep_selected_region_time_axis_and_firing_forms(
         result.outputs["residual"], result.outputs["replication_timing_fit"] - observed,
     )
     assert np.isfinite(result.fit_mse)
+    assert any("MSE" in message for message in messages)

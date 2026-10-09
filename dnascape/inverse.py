@@ -14,7 +14,7 @@ import numpy as np
 from scipy.optimize import OptimizeResult, least_squares
 
 from .mapping import _interp_time_rows
-from .utils import _report_progress, check_cancelled, etaferr
+from .utils import _fit_progress_enabled, _report_progress, check_cancelled, etaferr
 
 _FORMS = {"scalar": "constant", "x": "space", "t": "time", "xt": "spacetime"}
 
@@ -471,7 +471,7 @@ def fit_timing_kinetics(
         residual = prediction[valid] - observed[valid]
         mse = float(np.mean(residual**2))
         history.append(mse)
-        if verbose:
+        if _fit_progress_enabled(verbose):
             etaferr(len(history), int(maxiter), started, mse, label="rmap constrained kinetics")
         full_residual = np.concatenate(
             [residual / scale, penalty @ parameters, anchor_row @ parameters - anchor_target]

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import math
+import re
 from collections.abc import Callable, Mapping, Sequence
 from concurrent.futures import CancelledError
 from dataclasses import dataclass, field, replace
@@ -72,10 +73,13 @@ from app.mapping_uploads import (
     materialize_many,
     materialize_upload,
 )
+from app.page_activity import current_page_activity
 from app.pages.common import (
     DATA_ICON,
     RawOutputControls,
     action_dock,
+    workflow_action_button,
+    workflow_action_icon,
     data_upload,
     expansion,
     is_data_upload,
@@ -89,6 +93,7 @@ from app.pages.common import (
     stat_strip,
 )
 from app.preview_plotting import (
+    axis_limits_from_controls,
     HistogramBinSynchronizer,
     bind_preview_settings_updates,
     compact_color_input,
@@ -199,8 +204,8 @@ _FIT_DIAGNOSTIC_KEY = "fit_diagnostic"
 _MSE_DIAGNOSTIC_KEY = "mse_diagnostic"
 _PLOT_TYPES = ["Line", "Heatmap", "Histogram", "Boxplot"]
 _BATCH_COLOURS = (
-    "#2c7f77",
     "#b03412",
+    "#2c7f77",
     "#6f5a9c",
     "#c47a1b",
     "#3f6fa3",
@@ -222,11 +227,17 @@ class _ProgressState:
         self._lock = Lock()
         self._value = 0.0
         self._message = "Waiting to map"
+        self._mse = ""
 
     def report(self, value: float, message: str) -> None:
         with self._lock:
             self._value = max(0.0, min(1.0, float(value)))
             self._message = str(message)
+            metric = re.search(r"\bMSE\s+([+\-]?[\d.]+(?:[eE][+\-]?\d+)?)", self._message)
+            if metric is not None:
+                self._mse = metric.group(0)
+            elif self._mse:
+                self._message += f" - {self._mse}"
 
     def snapshot(self) -> tuple[float, str]:
         with self._lock:
@@ -601,9 +612,13 @@ def _render_mapping_result(
     histogram_x_limits: tuple[float, float] | None = None,
     histogram_touching: bool = True,
     histogram_boundary: str = "left",
+    x_limits: tuple[float, float] | None = None,
+    z_limits: tuple[float, float] | None = None,
 ) -> Any:
     options = _mapping_plot_options(
         result,
+        x_limits=x_limits,
+        z_limits=z_limits,
         output_key=output_key,
         plot_type=plot_type,
         normalization=normalization,
@@ -2655,8 +2670,8 @@ def _validate_mapping_case_axes(
         elif prepared.form == "xt" and array.ndim == 2:
             temporal[prepared.label] = int(array.shape[1])
     # Uploaded chromosome profiles and shorter local outputs can have different
-    # spatial lengths. The service applies Start/End and caps every input to
-    # their shortest usable length before validating the resulting grid.
+    # spatial lengths. The service applies chromosome Start/End and requires
+    # every input to cover the selected width before validating the grid.
     if len(set(temporal.values())) > 1:
         detail = ", ".join(f"{label}: {size:,}" for label, size in temporal.items())
         raise ValueError(f"Dataset {dataset_name!r} has inconsistent time points ({detail}).")
@@ -2679,6 +2694,7 @@ def render(_navigate: Callable[[str], None]) -> None:
     """Render mapping routes, inputs, configuration, and output placeholders."""
 
     running = False
+    page_activity = current_page_activity()
     active_cancel: Event | None = None
     restored_entry = consume_cached_workflow("mapping")
     restored_result = restored_entry.payload if restored_entry is not None else None
@@ -3204,6 +3220,7 @@ def render(_navigate: Callable[[str], None]) -> None:
                             ui.checkbox("Whole region", value=False)
                             .classes("dn-mapping-whole-region")
                             .mark("mapping-whole-region")
+                            .tooltip("Use the first points of every profile, from 0 to the shortest profile's length.")
                         )
                     with (
                         ui.element("div")
@@ -3215,6 +3232,7 @@ def render(_navigate: Callable[[str], None]) -> None:
                             .props("dense")
                             .classes("dn-field")
                             .mark("mapping-region-start")
+                            .tooltip("Chromosome position in the longest profile; shorter profiles begin at their first point.")
                         )
                         region_end = (
                             ui.number(
@@ -3263,6 +3281,8 @@ def render(_navigate: Callable[[str], None]) -> None:
                     render_region_settings()
 
                 with expansion("Mapping settings", icon="tune"):
+                    show_plot = ui.checkbox("Show Plot", value=True).mark("mapping-show-plot")
+                    show_plot.on_value_change(lambda: render_latest_result())
                     with ui.element("div").classes("dn-mapping-settings-grid"):
                         _region_missing = (
                             ui.select(
@@ -3316,7 +3336,7 @@ def render(_navigate: Callable[[str], None]) -> None:
 
                 with action_dock(code_menu=render_mapping_code_menu):
                     map_button = (
-                        ui.button("Map", icon="map")
+                        workflow_action_button("Map", symbol="mapping")
                         .props("no-caps")
                         .classes("dn-action-primary")
                         .mark("action-map")
@@ -3617,7 +3637,7 @@ def render(_navigate: Callable[[str], None]) -> None:
                                             control: Any = color_control,
                                         ) -> None:
                                             mapping_batch_colors[retained_key] = str(
-                                                control.value or "#2c7f77"
+                                                control.value or "#b03412"
                                             )
                                             render_latest_result()
 
@@ -3993,7 +4013,7 @@ def render(_navigate: Callable[[str], None]) -> None:
                         if latest_result is not None
                         else selected_route_state["route"].output_form
                     )
-                    if output_form in {"t", "xt"}:
+                    if output_form == "xt":
                         return "Heatmap"
                     requested_view = str(view.value or "Default")
                     if requested_view == "Histogram":
@@ -4039,7 +4059,7 @@ def render(_navigate: Callable[[str], None]) -> None:
                         plot_type=plot_type,
                         multiple_curves=multiple_curves,
                         allow_histogram=(
-                            output_form not in {"t", "xt"}
+                            output_form != "xt"
                             and actual_output_key != "fit_history"
                             and not comparison_curves
                         ),
@@ -4475,8 +4495,8 @@ def render(_navigate: Callable[[str], None]) -> None:
                         ).removesuffix(" (target)"),
                         x_label=str(preview_x_label.value or ""),
                         y_label=str(preview_y_label.value or ""),
-                        color=str(line_or_bar_color.value or "#2c7f77"),
-                        secondary_color=str(second_curve_color.value or "#b03412"),
+                        color=str(line_or_bar_color.value or "#b03412"),
+                        secondary_color=str(second_curve_color.value or "#2c7f77"),
                         palette=str(heatmap_palette.value or "viridis"),
                         histogram_bins=int(_read_number(histogram_bins, "Histogram bins")),
                         line_width=float(_read_number(line_width, "Curve thickness")),
@@ -4502,6 +4522,8 @@ def render(_navigate: Callable[[str], None]) -> None:
                         histogram_boundary=str(histogram_boundary.value or "left"),
                         show_grid=bool(show_grid.value),
                         y_limits=current_y_limits(),
+                        x_limits=axis_limits_from_controls(plot_settings, "x"),
+                        z_limits=axis_limits_from_controls(plot_settings, "z"),
                     )
 
                 async def download_mapping_code(*, bundle: bool) -> None:
@@ -4546,6 +4568,7 @@ def render(_navigate: Callable[[str], None]) -> None:
                                 "per_dataset": preferences,
                             },
                             plotting={
+                                "show_plot": bool(show_plot.value),
                                 "output": output_key,
                                 "layout": str(preview_layout.value or "Combined"),
                                 "view": str(view.value or "Default"),
@@ -4572,7 +4595,15 @@ def render(_navigate: Callable[[str], None]) -> None:
 
                 def render_latest_result() -> None:
                     nonlocal result_chart
+                    result_slot.visible = bool(show_plot.value)
+                    if not show_plot.value:
+                        result_chart = None
+                        result_slot.clear()
+                        return
                     if latest_result is None:
+                        if not result_slot.default_slot.children:
+                            with result_slot:
+                                preview_plot("No result", kind="mapping")
                         return
                     if not plotting_settings_ready(
                         plot_settings,
@@ -4603,6 +4634,7 @@ def render(_navigate: Callable[[str], None]) -> None:
                                     **plot_kwargs,
                                     on_download=download_plot,
                                 )
+                            result_chart.attach_settings(plot_settings)
                         except (RuntimeError, TypeError, ValueError) as exc:
                             ui.notify(str(exc), type="negative")
                             preview_plot("Output unavailable", kind="mapping")
@@ -4617,6 +4649,7 @@ def render(_navigate: Callable[[str], None]) -> None:
                         eta_timer
                     if running:
                         if active_cancel is not None and not active_cancel.is_set():
+                            page_activity.stop("mapping")
                             active_cancel.set()
                             status.text = "Stopping mapping..."
                             map_button.disable()
@@ -4630,6 +4663,8 @@ def render(_navigate: Callable[[str], None]) -> None:
 
                     running = True
                     active_cancel = cancel_event
+                    page_run = page_activity.begin("mapping", cancel=cancel_event.set)
+                    completed_successfully = False
                     map_button.set_text("Stop")
                     map_button.set_icon("stop")
                     frozen_controls = freeze_scientific_controls()
@@ -4936,6 +4971,7 @@ def render(_navigate: Callable[[str], None]) -> None:
                                 navigate_to="mapping",
                             )
                         eta.finish("complete")
+                        completed_successfully = True
                     except (CancelledError, asyncio.CancelledError):
                         cancel_event.set()
                         eta.finish("stopped")
@@ -4979,8 +5015,9 @@ def render(_navigate: Callable[[str], None]) -> None:
                         active_cancel = None
                         restore_scientific_controls(frozen_controls)
                         map_button.set_text("Map")
-                        map_button.set_icon("map")
+                        map_button.set_icon(workflow_action_icon("mapping"))
                         map_button.enable()
+                        page_activity.finish("mapping", page_run, success=completed_successfully)
 
                 def apply_preview_output() -> None:
                     """Keep preview presentation and raw export tied to the actual output."""
@@ -5055,7 +5092,7 @@ def render(_navigate: Callable[[str], None]) -> None:
                     if actual_output_key == "fit_history":
                         preview_x_label.value = "Iteration"
                         preview_y_label.value = "MSE"
-                    elif comparison_source_key is None and output_form in {"t", "xt"}:
+                    elif comparison_source_key is None and output_form == "xt":
                         preview_x_label.value = "Chromosome position (kb)"
                         preview_y_label.value = "Time (min)"
                     elif comparison_source_key is None and (

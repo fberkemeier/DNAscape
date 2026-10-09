@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from app.pages.common import workflow_action_icon
+
 import asyncio
 import gzip
 import io
@@ -172,10 +174,11 @@ def test_sns_firing_preset_and_switch_back_to_repliseq_bigwig(
     requests: list[DataConversionRequest] = []
 
     def fake_fetch(url: str) -> RemoteSource:
-        bigwig = url.endswith(".bigWig")
+        bigwig = url.endswith((".bigWig", ".bw"))
+        okseq = "K562_merged_hmm_RFD" in url
         return RemoteSource(
             requested_url=url, final_url=url,
-            filename="RepliSeq.bigWig" if bigwig else "K562_Peaks_FDR15.bed.gz",
+            filename="K562_RFD.bw" if okseq else "RepliSeq.bigWig" if bigwig else "K562_Peaks_FDR15.bed.gz",
             content=b"\x26\xfc\x8f\x88fake" if bigwig else gzip.compress(sns_peak_payload),
             content_type="application/octet-stream", etag=None, last_modified=None,
             accept_ranges=False, redirects=(),
@@ -260,6 +263,27 @@ def test_sns_firing_preset_and_switch_back_to_repliseq_bigwig(
             assert requests[1].inspection.source_format == "bigwig"
             assert requests[1].aggregation == "mean"
             assert requests[1].biological_role == "replication_timing"
+
+            await user.should_see(marker="data-manager-result-2", retries=80)
+            user.find(marker="use-okseq-data-example").click()
+            await asyncio.sleep(0.1)
+            assert control("data-manager-source-url").value == (
+                "https://raw.githubusercontent.com/CL-CHEN-Lab/OK-Seq/master/"
+                "published_results/K562/K562_merged_hmm_RFD_cutoff10_bs1kb_sorted.bw"
+            )
+            user.find(marker="action-inspect-data-link-1").click()
+            await user.should_see("K562_RFD.bw is ready.", retries=80)
+            assert control("data-manager-feature").value == "fork_directionality"
+            assert control("data-manager-aggregation").value == "mean"
+            assert control("data-manager-track-missing").value == "nan"
+            user.find(marker="action-convert").click()
+            await _wait_for(lambda: len(requests) == 3)
+            assert requests[2].inspection.source_format == "bigwig"
+            assert requests[2].biological_role == "fork_directionality"
+            assert requests[2].aggregation == "mean"
+            assert requests[2].track_missing == "nan"
+            assert requests[2].threshold_min == -1.0
+            assert requests[2].threshold_max == 1.0
 
     asyncio.run(scenario())
 
@@ -684,6 +708,7 @@ def test_track_conversion_can_be_retried_after_increasing_settings_memory_limit(
                 Number, next(iter(user.find(marker="settings-conversion-memory-limit").elements))
             )
             memory_limit.set_value(512)
+            user.find(marker="settings-apply").click()
             await asyncio.sleep(0)
             assert settings.conversion_memory_limit_mb == 512
             assert scope.value == "all"
@@ -1116,9 +1141,13 @@ def test_data_manager_examples_follow_the_global_visibility_setting() -> None:
             )
             assert show_examples.value is True
             show_examples.set_value(False)
+            user.find(marker="settings-apply").click()
             await user.should_not_see(marker="data-manager-link-examples")
             assert settings.show_examples is False
+            user.find(marker="app-menu-toggle").click()
+            user.find(marker="menu-settings").click()
             show_examples.set_value(True)
+            user.find(marker="settings-apply").click()
             await user.should_see(marker="data-manager-link-examples")
             assert settings.show_examples is True
 
@@ -1417,7 +1446,7 @@ def test_data_manager_stop_cancels_batch_without_publishing_staged_files(
             user.find(marker="action-convert").click()
             await user.should_see("Conversion stopped", retries=40)
             assert button.text == "Convert"
-            assert button.icon == "sync_alt"
+            assert button.icon == workflow_action_icon("data")
             assert button.enabled
             assert progress.visible is False
             await user.should_see(marker="data-manager-empty-result")

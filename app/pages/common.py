@@ -9,11 +9,12 @@ from contextlib import contextmanager
 from dataclasses import dataclass
 from functools import partial
 from typing import Any
+from urllib.parse import quote
 
 from nicegui import background_tasks, events, helpers, ui
 
 from app.export_settings import DATA_FILE_FORMAT_OPTIONS, get_export_settings
-from app.icons import DATA_ICON, DATA_ICON_SVG, PLOT_ICON_SVG
+from app.icons import DATA_ICON, DATA_ICON_SVG, OUTLINE_ICON_SVGS, PLOT_ICON_SVG
 from app.mapping_uploads import MAX_DECOMPRESSED_BYTES, MAX_UPLOAD_BYTES
 
 # Keep every data-export selector in the same user-facing order.
@@ -193,6 +194,24 @@ def inert_button(
     return button
 
 
+def workflow_action_icon(symbol: str) -> str:
+    """Use the navigation's exact SVG geometry in a native action button."""
+    svg = OUTLINE_ICON_SVGS[symbol].replace(
+        "<svg ",
+        '<svg xmlns="http://www.w3.org/2000/svg" style="color:white;fill:none;stroke:currentColor;'
+        'stroke-width:1.5;stroke-linecap:round;stroke-linejoin:round" ',
+        1,
+    )
+    return "img:data:image/svg+xml," + quote(svg)
+
+
+def workflow_action_button(label: str, *, symbol: str, on_click: Callable[..., Any] | None = None) -> Any:
+    return (
+        ui.button(label, icon=workflow_action_icon(symbol), on_click=on_click)
+        .props("no-caps").classes("dn-action-primary").mark(f"action-{label.casefold()}")
+    )
+
+
 def plot_action_button() -> Any:
     """Create the Plot action with the shared axis-and-line symbol."""
 
@@ -248,8 +267,8 @@ def action_dock(*, code_menu: Callable[[], None] | None = None) -> Iterator[None
     with ui.element("div").classes("dn-action-dock").mark("scientific-action-dock"):
         yield
         code_button = (
-            ui.button("Code", color="#2596be")
-            .props('no-caps icon-right="arrow_drop_down"')
+            ui.button("Code", icon="download", color="#2596be")
+            .props("no-caps")
             .classes("dn-action-primary dn-action-code")
             .mark("action-code")
             .bind_visibility_from(get_export_settings(), "dev_mode")
@@ -333,11 +352,7 @@ def data_upload(
         if ".csv" in accept_tokens and "text/csv" not in accept_tokens:
             accept_tokens.append("text/csv")
         normalized_accept = ",".join(accept_tokens)
-        upload_prompt = (
-            "Choose files or drag them here"
-            if multiple
-            else "Choose a file or drag it here"
-        )
+        upload_prompt = "Choose file or drag it here"
         uploader = (
             ui.upload(
                 label=upload_prompt,

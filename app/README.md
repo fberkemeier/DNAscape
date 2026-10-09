@@ -19,8 +19,22 @@ BigWig and bedGraph preparation, from 64 MB (default) to 4096 MB. The K562 ENCOD
 example at 1 kb bins for all chromosomes needs about 322 MB; choosing 512 MB
 allows that conversion. Related track array and download limits scale with the
 budget. This setting does not reserve RAM, cap actual RAM use, or change upload
-limits. Settings changes take effect immediately. Application restart and
+limits. Settings uses grouped switches and draft preferences; Apply saves changes.
+Restore defaults fills the draft without clearing any data or results. Application restart and
 Reset everything restore the 64 MB default.
+
+You can switch pages while converting, mapping, simulating, or preparing a plot.
+The sidebar shows a spinner beside that page while the job runs and a check when
+it completes while another page is open. Selecting the page clears its check;
+Stop immediately clears the indicator. Active jobs and unread results remain
+available even when preserving page state is switched off.
+
+Time profiles use the same curve renderer across all four workflow pages;
+space-time matrices use heatmaps. Axes stay at the plot edges when inverted.
+Automatic X and heatmap Z bounds are shown in their editable fields, and Reset
+restores the data-derived range. Plot titles are generated from the result.
+Time and space-time firing-rate fits use Weibull without a shape selector.
+
 Data Manager fills empty genomic bins with zero by default, including for the
 ENCODE example. Zero and custom-value fills are applied after thresholding,
 smoothing, and value scaling, so the requested fill is unchanged in the output.
@@ -43,6 +57,11 @@ BigWig signals; peak-call gaps cannot be interpolated. Firing rate excludes cent
 and Z-score scaling. SNS enrichment is relative origin activity and needs a
 chosen calibration to express a firing rate. Repli-seq BigWig retains mean
 aggregation and its existing continuous-signal operations and preview.
+The OKseqHMM K562 OK-seq example links to the authors' hg19 fork-directionality
+BigWig at 1 kb resolution, with read-count cutoff 10 and no 15 kb smoothing.
+It selects Fork directionality, mean aggregation and Keep empty bins, preserving
+uncovered bins as missing rather than treating them as balanced forks. The
+source is available in the [OKseqHMM published K562 results](https://github.com/CL-CHEN-Lab/OK-Seq/tree/master/published_results/K562).
 Mapping raw downloads start with TSV (the first format option) and compression
 disabled, for both individual and batch outputs.
 Simulation accepts up to 50,000 replicates. One-dimensional time courses and
@@ -53,12 +72,17 @@ outputs. A memory-bounded
 subset of at most 50 individual timing profiles is retained for optional
 overlays.
 
-Mapping accepts spatial inputs of different lengths. The selected Start/End
-window is capped to the shortest available spatial profile, keeping the declared
-bin width. A longer chromosome upload supplies genomic coordinates; a shorter
-plain profile is treated as local data beginning at Start. Prepared results with
-position axes keep their explicit coordinates. No stretching or interpolation is
-implied by this alignment. Temporal inputs still need a consistent time grid.
+Mapping aligns spatial inputs of different lengths automatically. Start and End
+refer to the longest profile's chromosome coordinates; shorter profiles begin
+at their first point and retain their bin width. At 1 kb/bin, 30,000–35,000 kb
+uses that slice of the longest profile and the first 5,000 points of a shorter
+profile, plotted at the selected chromosome positions. Mapping reports an error
+if the requested width exceeds the shortest profile's length, or End lies beyond
+the longest profile; it never silently shortens the selection. **Whole region**
+uses the first points of every profile, from 0 to the shortest profile's length.
+Shorter prepared profiles follow the same rule, with their position axes aligned
+to the selected Start. Downloaded code uses the same validation and alignment.
+Temporal inputs still need a consistent time grid.
 For spatial fork speed from replication timing and constant firing, Start/End
 crop the timing array before the fit; the constant applies throughout that region.
 This route uses the earlier deterministic local speed iteration: increase speed
@@ -67,6 +91,21 @@ the best evaluated profile. Its defaults are 10 updates, step 0.4, smoothing
 over 100 bins, a 2000 kb neighbourhood, and initial speed 1.4 kb/min. Progress
 and cancellation remain available; the route requires no compiled kernel or
 time grid.
+Spatial fork-speed fitting also offers **Maximum edge context (kb)**, default
+1000 kb, matching spatial firing-rate fitting. On linear subregions it reflects
+firing and speed beyond the endpoints, caps the context adaptively, and tapers
+only the last few updates to reduce artificial endpoint spikes. Every position
+remains refinable; timing MSE scores the core outside the inferred context.
+Set the control to 0 for true chromosome ends. Periodic fits are unaffected,
+and downloaded Mapping code retains the chosen value.
+Spatial fork-speed fitting smooths its log-speed corrections and checks timing
+MSE before accepting each update. If smoothing prevents improvement, it tries a
+local correction with a reduced step as needed. This keeps profile-based firing
+fits from repeatedly flattening the accumulated speed profile or increasing
+MSE. All fitting routes retain their latest live MSE through intervening progress
+messages, using the same scientific-number display as firing-rate mapping.
+Live MSE also covers directionality-based fits and refinement stages with
+console verbosity disabled.
 Time-dependent speed uses the earlier compact temporal fit; space-time speed
 uses the earlier alternating spatial and temporal fit, with controls for its
 phase steps, iteration limits, smoothing, and update order. Periodic geometry
@@ -75,8 +114,17 @@ geometry only. All Mapping runs show a persistent ETA and elapsed time:
 "estimating" during preparation or quiet work, followed by an estimate when
 solver progress or completed batch cases provide enough information.
 Heatmap automatic axes end at the raster edges, without extra plot padding.
-Requested heatmap bounds beyond the supplied data are limited to its extent;
-inner crops are retained, and genuinely missing cells stay transparent.
+X and Y limits are editable for every plot, with Z (colour) limits for heatmaps.
+Reset restores automatic ranges, including after an incomplete edit. Custom
+heatmap axes crop or extend the visible domain without stretching the data;
+genuinely missing cells stay transparent. Grid lines are drawn over the image.
+Heatmaps automatically average large inputs into at most 300 time rows by 720
+position columns, using bounded working tiles; original data and raw exports
+keep their full resolution. SVG and PDF exports embed the heatmap as a PNG
+while retaining vector axes, grid lines, colour scales, and labels.
+Mapping options include **Show Plot**, enabled by default. Turning it off skips
+preview generation while retaining mapping results and raw downloads; turning
+it back on displays the completed result without rerunning the mapping.
 Same-quantity reductions identify their source as space-time data so they cannot
 be mistaken for a route that simply returns its target unchanged. Exact
 same-quantity, same-form routes are excluded from the Mapping catalogue.

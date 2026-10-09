@@ -99,7 +99,7 @@ def test_speed_route_settings_match_consumed_inverse_controls_and_dimensions():
         settings = set(spec.required_assumptions + spec.optional_assumptions)
         if spec.method == "timing_and_firing_to_spatial_fork_speed":
             assert spec.func is map_timing_and_firing_to_spatial_speed
-            assert {"fit_step", "smoothw", "neighbourhood_range", "T0"} <= settings
+            assert {"fit_step", "smoothw", "neighbourhood_range", "T0", "refine_edge_kb"} <= settings
             assert not {"time_grid", "resolution_time", "spatial_knots", "regularization", "tolerance"} & settings
             continue
         form = dict(spec.assumption_values)["target_form"][0]

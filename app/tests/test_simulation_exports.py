@@ -6,7 +6,9 @@ import base64
 import gzip
 import io
 import lzma
+import re
 import zipfile
+import zlib
 from dataclasses import replace
 from pathlib import Path
 from xml.etree import ElementTree
@@ -58,11 +60,14 @@ def _result() -> ConstantSimulationResult:
     )
 
 
-def _png_data_uri() -> tuple[str, bytes]:
+def _png_data_uri(*, transparent: bool = False) -> tuple[str, bytes]:
     from PIL import Image
 
     output = io.BytesIO()
-    Image.new("RGB", (3, 2), "white").save(output, format="PNG")
+    image = Image.new("RGBA" if transparent else "RGB", (3, 2), "white")
+    if transparent:
+        image.putpixel((0, 0), (0, 0, 0, 0))
+    image.save(output, format="PNG")
     payload = output.getvalue()
     return f"data:image/png;base64,{base64.b64encode(payload).decode('ascii')}", payload
 
@@ -169,15 +174,56 @@ def test_vector_exports_reject_canvas_png_captures(file_format: str) -> None:
 
 
 @pytest.mark.parametrize("file_format", ("svg", "pdf"))
-def test_vector_exports_reject_embedded_raster_images(file_format: str) -> None:
+def test_vector_exports_reject_invalid_embedded_png_images(file_format: str) -> None:
     raster_svg = (
         '<svg xmlns="http://www.w3.org/2000/svg" width="3" height="2">'
         '<image href="data:image/png;base64,AAAA" width="3" height="2"/>'
         "</svg>"
     ).encode("utf-8")
     data_uri = "data:image/svg+xml;base64," + base64.b64encode(raster_svg).decode("ascii")
-    with pytest.raises(ValueError, match="embedded raster"):
+    with pytest.raises(ValueError, match="invalid PNG image"):
         build_chart_capture_export(data_uri, file_format)
+
+
+@pytest.mark.parametrize("file_format", ("svg", "pdf"))
+@pytest.mark.parametrize("transparent", (False, True))
+def test_heatmap_exports_embed_only_the_raster_and_keep_vector_axes(file_format: str, transparent: bool) -> None:
+    image_uri, _ = _png_data_uri(transparent=transparent)
+    svg = (
+        '<svg xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" '
+        'width="320" height="180">'
+        f'<image xlink:href="{image_uri}" x="20" y="10" width="280" height="130"/>'
+        '<path d="M20 10 L20 140 L300 140" fill="none" stroke="#000000"/>'
+        '<text x="160" y="168" text-anchor="middle" font-size="12">Position (kb)</text>'
+        '<text x="8" y="140" font-size="10">0</text>'
+        '</svg>'
+    ).encode()
+    data_uri = "data:image/svg+xml;base64," + base64.b64encode(svg).decode("ascii")
+    artifact = build_chart_capture_export(data_uri, file_format)
+    if file_format == "svg":
+        assert artifact.data == svg
+        root = ElementTree.fromstring(artifact.data)
+        assert len(list(root.iter("{http://www.w3.org/2000/svg}image"))) == 1
+        assert len(list(root.iter("{http://www.w3.org/2000/svg}text"))) == 2
+        assert len(list(root.iter("{http://www.w3.org/2000/svg}path"))) == 1
+    else:
+        assert artifact.data.startswith(b"%PDF")
+        # An alpha channel is retained as a soft mask, not flattened into a
+        # background that would cover the grid or misrepresent missing data.
+        assert artifact.data.count(b"/Subtype /Image") == (2 if transparent else 1)
+        assert (b"/SMask" in artifact.data) == transparent
+        # ReportLab's content streams contain vector text/path operators, even
+        # though the coloured heatmap is embedded as a separate image object.
+        streams = []
+        for stream in re.findall(rb"stream\r?\n(.*?)endstream", artifact.data, re.DOTALL):
+            try:
+                streams.append(zlib.decompress(base64.a85decode(stream.strip(), adobe=True)))
+            except (ValueError, zlib.error):
+                continue
+        content = b"\n".join(streams)
+        assert b"Position \\(kb\\)" in content
+        assert b"(0) Tj" in content
+        assert b"20 140 l" in content
 
 
 def test_output_selection_infers_space_time_replicate_and_xt_axes() -> None:
@@ -763,9 +809,9 @@ def test_plot_export_preserves_preview_titles_labels_and_series_name() -> None:
 
 @pytest.mark.parametrize(
     ("requested", "displayed"),
-    ((None, (0.0, 5.0)), ((-10.0, 20.0), (0.0, 5.0)), ((1.0, 4.0), (1.0, 4.0))),
+    ((None, (0.0, 5.0)), ((-10.0, 20.0), (-10.0, 20.0)), ((1.0, 4.0), (1.0, 4.0)), ((6.0, 10.0), (6.0, 10.0))),
 )
-def test_xt_plot_export_keeps_raster_coordinates_and_clips_limits_to_available_data(
+def test_xt_plot_export_keeps_raster_coordinates_and_requested_limits(
     monkeypatch: pytest.MonkeyPatch,
     requested: tuple[float, float] | None,
     displayed: tuple[float, float],
@@ -796,9 +842,9 @@ def test_xt_plot_export_keeps_raster_coordinates_and_clips_limits_to_available_d
     assert extent[2:] == (0.0, 5.0)
 
 
-def test_xt_plot_export_rejects_limits_outside_available_data() -> None:
-    with pytest.raises(ValueError, match="do not overlap the available data range"):
-        build_plot_export(_result(), "replicated_fraction_xt", "svg", y_limits=(6.0, 10.0))
+def test_xt_plot_export_rejects_reversed_limits() -> None:
+    with pytest.raises(ValueError, match="greater than"):
+        build_plot_export(_result(), "replicated_fraction_xt", "svg", y_limits=(10.0, 6.0))
 
 
 def test_xt_plot_export_respects_preview_colorbar_visibility(

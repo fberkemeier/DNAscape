@@ -47,6 +47,7 @@ from dnascape.workflows.preview import (
     _histogram_edges as _histogram_edges,
     _histogram_data as _histogram_data,
     finite_values as finite_values,
+    has_finite_values as has_finite_values,
     _validate_log_axis as _validate_log_axis,
     nice_linear_limits as nice_linear_limits,
     _logarithmic_data_limits as _logarithmic_data_limits,
@@ -78,6 +79,15 @@ from dnascape.workflows.preview import (
     _heatmap_tooltip_data as _heatmap_tooltip_data,
     build_preview_plot_options as build_preview_plot_options,
 )
+
+
+@dataclass
+class _PlotTitle:
+    """Internal result metadata; titles are not editable plot settings."""
+    value: str
+
+    def update(self) -> None:
+        pass
 
 
 @dataclass(frozen=True)
@@ -125,6 +135,16 @@ class PreviewSettingsControls:
     y_minimum: Any
     y_maximum: Any
     reset_y_limits: Any
+    x_limit_editor: Any = None
+    x_minimum: Any = None
+    x_maximum: Any = None
+    reset_x_limits: Any = None
+    z_limit_editor: Any = None
+    z_minimum: Any = None
+    z_maximum: Any = None
+    reset_z_limits: Any = None
+    _resetting_limits: bool = field(default=False, init=False, repr=False)
+    _automatic_axes: set[str] = field(default_factory=lambda: {"x", "z"}, init=False, repr=False)
 
 
 @dataclass
@@ -140,6 +160,7 @@ class PreviewChartHandle:
 
     canvas: Any
     vector: Any
+    settings: PreviewSettingsControls | None = None
     _revision: int = field(default=0, init=False, repr=False)
     _vector_revision: int = field(default=-1, init=False, repr=False)
     _vector_capture_revision: int = field(default=-1, init=False, repr=False)
@@ -160,11 +181,17 @@ class PreviewChartHandle:
     def update(self) -> None:
         """Update the interactive chart; the vector twin stays lazy."""
 
+        if self.settings is not None:
+            sync_preview_axis_limits(self.settings, self.options)
         self.canvas.update()
         self._revision += 1
         self._vector_capture = None
         self._vector_capture_revision = -1
         self._vector_capture_key = None
+
+    def attach_settings(self, controls: PreviewSettingsControls) -> None:
+        self.settings = controls
+        sync_preview_axis_limits(controls, self.options)
 
     async def run_chart_method(
         self,
@@ -233,6 +260,63 @@ def histogram_x_limits_from_controls(
     return lower, upper
 
 
+def axis_limits_from_controls(
+    controls: PreviewSettingsControls, axis: str,
+) -> tuple[float, float] | None:
+    """Read an optional complete axis interval from the shared controls."""
+    if axis in getattr(controls, "_automatic_axes", ()):
+        return None
+    lower_control = getattr(controls, f"{axis}_minimum", None)
+    upper_control = getattr(controls, f"{axis}_maximum", None)
+    if lower_control is None or upper_control is None:
+        return None
+    lower, upper = _finite_number(lower_control.value), _finite_number(upper_control.value)
+    return (lower, upper) if lower is not None and upper is not None and upper > lower else None
+
+
+def sync_preview_axis_limits(controls: PreviewSettingsControls, options: Mapping[str, Any]) -> None:
+    """Display the actual automatic bounds without turning them into overrides."""
+    object.__setattr__(controls, "_resetting_limits", True)
+    try:
+        for axis in controls._automatic_axes:
+            specification = options.get("xAxis" if axis == "x" else "visualMap", {})
+            if isinstance(specification, list):
+                specification = next(iter(specification), {})
+            if not specification or (axis == "x" and specification.get("type") == "category"):
+                continue
+            bounds = [_finite_number(specification.get(endpoint)) for endpoint in ("min", "max")]
+            if any(value is None for value in bounds):
+                continue
+            if axis == "z" and bool(controls.log_z.value):
+                bounds = [10.0 ** value for value in bounds]
+            for suffix, value in zip(("minimum", "maximum"), bounds, strict=True):
+                control = getattr(controls, f"{axis}_{suffix}")
+                displayed = float(f"{value:.12g}")
+                if control.value != displayed:
+                    control.value = displayed
+                    control.update()
+    finally:
+        object.__setattr__(controls, "_resetting_limits", False)
+
+
+def _reset_preview_axis(
+    controls: PreviewSettingsControls, axis: str, callback: Callable[[], Any],
+) -> None:
+    # Suppress intermediate redraws while clearing both endpoints. The frozen
+    # control collection owns this internal state; its UI fields stay mutable.
+    object.__setattr__(controls, "_resetting_limits", True)
+    try:
+        if axis in {"x", "z"}:
+            controls._automatic_axes.add(axis)
+        for suffix in ("minimum", "maximum"):
+            control = getattr(controls, f"{axis}_{suffix}")
+            control.value = None
+            control.update()
+    finally:
+        object.__setattr__(controls, "_resetting_limits", False)
+    callback()
+
+
 def plotting_settings_ready(
     controls: PreviewSettingsControls,
     *,
@@ -258,6 +342,15 @@ def plotting_settings_ready(
         return False
     if plot_type == "Line" and _positive_finite(controls.line_width.value) is None:
         return False
+    for axis in (("x", "z") if plot_type == "Heatmap" else ("x",) if plot_type != "Histogram" else ()):
+        if axis in getattr(controls, "_automatic_axes", ()):
+            continue
+        lower = getattr(controls, f"{axis}_minimum", None)
+        upper = getattr(controls, f"{axis}_maximum", None)
+        if lower is not None and upper is not None and (lower.value is not None or upper.value is not None):
+            limits = axis_limits_from_controls(controls, axis)
+            if limits is None or (bool(getattr(controls, f"log_{axis}").value) and limits[0] <= 0):
+                return False
     y_minimum = controls.y_minimum.value
     y_maximum = controls.y_maximum.value
     if y_minimum is None and y_maximum is None:
@@ -419,10 +512,36 @@ def _mark(control: Any, markers: Mapping[str, str], key: str) -> Any:
     return control.mark(marker) if marker else control
 
 
+def _axis_limit_editor(axis: str, markers: Mapping[str, str]) -> tuple[Any, Any, Any, Any]:
+    """Create a matching pair of limits and an always-available reset button."""
+
+    with _mark(
+        ui.element("div").classes("dn-y-limit-editor"), markers, f"{axis}_limit_editor",
+    ) as editor:
+        minimum, maximum = (
+            _mark(
+                ui.number(label=f"{axis.upper()} {suffix}", value=None, **({"step": 0.1} if axis == "y" else {}))
+                .props('dense inputmode=decimal placeholder="Auto"')
+                .classes("dn-field dn-field-compact"),
+                markers,
+                f"{axis}_{endpoint}",
+            )
+            for suffix, endpoint in (("min", "minimum"), ("max", "maximum"))
+        )
+        reset = _mark(
+            ui.button(icon="restart_alt")
+            .props(f'flat round dense aria-label="Reset {axis.upper()} limits to data range"')
+            .classes("dn-y-limit-reset"),
+            markers,
+            f"reset_{axis}_limits",
+        )
+        reset.tooltip("Reset to the data-derived colour range" if axis == "z" else "Reset to the data-derived range")
+    return editor, minimum, maximum, reset
+
+
 _PREVIEW_SETTING_MARKER_SUFFIXES: dict[str, str] = {
     "container": "preview-settings",
     "view": "view",
-    "title": "preview-title",
     "x_axis_label": "x-axis-label",
     "y_axis_label": "y-axis-label",
     "primary_color": "primary-color",
@@ -460,6 +579,10 @@ _PREVIEW_SETTING_MARKER_SUFFIXES: dict[str, str] = {
     "y_minimum": "y-minimum",
     "y_maximum": "y-maximum",
     "reset_y_limits": "reset-y-limits",
+    **{key: key.replace("_", "-") for key in (
+        "x_limit_editor", "x_minimum", "x_maximum", "reset_x_limits",
+        "z_limit_editor", "z_minimum", "z_maximum", "reset_z_limits",
+    )},
 }
 
 
@@ -553,11 +676,7 @@ def preview_settings_controls(
                     markers,
                     "view",
                 )
-                title = _mark(
-                    ui.input(label="Title", value=initial_title).props("dense").classes("dn-field"),
-                    markers,
-                    "title",
-                )
+                title = _PlotTitle(initial_title)
                 with ui.element("div").classes("dn-preview-histogram-grid"):
                     histogram_bins = _mark(
                         ui.number(
@@ -642,12 +761,12 @@ def preview_settings_controls(
                 with ui.element("div").classes("dn-preview-colour-grid"):
                     primary_color_surface, primary_color = compact_color_input(
                         "Color",
-                        "#2c7f77",
+                        "#b03412",
                         marker=markers.get("primary_color"),
                     )
                     secondary_color_surface, secondary_color = compact_color_input(
                         "Second color",
-                        "#b03412",
+                        "#2c7f77",
                         marker=markers.get("secondary_color"),
                     )
                 secondary_color_surface.visible = False
@@ -751,33 +870,9 @@ def preview_settings_controls(
                         "reset_histogram_x_limits",
                     )
                     reset_histogram_x_limits.tooltip("Reset to the data range")
-                with ui.element("div").classes("dn-y-limit-editor"):
-                    y_minimum = _mark(
-                        ui.number(label="Y min", value=None, step=0.1)
-                        .props("dense")
-                        .classes("dn-field dn-field-compact"),
-                        markers,
-                        "y_minimum",
-                    )
-                    y_maximum = _mark(
-                        ui.number(label="Y max", value=None, step=0.1)
-                        .props("dense")
-                        .classes("dn-field dn-field-compact"),
-                        markers,
-                        "y_maximum",
-                    )
-                    for bound_control in (y_minimum, y_maximum):
-                        bound_control.tooltip(
-                            "Heatmaps restrict the displayed limits to the available data range."
-                        )
-                    reset_y_limits = _mark(
-                        ui.button(icon="restart_alt", on_click=on_reset_y_limits)
-                        .props('flat round dense aria-label="Reset Y limits to data range"')
-                        .classes("dn-y-limit-reset"),
-                        markers,
-                        "reset_y_limits",
-                    )
-                    reset_y_limits.tooltip("Reset to the data-derived range")
+                x_limit_editor, x_minimum, x_maximum, reset_x_limits = _axis_limit_editor("x", markers)
+                _, y_minimum, y_maximum, reset_y_limits = _axis_limit_editor("y", markers)
+                z_limit_editor, z_minimum, z_maximum, reset_z_limits = _axis_limit_editor("z", markers)
 
             with ui.column().classes("dn-preview-setting-group"):
                 ui.label("Guides").classes("dn-setting-group-title")
@@ -828,7 +923,7 @@ def preview_settings_controls(
                     "histogram_statistics_position",
                 )
 
-    return PreviewSettingsControls(
+    controls = PreviewSettingsControls(
         view=view,
         title=title,
         x_axis_label=x_axis_label,
@@ -870,7 +965,17 @@ def preview_settings_controls(
         y_minimum=y_minimum,
         y_maximum=y_maximum,
         reset_y_limits=reset_y_limits,
+        x_limit_editor=x_limit_editor,
+        x_minimum=x_minimum,
+        x_maximum=x_maximum,
+        reset_x_limits=reset_x_limits,
+        z_limit_editor=z_limit_editor,
+        z_minimum=z_minimum,
+        z_maximum=z_maximum,
+        reset_z_limits=reset_z_limits,
     )
+    reset_y_limits.on_click(lambda: _reset_preview_axis(controls, "y", on_reset_y_limits))
+    return controls
 
 
 def bind_preview_settings_updates(
@@ -893,7 +998,6 @@ def bind_preview_settings_updates(
     """
 
     for control in (
-        controls.title,
         controls.x_axis_label,
         controls.y_axis_label,
         controls.primary_color,
@@ -924,8 +1028,25 @@ def bind_preview_settings_updates(
     controls.density.on_value_change(on_density_change)
     controls.log_x.on_value_change(on_log_x_change)
     controls.log_y.on_value_change(on_histogram_range_change)
-    controls.y_minimum.on_value_change(on_y_limits_change)
-    controls.y_maximum.on_value_change(on_y_limits_change)
+    for axis in ("x", "z"):
+        def limits_changed(_event: Any, selected: str = axis) -> None:
+            if controls._resetting_limits:
+                return
+            minimum = getattr(controls, f"{selected}_minimum").value
+            maximum = getattr(controls, f"{selected}_maximum").value
+            if minimum is None and maximum is None:
+                controls._automatic_axes.add(selected)
+            else:
+                controls._automatic_axes.discard(selected)
+            on_redraw()
+
+        for suffix in ("minimum", "maximum"):
+            getattr(controls, f"{axis}_{suffix}").on_value_change(limits_changed)
+        getattr(controls, f"reset_{axis}_limits").on_click(
+            lambda _event, selected=axis: _reset_preview_axis(controls, selected, on_redraw),
+        )
+    controls.y_minimum.on_value_change(lambda: None if controls._resetting_limits else on_y_limits_change())
+    controls.y_maximum.on_value_change(lambda: None if controls._resetting_limits else on_y_limits_change())
 
 
 def sync_preview_settings_visibility(
@@ -964,6 +1085,8 @@ def sync_preview_settings_visibility(
     controls.histogram_touching.visible = histogram
     controls.histogram_boundary.visible = histogram
     controls.histogram_x_limit_editor.visible = histogram
+    controls.x_limit_editor.visible = not histogram
+    controls.z_limit_editor.visible = heatmap
     controls.density.visible = histogram
     controls.show_histogram_statistics.visible = histogram
     controls.histogram_statistics_position.visible = histogram and bool(

@@ -31,10 +31,13 @@ from app.mapping_uploads import (
     inspect_upload_event,
     materialize_upload,
 )
+from app.page_activity import current_page_activity
 from app.pages.common import (
     DATA_ICON,
     RawOutputControls,
     action_dock,
+    workflow_action_button,
+    workflow_action_icon,
     data_upload,
     expansion,
     page_intro,
@@ -48,6 +51,7 @@ from app.pages.common import (
     two_column_fields,
 )
 from app.preview_plotting import (
+    axis_limits_from_controls,
     FIXED_QUANTITY_Y_LIMITS,
     HistogramBinSynchronizer,
     PreviewBand,
@@ -57,6 +61,7 @@ from app.preview_plotting import (
     build_preview_plot_options,
     compact_color_input,
     histogram_x_limits_from_controls,
+    has_finite_values,
     plotting_settings_ready,
     preview_settings_controls,
     preview_settings_markers,
@@ -447,8 +452,8 @@ def _simulation_raw_page_bounds(total: int, requested_page: int) -> tuple[int, i
 
 
 _BATCH_COLORS = (
-    "#2c7f77",
     "#b03412",
+    "#2c7f77",
     "#3f6da8",
     "#8b6f37",
     "#6f5b8f",
@@ -1583,6 +1588,8 @@ def _result_plot_options(
     show_individual_profiles: bool = False,
     individual_profile_count: int = 10,
     show_standard_deviation: bool = False,
+    x_limits: tuple[float, float] | None = None,
+    z_limits: tuple[float, float] | None = None,
 ) -> dict[str, Any]:
     """Build bounded ECharts options for any supported simulation output."""
 
@@ -1600,8 +1607,8 @@ def _result_plot_options(
                 "Run the simulation again with space-time outputs enabled to plot this result."
             )
         raise ValueError(f"DNAscape did not return {output_label.lower()}.")
-    values = np.asarray(values, dtype=float)
-    if not np.isfinite(values).any():
+    values = np.asarray(values)
+    if not has_finite_values(values):
         if spec.key == "inter_origin_distances":
             raise ValueError(
                 "No inter-origin distances were recorded. At least two origins must "
@@ -1668,6 +1675,8 @@ def _result_plot_options(
             )
     return build_preview_plot_options(
         plot_type=plot_type,
+        x_limits=x_limits,
+        z_limits=z_limits,
         title=title.strip() or output_label,
         x_label=x_axis_label.strip()
         or (
@@ -1734,6 +1743,7 @@ def _combined_result_plot_options(
     invert_x: bool,
     log_y: bool,
     invert_y: bool,
+    x_limits: tuple[float, float] | None = None,
 ) -> dict[str, Any]:
     """Build one overlay for axis-compatible one-dimensional batch outputs."""
 
@@ -1767,6 +1777,7 @@ def _combined_result_plot_options(
     )
     return build_preview_plot_options(
         plot_type="Line",
+        x_limits=x_limits,
         title=title.strip() or output_label,
         x_label=x_axis_label.strip() or spec.x_label,
         y_label=y_axis_label.strip() or spec.y_label,
@@ -1829,11 +1840,15 @@ def _render_result_plot(
     show_individual_profiles: bool = False,
     individual_profile_count: int = 10,
     show_standard_deviation: bool = False,
+    x_limits: tuple[float, float] | None = None,
+    z_limits: tuple[float, float] | None = None,
 ) -> Any:
     """Render a bounded ECharts preview with shared zoom/download tools."""
 
     options = _result_plot_options(
         result,
+        x_limits=x_limits,
+        z_limits=z_limits,
         output_label=output_label,
         title=title,
         series_label=series_label,
@@ -1879,6 +1894,7 @@ def render(_navigate: Callable[[str], None]) -> None:
     """Render the local simulation controls and live preview."""
 
     running = False
+    page_activity = current_page_activity()
     active_cancel: Event | None = None
     restored_entry = consume_cached_workflow("simulation")
     restored_result = restored_entry.payload if restored_entry is not None else None
@@ -2706,6 +2722,7 @@ def render(_navigate: Callable[[str], None]) -> None:
                                     y_axis_label=str(y_axis_label.value or ""),
                                     colors=batch_colors,
                                     y_limits=current_y_limits(),
+                                    x_limits=axis_limits_from_controls(plot_settings, "x"),
                                     show_legend=bool(show_legend.value),
                                     legend_position=str(
                                         legend_position.value or "Top right"
@@ -2728,12 +2745,14 @@ def render(_navigate: Callable[[str], None]) -> None:
                             else:
                                 result_chart = _render_result_plot(
                                     latest_result,
+                                    x_limits=axis_limits_from_controls(plot_settings, "x"),
+                                    z_limits=axis_limits_from_controls(plot_settings, "z"),
                                     output_label=str(output.value or "Replication timing"),
                                     title=str(title.value or ""),
                                     series_label=str(output.value or "Replication timing"),
                                     x_axis_label=str(x_axis_label.value or ""),
                                     y_axis_label=str(y_axis_label.value or ""),
-                                    color=str(line_or_bar_color.value or "#2c7f77"),
+                                    color=str(line_or_bar_color.value or "#b03412"),
                                     palette=str(heatmap_palette.value or "viridis"),
                                     view_mode=str(view.value or "Default"),
                                     histogram_bins=_integer(histogram_bins, "Histogram bins"),
@@ -2788,6 +2807,7 @@ def render(_navigate: Callable[[str], None]) -> None:
                                     y_limits=current_y_limits(),
                                     on_download=download_plot,
                                 )
+                            result_chart.attach_settings(plot_settings)
                         except (RuntimeError, TypeError, ValueError) as exc:
                             result_chart = None
                             ui.notify(str(exc), type="negative")
@@ -2809,6 +2829,7 @@ def render(_navigate: Callable[[str], None]) -> None:
                     nonlocal latest_result, result_chart, running
                     if running:
                         if active_cancel is not None and not active_cancel.is_set():
+                            page_activity.stop("simulation")
                             active_cancel.set()
                             status.text = "Stopping simulation..."
                             simulate_button.disable()
@@ -2866,11 +2887,13 @@ def render(_navigate: Callable[[str], None]) -> None:
                         for control in frozen_controls:
                             control.enable()
                         simulate_button.set_text("Simulate")
-                        simulate_button.set_icon("play_arrow")
+                        simulate_button.set_icon(workflow_action_icon("simulation"))
                         simulate_button.enable()
 
                     running = True
                     active_cancel = cancel_event
+                    page_run = page_activity.begin("simulation", cancel=cancel_event.set)
+                    completed_successfully = False
                     set_data_upload_locked(firing_source.uploader, True)
                     set_data_upload_locked(speed_source.uploader, True)
                     for control in frozen_controls:
@@ -3246,6 +3269,7 @@ def render(_navigate: Callable[[str], None]) -> None:
                             navigate_to="simulation",
                         )
                         status.text = completion_status
+                        completed_successfully = True
                     except CancelledError:
                         progress.visible = False
                         status.text = "Simulation stopped"
@@ -3271,10 +3295,11 @@ def render(_navigate: Callable[[str], None]) -> None:
                                 )
                     finally:
                         release_simulation_controls()
+                        page_activity.finish("simulation", page_run, success=completed_successfully)
 
                 with action_dock():
                     simulate_button = (
-                        ui.button("Simulate", icon="play_arrow", on_click=simulate)
+                        workflow_action_button("Simulate", symbol="simulation", on_click=simulate)
                         .props("no-caps")
                         .classes("dn-action-primary")
                         .mark("action-simulate")
@@ -3570,7 +3595,7 @@ def render(_navigate: Callable[[str], None]) -> None:
                                         control: Any = color_control,
                                     ) -> None:
                                         batch_colors[item_key] = str(
-                                            control.value or "#2c7f77"
+                                            control.value or "#b03412"
                                         )
                                         render_latest_result()
 

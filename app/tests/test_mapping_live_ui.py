@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from app.pages.common import workflow_action_icon
+
 import asyncio
 import threading
 import time
@@ -646,17 +648,20 @@ def test_spatial_speed_submit_aligns_profiles_and_keeps_selected_boundaries(
     results: list[MappingResult] = []
     timing = 10.0 + np.arange(30, dtype=float) / 10.0
     local_firing = np.full(10, 0.01)
-    selected_end = 36.0 if firing_form == "scalar" else 56.0
+    whole_finished = threading.Event()
+    selected_end = 36.0 if firing_form == "scalar" else 44.0
     expected_bins = 6 if firing_form == "scalar" else 10
 
     def fake_rmap(**kwargs: Any) -> dict[str, Any]:
         calls.append(kwargs)
-        return {"values": np.full(expected_bins, 1.4)}
+        return {"values": np.full(kwargs["source"]["replication_timing"].size, 1.4)}
 
     def recording_run(request: MappingRequest, report: Any, cancel: Any) -> MappingResult:
         requests.append(request)
         result = run_mapping(request, report, cancel)
         results.append(result)
+        if len(results) == 2:
+            whole_finished.set()
         return result
 
     monkeypatch.setattr(dnascape, "rmap", fake_rmap)
@@ -699,6 +704,14 @@ def test_spatial_speed_submit_aligns_profiles_and_keeps_selected_boundaries(
             if firing_form == "x":
                 await set_value("mapping-input-firing-rate-type", "profile")
                 await upload("source-firing-rate-upload", "firing.csv", local_firing)
+                await set_value("mapping-region-end", 56.0)
+                user.find(marker="action-map").click()
+                await user.should_see("choose a width of at most 20 kb", retries=60)
+                assert requests == calls == results == []
+                assert control("mapping-region-start").value == 24.0
+                assert control("mapping-region-end").value == 56.0
+                assert control("action-map").enabled
+                await set_value("mapping-region-end", selected_end)
             else:
                 await set_value("mapping-input-firing-rate-constant", 0.01)
 
@@ -721,6 +734,20 @@ def test_spatial_speed_submit_aligns_profiles_and_keeps_selected_boundaries(
                 results[0].x_axis, 24.0 + np.arange(expected_bins) * 2.0
             )
             assert results[0].outputs[results[0].primary_output].size == expected_bins
+
+            if firing_form == "x":
+                await set_value("mapping-whole-region", True)
+                user.find(marker="action-map").click()
+                assert await asyncio.to_thread(whole_finished.wait, 5)
+                await user.should_see("Complete in", retries=60)
+                await user.should_not_see(marker="mapping-error")
+                assert len(requests) == len(calls) == len(results) == 2
+                assert requests[1].whole_genome is True
+                np.testing.assert_array_equal(calls[1]["source"]["replication_timing"], timing[:10])
+                np.testing.assert_array_equal(calls[1]["source"]["firing_rate"], local_firing)
+                np.testing.assert_array_equal(results[1].x_axis, np.arange(10) * 2.0)
+                assert control("mapping-region-start").value == 24.0
+                assert control("mapping-region-end").value == selected_end
 
     asyncio.run(scenario())
 
@@ -890,10 +917,7 @@ def test_mapping_plot_settings_redraw_the_completed_preview(
                     next(iter(user.find(marker="mapping-result-plot").elements)),
                 )
 
-            title = cast(
-                Input,
-                next(iter(user.find(marker="mapping-preview-title").elements)),
-            )
+            await user.should_not_see("Title")
             await user.should_not_see("Series label")
             x_label = cast(
                 Input,
@@ -909,14 +933,12 @@ def test_mapping_plot_settings_redraw_the_completed_preview(
             )
             assert user.client is not None
             with user.client:
-                title.set_value("Updated mapping")
                 x_label.set_value("Genomic position")
                 y_label.set_value("Rate")
                 color.set_value("#c43b22")
             await asyncio.sleep(0)
             await asyncio.sleep(0)
             updated = chart()
-            assert updated.options["title"]["text"] == "Updated mapping"
             assert updated.options["series"][0]["lineStyle"]["color"] == "#c43b22"
             assert updated.options["xAxis"]["name"] == "Genomic position"
             assert updated.options["yAxis"]["name"] == "Rate"
@@ -928,7 +950,7 @@ def test_mapping_plot_settings_redraw_the_completed_preview(
             with user.client:
                 line_width.set_value(None)
             await asyncio.sleep(0)
-            assert chart().options["title"]["text"] == "Updated mapping"
+            assert chart().options["xAxis"]["name"] == "Genomic position"
             await user.should_not_see("Output unavailable")
             with user.client:
                 line_width.set_value(1.8)
@@ -1091,6 +1113,134 @@ def test_mapping_plot_settings_redraw_the_completed_preview(
             assert "Mean" in summary["style"]["text"]
             assert "Median" in summary["style"]["text"]
             assert "Std dev" in summary["style"]["text"]
+
+    asyncio.run(scenario())
+
+
+def test_mapping_show_plot_can_skip_rendering_and_restore_without_remapping(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from app.pages import mapping as mapping_page
+
+    runs: list[MappingRequest] = []
+    renders: list[MappingResult] = []
+    original_options = mapping_page._mapping_plot_options
+
+    def fake_run(request: MappingRequest, _report: Any, _cancel: Any) -> MappingResult:
+        runs.append(request)
+        return _mapped_result(request, np.asarray([0.2, 0.4, 0.6]))
+
+    def record_options(result: MappingResult, **kwargs: Any) -> dict[str, Any]:
+        renders.append(result)
+        return original_options(result, **kwargs)
+
+    monkeypatch.setattr(mapping_page, "run_mapping", fake_run)
+    monkeypatch.setattr(mapping_page, "_mapping_plot_options", record_options)
+
+    async def scenario() -> None:
+        async with user_simulation(index) as user:
+            await user.open("/")
+            user.find(marker="nav-mapping").click()
+            await user.should_see(marker="source-replication-timing-upload", retries=60)
+            show_plot = cast(Checkbox, next(iter(user.find(marker="mapping-show-plot").elements)))
+            assert show_plot.value is True
+            assert user.client is not None
+            with user.client:
+                show_plot.set_value(False)
+            with user.client:
+                show_plot.set_value(True)
+            await user.should_see("No result")
+            with user.client:
+                show_plot.set_value(False)
+            uploader = cast(Upload, next(iter(user.find(marker="source-replication-timing-upload").elements)))
+            await uploader.handle_uploads([
+                Upload.SmallFileUpload("timing.csv", "text/csv", b"timing\n8\n7\n9\n")
+            ])
+            await user.should_see(marker="mapping-input-replication-timing-detected-data", retries=20)
+            user.find(marker="action-map").click()
+            await user.should_see("Complete in 0.08 s", retries=30)
+            await user.should_see(marker="mapping-stats")
+            await user.should_see(marker="mapping-raw-file-type")
+            assert next(iter(user.find(marker="action-download-raw-data").elements)).enabled
+            await user.should_not_see(marker="mapping-result-plot")
+            assert len(runs) == 1
+            assert not renders
+            with user.client:
+                show_plot.set_value(True)
+            await user.should_see(marker="mapping-result-plot", retries=20)
+            assert len(runs) == 1
+            assert renders
+            with user.client:
+                show_plot.set_value(False)
+            await user.should_not_see(marker="mapping-result-plot")
+            await user.should_see("Complete in 0.08 s")
+
+    asyncio.run(scenario())
+
+
+@pytest.mark.parametrize("heatmap", (False, True))
+def test_mapping_axis_limits_remain_editable_and_resettable(
+    monkeypatch: pytest.MonkeyPatch, heatmap: bool,
+) -> None:
+    from app.pages import mapping as mapping_page
+
+    def fake_run(request: MappingRequest, _report: Any, _cancel: Any) -> MappingResult:
+        result = _mapped_result(request, np.asarray([0.2, 0.4, 0.6, 0.8]))
+        if heatmap:
+            return replace(
+                result, output_form="xt", output_dependence="spacetime",
+                outputs={"firing_rate": np.arange(12.0).reshape(4, 3)},
+                output_forms={"firing_rate": "xt"}, time_axis=np.asarray([0.0, 10.0, 20.0]),
+            )
+        return result
+
+    monkeypatch.setattr(mapping_page, "run_mapping", fake_run)
+
+    async def scenario() -> None:
+        async with user_simulation(index) as user:
+            await user.open("/")
+            user.find(marker="nav-mapping").click()
+            await user.should_see(marker="source-replication-timing-upload", retries=60)
+            uploader = cast(Upload, next(iter(user.find(marker="source-replication-timing-upload").elements)))
+            await uploader.handle_uploads([
+                Upload.SmallFileUpload("timing.csv", "text/csv", b"timing\n8\n7\n9\n10\n")
+            ])
+            await user.should_see(marker="mapping-input-replication-timing-detected-data", retries=20)
+            user.find(marker="action-map").click()
+            try:
+                await user.should_see(marker="mapping-result-plot", retries=30)
+            except AssertionError:
+                raise AssertionError(user.notify.messages) from None
+            user.find("Plotting settings").click()
+
+            def chart() -> EChart:
+                return cast(EChart, next(iter(user.find(marker="mapping-result-plot").elements)))
+
+            automatic = chart().options
+            assert user.client is not None
+            axes = [("x", (-1.0, 5.0)), ("y", (-10.0, 40.0))]
+            if heatmap:
+                axes.append(("z", (2.0, 8.0)))
+            for axis, limits in axes:
+                lower = cast(Number, next(iter(user.find(marker=f"mapping-{axis}-minimum").elements)))
+                upper = cast(Number, next(iter(user.find(marker=f"mapping-{axis}-maximum").elements)))
+                reset = cast(Button, next(iter(user.find(marker=f"mapping-reset-{axis}-limits").elements)))
+                assert lower.enabled and upper.enabled and reset.enabled
+                with user.client:
+                    lower.set_value(limits[0])
+                    upper.set_value(limits[1])
+                await asyncio.sleep(0)
+                displayed = chart().options["visualMap" if axis == "z" else f"{axis}Axis"]
+                assert (displayed["min"], displayed["max"]) == limits
+                # An incomplete/invalid edit must not prevent using Reset.
+                with user.client:
+                    upper.set_value(None)
+                user.find(marker=f"mapping-reset-{axis}-limits").click()
+                await asyncio.sleep(0)
+                restored = chart().options["visualMap" if axis == "z" else f"{axis}Axis"]
+                original = automatic["visualMap" if axis == "z" else f"{axis}Axis"]
+                assert (restored["min"], restored["max"]) == (original["min"], original["max"])
+            await user.should_not_see("Output unavailable")
 
     asyncio.run(scenario())
 
@@ -1272,7 +1422,7 @@ def test_map_button_becomes_stop_and_cancels_the_worker(
             user.find(marker="action-map").click()
             await user.should_see("Mapping stopped", retries=40)
             assert button.text == "Map"
-            assert button.icon == "map"
+            assert button.icon == workflow_action_icon("mapping")
             assert button.enabled
             await user.should_not_see(marker="mapping-error")
 
@@ -1924,7 +2074,7 @@ def test_fit_comparison_preview_overlays_observed_and_fitted_profiles() -> None:
         title="Replication timing: observed vs fitted",
         x_label="Position (kb)",
         y_label="Replication timing",
-        color="#2c7f77",
+        color="#b03412",
         palette="viridis",
         histogram_bins=20,
         line_width=1.8,
@@ -1936,8 +2086,8 @@ def test_fit_comparison_preview_overlays_observed_and_fitted_profiles() -> None:
 
     assert options["legend"]["data"] == ["Observed", "Fitted"]
     assert [series["name"] for series in options["series"]] == ["Observed", "Fitted"]
-    assert options["series"][0]["lineStyle"]["color"] == "#2c7f77"
-    assert options["series"][1]["lineStyle"]["color"] == "#b03412"
+    assert options["series"][0]["lineStyle"]["color"] == "#b03412"
+    assert options["series"][1]["lineStyle"]["color"] == "#2c7f77"
     assert options["series"][0]["data"] == [[10.0, 8.0], [11.0, 7.0], [12.0, 9.0]]
     assert options["series"][1]["data"] == [[10.0, 8.2], [11.0, 7.1], [12.0, 9.1]]
 

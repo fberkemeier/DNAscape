@@ -20,8 +20,10 @@ from .preview import (
     FIXED_QUANTITY_Y_LIMITS,
     PreviewLine,
     automatic_y_limits,
+    build_legend_options,
     build_preview_plot_options,
     finite_values,
+    has_finite_values,
     limit_curve_hover,
 )
 
@@ -221,8 +223,8 @@ _MSE_DIAGNOSTIC_KEY = "mse_diagnostic"
 
 
 _BATCH_COLOURS = (
-    "#2c7f77",
     "#b03412",
+    "#2c7f77",
     "#6f5a9c",
     "#c47a1b",
     "#3f6fa3",
@@ -313,7 +315,7 @@ def mapping_plot_options(
     legend_position: str = "Top right",
     show_grid: bool = True,
     y_limits: tuple[float, float] | None = None,
-    secondary_color: str = "#b03412",
+    secondary_color: str = "#2c7f77",
     log_x: bool = False,
     invert_x: bool = False,
     invert_z: bool = False,
@@ -323,6 +325,8 @@ def mapping_plot_options(
     histogram_x_limits: tuple[float, float] | None = None,
     histogram_touching: bool = True,
     histogram_boundary: str = "left",
+    x_limits: tuple[float, float] | None = None,
+    z_limits: tuple[float, float] | None = None,
 ) -> dict[str, Any]:
     """Build a bounded ECharts view for scalar, X, T, XT, and bundle outputs."""
 
@@ -370,6 +374,7 @@ def mapping_plot_options(
         return build_preview_plot_options(
             plot_type="Line",
             title=title.strip() or "Observed vs fitted",
+            x_limits=x_limits,
             x_label=x_label,
             y_label=y_label,
             color=color,
@@ -398,7 +403,7 @@ def mapping_plot_options(
     outputs = getattr(result, "outputs", {})
     if output_key not in outputs:
         raise ValueError("The selected mapping output was not returned by DNAscape.")
-    values = np.asarray(outputs[output_key], dtype=float)
+    values = np.asarray(outputs[output_key])
     if values.size == 0 and output_key == "inter_origin_distance":
         return {
             "title": {"text": title.strip() or "Inter-origin distance"},
@@ -412,7 +417,8 @@ def mapping_plot_options(
                 }
             ],
         }
-    if values.size and not np.isfinite(values).any() and getattr(result, "diagnostics", {}).get(
+    has_finite = has_finite_values(values)
+    if values.size and not has_finite and getattr(result, "diagnostics", {}).get(
         "unidentifiable_count"
     ) == values.size:
         return {
@@ -425,7 +431,7 @@ def mapping_plot_options(
                 "style": {"text": "No identifiable values in this interval.", "fill": "#777"},
             }],
         }
-    if values.size == 0 or not np.isfinite(values).any():
+    if values.size == 0 or not has_finite:
         raise ValueError("The selected mapping output contains no finite values.")
     if normalization == "Z-score":
         finite = finite_values(values)
@@ -457,9 +463,9 @@ def mapping_plot_options(
                     space_axis,
                     np.zeros(space_axis.size, dtype=float),
                 )
-            display_matrix = np.repeat(values.reshape(-1, 1), space_axis.size, axis=1)
+            display_matrix = np.broadcast_to(values.reshape(-1, 1), (values.size, space_axis.size))
         elif output_form == "xt":
-            matrix = np.asarray(values, dtype=float)
+            matrix = np.asarray(values)
             if matrix.ndim != 2:
                 raise ValueError("Heatmap view requires a temporal or space-time mapping output.")
             space_axis = _result_axis(result, kind="space", length=matrix.shape[0])
@@ -474,6 +480,8 @@ def mapping_plot_options(
             raise ValueError("Heatmap view requires a temporal or space-time mapping output.")
         return build_preview_plot_options(
             plot_type="Heatmap",
+            x_limits=x_limits,
+            z_limits=z_limits,
             title=resolved_title,
             x_label=x_label,
             y_label=y_label,
@@ -502,6 +510,7 @@ def mapping_plot_options(
     if plot_type == "Histogram":
         return build_preview_plot_options(
             plot_type="Histogram",
+            x_limits=x_limits,
             title=resolved_title,
             x_label=x_label,
             y_label=y_label or ("Density" if density else "Count"),
@@ -531,6 +540,7 @@ def mapping_plot_options(
     if plot_type == "Boxplot":
         return build_preview_plot_options(
             plot_type="Boxplot",
+            x_limits=x_limits,
             title=resolved_title,
             x_label=x_label,
             y_label=y_label,
@@ -565,6 +575,7 @@ def mapping_plot_options(
         axis, flattened = _closed_periodic_profile(axis, flattened)
     return build_preview_plot_options(
         plot_type="Line",
+        x_limits=x_limits,
         title=resolved_title,
         x_label=x_label,
         y_label=y_label,
@@ -739,30 +750,14 @@ def combined_mapping_plot_options(
         # combined distribution needs one, and summary statistics should
         # describe the pooled values rather than whichever dataset happened
         # to become the base chart.
-        show_legend = bool(plot_kwargs.get("show_legend", True))
-        position = str(plot_kwargs.get("legend_position") or "Top right").casefold()
-        bottom_legend = show_legend and position.startswith("bottom")
-        base["legend"] = {
-            "show": show_legend,
-            "type": "scroll",
-            "selectedMode": True,
-            "orient": "horizontal" if bottom_legend else "vertical",
-            **({"top": 24} if position.startswith("top") else {"bottom": 8}),
-            **({"left": 84} if position.endswith("left") else {"right": 28}),
-            "itemWidth": 16,
-            "itemHeight": 8,
-            "backgroundColor": "rgba(255,255,255,0.84)",
-            "borderColor": "#ddd7d1",
-            "borderWidth": 1,
-            "borderRadius": 4,
-            "padding": [4, 6],
-            "textStyle": {"color": "#625c57", "fontSize": 11},
-            "data": combined_names,
-        }
-        if bottom_legend:
-            grid = dict(base.get("grid", {}))
-            grid["bottom"] = max(106, int(grid.get("bottom", 0)))
-            base["grid"] = grid
+        base["legend"] = build_legend_options(
+            combined_names,
+            grid=base["grid"],
+            position=str(plot_kwargs.get("legend_position") or "Top right"),
+            show=bool(plot_kwargs.get("show_legend", True)),
+            item_width=16,
+            item_height=8,
+        )
         if bool(plot_kwargs.get("show_histogram_statistics", False)):
             actual_keys = tuple(
                 resolved_output_key(named.result, output_key) for named in results

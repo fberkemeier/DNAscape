@@ -7,7 +7,7 @@ from typing import cast
 
 import pytest
 from nicegui.elements.button import Button
-from nicegui.elements.checkbox import Checkbox
+from nicegui.elements.switch import Switch
 from nicegui.elements.drawer import LeftDrawer
 from nicegui.elements.number import Number
 from nicegui.elements.select import Select
@@ -108,15 +108,15 @@ def test_export_preferences_live_in_the_application_settings_menu() -> None:
                 next(iter(user.find(marker="settings-result-name-style").elements)),
             )
             preserve_page_state = cast(
-                Checkbox,
+                Switch,
                 next(iter(user.find(marker="settings-preserve-page-state").elements)),
             )
             show_examples = cast(
-                Checkbox,
+                Switch,
                 next(iter(user.find(marker="settings-show-examples").elements)),
             )
             show_help = cast(
-                Checkbox,
+                Switch,
                 next(iter(user.find(marker="settings-show-help").elements)),
             )
             memory_limit = cast(
@@ -148,6 +148,11 @@ def test_export_preferences_live_in_the_application_settings_menu() -> None:
                 show_help.set_value(True)
                 memory_limit.set_value(512)
             await asyncio.sleep(0)
+            assert settings.plot_dpi == previous[0]
+            assert settings.raw_compression == previous[1]
+            assert settings.preserve_page_state == previous[5]
+            user.find(marker="settings-apply").click()
+            await asyncio.sleep(0)
             assert settings.plot_dpi == 240
             assert settings.raw_compression == "zip"
             assert settings.cached_file_format == "csv"
@@ -158,13 +163,18 @@ def test_export_preferences_live_in_the_application_settings_menu() -> None:
             assert settings.show_help is True
             assert settings.conversion_memory_limit_mb == 512
             assert memory_limit.validate() is True
+            user.find(marker="app-menu-toggle").click()
+            user.find(marker="menu-settings").click()
             with user.client:
                 memory_limit.set_value(None)
             await asyncio.sleep(0)
             assert settings.conversion_memory_limit_mb == 512
             assert memory_limit.validate() is False
+            user.find(marker="settings-apply").click()
             with user.client:
                 result_name_style.set_value("short")
+                memory_limit.set_value(512)
+            user.find(marker="settings-apply").click()
             await asyncio.sleep(0)
             assert settings.result_name_style == "short"
 
@@ -212,11 +222,12 @@ def test_page_controls_are_retained_until_page_preservation_is_disabled() -> Non
             user.find(marker="app-menu-toggle").click()
             user.find(marker="menu-settings").click()
             preserve = cast(
-                Checkbox,
+                Switch,
                 next(iter(user.find(marker="settings-preserve-page-state").elements)),
             )
             with user.client:
                 preserve.set_value(False)
+            user.find(marker="settings-apply").click()
             user.find(marker="nav-mapping").click()
             user.find(marker="nav-simulation").click()
             reset = cast(
@@ -303,11 +314,11 @@ def test_reset_menu_restores_defaults_and_clears_the_client_workspace() -> None:
                 next(iter(user.find(marker="settings-result-name-style").elements)),
             )
             show_examples = cast(
-                Checkbox,
+                Switch,
                 next(iter(user.find(marker="settings-show-examples").elements)),
             )
             show_help = cast(
-                Checkbox,
+                Switch,
                 next(iter(user.find(marker="settings-show-help").elements)),
             )
             memory_limit = cast(
