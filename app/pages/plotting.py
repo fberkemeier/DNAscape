@@ -26,6 +26,7 @@ from app.pages.common import (
     preview_plot,
 )
 from app.preview_plotting import (
+    CURVE_TYPES,
     axis_limits_from_controls,
     HistogramBinSynchronizer,
     PreviewLine,
@@ -58,7 +59,7 @@ _NATURAL_SELECTION = "__natural_profile__"
 _MATRIX_SELECTION = "__all_columns__"
 _LINE_COLOURS = (
     "#b03412",
-    "#2c7f77",
+    "#2596be",
     "#3f6da8",
     "#8b6f37",
     "#6f5b8f",
@@ -89,6 +90,7 @@ class _PlotSeries:
 class _CurveStyle:
     color: str
     width: float = 1.8
+    line_type: str | None = None
 
 
 @dataclass
@@ -127,6 +129,8 @@ _SEPARATE_SETTING_VALUE_FIELDS = (
     "log_z",
     "invert_z",
     "line_width",
+    "line_type",
+    "aspect_ratio",
     "histogram_bins",
     "histogram_bin_size",
     "histogram_touching",
@@ -463,12 +467,12 @@ def _plot_groups(
 
 def _axis_labels(form: str, view: str, density: bool) -> tuple[str, str]:
     if form == "xt":
-        return "Position (bin)", "Time (bin)"
+        return "Position (kb)", "Time (min)"
     if view == "Boxplot":
         return "", "Value"
     if view == "Histogram":
         return "Value", "Density" if density else "Count"
-    return ("Time (bin)" if form == "t" else "Position (bin)"), "Value"
+    return "Position (kb)", "Value"
 
 
 def _numeric_value(control: Any, label: str) -> float:
@@ -500,6 +504,8 @@ def render(_navigate: Callable[[str], None]) -> None:
     result_charts: list[Any] = []
     separate_plot_contexts: list[_SeparatePlotContext] = []
     curve_styles: dict[tuple[int, str], _CurveStyle] = {}
+    curve_names: dict[tuple[int, str], str] = {}
+    secondary_y_limits_automatic = True
     separate_plot_settings: dict[tuple[int, str], _SeparatePlotSettingsSnapshot] = {}
     y_limits_automatic = True
     updating_y_limits = False
@@ -584,7 +590,6 @@ def render(_navigate: Callable[[str], None]) -> None:
                             source="Plotting",
                             navigate_to="plotting",
                         )
-                        render_profile_sources.refresh()
                         staged_sources_changed()
                         return True
 
@@ -612,8 +617,100 @@ def render(_navigate: Callable[[str], None]) -> None:
                             ]
                         else:
                             sources.clear()
-                        render_profile_sources.refresh()
                         staged_sources_changed()
+
+                    def render_profile_source(name: str) -> None:
+                        source = next(
+                            (
+                                state for state in sources
+                                if state.inspection is not None
+                                and state.inspection.name == name
+                            ),
+                            None,
+                        )
+                        if source is None:
+                            return
+                        with (
+                            ui.element("div")
+                            .classes("dn-plot-profile-source")
+                            .mark(f"plotting-profile-source-{source.source_id}")
+                        ):
+
+                            @ui.refreshable
+                            def details_panel(state: _ProfileSourceState = source) -> None:
+                                options = _source_selection_options(state)
+                                # Omit selectors which cannot change anything:
+                                # plain arrays and one-signal-column tables.
+                                if options and len(options) > 1:
+                                    selector = (
+                                        ui.select(
+                                            dict(options),
+                                            value=list(state.selection),
+                                            label="Profiles",
+                                            multiple=True,
+                                            clearable=True,
+                                        )
+                                        .props("dense options-dense use-chips")
+                                        .classes(
+                                            "dn-field dn-mapping-column-select "
+                                            "dn-plot-profile-selector"
+                                        )
+                                        .mark(f"plotting-profile-selection-{state.source_id}")
+                                    )
+                                    selector._props["data-upload-name"] = name
+
+                                    def selection_changed() -> None:
+                                        raw = tuple(
+                                            str(token) for token in (selector.value or [])
+                                        )
+                                        normalized = _normalize_multi_selection(state, raw)
+                                        state.selection = normalized
+                                        expected_value = list(normalized)
+                                        if selector.value != expected_value:
+                                            selector.value = expected_value
+                                            selector.update()
+                                        details_panel.refresh()
+                                        staged_sources_changed()
+
+                                    selector.on_value_change(selection_changed)
+
+                                try:
+                                    selected = _materialize_source(
+                                        state,
+                                        missing_policy="zero",
+                                    )
+                                except (OSError, TypeError, ValueError):
+                                    selected = []
+                                if not selected:
+                                    dependence = "Not selected"
+                                    size = "0"
+                                else:
+                                    forms = {item.form for item in selected}
+                                    dependence = (
+                                        _DEPENDENCE_LABELS.get(next(iter(forms)), "Unknown")
+                                        if len(forms) == 1
+                                        else "Mixed"
+                                    )
+                                    shapes = [
+                                        " x ".join(str(value) for value in item.values.shape)
+                                        or "1"
+                                        for item in selected
+                                    ]
+                                    size = ", ".join(shapes)
+                                with (
+                                    ui.element("div")
+                                    .classes("dn-mapping-detected-data dn-profile-metadata")
+                                    .mark(f"plotting-detected-data-{state.source_id}")
+                                ):
+                                    ui.label(f"Dependence: {dependence}").classes(
+                                        "dn-mapping-detected-summary "
+                                        "dn-mapping-detected-dependence"
+                                    )
+                                    ui.label(f"Array size: {size}").classes(
+                                        "dn-mapping-detected-summary"
+                                    )
+
+                            details_panel()
 
                     data_upload(
                         accept=_PROFILE_ACCEPT,
@@ -630,118 +727,8 @@ def render(_navigate: Callable[[str], None]) -> None:
                             for source in sources
                             if source.inspection is not None
                         ),
+                        file_details=render_profile_source,
                     )
-
-                    @ui.refreshable
-                    def render_profile_sources() -> None:
-                        for position, state in enumerate(sources, start=1):
-                            with (
-                                ui.element("div")
-                                .classes("dn-plot-profile-source")
-                                .mark(f"plotting-profile-source-{state.source_id}")
-                            ):
-                                with ui.row().classes("dn-plot-profile-source-head"):
-                                    ui.label(
-                                        state.inspection.name
-                                        if state.inspection is not None
-                                        else f"Profile file {position}"
-                                    ).classes(
-                                        "dn-setting-group-title"
-                                    )
-
-                                @ui.refreshable
-                                def selection_panel(
-                                    source: _ProfileSourceState = state,
-                                ) -> None:
-                                    options = _source_selection_options(source)
-                                    # Match Mapping: omit selectors which cannot
-                                    # change anything (plain arrays, headerless
-                                    # vectors, and one-signal-column tables).
-                                    if not options or len(options) <= 1:
-                                        return
-                                    value = list(source.selection)
-                                    selector = (
-                                        ui.select(
-                                            dict(options),
-                                            value=value,
-                                            label="Profiles",
-                                            multiple=True,
-                                            clearable=True,
-                                        )
-                                        .props("dense options-dense use-chips")
-                                        .classes(
-                                            "dn-field dn-mapping-column-select "
-                                            "dn-plot-profile-selector"
-                                        )
-                                        .mark(f"plotting-profile-selection-{source.source_id}")
-                                    )
-                                    if source.inspection is not None:
-                                        selector._props["data-upload-name"] = (
-                                            source.inspection.name
-                                        )
-
-                                    def selection_changed() -> None:
-                                        raw = tuple(
-                                            str(token) for token in (selector.value or [])
-                                        )
-                                        normalized = _normalize_multi_selection(source, raw)
-                                        source.selection = normalized
-                                        expected_value = list(normalized)
-                                        if selector.value != expected_value:
-                                            selector.value = expected_value
-                                            selector.update()
-                                        render_profile_sources.refresh()
-                                        staged_sources_changed()
-
-                                    selector.on_value_change(selection_changed)
-
-                                selection_panel()
-
-                                @ui.refreshable
-                                def summary_panel(
-                                    source: _ProfileSourceState = state,
-                                ) -> None:
-                                    if source.inspection is None:
-                                        return
-                                    try:
-                                        selected = _materialize_source(
-                                            source,
-                                            missing_policy="zero",
-                                        )
-                                    except (OSError, TypeError, ValueError):
-                                        selected = []
-                                    if not selected:
-                                        dependence = "Not selected"
-                                        size = "0"
-                                    else:
-                                        forms = {item.form for item in selected}
-                                        dependence = (
-                                            _DEPENDENCE_LABELS.get(next(iter(forms)), "Unknown")
-                                            if len(forms) == 1
-                                            else "Mixed"
-                                        )
-                                        shapes = [
-                                            " x ".join(str(value) for value in item.values.shape)
-                                            or "1"
-                                            for item in selected
-                                        ]
-                                        size = ", ".join(shapes)
-                                    with (
-                                        ui.element("div")
-                                        .classes("dn-mapping-detected-data dn-profile-metadata")
-                                        .mark(f"plotting-detected-data-{source.source_id}")
-                                    ):
-                                        ui.label(f"Dependence: {dependence}").classes(
-                                            "dn-mapping-detected-summary "
-                                            "dn-mapping-detected-dependence"
-                                        )
-                                        ui.label(f"Array size: {size}").classes(
-                                            "dn-mapping-detected-summary"
-                                        )
-
-                                summary_panel()
-
-                    render_profile_sources()
                     compatibility_note = (
                         ui.label("")
                         .classes("dn-settings-help dn-plot-compatibility-note")
@@ -781,9 +768,11 @@ def render(_navigate: Callable[[str], None]) -> None:
                 with shared_settings_surface:
                     plot_settings = preview_settings_controls(
                         initial_title="Profile",
-                        initial_x_label="Position (bin)",
+                        initial_x_label="Position (kb)",
                         initial_y_label="Value",
                         on_reset_y_limits=lambda: reset_y_limits(),
+                        allow_dual_y_axes=True,
+                        on_reset_secondary_y_limits=lambda: reset_secondary_y_limits(),
                         markers=_plotting_setting_markers(),
                     )
 
@@ -811,7 +800,26 @@ def render(_navigate: Callable[[str], None]) -> None:
                                     _CurveStyle(_LINE_COLOURS[index % len(_LINE_COLOURS)]),
                                 )
                                 with ui.element("div").classes("dn-plot-curve-row"):
-                                    ui.label(item.name).classes("dn-plot-curve-name")
+                                    name = (
+                                        ui.input("Name", value=curve_names.get(item.series_id, item.name))
+                                        .props("dense")
+                                        .classes("dn-field dn-plot-curve-name")
+                                        .mark(f"plotting-curve-name-{index + 1}")
+                                    )
+
+                                    def name_changed(
+                                        _event: Any = None, *,
+                                        series_id: tuple[int, str] = item.series_id,
+                                        control: Any = name,
+                                    ) -> None:
+                                        value = str(control.value or "").strip()
+                                        if value:
+                                            curve_names[series_id] = value
+                                        else:
+                                            curve_names.pop(series_id, None)
+                                        update_combined_plot()
+
+                                    name.on_value_change(name_changed)
                                     color_surface, color = compact_color_input(
                                         "Color",
                                         style.color,
@@ -830,6 +838,13 @@ def render(_navigate: Callable[[str], None]) -> None:
                                         .classes("dn-field dn-field-compact")
                                         .mark(f"plotting-curve-width-{index + 1}")
                                     )
+                                    curve_type = ui.select(
+                                        CURVE_TYPES,
+                                        value=style.line_type or str(plot_settings.line_type.value or "solid"),
+                                        label="Curve type",
+                                    ).props("dense options-dense").classes("dn-field dn-field-compact").mark(
+                                        f"plotting-curve-type-{index + 1}"
+                                    )
 
                                     def style_changed(
                                         _event: Any = None,
@@ -837,6 +852,7 @@ def render(_navigate: Callable[[str], None]) -> None:
                                         series_id: tuple[int, str] = item.series_id,
                                         color_control: Any = color,
                                         width_control: Any = width,
+                                        type_control: Any = curve_type,
                                     ) -> None:
                                         numeric_width = width_control.value
                                         if numeric_width is None:
@@ -850,11 +866,13 @@ def render(_navigate: Callable[[str], None]) -> None:
                                         curve_styles[series_id] = _CurveStyle(
                                             str(color_control.value or _LINE_COLOURS[0]),
                                             parsed_width,
+                                            str(type_control.value or "solid"),
                                         )
                                         update_combined_plot()
 
                                     color.on_value_change(style_changed)
                                     width.on_value_change(style_changed)
+                                    curve_type.on_value_change(style_changed)
 
                 with shared_settings_surface:
                     render_curve_settings()
@@ -960,6 +978,17 @@ def render(_navigate: Callable[[str], None]) -> None:
             allow_histogram=not multiple and form != "xt",
             allow_boxplot=not multiple and form != "xt",
         )
+        dual_available = len(forms) == 2 and not separate and len(unique_forms) == 1 and form in {"x", "t"}
+        plot_settings.dual_y_axes.visible = dual_available
+        dual_active = dual_available and bool(plot_settings.dual_y_axes.value)
+        plot_settings.secondary_y_limit_editor.visible = dual_active
+        plot_settings.secondary_y_axis_label.visible = dual_active
+        for control, label in (
+            (plot_settings.y_minimum, "Y1 min" if dual_active else "Y min"),
+            (plot_settings.y_maximum, "Y1 max" if dual_active else "Y max"),
+            (plot_settings.y_axis_label, "Y1 label" if dual_active else "Y label"),
+        ):
+            control.props(f'label="{label}"')
         # Multiple curves have individual styles in Curves; a single profile
         # uses the shared Style controls, as it does in Mapping.
         if plot_type == "Line" and len(latest_series) > 1:
@@ -981,14 +1010,17 @@ def render(_navigate: Callable[[str], None]) -> None:
             plot_settings.y_axis_label.update()
 
     def clear_automatic_y_limits() -> None:
-        nonlocal updating_y_limits, y_limits_automatic
+        nonlocal updating_y_limits, y_limits_automatic, secondary_y_limits_automatic
         y_limits_automatic = True
+        secondary_y_limits_automatic = True
         updating_y_limits = True
         try:
             plot_settings.y_minimum.value = None
             plot_settings.y_maximum.value = None
             plot_settings.y_minimum.update()
             plot_settings.y_maximum.update()
+            for control in (plot_settings.secondary_y_minimum, plot_settings.secondary_y_maximum):
+                control.set_value(None)
         finally:
             updating_y_limits = False
 
@@ -996,6 +1028,48 @@ def render(_navigate: Callable[[str], None]) -> None:
         clear_automatic_y_limits()
         sync_presentation_options()
         sync_staged_controls(reset_axes=True)
+
+    def dual_y_axes_active(group: Sequence[_PlotSeries], controls: Any = None) -> bool:
+        active_controls = plot_settings if controls is None else controls
+        return bool(
+            active_controls is plot_settings and plot_settings.dual_y_axes.value
+            and str(presentation.value or "Combined") == "Combined"
+            and len(group) == 2 and _combined_series_compatible(group)
+        )
+
+    def current_secondary_y_limits() -> tuple[float, float] | None:
+        lower, upper = plot_settings.secondary_y_minimum.value, plot_settings.secondary_y_maximum.value
+        if lower is None or upper is None:
+            return None
+        limits = float(lower), float(upper)
+        if not np.isfinite(limits).all() or limits[1] <= limits[0]:
+            raise ValueError("Y2 maximum must be greater than its finite minimum.")
+        return limits
+
+    def populate_secondary_y_limits() -> None:
+        nonlocal updating_y_limits, secondary_y_limits_automatic
+        secondary_y_limits_automatic = True
+        if not dual_y_axes_active(latest_series):
+            return
+        limits = automatic_y_limits(
+            [latest_series[1].values], plot_type="Line", histogram_bins=60,
+            density=False, log_y=bool(plot_settings.log_y.value),
+        )
+        updating_y_limits = True
+        try:
+            for control, value in zip(
+                (plot_settings.secondary_y_minimum, plot_settings.secondary_y_maximum), limits, strict=True,
+            ):
+                control.set_value(float(f"{value:.10g}"))
+        finally:
+            updating_y_limits = False
+
+    def reset_secondary_y_limits() -> None:
+        try:
+            populate_secondary_y_limits()
+            update_combined_plot()
+        except ValueError as exc:
+            ui.notify(str(exc), type="negative")
 
     def current_y_limits(controls: Any = None) -> tuple[float, float] | None:
         active_controls = plot_settings if controls is None else controls
@@ -1038,7 +1112,7 @@ def render(_navigate: Callable[[str], None]) -> None:
         ):
             return
         limits = automatic_y_limits(
-            [item.values for item in latest_series],
+            [item.values for item in (latest_series[:1] if dual_y_axes_active(latest_series) else latest_series)],
             plot_type=plot_type,
             histogram_bins=_integer_value(plot_settings.histogram_bins, "Histogram bins"),
             density=bool(plot_settings.density.value),
@@ -1071,6 +1145,8 @@ def render(_navigate: Callable[[str], None]) -> None:
             plot_settings.y_maximum.update()
         finally:
             updating_y_limits = False
+        if secondary_y_limits_automatic:
+            populate_secondary_y_limits()
 
     def reset_y_limits() -> None:
         try:
@@ -1103,7 +1179,7 @@ def render(_navigate: Callable[[str], None]) -> None:
             individual_styles = use_curve_styles and len(group) > 1
             lines = tuple(
                 PreviewLine(
-                    name=item.name,
+                    name=curve_names.get(item.series_id, item.name),
                     x=np.arange(item.values.size, dtype=float),
                     y=np.asarray(item.values, dtype=float).reshape(-1),
                     color=(
@@ -1116,8 +1192,10 @@ def render(_navigate: Callable[[str], None]) -> None:
                         if individual_styles
                         else _numeric_value(active_controls.line_width, "Curve thickness")
                     ),
+                    line_type=curve_styles[item.series_id].line_type if individual_styles else None,
+                    z=3 + len(group) - index,
                 )
-                for item in group
+                for index, item in enumerate(group)
             )
         else:
             values = profile.reshape(-1)
@@ -1166,16 +1244,26 @@ def render(_navigate: Callable[[str], None]) -> None:
             y_limits=current_y_limits(active_controls),
             x_limits=axis_limits_from_controls(active_controls, "x"),
             z_limits=axis_limits_from_controls(active_controls, "z"),
+            aspect_ratio=(
+                float(active_controls.aspect_ratio.value)
+                if active_controls.aspect_ratio.value is not None else None
+            ),
             series_label=first.name,
             values=values,
             x_axis=x_axis,
             y_axis=y_axis,
             lines=lines,
             line_width=_numeric_value(active_controls.line_width, "Curve thickness"),
+            line_type=str(active_controls.line_type.value or "solid"),
+            secondary_y_label=(
+                str(plot_settings.secondary_y_axis_label.value or "")
+                if dual_y_axes_active(group, active_controls) else None
+            ),
+            secondary_y_limits=(current_secondary_y_limits() if dual_y_axes_active(group, active_controls) else None),
             show_markers=False,
             legend_position=str(active_controls.legend_position.value or "Top right"),
             show_grid=bool(active_controls.show_grid.value),
-            interactive=first.form not in {"t", "xt"},
+            interactive=True,
         )
 
     def sync_separate_controls(
@@ -1361,6 +1449,7 @@ def render(_navigate: Callable[[str], None]) -> None:
             ),
         )
         holder["context"] = context
+        controls.line_type.set_value(curve_styles.get(first.series_id, _CurveStyle(_LINE_COLOURS[0])).line_type or str(plot_settings.line_type.value or "solid"))
         if saved_settings is not None:
             restore_separate_plot_settings(controls, saved_settings)
 
@@ -1577,6 +1666,11 @@ def render(_navigate: Callable[[str], None]) -> None:
                 render_latest_plot()
                 return
             for group, chart in zip(groups, result_charts):
+                if not plotting_settings_ready(
+                    plot_settings, plot_type=group_plot_type(group),
+                    allow_empty_y_limits=y_limits_automatic,
+                ):
+                    return
                 options = plot_options(group)
                 if len(latest_series) == 1 and latest_series[0].form in {"x", "t"}:
                     # Retain edits from Style if this profile later joins a
@@ -1631,6 +1725,8 @@ def render(_navigate: Callable[[str], None]) -> None:
                 style = curve_styles[first.series_id]
                 plot_settings.primary_color.set_value(style.color)
                 plot_settings.line_width.set_value(style.width)
+                if style.line_type is not None:
+                    plot_settings.line_type.set_value(style.line_type)
             sync_presentation_options(sync_action=False)
             histogram_bin_sync.sync_to_data(redraw=False)
             sync_staged_controls(reset_axes=False)
@@ -1677,10 +1773,35 @@ def render(_navigate: Callable[[str], None]) -> None:
         y_limits_automatic = False
         update_combined_plot()
 
+    def custom_secondary_y_limits_changed() -> None:
+        nonlocal secondary_y_limits_automatic
+        if updating_y_limits or plot_settings._resetting_limits:
+            return
+        secondary_y_limits_automatic = False
+        update_combined_plot()
+
+    def dual_y_axes_changed() -> None:
+        clear_automatic_y_limits()
+        sync_staged_controls()
+        if dual_y_axes_active(latest_series) and plot_settings.secondary_y_axis_label.value == "Value":
+            plot_settings.secondary_y_axis_label.set_value(latest_series[1].name)
+        try:
+            populate_automatic_y_limits()
+            # ECharts merges axes when the series count stays unchanged.
+            # Rebuild only when switching between one and two Y axes so no
+            # previous right axis survives turning this option off.
+            render_latest_plot()
+        except ValueError as exc:
+            ui.notify(str(exc), type="negative")
+
     def sync_guide_visibility() -> None:
         sync_staged_controls(reset_axes=False)
 
     def live_setting_changed() -> None:
+        update_combined_plot()
+
+    def line_type_changed() -> None:
+        render_curve_settings.refresh()
         update_combined_plot()
 
     def x_scale_changed() -> None:
@@ -1712,7 +1833,12 @@ def render(_navigate: Callable[[str], None]) -> None:
         on_log_x_change=x_scale_changed,
         on_y_limits_change=custom_y_limits_changed,
         on_visibility_change=sync_guide_visibility,
+        on_line_type_change=line_type_changed,
     )
+    plot_settings.dual_y_axes.on_value_change(dual_y_axes_changed)
+    plot_settings.secondary_y_minimum.on_value_change(custom_secondary_y_limits_changed)
+    plot_settings.secondary_y_maximum.on_value_change(custom_secondary_y_limits_changed)
+    plot_settings.secondary_y_axis_label.on_value_change(live_setting_changed)
     presentation.on_value_change(presentation_changed)
     plot_button.on_click(plot_profiles)
     sync_presentation_options()
@@ -1724,6 +1850,7 @@ def render(_navigate: Callable[[str], None]) -> None:
         result_charts.clear()
         separate_plot_contexts.clear()
         curve_styles.clear()
+        curve_names.clear()
         separate_plot_settings.clear()
         shared_settings_surface.visible = True
         shared_settings_surface.update()

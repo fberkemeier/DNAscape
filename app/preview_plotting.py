@@ -12,6 +12,7 @@ import numpy as np
 from nicegui import ui
 
 from dnascape.workflows.preview import (
+    CURVE_TYPES,
     PALETTES as PALETTES,
     MAX_HEATMAP_ROWS as MAX_HEATMAP_ROWS,
     MAX_HEATMAP_COLUMNS as MAX_HEATMAP_COLUMNS,
@@ -143,6 +144,15 @@ class PreviewSettingsControls:
     z_minimum: Any = None
     z_maximum: Any = None
     reset_z_limits: Any = None
+    aspect_ratio: Any = None
+    reset_aspect_ratio: Any = None
+    line_type: Any = None
+    dual_y_axes: Any = None
+    secondary_y_axis_label: Any = None
+    secondary_y_limit_editor: Any = None
+    secondary_y_minimum: Any = None
+    secondary_y_maximum: Any = None
+    reset_secondary_y_limits: Any = None
     _resetting_limits: bool = field(default=False, init=False, repr=False)
     _automatic_axes: set[str] = field(default_factory=lambda: {"x", "z"}, init=False, repr=False)
 
@@ -161,6 +171,8 @@ class PreviewChartHandle:
     canvas: Any
     vector: Any
     settings: PreviewSettingsControls | None = None
+    zoom: Any = None
+    zoom_card: Any = None
     _revision: int = field(default=0, init=False, repr=False)
     _vector_revision: int = field(default=-1, init=False, repr=False)
     _vector_capture_revision: int = field(default=-1, init=False, repr=False)
@@ -183,7 +195,13 @@ class PreviewChartHandle:
 
         if self.settings is not None:
             sync_preview_axis_limits(self.settings, self.options)
+            self._apply_aspect_ratio()
         self.canvas.update()
+        self.invalidate_export()
+
+    def invalidate_export(self) -> None:
+        """Discard SVG captures after a data, style, or browser theme change."""
+
         self._revision += 1
         self._vector_capture = None
         self._vector_capture_revision = -1
@@ -192,6 +210,30 @@ class PreviewChartHandle:
     def attach_settings(self, controls: PreviewSettingsControls) -> None:
         self.settings = controls
         sync_preview_axis_limits(controls, self.options)
+        self._apply_aspect_ratio()
+
+    def _apply_aspect_ratio(self) -> None:
+        control = self.settings.aspect_ratio if self.settings is not None else None
+        ratio = _positive_finite(control.value) if control is not None else None
+        self.options["dnascapeAspectRatio"] = ratio
+        size = "height: 360px; aspect-ratio: auto; min-height: 0;"
+        if ratio is not None:
+            size = f"height: auto; aspect-ratio: {ratio}; min-height: 240px;"
+        for chart in (self.canvas, self.vector):
+            if hasattr(chart, "style"):
+                chart.style("width: 100%; " + size)
+        if hasattr(self.vector, "style"):
+            self.vector.style("bottom: auto;")
+        if self.zoom is not None:
+            self.zoom.style(
+                "width: 100%; " + size + " flex: none;" if ratio is not None
+                else "width: 100%; height: 100%; min-height: 0; aspect-ratio: auto; flex: 1 1 auto;"
+            )
+        if self.zoom_card is not None:
+            self.zoom_card.style(
+                "height: auto; max-height: 90dvh !important; overflow: auto;" if ratio is not None
+                else "height: min(90dvh, 56rem); max-height: none !important; overflow: hidden;"
+            )
 
     async def run_chart_method(
         self,
@@ -342,6 +384,9 @@ def plotting_settings_ready(
         return False
     if plot_type == "Line" and _positive_finite(controls.line_width.value) is None:
         return False
+    if controls.aspect_ratio is not None and controls.aspect_ratio.value is not None:
+        if _positive_finite(controls.aspect_ratio.value) is None:
+            return False
     for axis in (("x", "z") if plot_type == "Heatmap" else ("x",) if plot_type != "Histogram" else ()):
         if axis in getattr(controls, "_automatic_axes", ()):
             continue
@@ -354,7 +399,8 @@ def plotting_settings_ready(
     y_minimum = controls.y_minimum.value
     y_maximum = controls.y_maximum.value
     if y_minimum is None and y_maximum is None:
-        return allow_empty_y_limits
+        if not allow_empty_y_limits:
+            return False
     if (y_minimum is None) != (y_maximum is None):
         return False
     if y_minimum is not None and (
@@ -363,6 +409,15 @@ def plotting_settings_ready(
         return False
     if y_minimum is not None and float(y_maximum) <= float(y_minimum):
         return False
+    dual_y_axes = getattr(controls, "dual_y_axes", None)
+    if dual_y_axes is not None and dual_y_axes.visible and dual_y_axes.value:
+        lower, upper = controls.secondary_y_minimum.value, controls.secondary_y_maximum.value
+        if (lower is None) != (upper is None):
+            return False
+        if lower is not None and (
+            _finite_number(lower) is None or _finite_number(upper) is None or float(upper) <= float(lower)
+        ):
+            return False
     return True
 
 
@@ -515,12 +570,13 @@ def _mark(control: Any, markers: Mapping[str, str], key: str) -> Any:
 def _axis_limit_editor(axis: str, markers: Mapping[str, str]) -> tuple[Any, Any, Any, Any]:
     """Create a matching pair of limits and an always-available reset button."""
 
+    axis_label = "Y2" if axis == "secondary_y" else axis.upper()
     with _mark(
         ui.element("div").classes("dn-y-limit-editor"), markers, f"{axis}_limit_editor",
     ) as editor:
         minimum, maximum = (
             _mark(
-                ui.number(label=f"{axis.upper()} {suffix}", value=None, **({"step": 0.1} if axis == "y" else {}))
+                ui.number(label=f"{axis_label} {suffix}", value=None, **({"step": 0.1} if axis in {"y", "secondary_y"} else {}))
                 .props('dense inputmode=decimal placeholder="Auto"')
                 .classes("dn-field dn-field-compact"),
                 markers,
@@ -530,7 +586,7 @@ def _axis_limit_editor(axis: str, markers: Mapping[str, str]) -> tuple[Any, Any,
         )
         reset = _mark(
             ui.button(icon="restart_alt")
-            .props(f'flat round dense aria-label="Reset {axis.upper()} limits to data range"')
+            .props(f'flat round dense aria-label="Reset {axis_label} limits to data range"')
             .classes("dn-y-limit-reset"),
             markers,
             f"reset_{axis}_limits",
@@ -557,6 +613,15 @@ _PREVIEW_SETTING_MARKER_SUFFIXES: dict[str, str] = {
     "y_axis_options": "y-axis-options",
     "z_axis_options": "z-axis-options",
     "line_width": "line-width",
+    "line_type": "curve-type",
+    "dual_y_axes": "dual-y-axes",
+    "secondary_y_axis_label": "y2-axis-label",
+    "secondary_y_limit_editor": "y2-limit-editor",
+    "secondary_y_minimum": "y2-minimum",
+    "secondary_y_maximum": "y2-maximum",
+    "reset_secondary_y_limits": "reset-y2-limits",
+    "aspect_ratio": "aspect-ratio",
+    "reset_aspect_ratio": "reset-aspect-ratio",
     "histogram_bins": "histogram-bins",
     "histogram_bin_size": "histogram-bin-size",
     "histogram_touching": "histogram-touching",
@@ -639,6 +704,15 @@ def compact_color_input(
         )
         if marker:
             control.mark(marker)
+
+        def sync_brand_swatch() -> None:
+            control.button.classes(
+                add="dn-brand-color-swatch" if str(control.value).casefold() == "#b03412" else None,
+                remove=None if str(control.value).casefold() == "#b03412" else "dn-brand-color-swatch",
+            )
+
+        control.on_value_change(sync_brand_swatch)
+        sync_brand_swatch()
     return surface, control
 
 
@@ -649,6 +723,8 @@ def preview_settings_controls(
     initial_y_label: str,
     on_reset_y_limits: Callable[[], Any],
     markers: Mapping[str, str] | None = None,
+    allow_dual_y_axes: bool = False,
+    on_reset_secondary_y_limits: Callable[[], Any] | None = None,
 ) -> PreviewSettingsControls:
     """Render the common, thematically grouped preview settings panel."""
 
@@ -660,11 +736,13 @@ def preview_settings_controls(
         icon="palette",
         extra_classes="dn-preview-settings-section",
     ):
-        settings_grid = ui.element("div").classes("dn-preview-settings-grid")
+        settings_grid = ui.element("div").classes(
+            "dn-preview-settings-grid dn-preview-settings-main-grid"
+        )
         _mark(settings_grid, markers, "container")
         with settings_grid:
             with ui.column().classes("dn-preview-setting-group"):
-                ui.label("Plot").classes("dn-setting-group-title")
+                ui.label("Style").classes("dn-setting-group-title")
                 view = _mark(
                     ui.select(
                         ["Default", "Histogram"],
@@ -756,8 +834,6 @@ def preview_settings_controls(
                     )
                     individual_profile_count.tooltip("Show up to 50 retained simulation profiles.")
 
-            with ui.column().classes("dn-preview-setting-group"):
-                ui.label("Style").classes("dn-setting-group-title")
                 with ui.element("div").classes("dn-preview-colour-grid"):
                     primary_color_surface, primary_color = compact_color_input(
                         "Color",
@@ -766,7 +842,7 @@ def preview_settings_controls(
                     )
                     secondary_color_surface, secondary_color = compact_color_input(
                         "Second color",
-                        "#2c7f77",
+                        "#2596be",
                         marker=markers.get("secondary_color"),
                     )
                 secondary_color_surface.visible = False
@@ -794,6 +870,27 @@ def preview_settings_controls(
                     markers,
                     "line_width",
                 )
+                line_type = _mark(
+                    ui.select(CURVE_TYPES, value="solid", label="Curve type")
+                    .props("dense options-dense").classes("dn-field"), markers, "line_type",
+                )
+                line_type.tooltip("Default pattern; each curve can use its own.")
+                with ui.element("div").classes("dn-aspect-ratio-editor"):
+                    aspect_ratio = _mark(
+                        ui.number(label="Aspect ratio", value=None, min=0.25, max=5, step=0.1)
+                        .props('dense placeholder="Default"').classes("dn-field dn-field-compact"),
+                        markers, "aspect_ratio",
+                    )
+                    aspect_ratio.tooltip(
+                        "Width divided by height. Default keeps the current preview size; "
+                        "short plots retain enough height for the axes and colorbar."
+                    )
+                    reset_aspect_ratio = _mark(
+                        ui.button(icon="restart_alt").props(
+                            'flat round dense aria-label="Reset aspect ratio to default"'
+                        ).classes("dn-y-limit-reset"), markers, "reset_aspect_ratio",
+                    )
+                    reset_aspect_ratio.tooltip("Reset to the default aspect ratio")
                 with ui.element("div").classes("dn-inline-actions"):
                     density = _mark(
                         ui.checkbox("Density", value=False),
@@ -873,6 +970,18 @@ def preview_settings_controls(
                 x_limit_editor, x_minimum, x_maximum, reset_x_limits = _axis_limit_editor("x", markers)
                 _, y_minimum, y_maximum, reset_y_limits = _axis_limit_editor("y", markers)
                 z_limit_editor, z_minimum, z_maximum, reset_z_limits = _axis_limit_editor("z", markers)
+                dual_y_axes = secondary_y_axis_label = secondary_y_limit_editor = None
+                secondary_y_minimum = secondary_y_maximum = reset_secondary_y_limits = None
+                if allow_dual_y_axes:
+                    dual_y_axes = _mark(ui.switch("Two Y axes", value=False), markers, "dual_y_axes")
+                    dual_y_axes.tooltip("One Y axis for each of the two curves in a combined plot.")
+                    dual_y_axes.visible = False
+                    secondary_y_axis_label = _mark(
+                        ui.input(label="Y2 label", value="Value").props("dense").classes("dn-field"),
+                        markers, "secondary_y_axis_label",
+                    )
+                    secondary_y_limit_editor, secondary_y_minimum, secondary_y_maximum, reset_secondary_y_limits = _axis_limit_editor("secondary_y", markers)
+                    secondary_y_axis_label.visible = secondary_y_limit_editor.visible = False
 
             with ui.column().classes("dn-preview-setting-group"):
                 ui.label("Guides").classes("dn-setting-group-title")
@@ -973,8 +1082,21 @@ def preview_settings_controls(
         z_minimum=z_minimum,
         z_maximum=z_maximum,
         reset_z_limits=reset_z_limits,
+        aspect_ratio=aspect_ratio,
+        reset_aspect_ratio=reset_aspect_ratio,
+        line_type=line_type,
+        dual_y_axes=dual_y_axes,
+        secondary_y_axis_label=secondary_y_axis_label,
+        secondary_y_limit_editor=secondary_y_limit_editor,
+        secondary_y_minimum=secondary_y_minimum,
+        secondary_y_maximum=secondary_y_maximum,
+        reset_secondary_y_limits=reset_secondary_y_limits,
     )
     reset_y_limits.on_click(lambda: _reset_preview_axis(controls, "y", on_reset_y_limits))
+    if reset_secondary_y_limits is not None:
+        reset_secondary_y_limits.on_click(lambda: _reset_preview_axis(
+            controls, "secondary_y", on_reset_secondary_y_limits or (lambda: None),
+        ))
     return controls
 
 
@@ -988,6 +1110,7 @@ def bind_preview_settings_updates(
     on_log_x_change: Callable[[], Any],
     on_y_limits_change: Callable[[], Any],
     on_visibility_change: Callable[[], Any],
+    on_line_type_change: Callable[[], Any] | None = None,
 ) -> None:
     """Wire the common plotting settings with identical live behavior.
 
@@ -1007,6 +1130,7 @@ def bind_preview_settings_updates(
         controls.log_z,
         controls.invert_z,
         controls.line_width,
+        controls.aspect_ratio,
         controls.histogram_touching,
         controls.histogram_statistics_position,
         controls.legend_position,
@@ -1016,6 +1140,8 @@ def bind_preview_settings_updates(
     ):
         control.on_value_change(on_redraw)
     controls.histogram_boundary.on_value_change(on_histogram_range_change)
+    controls.line_type.on_value_change(on_line_type_change or on_redraw)
+    controls.reset_aspect_ratio.on_click(lambda: controls.aspect_ratio.set_value(None))
     def refresh_visibility_and_plot() -> None:
         # One event should produce one redraw.  This matters for a dense
         # heatmap, where duplicate browser updates are visibly expensive.
@@ -1104,6 +1230,7 @@ def sync_preview_settings_visibility(
     controls.primary_color_surface.visible = not heatmap
     controls.secondary_color_surface.visible = line and multiple_curves
     controls.line_width.visible = line
+    controls.line_type.visible = line
     legend_available = line or (histogram and multiple_curves)
     controls.show_legend.visible = legend_available
     controls.legend_position.visible = legend_available and bool(controls.show_legend.value)
@@ -1120,14 +1247,14 @@ def render_preview_chart(
 
     from app.pages.common import plot_toolbar
 
-    with ui.dialog() as zoom_dialog, ui.card().classes("dn-plot-dialog"):
+    with ui.dialog() as zoom_dialog, ui.card().classes("dn-plot-dialog") as zoom_card:
         with ui.row().classes("dn-plot-dialog-header"):
             ui.label(title).classes("dn-panel-title")
             ui.space()
             ui.button(icon="close", on_click=zoom_dialog.close).props(
                 'flat round dense aria-label="Close enlarged plot"'
             )
-        ui.echart(options, renderer="canvas").classes("dn-chart-wrap-large").style(
+        zoom_chart = ui.echart(options, renderer="canvas").classes("dn-chart-wrap-large").style(
             "width: 100%; min-height: 0; height: 100%;"
         )
     with ui.element("div").classes("dn-plot-shell"):
@@ -1144,4 +1271,6 @@ def render_preview_chart(
             )
         )
         plot_toolbar(on_zoom=zoom_dialog.open, on_download=on_download)
-    return PreviewChartHandle(canvas=chart, vector=vector_chart)
+    handle = PreviewChartHandle(canvas=chart, vector=vector_chart, zoom=zoom_chart, zoom_card=zoom_card)
+    chart.on("brandTheme", handle.invalidate_export)
+    return handle

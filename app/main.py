@@ -75,6 +75,9 @@ def index() -> None:
 
     ui.add_css(STYLE_PATH.read_text(encoding="utf-8"))
     ui.add_body_html(
+        "<script>" + (STYLE_PATH.parent / "brand_theme.js").read_text(encoding="utf-8") + "</script>"
+    )
+    ui.add_body_html(
         """
         <script>
         (() => {

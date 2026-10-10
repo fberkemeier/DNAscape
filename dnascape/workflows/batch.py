@@ -136,6 +136,18 @@ def target_first_combination_names(
     )
 
 
+def combination_curve_label(
+    sources: Sequence[CombinationSource], indices: Sequence[int],
+) -> str:
+    """Name overlaid curves after the inputs that vary between runs."""
+
+    return " · ".join(
+        f"{source.label} {index + 1}"
+        for source, index in zip(sources, indices, strict=True)
+        if len(source.components) > 1
+    )
+
+
 def combination_names(
     target_label: str,
     sources: Sequence[CombinationSource],

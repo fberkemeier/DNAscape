@@ -152,6 +152,21 @@ def test_mapping_batch_raw_rows_are_independent_and_bulk_uses_each_preference(
             await user.should_see("Datasets: 2", retries=40)
             user.find(marker="action-map").click()
             await user.should_see(marker="mapping-batch-raw-files", retries=60)
+            assert user.client is not None
+            user.find("Plotting settings").click()
+            shared_type = next(iter(user.find(marker="mapping-curve-type").elements))
+            with user.client:
+                shared_type.set_value("dashed")
+            await asyncio.sleep(0)
+            user.find("Curves").click()
+            individual_type = next(iter(user.find(marker="mapping-dataset-curve-type-2").elements))
+            assert "default" not in individual_type.options
+            assert individual_type.value == "dashed"
+            with user.client:
+                individual_type.set_value("dotted")
+            await asyncio.sleep(0)
+            chart = next(iter(user.find(marker="mapping-result-plot").elements))
+            assert [series["lineStyle"]["type"] for series in chart.options["series"]] == ["dashed", "dotted"]
             stats = next(iter(user.find(marker="mapping-stats").elements))
 
             first_row = next(

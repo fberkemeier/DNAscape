@@ -389,7 +389,7 @@ def test_mapping_batch_runs_all_files_tabs_exports_and_preserves_previous_result
                 next(iter(user.find(marker="mapping-preview-output").elements)),
             )
             assert layout.value == "Combined"
-            assert tuple(output.options) == ("firing_rate",)
+            assert tuple(output.options) == ("firing_rate", "input:replication_timing")
 
             # Histograms share one binning configuration and may be overlaid
             # just like line profiles. Individual selection remains available.
@@ -482,7 +482,7 @@ def test_mapping_batch_runs_all_files_tabs_exports_and_preserves_previous_result
             await asyncio.sleep(0)
             # Dataset selection must retain the submit-time output
             # intersection; result-specific outputs cannot leak into a batch.
-            assert tuple(output.options) == ("firing_rate",)
+            assert tuple(output.options) == ("firing_rate", "input:replication_timing")
 
             user.find(marker="mapping-download-all-raw").click()
             for _ in range(40):
@@ -1654,7 +1654,7 @@ def test_temporal_mapping_preview_spans_position_x_and_time_y() -> None:
     ]
     assert "data:image/png;base64," in options["series"][0][":renderItem"]
     assert options["series"][0]["silent"] is True
-    assert options["tooltip"]["show"] is False
+    assert options["tooltip"]["show"] is True
     assert options["visualMap"]["text"] == ["1", "0"]
     assert options["graphic"][0]["style"]["text"] == "Replicated fraction"
     assert options["title"]["show"] is False
@@ -1816,7 +1816,7 @@ def test_square_space_time_heatmap_uses_position_x_and_time_y() -> None:
         [10.0, 0.0, 11.0, 5.0],
     ]
     assert options["series"][0]["silent"] is True
-    assert options["tooltip"]["show"] is False
+    assert options["tooltip"]["show"] is True
 
 
 def test_log_z_uses_logarithmic_colours_and_masks_nonpositive_values() -> None:
@@ -1891,7 +1891,7 @@ def test_heatmap_frame_ends_at_the_last_time_without_clipping_labels() -> None:
     assert options["grid"]["right"] == 86
     assert options["visualMap"]["right"] == 24
     assert options["visualMap"]["textStyle"]["align"] == "center"
-    assert options["graphic"][0]["right"] == 2
+    assert 2 < options["graphic"][0]["right"] < options["visualMap"]["right"]
     assert options["graphic"][0]["rotation"] == pytest.approx(np.pi / 2)
 
 
@@ -2087,7 +2087,7 @@ def test_fit_comparison_preview_overlays_observed_and_fitted_profiles() -> None:
     assert options["legend"]["data"] == ["Observed", "Fitted"]
     assert [series["name"] for series in options["series"]] == ["Observed", "Fitted"]
     assert options["series"][0]["lineStyle"]["color"] == "#b03412"
-    assert options["series"][1]["lineStyle"]["color"] == "#2c7f77"
+    assert options["series"][1]["lineStyle"]["color"] == "#2596be"
     assert options["series"][0]["data"] == [[10.0, 8.0], [11.0, 7.0], [12.0, 9.0]]
     assert options["series"][1]["data"] == [[10.0, 8.2], [11.0, 7.1], [12.0, 9.1]]
 

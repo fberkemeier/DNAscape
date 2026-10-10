@@ -667,7 +667,7 @@ def _preview_options(preview: Any) -> dict[str, Any]:
     return build_preview_plot_options(
         plot_type="Line",
         title="Prepared profile",
-        x_label=str(preview.x_label),
+        x_label="Position (kb)",
         y_label=value_label,
         color="#b03412",
         palette="viridis",

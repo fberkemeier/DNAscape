@@ -208,7 +208,7 @@ def workflow_action_icon(symbol: str) -> str:
 def workflow_action_button(label: str, *, symbol: str, on_click: Callable[..., Any] | None = None) -> Any:
     return (
         ui.button(label, icon=workflow_action_icon(symbol), on_click=on_click)
-        .props("no-caps").classes("dn-action-primary").mark(f"action-{label.casefold()}")
+        .props("no-caps").classes("dn-action-primary dn-workflow-action").mark(f"action-{label.casefold()}")
     )
 
 
@@ -216,7 +216,7 @@ def plot_action_button() -> Any:
     """Create the Plot action with the shared axis-and-line symbol."""
 
     with (
-        ui.button().props("no-caps").classes("dn-action-primary dn-plot-action").mark("action-plot")
+        ui.button().props("no-caps").classes("dn-action-primary dn-workflow-action dn-plot-action").mark("action-plot")
     ) as button:
         ui.html(PLOT_ICON_SVG).classes("dn-action-plot-icon dn-plot-icon-wrap")
         ui.label("Plot").classes("dn-action-label")
@@ -318,6 +318,7 @@ def data_upload(
     max_files: int | None = None,
     hide_when_loaded: bool = False,
     initial_names: Sequence[str] = (),
+    file_details: Callable[[str], None] | None = None,
 ) -> Any:
     """Render the shared drag-and-drop surface with immediate upload.
 
@@ -325,7 +326,8 @@ def data_upload(
     DNAscape replaces it with a compact filename row and an explicit remove
     button. ``on_clear`` is the authoritative hook for an explicit removal;
     accepted replacements are committed by ``on_upload`` without briefly
-    clearing the previous page state.
+    clearing the previous page state. ``file_details`` can render controls or
+    metadata immediately below each completed filename row.
     """
 
     uploaded_names: list[str] = list(dict.fromkeys(str(name) for name in initial_names))
@@ -458,6 +460,8 @@ def data_upload(
                         if upload_state.locked or inspecting_names:
                             remove.disable()
                         remove.tooltip(f"Remove {name}")
+                    if file_details is not None:
+                        file_details(name)
                 if multiple and len(uploaded_names) > 1:
 
                     def remove_all_current_files(_event: Any = None) -> None:

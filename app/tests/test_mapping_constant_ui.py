@@ -159,6 +159,16 @@ def test_mapping_constants_pairwise_and_all_combinations_are_deterministic(
                 first.set_value(1.2)
                 second.set_value(1.8)
 
+            # Constant lists remain editable when profiles are already uploaded.
+            await user.should_see("Fork speed 1")
+            await user.should_see("Fork speed 2")
+            user.find(marker="mapping-input-fork-speed-constant-add").click()
+            await user.should_see(marker="mapping-input-fork-speed-constant-3", retries=30)
+            user.find(marker="mapping-input-fork-speed-constant-remove-3").click()
+            await user.should_not_see(marker="mapping-input-fork-speed-constant-3", retries=30)
+            assert _constant(user, 1).value == pytest.approx(1.2)
+            assert _constant(user, 2).value == pytest.approx(1.8)
+
             user.find(marker="action-map").click()
             await _wait_for(lambda: len(requests) == 2)
             await user.should_see(marker="mapping-result-plot", retries=60)
@@ -175,6 +185,37 @@ def test_mapping_constants_pairwise_and_all_combinations_are_deterministic(
                 float(np.asarray(request.inputs["replication_timing"])[0])
                 for request in requests
             ] == [8.0, 6.0]
+            chart = next(iter(user.find(marker="mapping-result-plot").elements))
+            assert [series["name"] for series in chart.options["series"]] == [
+                "Replication timing 1 · Fork speed 1",
+                "Replication timing 2 · Fork speed 2",
+            ]
+            output = next(iter(user.find(marker="mapping-preview-output").elements))
+            assert output.options["input:replication_timing"] == "Replication timing (input)"
+            assert "input:fork_speed" not in output.options
+            await user.should_see(marker="mapping-dataset-name-1", retries=30)
+            name = next(iter(user.find(marker="mapping-dataset-name-1").elements))
+            default_name = name.value
+            with user.client:
+                name.set_value("First fit")
+            await asyncio.sleep(0)
+            renamed = next(iter(user.find(marker="mapping-result-plot").elements))
+            assert renamed.options["series"][0]["name"] == "First fit"
+            with user.client:
+                name.set_value("")
+            await asyncio.sleep(0)
+            restored = next(iter(user.find(marker="mapping-result-plot").elements))
+            assert restored.options["series"][0]["name"] == default_name
+            with user.client:
+                output.set_value("input:replication_timing")
+            await asyncio.sleep(0)
+            chart = next(iter(user.find(marker="mapping-result-plot").elements))
+            assert [point[1] for point in chart.options["series"][0]["data"]] == [8.0, 7.0, 9.0]
+            layout = next(iter(user.find(marker="mapping-preview-layout").elements))
+            assert layout.value == "Combined"
+            with user.client:
+                layout.set_value("Individual")
+            await asyncio.sleep(0)
 
             matching = cast(
                 Select,
@@ -211,6 +252,7 @@ def test_mapping_constants_pairwise_and_all_combinations_are_deterministic(
                 (6.0, 1.2),
                 (6.0, 1.8),
             ]
+            await _wait_for(lambda: layout.value == "Combined")
 
     asyncio.run(scenario())
 

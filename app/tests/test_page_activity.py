@@ -143,6 +143,45 @@ def test_background_workflow_finishes_and_stops_across_page_switches(
         settings.preserve_page_state = previous
 
 
+@pytest.mark.parametrize(
+    ("source", "message"),
+    (
+        ("firing-rate", "Upload firing rate data."),
+        ("fork-speed", "Upload fork speed data."),
+    ),
+)
+def test_missing_simulation_profile_clears_activity(
+    monkeypatch: pytest.MonkeyPatch, source: str, message: str,
+) -> None:
+    def unexpected_worker(*_args: Any, **_kwargs: Any) -> None:
+        pytest.fail("A simulation worker must not start without its input profile.")
+
+    monkeypatch.setattr(simulation, "run_constant_simulation", unexpected_worker)
+
+    async def scenario() -> None:
+        async with user_simulation(index) as user:
+            await user.open("/")
+            user.find(marker="nav-simulation").click()
+            mode = next(iter(user.find(marker=f"source-{source}-mode").elements))
+            with user.client:
+                mode.set_value("profile")
+            user.find(marker="action-simulate").click()
+
+            await user.should_see(message, retries=60)
+            await user.should_see("Check the settings")
+            await user.should_not_see(marker="nav-simulation-running", retries=30)
+            await user.should_not_see(marker="nav-simulation-complete")
+            await user.should_not_see(marker="simulation-progress")
+            button = next(iter(user.find(marker="action-simulate").elements))
+            assert button.text == "Simulate"
+            assert button.enabled
+            assert mode.enabled
+            with user.client:
+                assert not current_page_activity().retain_page("simulation")
+
+    asyncio.run(scenario())
+
+
 def test_mapping_and_simulation_can_run_together_with_independent_completion(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

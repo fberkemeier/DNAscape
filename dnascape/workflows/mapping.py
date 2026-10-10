@@ -146,6 +146,7 @@ class MappingResult:
     inter_origin_distances_truncated: bool = False
     fit_mse: float | None = None
     diagnostics: Mapping[str, Any] = field(default_factory=dict)
+    input_axes: Mapping[str, tuple[np.ndarray, np.ndarray]] = field(default_factory=dict)
 
 
 @dataclass(frozen=True, slots=True)
@@ -1858,7 +1859,7 @@ def run_mapping(
             returned_time,
         )
         report(1.0, "Mapping complete")
-        return MappingResult(
+        result = MappingResult(
             target=prepared.route.target,
             target_key=prepared.route.target_key,
             target_label=mapping_target(prepared.route.target_key).label,
@@ -1888,6 +1889,9 @@ def run_mapping(
                 if key in _DIAGNOSTIC_KEYS
             }),
         )
+        from .preview_inputs import add_mapping_input_previews
+
+        return add_mapping_input_previews(result, prepared)
     finally:
         _RUN_LOCK.release()
 

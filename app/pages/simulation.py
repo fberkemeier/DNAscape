@@ -32,6 +32,9 @@ from app.mapping_uploads import (
     materialize_upload,
 )
 from app.page_activity import current_page_activity
+from dnascape.workflows.preview_inputs import (
+    INPUT_PREFIX, add_simulation_input_previews, input_preview_result,
+)
 from app.pages.common import (
     DATA_ICON,
     RawOutputControls,
@@ -51,6 +54,7 @@ from app.pages.common import (
     two_column_fields,
 )
 from app.preview_plotting import (
+    CURVE_TYPES,
     axis_limits_from_controls,
     FIXED_QUANTITY_Y_LIMITS,
     HistogramBinSynchronizer,
@@ -155,16 +159,34 @@ _SPACETIME_OUTPUTS = {
     ),
 }
 _STANDARD_OUTPUTS = {**_BASE_OUTPUTS, **_DISTRIBUTION_OUTPUTS}
+_INPUT_OUTPUTS = {
+    "Firing rate (input)": _OutputSpec("input:firing_rate", "Position (kb)", "Firing rate", "input"),
+    "Fork speed (input)": _OutputSpec("input:fork_speed", "Position (kb)", "Fork speed", "input"),
+}
 _OUTPUT_SPECS = {
     **_STANDARD_OUTPUTS,
     **_TIME_OUTPUTS,
     **_SPACETIME_OUTPUTS,
+    **_INPUT_OUTPUTS,
 }
+
+
+def _output_spec(label: str, result: ConstantSimulationResult | None = None) -> _OutputSpec:
+    spec = _OUTPUT_SPECS[label]
+    if spec.kind != "input":
+        return spec
+    form = getattr(result, "input_forms", {}).get(spec.key, "x")
+    if form == "xt":
+        return replace(spec, kind="xt", y_label="Time (min)")
+    if form == "t":
+        return replace(spec, kind="time", x_label="Time (min)")
+    return replace(spec, kind="space")
 
 # Some simulation quantities have a meaningful physical domain which should not
 # shrink to the particular values observed in one run. Other outputs retain an
 # automatic, data-dependent range chosen by ECharts.
 _NONNEGATIVE_LINE_OUTPUTS = {
+    "Origin efficiency",
     "Total forks",
     "Active forks",
     "Stalled forks",
@@ -368,8 +390,8 @@ class _SimulationRawPreference:
     """Editable raw-export values retained across batch-row refreshes."""
 
     file_name: str
-    file_type: str = "NPY"
-    compress: bool = True
+    file_type: str = "TSV"
+    compress: bool = False
     automatic_name: str = ""
     customized: bool = False
 
@@ -453,7 +475,7 @@ def _simulation_raw_page_bounds(total: int, requested_page: int) -> tuple[int, i
 
 _BATCH_COLORS = (
     "#b03412",
-    "#2c7f77",
+    "#2596be",
     "#3f6da8",
     "#8b6f37",
     "#6f5b8f",
@@ -1450,7 +1472,8 @@ def _automatic_y_limits(
 ) -> tuple[float, float]:
     """Return stable, editable plot bounds derived from the selected result."""
 
-    spec = _OUTPUT_SPECS[output_label]
+    spec = _output_spec(output_label, result)
+    result = input_preview_result(result, spec.key)
     selected = select_result_output(result, spec.key)
     plot_type = (
         "Heatmap"
@@ -1531,8 +1554,10 @@ def _default_y_limits(
     Those cases therefore continue to use a data-derived automatic range.
     """
 
-    spec = _OUTPUT_SPECS[output_label]
+    spec = _output_spec(output_label)
     if spec.kind in {"distribution", "xt"} or view_mode in {"Histogram", "Boxplot"} or log_y:
+        return None
+    if spec.key == "origin_efficiency":
         return None
     return FIXED_QUANTITY_Y_LIMITS.get(spec.key)
 
@@ -1542,10 +1567,11 @@ def _default_axis_labels(
     output_label: str,
     view_mode: str,
     density: bool,
+    result: ConstantSimulationResult | None = None,
 ) -> tuple[str, str]:
     """Return labels for the quantity and frequency axes in the active view."""
 
-    spec = _OUTPUT_SPECS[output_label]
+    spec = _output_spec(output_label, result)
     if view_mode == "Boxplot":
         return "", spec.y_label
     if spec.kind == "distribution" or view_mode == "Histogram":
@@ -1573,6 +1599,7 @@ def _result_plot_options(
     y_limits: tuple[float, float] | None,
     legend_position: str = "Top right",
     line_width: float = 1.8,
+    line_type: str = "solid",
     show_markers: bool = False,
     show_grid: bool = True,
     log_z: bool = False,
@@ -1593,7 +1620,8 @@ def _result_plot_options(
 ) -> dict[str, Any]:
     """Build bounded ECharts options for any supported simulation output."""
 
-    spec = _OUTPUT_SPECS[output_label]
+    spec = _output_spec(output_label, result)
+    result = input_preview_result(result, spec.key)
     values = result.outputs.get(spec.key)
     if values is None:
         if spec.key == "firing_factors":
@@ -1711,9 +1739,10 @@ def _result_plot_options(
         bands=bands,
         legend_position=legend_position,
         line_width=line_width,
+        line_type=line_type,
         show_markers=show_markers,
         show_grid=show_grid,
-        interactive=spec.kind not in {"time", "xt"} and not ensemble_active,
+        interactive=not ensemble_active,
         log_x=log_x,
         invert_x=invert_x,
         invert_z=invert_z,
@@ -1744,6 +1773,9 @@ def _combined_result_plot_options(
     log_y: bool,
     invert_y: bool,
     x_limits: tuple[float, float] | None = None,
+    line_type: str = "solid",
+    line_types: Mapping[str, str] | None = None,
+    curve_names: Mapping[str, str] | None = None,
 ) -> dict[str, Any]:
     """Build one overlay for axis-compatible one-dimensional batch outputs."""
 
@@ -1754,7 +1786,7 @@ def _combined_result_plot_options(
             "Combined previews support at most "
             f"{_MAX_COMBINED_PREVIEW_DATASETS} datasets; choose Individual."
         )
-    spec = _OUTPUT_SPECS[output_label]
+    spec = _output_spec(output_label, items[0].result)
     if spec.kind not in {"space", "time"}:
         raise ValueError("This output is shown one dataset at a time.")
     selected = tuple(select_result_output(item.result, spec.key) for item in items)
@@ -1767,11 +1799,12 @@ def _combined_result_plot_options(
             )
     lines = tuple(
         PreviewLine(
-            name=_simulation_display_name(item),
+            name=(curve_names or {}).get(item.key, _simulation_display_name(item)),
             x=output_value.x,
             y=np.asarray(output_value.values, dtype=float).reshape(-1),
             color=colors.get(item.key, _BATCH_COLORS[index % len(_BATCH_COLORS)]),
             width=line_width,
+            line_type=(line_types or {}).get(item.key),
         )
         for index, (item, output_value) in enumerate(zip(items, selected, strict=True))
     )
@@ -1795,10 +1828,11 @@ def _combined_result_plot_options(
         x_axis=np.asarray(selected[0].x, dtype=float).reshape(-1),
         lines=lines,
         line_width=line_width,
+        line_type=line_type,
         show_markers=False,
         legend_position=legend_position,
         show_grid=show_grid,
-        interactive=spec.kind != "time",
+        interactive=True,
         log_x=log_x,
         invert_x=invert_x,
     )
@@ -1826,6 +1860,7 @@ def _render_result_plot(
     y_limits: tuple[float, float] | None,
     on_download: Callable[[str], Any],
     line_width: float = 1.8,
+    line_type: str = "solid",
     show_markers: bool = False,
     show_grid: bool = True,
     log_x: bool = False,
@@ -1867,6 +1902,7 @@ def _render_result_plot(
         invert_y=invert_y,
         y_limits=y_limits,
         line_width=line_width,
+        line_type=line_type,
         show_markers=show_markers,
         show_grid=show_grid,
         log_x=log_x,
@@ -1921,6 +1957,8 @@ def render(_navigate: Callable[[str], None]) -> None:
     updating_y_limits = False
     updating_presentation = False
     batch_colors: dict[str, str] = {}
+    batch_line_types: dict[str, str] = {}
+    batch_names: dict[str, str] = {}
     batch_navigation_page = {"value": 1}
     batch_raw_preferences: dict[tuple[str, str], _SimulationRawPreference] = {}
     batch_raw_page = {"value": 1}
@@ -2196,8 +2234,44 @@ def render(_navigate: Callable[[str], None]) -> None:
                             )
 
                         with ui.column().classes("dn-setting-group dn-fork-behaviour-group"):
-                            ui.label("Fork behaviour").classes("dn-setting-group-title")
+                            ui.label("Origin & fork behaviour").classes("dn-setting-group-title")
                             with ui.element("div").classes("dn-fork-behaviour-grid"):
+                                with (
+                                    ui.element("div")
+                                    .classes("dn-setting-subgroup")
+                                    .mark("simulation-factor-pool-settings")
+                                ):
+                                    ui.label("Firing factor").classes(
+                                        "dn-setting-subgroup-title"
+                                    )
+                                    with ui.element("div").classes("dn-setting-inline"):
+                                        finite_pool = ui.checkbox("Finite pool", value=False).mark(
+                                            "simulation-finite-pool"
+                                        )
+                                        pool_size = (
+                                            ui.number(label="Pool size", value=100, min=2, step=1)
+                                            .props("dense")
+                                            .classes("dn-field dn-field-xs")
+                                        )
+                                    pool_size.bind_visibility_from(finite_pool, "value")
+                                    with (
+                                        ui.element("div")
+                                        .classes("dn-setting-inline")
+                                        .mark("simulation-pool-fields") as pool_fields
+                                    ):
+                                        recycle_rate = (
+                                            ui.number(
+                                                label="Recycle rate",
+                                                value=0.0,
+                                                min=0.0,
+                                                step=0.001,
+                                            )
+                                            .props("dense")
+                                            .classes("dn-field dn-field-compact")
+                                        )
+                                        factor_coupling = ui.checkbox("Fork coupling", value=False)
+                                    pool_fields.bind_visibility_from(finite_pool, "value")
+
                                 with (
                                     ui.element("div")
                                     .classes("dn-setting-subgroup")
@@ -2269,50 +2343,11 @@ def render(_navigate: Callable[[str], None]) -> None:
                                     resolution_x.on_value_change(sync_stall_probability)
                                     sync_stall_probability()
 
-                                with (
-                                    ui.element("div")
-                                    .classes("dn-setting-subgroup")
-                                    .mark("simulation-factor-pool-settings")
-                                ):
-                                    ui.label("Firing-factor pool").classes(
-                                        "dn-setting-subgroup-title"
-                                    )
-                                    with ui.element("div").classes("dn-setting-inline"):
-                                        finite_pool = ui.checkbox("Finite pool", value=False).mark(
-                                            "simulation-finite-pool"
-                                        )
-                                        pool_size = (
-                                            ui.number(label="Pool size", value=100, min=2, step=1)
-                                            .props("dense")
-                                            .classes("dn-field dn-field-xs")
-                                        )
-                                    pool_size.bind_visibility_from(finite_pool, "value")
-                                    with (
-                                        ui.element("div")
-                                        .classes("dn-setting-inline")
-                                        .mark("simulation-pool-fields") as pool_fields
-                                    ):
-                                        recycle_rate = (
-                                            ui.number(
-                                                label="Recycle rate",
-                                                value=0.0,
-                                                min=0.0,
-                                                step=0.001,
-                                            )
-                                            .props("dense")
-                                            .classes("dn-field dn-field-compact")
-                                        )
-                                        factor_coupling = ui.checkbox("Fork coupling", value=False)
-                                    pool_fields.bind_visibility_from(finite_pool, "value")
-
                 def combined_preview_compatible() -> bool:
                     if not 2 <= len(latest_items) <= _MAX_COMBINED_PREVIEW_DATASETS:
                         return False
                     selected_label = str(output.value or "Replication timing")
-                    spec = _OUTPUT_SPECS.get(
-                        selected_label,
-                        _BASE_OUTPUTS["Replication timing"],
-                    )
+                    spec = _output_spec(selected_label, latest_result)
                     if spec.kind not in {"space", "time"}:
                         return False
                     if str(view.value or "Default") != "Default":
@@ -2350,7 +2385,7 @@ def render(_navigate: Callable[[str], None]) -> None:
 
                 def active_plot_type() -> str:
                     selected = str(output.value or "Replication timing")
-                    spec = _OUTPUT_SPECS.get(selected, _BASE_OUTPUTS["Replication timing"])
+                    spec = _output_spec(selected, latest_result)
                     requested_view = str(view.value or "Default")
                     if spec.kind == "xt" and requested_view == "Default":
                         return "Heatmap"
@@ -2384,7 +2419,7 @@ def render(_navigate: Callable[[str], None]) -> None:
                     try:
                         selected_label = str(output.value or "Replication timing")
                         if combined_preview_active():
-                            spec = _OUTPUT_SPECS[selected_label]
+                            spec = _output_spec(selected_label, latest_result)
                             values = [
                                 select_result_output(item.result, spec.key).values
                                 for item in latest_items
@@ -2721,6 +2756,9 @@ def render(_navigate: Callable[[str], None]) -> None:
                                     x_axis_label=str(x_axis_label.value or ""),
                                     y_axis_label=str(y_axis_label.value or ""),
                                     colors=batch_colors,
+                                    line_types=batch_line_types,
+                                    curve_names=batch_names,
+                                    line_type=str(plot_settings.line_type.value or "solid"),
                                     y_limits=current_y_limits(),
                                     x_limits=axis_limits_from_controls(plot_settings, "x"),
                                     show_legend=bool(show_legend.value),
@@ -2792,6 +2830,7 @@ def render(_navigate: Callable[[str], None]) -> None:
                                     line_width=float(
                                         _number(line_width, "Curve thickness")
                                     ),
+                                    line_type=str(plot_settings.line_type.value or "solid"),
                                     show_markers=False,
                                     show_grid=bool(show_grid.value),
                                     show_colorbar=bool(colorbar.value),
@@ -2878,7 +2917,7 @@ def render(_navigate: Callable[[str], None]) -> None:
                         if bool(getattr(control, "enabled", False))
                     ]
 
-                    def release_simulation_controls() -> None:
+                    def cleanup_simulation() -> None:
                         nonlocal active_cancel, running
                         running = False
                         active_cancel = None
@@ -2889,6 +2928,10 @@ def render(_navigate: Callable[[str], None]) -> None:
                         simulate_button.set_text("Simulate")
                         simulate_button.set_icon(workflow_action_icon("simulation"))
                         simulate_button.enable()
+                        # Input validation can return before the worker's finally block.
+                        page_activity.finish(
+                            "simulation", page_run, success=completed_successfully
+                        )
 
                     running = True
                     active_cancel = cancel_event
@@ -3055,7 +3098,7 @@ def render(_navigate: Callable[[str], None]) -> None:
                                 else _number(stall_duration, "Stall duration")
                             ),
                             firing_factors=(
-                                float(_integer(pool_size, "Firing-factor pool"))
+                                float(_integer(pool_size, "Firing factor"))
                                 if finite_pool.value
                                 else None
                             ),
@@ -3103,13 +3146,13 @@ def render(_navigate: Callable[[str], None]) -> None:
                             result_slot.clear()
                             with result_slot:
                                 preview_plot("Simulation stopped", kind="simulation")
-                        release_simulation_controls()
+                        cleanup_simulation()
                         return
                     except Exception as exc:
                         ui.notify(str(exc), type="negative")
                         status.text = "Check the settings"
                         progress.visible = False
-                        release_simulation_controls()
+                        cleanup_simulation()
                         return
 
                     progress.value = 0.02
@@ -3165,6 +3208,7 @@ def render(_navigate: Callable[[str], None]) -> None:
                                 raise RuntimeError(
                                     "The simulation worker stopped before returning data."
                                 )
+                            result = add_simulation_input_previews(result, request)
                             staged_items.append(
                                 _SimulationBatchItem(
                                     key=case.key,
@@ -3185,6 +3229,12 @@ def render(_navigate: Callable[[str], None]) -> None:
                         for color_key in tuple(batch_colors):
                             if color_key not in retained_keys:
                                 batch_colors.pop(color_key, None)
+                        for type_key in tuple(batch_line_types):
+                            if type_key not in retained_keys:
+                                batch_line_types.pop(type_key, None)
+                        for name_key in tuple(batch_names):
+                            if name_key not in retained_keys:
+                                batch_names.pop(name_key, None)
                         batch_raw_page["value"] = 1
                         batch_navigation_page["value"] = 1
                         active_dataset_index = 0
@@ -3294,8 +3344,7 @@ def render(_navigate: Callable[[str], None]) -> None:
                                     kind="simulation",
                                 )
                     finally:
-                        release_simulation_controls()
-                        page_activity.finish("simulation", page_run, success=completed_successfully)
+                        cleanup_simulation()
 
                 with action_dock():
                     simulate_button = (
@@ -3579,14 +3628,50 @@ def render(_navigate: Callable[[str], None]) -> None:
                                         index % len(_BATCH_COLORS)
                                     ]
                                     batch_colors.setdefault(item.key, default_color)
+                                    name_control = (
+                                        ui.input("Name", value=batch_names.get(item.key, _simulation_display_name(item)))
+                                        .props("dense").classes("dn-field").style("grid-column: 1 / -1")
+                                        .mark(f"simulation-dataset-name-{index + 1}")
+                                    )
+
+                                    def name_changed(
+                                        _event: Any = None, *,
+                                        item_key: str = item.key, control: Any = name_control,
+                                    ) -> None:
+                                        value = str(control.value or "").strip()
+                                        if value:
+                                            batch_names[item_key] = value
+                                        else:
+                                            batch_names.pop(item_key, None)
+                                        render_latest_result()
+
+                                    name_control.on_value_change(name_changed)
                                     color_surface, color_control = compact_color_input(
-                                        _simulation_display_name(item),
+                                        "Color",
                                         batch_colors[item.key],
                                         marker=(
                                             f"simulation-dataset-color-{index + 1}"
                                         ),
                                     )
                                     color_surface.tooltip(item.identity.full)
+                                    curve_type = ui.select(
+                                        CURVE_TYPES,
+                                        value=batch_line_types.get(
+                                            item.key, str(plot_settings.line_type.value or "solid")
+                                        ),
+                                        label="Curve type",
+                                    ).props("dense options-dense").classes("dn-field").mark(
+                                        f"simulation-dataset-curve-type-{index + 1}"
+                                    )
+
+                                    def type_changed(
+                                        _event: Any = None, *,
+                                        item_key: str = item.key, control: Any = curve_type,
+                                    ) -> None:
+                                        batch_line_types[item_key] = str(control.value or "solid")
+                                        render_latest_result()
+
+                                    curve_type.on_value_change(type_changed)
 
                                     def color_changed(
                                         _event: Any = None,
@@ -3616,7 +3701,8 @@ def render(_navigate: Callable[[str], None]) -> None:
                 )
                 raw_controls = raw_output_controls(
                     file_name=initial_raw_name,
-                    default_type="NPY",
+                    default_type="TSV",
+                    default_compress=False,
                     on_download=download_raw,
                     on_remove=lambda _controls: remove_simulation_result(
                         latest_items[0].key if latest_items else ""
@@ -3859,6 +3945,8 @@ def render(_navigate: Callable[[str], None]) -> None:
                         if preference_key[0] == item_key:
                             batch_raw_preferences.pop(preference_key, None)
                     batch_colors.pop(item_key, None)
+                    batch_line_types.pop(item_key, None)
+                    batch_names.pop(item_key, None)
                     if not latest_items:
                         clear_simulation_output()
                         return
@@ -4002,10 +4090,7 @@ def render(_navigate: Callable[[str], None]) -> None:
                     """Show controls for the representation rendered by Default."""
 
                     selected = str(output.value or "Replication timing")
-                    spec = _OUTPUT_SPECS.get(
-                        selected,
-                        _BASE_OUTPUTS["Replication timing"],
-                    )
+                    spec = _output_spec(selected, latest_result)
                     requested_view = str(view.value or "Default")
                     available_profiles = available_profile_count()
                     allow_individual_profiles = (
@@ -4095,6 +4180,10 @@ def render(_navigate: Callable[[str], None]) -> None:
                             for label, spec in _SPACETIME_OUTPUTS.items()
                             if spec.key in latest_result.outputs
                         )
+                        labels.extend(
+                            label for label, spec in _INPUT_OUTPUTS.items()
+                            if spec.key in latest_result.outputs
+                        )
                     if not labels:
                         labels = ["Replication timing"]
                     output.options = labels
@@ -4111,10 +4200,7 @@ def render(_navigate: Callable[[str], None]) -> None:
                     """Switch the existing result locally without starting a new run."""
 
                     selected = str(output.value or "Replication timing")
-                    spec = _OUTPUT_SPECS.get(
-                        selected,
-                        _BASE_OUTPUTS["Replication timing"],
-                    )
+                    spec = _output_spec(selected, latest_result)
                     title.value = selected
                     if len(latest_items) == 1:
                         sync_single_raw_filename()
@@ -4130,6 +4216,7 @@ def render(_navigate: Callable[[str], None]) -> None:
                         output_label=selected,
                         view_mode=str(view.value or "Default"),
                         density=bool(density.value),
+                        result=latest_result,
                     )
                     x_axis_label.value = default_x_label
                     y_axis_label.value = default_y_label
@@ -4158,6 +4245,7 @@ def render(_navigate: Callable[[str], None]) -> None:
                         output_label=selected,
                         view_mode=str(view.value or "Default"),
                         density=bool(density.value),
+                        result=latest_result,
                     )
                     x_axis_label.value = default_x_label
                     y_axis_label.value = default_y_label
@@ -4170,7 +4258,7 @@ def render(_navigate: Callable[[str], None]) -> None:
                     if latest_result is None:
                         return None
                     selected = str(output.value or "Replication timing")
-                    spec = _OUTPUT_SPECS.get(selected, _BASE_OUTPUTS["Replication timing"])
+                    spec = _output_spec(selected, latest_result)
                     return latest_result.outputs.get(spec.key)
 
                 histogram_bin_sync = HistogramBinSynchronizer(
@@ -4196,6 +4284,11 @@ def render(_navigate: Callable[[str], None]) -> None:
                 track_detailed_outputs.on_value_change(sync_output_options)
                 output.on_value_change(sync_plot_labels)
                 presentation.on_value_change(sync_batch_presentation)
+
+                def line_type_changed() -> None:
+                    render_batch_colors.refresh()
+                    render_latest_result()
+
                 bind_preview_settings_updates(
                     plot_settings,
                     on_redraw=render_latest_result,
@@ -4205,6 +4298,7 @@ def render(_navigate: Callable[[str], None]) -> None:
                     on_log_x_change=log_x_changed,
                     on_y_limits_change=use_custom_y_limits,
                     on_visibility_change=sync_view_controls,
+                    on_line_type_change=line_type_changed,
                 )
                 show_individual_profiles.on_value_change(ensemble_display_changed)
                 show_standard_deviation.on_value_change(ensemble_display_changed)
@@ -4226,6 +4320,8 @@ def render(_navigate: Callable[[str], None]) -> None:
                     nonlocal latest_result, result_chart
                     latest_items = ()
                     batch_colors.clear()
+                    batch_line_types.clear()
+                    batch_names.clear()
                     batch_raw_preferences.clear()
                     batch_raw_page["value"] = 1
                     batch_navigation_page["value"] = 1

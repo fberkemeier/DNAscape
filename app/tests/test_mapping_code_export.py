@@ -37,7 +37,7 @@ def _plot_settings() -> dict[str, Any]:
         "color": "#2596be", "palette": "viridis", "histogram_bins": 12,
         "line_width": 3.0, "show_markers": False, "show_colorbar": False,
         "log_y": False, "invert_y": True, "show_grid": False,
-        "show_legend": False, "y_limits": None,
+        "show_legend": False, "y_limits": None, "aspect_ratio": 1.5, "line_type": "dotted",
     }
 
 

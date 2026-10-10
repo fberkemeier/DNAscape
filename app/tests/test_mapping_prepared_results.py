@@ -59,14 +59,43 @@ def test_mapping_reuses_prepared_bundle_across_downstream_targets(
             user.find(marker="nav-mapping").click()
             await user.should_see(marker="mapping-target", retries=60)
             await set_value("mapping-target", "fork_densities")
+            density_outputs = (
+                "fork_density_xt", "left_fork_density_xt", "right_fork_density_xt",
+            )
+            assert tuple(control("mapping-preview-output").options)[:3] == density_outputs
+            assert control("mapping-preview-output").value == "fork_density_xt"
             await set_value("mapping-region-start", 20.0)
             await set_value("mapping-region-end", 36.0)
             await set_value("mapping-setting-resolution", 2.0)
+            await set_value("mapping-setting-perq", False)
             await set_value("mapping-input-firing-rate-constant", 0.02)
             await set_value("mapping-setting-time-grid-override", True)
             await set_value("mapping-setting-time-grid", "0, 1, 3, 6, 10")
             await map_and_wait(1)
             assert results[0].target == "fork_densities_xt"
+            with user.scope(marker="mapping-stats"):
+                await user.should_see("Dependence")
+                await user.should_not_see("Form")
+            assert tuple(control("mapping-preview-output").options)[:3] == density_outputs
+            assert control("mapping-preview-output").value == "fork_density_xt"
+            np.testing.assert_allclose(
+                results[0].outputs["fork_density_xt"],
+                results[0].outputs["left_fork_density_xt"]
+                + results[0].outputs["right_fork_density_xt"],
+            )
+            raw_names: set[str] = set()
+            for output_key in density_outputs:
+                await set_value("mapping-preview-output", output_key)
+                chart = control("mapping-result-plot")
+                assert chart.options["xAxis"]["name"] == "Position (kb)"
+                assert chart.options["yAxis"]["name"] == "Time (min)"
+                cells = chart.options["series"][-1]["data"]
+                np.testing.assert_allclose(
+                    [cell[2] for cell in cells],
+                    results[0].outputs[output_key].T.reshape(-1),
+                )
+                raw_names.add(control("mapping-raw-filename").value)
+            assert len(raw_names) == 3
 
             await set_value("mapping-target", "fork_directionality")
             await set_value("mapping-route", "fork_directionality--space--fork_densities")

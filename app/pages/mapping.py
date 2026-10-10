@@ -23,6 +23,10 @@ from dnascape.workflows.plotting import (
     mapping_plot_options as _mapping_plot_options,
     resolved_output_key as _resolved_output_key,
 )
+from dnascape.workflows.batch import combination_curve_label
+from dnascape.workflows.preview_inputs import (
+    INPUT_PREFIX, add_mapping_input_previews, input_preview_result, input_profile_label,
+)
 
 from app.artifact_archives import (
     DEFAULT_BATCH_ARCHIVE_SOURCE_BYTES,
@@ -93,6 +97,7 @@ from app.pages.common import (
     stat_strip,
 )
 from app.preview_plotting import (
+    CURVE_TYPES,
     axis_limits_from_controls,
     HistogramBinSynchronizer,
     bind_preview_settings_updates,
@@ -192,10 +197,10 @@ _BUNDLE_OUTPUTS = {
         "fit_history",
     ),
     "fork_densities": (
-        "replicated_fraction_xt",
-        "right_fork_density_xt",
-        "left_fork_density_xt",
         "fork_density_xt",
+        "left_fork_density_xt",
+        "right_fork_density_xt",
+        "replicated_fraction_xt",
     ),
 }
 
@@ -205,7 +210,7 @@ _MSE_DIAGNOSTIC_KEY = "mse_diagnostic"
 _PLOT_TYPES = ["Line", "Heatmap", "Histogram", "Boxplot"]
 _BATCH_COLOURS = (
     "#b03412",
-    "#2c7f77",
+    "#2596be",
     "#6f5a9c",
     "#c47a1b",
     "#3f6fa3",
@@ -282,6 +287,7 @@ class _MappingConstantState:
     values_by_key: dict[str, float] = field(default_factory=dict)
     manual_keys: list[str] = field(default_factory=lambda: ["manual-1", "manual-2"])
     next_manual_index: int = 3
+    manual_override: bool = False
 
 
 @dataclass(frozen=True, slots=True)
@@ -308,6 +314,7 @@ class _MappingBatchCase:
     item_indices: tuple[int, ...]
     short_name: str = ""
     short_export_stem: str = ""
+    curve_label: str = ""
 
 
 @dataclass(frozen=True, slots=True)
@@ -320,6 +327,7 @@ class _NamedMappingResult:
     result: MappingResult
     short_name: str = ""
     short_export_stem: str = ""
+    curve_label: str = ""
 
 
 @dataclass
@@ -346,7 +354,29 @@ class _MappingRawExportSelection:
 # Building the scientific route catalogue is the only non-trivial part of
 # Mapping-page setup. Resolve it while the local app starts so opening Mapping
 # never pays that cold cost or leaves the navigation looking unresponsive.
-_MAPPING_TARGETS = mapping_targets()
+_MAPPING_TARGET_ORDER = (
+    "firing_rate",
+    "fork_speed",
+    "replication_timing",
+    "fork_directionality",
+    "fork_densities",
+)
+_MAPPING_TARGETS = tuple(
+    sorted(
+        (
+            replace(target, label="Fork densities")
+            if target.key == "fork_densities"
+            else target
+            for target in mapping_targets()
+            if target.key not in {"left_fork_density", "right_fork_density"}
+        ),
+        key=lambda target: (
+            _MAPPING_TARGET_ORDER.index(target.key)
+            if target.key in _MAPPING_TARGET_ORDER
+            else len(_MAPPING_TARGET_ORDER)
+        ),
+    )
+)
 
 
 def _mapping_route_families_for_ui(
@@ -362,6 +392,27 @@ def _slug(value: str) -> str:
     """Return the stable marker fragment used by route-driven inputs."""
 
     return "-".join(value.casefold().replace("_", " ").split())
+
+
+def _mapping_method_name(method: str) -> str:
+    """Keep implementation identifiers out of the preview's method summary."""
+    for token, label in (
+        ("simulation", "Simulation"), ("lightcone", "Light-cone mapping"),
+        ("mean_field", "Mean-field mapping"), ("region_integral", "Region integration"),
+        ("time_integrated", "Time integration"), ("deterministic", "Deterministic mapping"),
+    ):
+        if token in method:
+            return label
+    source, _separator, target = method.partition("_to_")
+    if "timing" in source and any(key in target for key in ("firing", "fork_speed", "kinetic")):
+        dependence = (
+            "Space-time" if "spacetime" in target else "Temporal" if "time_" in target
+            else "Constant" if "constant" in target else "Spatial"
+        )
+        return f"{dependence} fit"
+    if "directionality_to_timing" in method:
+        return "Integration"
+    return "Direct mapping"
 
 
 def _select_options(values: tuple[str, ...], labels: dict[str, str]) -> dict[str, str]:
@@ -535,8 +586,13 @@ def _preview_outputs(route: MappingRoute) -> dict[str, str]:
 def _result_preview_outputs(result: MappingResult) -> dict[str, str]:
     """Return every output available in one completed Mapping result."""
 
+    preferred_outputs = (
+        _BUNDLE_OUTPUTS["fork_densities"] if result.target_key == "fork_densities" else ()
+    )
+    output_keys = dict.fromkeys((*preferred_outputs, *result.outputs))
     outputs = {
         key: (
+            input_profile_label(key) if key.startswith(INPUT_PREFIX) else
             f"{_OUTPUT_LABELS.get(key, key.removesuffix('_xt').replace('_', ' ').title())} (target)"
             if key == result.target
             else _OUTPUT_LABELS.get(
@@ -544,8 +600,8 @@ def _result_preview_outputs(result: MappingResult) -> dict[str, str]:
                 key.removesuffix("_xt").replace("_", " ").title(),
             )
         )
-        for key in result.outputs
-        if key not in {"fit_history", "residual"}
+        for key in output_keys
+        if key in result.outputs and key not in {"fit_history", "residual"}
     }
     for fitted_key, comparison in result.comparisons.items():
         source_label = _OUTPUT_LABELS.get(
@@ -560,6 +616,14 @@ def _result_preview_outputs(result: MappingResult) -> dict[str, str]:
     if "fit_history" in result.outputs:
         outputs["fit_history"] = "MSE"
     return outputs
+
+
+def _default_preview_output(result: MappingResult, options: Mapping[str, str]) -> str:
+    """Show both fork directions together by default for the density bundle."""
+
+    if result.target_key == "fork_densities" and "fork_density_xt" in options:
+        return "fork_density_xt"
+    return result.primary_output if result.primary_output in options else next(iter(options))
 
 
 def _common_result_preview_outputs(
@@ -614,11 +678,15 @@ def _render_mapping_result(
     histogram_boundary: str = "left",
     x_limits: tuple[float, float] | None = None,
     z_limits: tuple[float, float] | None = None,
+    aspect_ratio: float | None = None,
+    line_type: str = "solid",
 ) -> Any:
     options = _mapping_plot_options(
         result,
         x_limits=x_limits,
         z_limits=z_limits,
+        aspect_ratio=aspect_ratio,
+        line_type=line_type,
         output_key=output_key,
         plot_type=plot_type,
         normalization=normalization,
@@ -663,6 +731,8 @@ def _combined_mapping_plot_options(
     results: Sequence[_NamedMappingResult],
     *,
     colors: Mapping[tuple[str, str, int], str] | None = None,
+    line_types: Mapping[tuple[str, str, int], str] | None = None,
+    curve_names: Mapping[tuple[str, str, int], str] | None = None,
     **plot_kwargs: Any,
 ) -> dict[str, Any]:
     """Use the package workflow with the current UI naming preference."""
@@ -670,7 +740,9 @@ def _combined_mapping_plot_options(
     return combined_mapping_plot_options(
         results,
         colors=colors,
-        display_names={named.key: _mapping_display_name(named) for named in results},
+        line_types=line_types,
+        curve_names=curve_names,
+        display_names={named.key: _mapping_curve_label(named) for named in results},
         plot_options_builder=_mapping_plot_options,
         **plot_kwargs,
     )
@@ -985,6 +1057,10 @@ def _mapping_display_name(named: _NamedMappingResult) -> str:
     if get_export_settings().result_name_style == "full":
         return named.name
     return named.short_name or named.name
+
+
+def _mapping_curve_label(named: _NamedMappingResult) -> str:
+    return named.curve_label or _mapping_display_name(named)
 
 
 def _mapping_result_stem(named: _NamedMappingResult) -> str:
@@ -1641,14 +1717,14 @@ def _render_multiple_constant_input(
     on_change: Callable[[], Any],
     on_structure_change: Callable[[], Any],
 ) -> None:
-    """Render a compact value row beside every uploaded counterpart dataset."""
+    """Render editable, indexed constants with optional counterpart pairing."""
 
     units = _SCALAR_UNITS.get(_friendly_input_key(input_spec.key), "")
-    aligned_rows = peer_rows()
+    aligned_rows = () if retained.manual_override else peer_rows()
     manual = not aligned_rows
     if manual:
         aligned_rows = tuple(
-            (key, f"Value {index}")
+            (key, f"{input_spec.label} {index}")
             for index, key in enumerate(retained.manual_keys, start=1)
         )
 
@@ -1693,6 +1769,13 @@ def _render_multiple_constant_input(
 
         matching.on_value_change(matching_changed)
         constant_controls: list[Any] = []
+        constant_actions: list[Any] = []
+
+        def make_rows_editable() -> None:
+            if not retained.manual_override:
+                retained.manual_keys[:] = [key for key, _label in aligned_rows]
+                retained.manual_override = True
+
         with (
             ui.element("div")
             .classes("dn-mapping-constant-list")
@@ -1700,7 +1783,7 @@ def _render_multiple_constant_input(
         ):
             for index, (row_key, row_label) in enumerate(aligned_rows, start=1):
                 with ui.element("div").classes("dn-mapping-constant-row"):
-                    label = ui.label(row_label).classes("dn-mapping-constant-label")
+                    label = ui.label(f"{input_spec.label} {index}").classes("dn-mapping-constant-label")
                     label.tooltip(row_label)
                     control = (
                         ui.number(
@@ -1712,7 +1795,9 @@ def _render_multiple_constant_input(
                         .classes("dn-field dn-mapping-constant-value")
                         .mark(f"mapping-input-{marker}-constant-{index}")
                     )
-                    control._props["aria-label"] = f"{input_spec.label} for {row_label}"
+                    control._props["aria-label"] = (
+                        row_label if manual else f"{input_spec.label} for {row_label}"
+                    )
                     if units:
                         control.tooltip(units)
 
@@ -1731,48 +1816,49 @@ def _render_multiple_constant_input(
 
                     control.on_value_change(value_changed)
                     constant_controls.append(control)
-                    if manual:
-                        with ui.element("div").classes("dn-mapping-constant-actions"):
-                            remove = (
-                                ui.button(icon="remove")
-                                .props(
-                                    'flat round dense aria-label="Remove constant value"'
-                                )
-                                .mark(f"mapping-input-{marker}-constant-remove-{index}")
-                            )
-                            remove.set_enabled(len(retained.manual_keys) > 1)
+                    with ui.element("div").classes("dn-mapping-constant-actions"):
+                        remove = (
+                            ui.button(icon="remove")
+                            .props('flat round dense aria-label="Remove constant value"')
+                            .mark(f"mapping-input-{marker}-constant-remove-{index}")
+                        )
+                        remove.set_enabled(len(aligned_rows) > 1)
+                        constant_actions.append(remove)
 
-                            def remove_value(identity: str = row_key) -> None:
-                                if len(retained.manual_keys) <= 1:
-                                    return
-                                retained.manual_keys.remove(identity)
-                                retained.values_by_key.pop(identity, None)
-                                on_change()
-                                on_structure_change()
+                        def remove_value(identity: str = row_key) -> None:
+                            if len(aligned_rows) <= 1:
+                                return
+                            make_rows_editable()
+                            retained.manual_keys.remove(identity)
+                            retained.values_by_key.pop(identity, None)
+                            on_change()
+                            on_structure_change()
 
-                            remove.on_click(remove_value)
-        if manual:
-            with ui.element("div").classes("dn-mapping-constant-add-row"):
-                add = (
-                    ui.button("Add value", icon="add")
-                    .props("flat no-caps dense")
-                    .classes("dn-action-secondary")
-                    .mark(f"mapping-input-{marker}-constant-add")
-                )
+                        remove.on_click(remove_value)
+        with ui.element("div").classes("dn-mapping-constant-add-row"):
+            add = (
+                ui.button("Add value", icon="add")
+                .props("flat no-caps dense")
+                .classes("dn-action-secondary")
+                .mark(f"mapping-input-{marker}-constant-add")
+            )
 
-                def add_value() -> None:
-                    identity = f"manual-{retained.next_manual_index}"
-                    retained.next_manual_index += 1
-                    retained.manual_keys.append(identity)
-                    retained.values_by_key[identity] = _scalar_default(input_spec)
-                    on_change()
-                    on_structure_change()
+            def add_value() -> None:
+                make_rows_editable()
+                identity = f"manual-{retained.next_manual_index}"
+                retained.next_manual_index += 1
+                retained.manual_keys.append(identity)
+                retained.values_by_key[identity] = _scalar_default(input_spec)
+                on_change()
+                on_structure_change()
 
-                add.on_click(add_value)
+            add.on_click(add_value)
+            constant_actions.append(add)
         surface.update(
             constants=constant_controls,
             constant_controls=constant_controls,
             constant_row_keys=tuple(key for key, _label in aligned_rows),
+            constant_actions=constant_actions,
             combination_mode=matching,
         )
 
@@ -1819,7 +1905,7 @@ def _render_mapping_input(
     scientific_error = on_error or (lambda _message: None)
     with ui.element("section").classes("dn-mapping-input-card").mark(f"mapping-input-{marker}"):
         with ui.element("div").classes("dn-mapping-input-head"):
-            heading = ui.label(input_spec.label).classes("dn-setting-group-title")
+            heading = ui.label(input_spec.label).classes("dn-setting-subgroup-title")
             heading.tooltip(input_spec.description)
             if defaulted_override:
                 ui.label("Uses package default").classes("dn-mapping-input-status")
@@ -2647,6 +2733,7 @@ def _plan_mapping_cases(
                 item_indices=tuple(indices),
                 short_name=identity.short,
                 short_export_stem=short_export_stem,
+                curve_label=combination_curve_label(sources, indices),
             )
         )
     return tuple(cases)
@@ -2737,6 +2824,8 @@ def render(_navigate: Callable[[str], None]) -> None:
     mapping_combination_mode = {"value": "pairwise"}
     mapping_raw_preferences: dict[tuple[str, str], _MappingRawPreference] = {}
     mapping_batch_colors: dict[tuple[str, str, int], str] = {}
+    mapping_batch_line_types: dict[tuple[str, str, int], str] = {}
+    mapping_batch_names: dict[tuple[str, str, int], str] = {}
     batch_raw_page = {"value": 1}
     dataset_page = {"value": 1}
     region_setting_controls: dict[str, _SettingControl] = {}
@@ -2883,13 +2972,17 @@ def render(_navigate: Callable[[str], None]) -> None:
                         invalidate_mapping_result()
                         if latest_result is not None:
                             return
-                        mapping_stats["Form"].text = "Per field" if route.target == "kinetic_fields" else _DEPENDENCE_LABELS.get(
+                        mapping_stats["Dependence"].text = "Per field" if route.target == "kinetic_fields" else _DEPENDENCE_LABELS.get(
                             str(dependence_control.value),
                             str(dependence_control.value).replace("_", " ").title(),
                         )
-                        mapping_stats["Form"].update()
+                        mapping_stats["Dependence"].update()
                         outputs = _preview_outputs(route)
                         previous_output = str(preview_output.value or "")
+                        if route.target_key == "fork_densities" and previous_output not in {
+                            "fork_density_xt", "left_fork_density_xt", "right_fork_density_xt",
+                        }:
+                            previous_output = "fork_density_xt"
                         preview_output.options = outputs
                         preview_output.value = (
                             previous_output if previous_output in outputs else next(iter(outputs))
@@ -3356,8 +3449,8 @@ def render(_navigate: Callable[[str], None]) -> None:
                     else _preview_outputs(selected_route)
                 )
                 initial_output_key = (
-                    latest_result.primary_output
-                    if latest_result is not None and latest_result.primary_output in initial_outputs
+                    _default_preview_output(latest_result, initial_outputs)
+                    if latest_result is not None
                     else next(iter(initial_outputs))
                 )
                 initial_output_label = _OUTPUT_LABELS.get(
@@ -3406,7 +3499,7 @@ def render(_navigate: Callable[[str], None]) -> None:
                     ):
                         mapping_stats = stat_strip(
                             (
-                                ("Form", ""),
+                                ("Dependence", ""),
                                 ("Points", ""),
                                 ("Method", ""),
                             )
@@ -3612,14 +3705,33 @@ def render(_navigate: Callable[[str], None]) -> None:
                                             color_key,
                                             default_color,
                                         )
-                                        short_label = _mapping_display_name(item)
+                                        short_label = _mapping_curve_label(item)
                                         control_label = (
                                             short_label
                                             if not role
                                             else f"{short_label} · {role}"
                                         )
+                                        name_control = (
+                                            ui.input("Name", value=mapping_batch_names.get(color_key, control_label))
+                                            .props("dense").classes("dn-field").style("grid-column: 1 / -1")
+                                            .mark(f"mapping-dataset-name-{curve_index + 1}")
+                                        )
+
+                                        def name_changed(
+                                            _event: Any = None, *,
+                                            retained_key: tuple[str, str, int] = color_key,
+                                            control: Any = name_control,
+                                        ) -> None:
+                                            value = str(control.value or "").strip()
+                                            if value:
+                                                mapping_batch_names[retained_key] = value
+                                            else:
+                                                mapping_batch_names.pop(retained_key, None)
+                                            render_latest_result()
+
+                                        name_control.on_value_change(name_changed)
                                         color_surface, color_control = compact_color_input(
-                                            control_label,
+                                            "Color",
                                             mapping_batch_colors[color_key],
                                             marker=(
                                                 "mapping-dataset-color-"
@@ -3629,6 +3741,26 @@ def render(_navigate: Callable[[str], None]) -> None:
                                         color_surface.tooltip(
                                             item.name if not role else f"{item.name} · {role}"
                                         )
+                                        curve_type = ui.select(
+                                            CURVE_TYPES,
+                                            value=mapping_batch_line_types.get(
+                                                color_key, str(plot_settings.line_type.value or "solid")
+                                            ),
+                                            label="Curve type",
+                                        ).props("dense options-dense").classes("dn-field").mark(
+                                            f"mapping-dataset-curve-type-{curve_index + 1}"
+                                        )
+                                        curve_type.visible = resolved_plot_type() == "Line"
+
+                                        def type_changed(
+                                            _event: Any = None, *,
+                                            retained_key: tuple[str, str, int] = color_key,
+                                            control: Any = curve_type,
+                                        ) -> None:
+                                            mapping_batch_line_types[retained_key] = str(control.value or "solid")
+                                            render_latest_result()
+
+                                        curve_type.on_value_change(type_changed)
 
                                         def color_changed(
                                             _event: Any = None,
@@ -3855,6 +3987,12 @@ def render(_navigate: Callable[[str], None]) -> None:
                     for color_key in tuple(mapping_batch_colors):
                         if color_key[0] == result_key:
                             mapping_batch_colors.pop(color_key, None)
+                    for type_key in tuple(mapping_batch_line_types):
+                        if type_key[0] == result_key:
+                            mapping_batch_line_types.pop(type_key, None)
+                    for name_key in tuple(mapping_batch_names):
+                        if name_key[0] == result_key:
+                            mapping_batch_names.pop(name_key, None)
                     if not latest_results:
                         clear_mapping_output()
                         return
@@ -3923,9 +4061,7 @@ def render(_navigate: Callable[[str], None]) -> None:
                     preview_output.value = (
                         requested_output
                         if requested_output in options
-                        else latest_result.primary_output
-                        if latest_result.primary_output in options
-                        else next(iter(options))
+                        else _default_preview_output(latest_result, options)
                     )
                     if len(options) == 1:
                         preview_output.disable()
@@ -3933,12 +4069,12 @@ def render(_navigate: Callable[[str], None]) -> None:
                         preview_output.enable()
                     preview_output.update()
                     primary = np.asarray(latest_result.outputs[latest_result.primary_output])
-                    mapping_stats["Form"].text = "Per field" if latest_result.target == "kinetic_fields" else _DEPENDENCE_LABELS.get(
+                    mapping_stats["Dependence"].text = "Per field" if latest_result.target == "kinetic_fields" else _DEPENDENCE_LABELS.get(
                         latest_result.output_dependence,
                         latest_result.output_dependence.replace("_", " ").title(),
                     )
                     mapping_stats["Points"].text = f"{primary.size:,}"
-                    mapping_stats["Method"].text = latest_result.method.replace("_", " ").title()
+                    mapping_stats["Method"].text = _mapping_method_name(latest_result.method)
                     for value in mapping_stats.values():
                         value.update()
                     apply_preview_output()
@@ -4013,7 +4149,7 @@ def render(_navigate: Callable[[str], None]) -> None:
                         if latest_result is not None
                         else selected_route_state["route"].output_form
                     )
-                    if output_form == "xt":
+                    if output_form in {"t", "xt"}:
                         return "Heatmap"
                     requested_view = str(view.value or "Default")
                     if requested_view == "Histogram":
@@ -4021,7 +4157,7 @@ def render(_navigate: Callable[[str], None]) -> None:
                     if requested_view == "Boxplot":
                         return "Boxplot"
                     dependence = (
-                        latest_result.output_dependence
+                        input_preview_result(latest_result, output_key).output_dependence
                         if latest_result is not None
                         else str(dependence_control.value)
                     )
@@ -4050,7 +4186,7 @@ def render(_navigate: Callable[[str], None]) -> None:
                         else selected_route_state["route"].output_form
                     )
                     dependence = (
-                        latest_result.output_dependence
+                        input_preview_result(latest_result, output_key).output_dependence
                         if latest_result is not None
                         else str(dependence_control.value)
                     )
@@ -4059,7 +4195,7 @@ def render(_navigate: Callable[[str], None]) -> None:
                         plot_type=plot_type,
                         multiple_curves=multiple_curves,
                         allow_histogram=(
-                            output_form != "xt"
+                            output_form not in {"t", "xt"}
                             and actual_output_key != "fit_history"
                             and not comparison_curves
                         ),
@@ -4496,10 +4632,11 @@ def render(_navigate: Callable[[str], None]) -> None:
                         x_label=str(preview_x_label.value or ""),
                         y_label=str(preview_y_label.value or ""),
                         color=str(line_or_bar_color.value or "#b03412"),
-                        secondary_color=str(second_curve_color.value or "#2c7f77"),
+                        secondary_color=str(second_curve_color.value or "#2596be"),
                         palette=str(heatmap_palette.value or "viridis"),
                         histogram_bins=int(_read_number(histogram_bins, "Histogram bins")),
                         line_width=float(_read_number(line_width, "Curve thickness")),
+                        line_type=str(plot_settings.line_type.value or "solid"),
                         show_markers=False,
                         show_colorbar=bool(colorbar.value),
                         log_y=bool(log_y.value),
@@ -4524,6 +4661,10 @@ def render(_navigate: Callable[[str], None]) -> None:
                         y_limits=current_y_limits(),
                         x_limits=axis_limits_from_controls(plot_settings, "x"),
                         z_limits=axis_limits_from_controls(plot_settings, "z"),
+                        aspect_ratio=(
+                            float(plot_settings.aspect_ratio.value)
+                            if plot_settings.aspect_ratio.value is not None else None
+                        ),
                     )
 
                 async def download_mapping_code(*, bundle: bool) -> None:
@@ -4581,6 +4722,14 @@ def render(_navigate: Callable[[str], None]) -> None:
                                     {"dataset": key, "output": output, "series": series, "color": color}
                                     for (key, output, series), color in mapping_batch_colors.items()
                                 ],
+                                "line_types": [
+                                    {"dataset": key, "output": output, "series": series, "line_type": line_type}
+                                    for (key, output, series), line_type in mapping_batch_line_types.items()
+                                ],
+                                "curve_names": [
+                                    {"dataset": key, "output": output, "series": series, "name": name}
+                                    for (key, output, series), name in mapping_batch_names.items()
+                                ],
                                 "plot_export_dpi": get_export_settings().plot_dpi,
                             },
                         )
@@ -4620,6 +4769,8 @@ def render(_navigate: Callable[[str], None]) -> None:
                                 options = _combined_mapping_plot_options(
                                     latest_results,
                                     colors=mapping_batch_colors,
+                                    line_types=mapping_batch_line_types,
+                                    curve_names=mapping_batch_names,
                                     **plot_kwargs,
                                 )
                                 result_chart = render_preview_chart(
@@ -4808,6 +4959,7 @@ def render(_navigate: Callable[[str], None]) -> None:
                         # Validate every paired request before the first rmap
                         # worker starts, so a bad batch cannot publish partial data.
                         status.text = "Checking batch consistency..."
+                        prepared_calls: list[Any] = []
                         for _case, request in requests:
                             checked = await run.io_bound(
                                 validate_mapping_request,
@@ -4816,6 +4968,7 @@ def render(_navigate: Callable[[str], None]) -> None:
                             )
                             if checked is None:
                                 raise RuntimeError("Mapping validation stopped before returning.")
+                            prepared_calls.append(checked)
                         check_cancelled()
 
                         staged_results: list[_NamedMappingResult] = []
@@ -4862,6 +5015,7 @@ def render(_navigate: Callable[[str], None]) -> None:
                                     "The mapping worker stopped before returning data."
                                 )
                             eta.complete_case()
+                            result = add_mapping_input_previews(result, prepared_calls[index])
                             staged_results.append(
                                 _NamedMappingResult(
                                     case.key,
@@ -4870,6 +5024,7 @@ def render(_navigate: Callable[[str], None]) -> None:
                                     result,
                                     case.short_name,
                                     case.short_export_stem,
+                                    case.curve_label,
                                 )
                             )
                         check_cancelled()
@@ -4887,6 +5042,12 @@ def render(_navigate: Callable[[str], None]) -> None:
                         for color_key in tuple(mapping_batch_colors):
                             if color_key[0] not in retained_keys:
                                 mapping_batch_colors.pop(color_key, None)
+                        for type_key in tuple(mapping_batch_line_types):
+                            if type_key[0] not in retained_keys:
+                                mapping_batch_line_types.pop(type_key, None)
+                        for name_key in tuple(mapping_batch_names):
+                            if name_key[0] not in retained_keys:
+                                mapping_batch_names.pop(name_key, None)
                         latest_results[:] = staged_results
                         prepared_result_candidates()
                         active_dataset_key = staged_results[0].key
@@ -4897,27 +5058,27 @@ def render(_navigate: Callable[[str], None]) -> None:
                         preview_output.value = (
                             requested_output
                             if requested_output in output_options
-                            else result.primary_output
-                            if result.primary_output in output_options
-                            else next(iter(output_options))
+                            else _default_preview_output(result, output_options)
                         )
                         if len(output_options) == 1:
                             preview_output.disable()
                         else:
                             preview_output.enable()
                         preview_output.update()
+                        if len(latest_results) > 1:
+                            preview_layout.value = "Combined"
                         sync_batch_presentation()
                         render_dataset_selector.refresh()
                         render_batch_raw_files.refresh()
                         apply_preview_output()
 
                         primary = np.asarray(result.outputs[result.primary_output])
-                        mapping_stats["Form"].text = "Per field" if result.target == "kinetic_fields" else _DEPENDENCE_LABELS.get(
+                        mapping_stats["Dependence"].text = "Per field" if result.target == "kinetic_fields" else _DEPENDENCE_LABELS.get(
                             result.output_dependence,
                             result.output_dependence.replace("_", " ").title(),
                         )
                         mapping_stats["Points"].text = f"{primary.size:,}"
-                        mapping_stats["Method"].text = route.method.replace("_", " ").title()
+                        mapping_stats["Method"].text = _mapping_method_name(route.method)
                         for value in mapping_stats.values():
                             value.update()
                         stats_container.visible = True
@@ -4964,7 +5125,7 @@ def render(_navigate: Callable[[str], None]) -> None:
                                 name=_mapping_display_name(named),
                                 source="Mapping",
                                 detail=(
-                                    f"{mapping_stats['Form'].text} | "
+                                    f"{mapping_stats['Dependence'].text} | "
                                     f"{named_primary.size:,} points | "
                                     f"{mapping_stats['Method'].text}"
                                 ),
@@ -5030,7 +5191,7 @@ def render(_navigate: Callable[[str], None]) -> None:
                             output_key.replace("_", " ").title(),
                         ),
                     )
-                    output_label = output_label.removesuffix(" (target)")
+                    output_label = output_label.removesuffix(" (target)").removesuffix(" (input)")
                     dependence = (
                         latest_result.output_dependence
                         if latest_result is not None
@@ -5076,6 +5237,10 @@ def render(_navigate: Callable[[str], None]) -> None:
                             else selected_route_state["route"].output_form
                         )
                     )
+                    if output_key.startswith(INPUT_PREFIX):
+                        dependence = {"x": "space", "t": "time", "xt": "spacetime"}.get(
+                            output_form, dependence,
+                        )
                     preview_title.value = output_label
                     view.value = "Default"
                     if comparison_source_key is not None:
@@ -5092,8 +5257,8 @@ def render(_navigate: Callable[[str], None]) -> None:
                     if actual_output_key == "fit_history":
                         preview_x_label.value = "Iteration"
                         preview_y_label.value = "MSE"
-                    elif comparison_source_key is None and output_form == "xt":
-                        preview_x_label.value = "Chromosome position (kb)"
+                    elif comparison_source_key is None and output_form in {"t", "xt"}:
+                        preview_x_label.value = "Position (kb)"
                         preview_y_label.value = "Time (min)"
                     elif comparison_source_key is None and (
                         output_form == "t" or dependence == "time"
@@ -5142,9 +5307,10 @@ def render(_navigate: Callable[[str], None]) -> None:
                 def sync_view_axis_labels() -> None:
                     sync_plot_controls()
                     output_key = str(preview_output.value or initial_output_key)
-                    output_label = _OUTPUT_LABELS.get(
-                        output_key,
-                        output_key.replace("_", " ").title(),
+                    output_label = (
+                        input_profile_label(output_key).removesuffix(" (input)")
+                        if output_key.startswith(INPUT_PREFIX)
+                        else _OUTPUT_LABELS.get(output_key, output_key.replace("_", " ").title())
                     )
                     plot_type = resolved_plot_type()
                     if plot_type == "Histogram":
@@ -5154,7 +5320,7 @@ def render(_navigate: Callable[[str], None]) -> None:
                         preview_x_label.value = ""
                         preview_y_label.value = output_label
                     elif plot_type == "Heatmap":
-                        preview_x_label.value = "Chromosome position (kb)"
+                        preview_x_label.value = "Position (kb)"
                         preview_y_label.value = "Time (min)"
                     else:
                         dependence = (
@@ -5162,6 +5328,10 @@ def render(_navigate: Callable[[str], None]) -> None:
                             if latest_result is not None
                             else str(dependence_control.value)
                         )
+                        if output_key.startswith(INPUT_PREFIX) and latest_result is not None:
+                            dependence = {"x": "space", "t": "time", "xt": "spacetime"}.get(
+                                latest_result.output_forms.get(output_key), dependence,
+                            )
                         preview_x_label.value = (
                             "Time (min)" if dependence == "time" else "Position (kb)"
                         )
@@ -5229,6 +5399,11 @@ def render(_navigate: Callable[[str], None]) -> None:
 
                 preview_output.on_value_change(refresh_preview_output)
                 preview_layout.on_value_change(refresh_preview_layout)
+
+                def line_type_changed() -> None:
+                    render_batch_colors.refresh()
+                    render_latest_result()
+
                 bind_preview_settings_updates(
                     plot_settings,
                     on_redraw=render_latest_result,
@@ -5238,6 +5413,7 @@ def render(_navigate: Callable[[str], None]) -> None:
                     on_log_x_change=log_x_changed,
                     on_y_limits_change=use_custom_y_limits,
                     on_visibility_change=sync_plot_controls,
+                    on_line_type_change=line_type_changed,
                 )
                 sync_plot_controls()
                 raw_controls.download_button.on_click(lambda: download_raw(raw_controls))
@@ -5262,12 +5438,12 @@ def render(_navigate: Callable[[str], None]) -> None:
                     restored_primary = np.asarray(
                         latest_result.outputs[latest_result.primary_output]
                     )
-                    mapping_stats["Form"].text = "Per field" if latest_result.target == "kinetic_fields" else _DEPENDENCE_LABELS.get(
+                    mapping_stats["Dependence"].text = "Per field" if latest_result.target == "kinetic_fields" else _DEPENDENCE_LABELS.get(
                         latest_result.output_dependence,
                         latest_result.output_dependence.replace("_", " ").title(),
                     )
                     mapping_stats["Points"].text = f"{restored_primary.size:,}"
-                    mapping_stats["Method"].text = latest_result.method.replace("_", " ").title()
+                    mapping_stats["Method"].text = _mapping_method_name(latest_result.method)
                     for value in mapping_stats.values():
                         value.update()
                     stats_container.visible = True
@@ -5286,6 +5462,8 @@ def render(_navigate: Callable[[str], None]) -> None:
                             live.refresh_surface()
                     mapping_raw_preferences.clear()
                     mapping_batch_colors.clear()
+                    mapping_batch_line_types.clear()
+                    mapping_batch_names.clear()
                     active_dataset_key = ""
                     dataset_page["value"] = 1
                     latest_result = None

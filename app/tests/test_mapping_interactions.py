@@ -256,7 +256,23 @@ def test_mapping_target_dependence_route_and_form_selectors_follow_the_catalog()
             await user.should_see(marker="mapping-target", retries=60)
 
             target_control = _select(user, "mapping-target")
-            assert _option_keys(target_control) == tuple(target.key for target in mapping_targets())
+            preferred_targets = (
+                "firing_rate", "fork_speed", "replication_timing",
+                "fork_directionality", "fork_densities",
+            )
+            assert _option_keys(target_control) == (
+                *preferred_targets,
+                *(
+                    target.key for target in mapping_targets()
+                    if target.key not in {
+                        *preferred_targets, "left_fork_density", "right_fork_density",
+                    }
+                ),
+            )
+            assert tuple(target_control.options.values())[:5] == (
+                "Firing rate", "Fork speed", "Replication timing",
+                "Fork directionality", "Fork densities",
+            )
             assert target_control.value == "firing_rate"
             initial_family = _mapping_route_families_for_ui("firing_rate", "space")[0]
             await _assert_family_surface(user, initial_family)
@@ -876,15 +892,15 @@ def test_mapping_preview_and_raw_filename_follow_the_selected_output() -> None:
             await _set_select(user, "mapping-target-form", "spacetime")
             assert output.value == "replicated_fraction_xt"
             assert raw_name.value == "rmap_rf-xt"
-            assert x_label.value == "Chromosome position (kb)"
+            assert x_label.value == "Position (kb)"
             assert y_label.value == "Time (min)"
             assert view.value == "Default"
 
             await _set_select(user, "mapping-target-form", "time")
             assert output.value == "replicated_fraction"
             assert raw_name.value == "rmap_rf"
-            assert x_label.value == "Time (min)"
-            assert y_label.value == "Replicated fraction"
+            assert x_label.value == "Position (kb)"
+            assert y_label.value == "Time (min)"
             assert view.value == "Default"
 
             await _set_select(user, "mapping-target", "kinetic_fields")

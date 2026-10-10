@@ -29,11 +29,17 @@ it completes while another page is open. Selecting the page clears its check;
 Stop immediately clears the indicator. Active jobs and unread results remain
 available even when preserving page state is switched off.
 
-Time profiles use the same curve renderer across all four workflow pages;
-space-time matrices use heatmaps. Axes stay at the plot edges when inverted.
+Spatial profiles use the same curve renderer across all four workflow pages.
+Mapping time and space-time outputs use heatmaps with position on X, time on Y,
+and the mapped quantity on the colour scale. Axes stay at the plot edges when inverted.
 Automatic X and heatmap Z bounds are shown in their editable fields, and Reset
 restores the data-derived range. Plot titles are generated from the result.
 Time and space-time firing-rate fits use Weibull without a shape selector.
+Curve type supports Solid, Dashed, Dotted, and Dash-dot in Style and individual
+Curves controls. Individual curves can inherit the shared setting or override it.
+With exactly two combined curves, Plotting also offers **Two Y axes**, off by
+default. Y1 is on the left and Y2 on the right, each with independent limits and
+reset buttons; switching it off restores the shared Y scale.
 
 Data Manager fills empty genomic bins with zero by default, including for the
 ENCODE example. Zero and custom-value fills are applied after thresholding,
@@ -113,9 +119,17 @@ retains the constrained inverse because the earlier fitters support linear
 geometry only. All Mapping runs show a persistent ETA and elapsed time:
 "estimating" during preparation or quiet work, followed by an estimate when
 solver progress or completed batch cases provide enough information.
-Heatmap automatic axes end at the raster edges, without extra plot padding.
+Heatmap automatic axes end at the raster edges, without extra plot padding,
+except for the next round boundary on zero-based position profiles (for example,
+10,000 bins labelled 0 through 9,999 still show the 10,000 tick).
 X and Y limits are editable for every plot, with Z (colour) limits for heatmaps.
 Reset restores automatic ranges, including after an incomplete edit. Custom
+aspect ratios in Style keep the preview width and adjust its height, with a
+minimum height for the axes and colour scale. Reset restores the original size.
+Hover coordinates use integers for whole-number axes, two decimals for fractional
+axes, and scientific notation for tiny values. Simulation raw exports default to
+uncompressed TSV, and origin efficiency uses an automatic upper Y limit with a
+zero lower limit. Custom
 heatmap axes crop or extend the visible domain without stretching the data;
 genuinely missing cells stay transparent. Grid lines are drawn over the image.
 Heatmaps automatically average large inputs into at most 300 time rows by 720

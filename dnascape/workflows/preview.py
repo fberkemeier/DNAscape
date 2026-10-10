@@ -12,6 +12,7 @@ import json
 import math
 from collections.abc import Sequence
 from dataclasses import dataclass
+from html import escape
 from typing import Any
 
 import numpy as np
@@ -58,18 +59,28 @@ _AXIS_LABEL_FONT_SIZE = 10
 _AXIS_LABEL_MARGIN = 7
 _AXIS_NAME_FONT_SIZE = 11
 _Y_AXIS_TITLE_TICK_CLEARANCE = 5
-_PLOT_OUTER_GUTTER = 4
+_PLOT_OUTER_GUTTER = 8
 _AXIS_MARGIN_FRACTION = 0.04
 
 # Keep hover text consistent even when ECharts would otherwise expose the full
 # binary representation of a floating-point value.
 _TOOLTIP_VALUE_FORMATTER = (
-    "value => { const n = Number(value); return Number.isFinite(n) ? n.toFixed(2) : value; }"
+    "value => { const n = Number(value); if (!Number.isFinite(n)) return value; "
+    "return n !== 0 && Math.abs(n) < 0.01 ? n.toExponential(2) : n.toFixed(2); }"
 )
 _TOOLTIP_POINTER_FORMATTER = (
     "params => { const n = Number(params.value); "
     "return Number.isFinite(n) ? n.toFixed(2) : params.value; }"
 )
+
+CURVE_TYPES = {"solid": "Solid", "dashed": "Dashed", "dotted": "Dotted", "dashdot": "Dash-dot"}
+
+
+def curve_dash_pattern(line_type: str) -> str | list[int]:
+    """Translate a named curve pattern to the canvas and SVG renderers."""
+    if line_type not in CURVE_TYPES:
+        raise ValueError(f"Unknown curve type {line_type!r}.")
+    return [8, 4, 2, 4] if line_type == "dashdot" else line_type
 
 
 @dataclass(frozen=True)
@@ -84,6 +95,7 @@ class PreviewLine:
     width: float | None = None
     show_in_legend: bool = True
     z: int = 3
+    line_type: str | None = None
 
 
 @dataclass(frozen=True)
@@ -571,13 +583,17 @@ def _cartesian_grid(
     *,
     heatmap_colorbar: bool = False,
     y_name_gap: int = _Y_AXIS_NAME_GAP_MIN,
-    has_y_name: bool = True,
+    y_name: str = "",
     bottom_legend: bool = False,
 ) -> dict[str, Any]:
     """Return deterministic outer chart margins shared by every plot type."""
 
-    if has_y_name:
-        left = math.ceil(y_name_gap + _AXIS_NAME_FONT_SIZE + _PLOT_OUTER_GUTTER)
+    if y_name:
+        # Each line becomes another title-width after the 90-degree rotation.
+        # Keep its complete text box and an antialiasing gutter inside the
+        # canvas instead of relying on overflow outside the chart surface.
+        title_width = _AXIS_NAME_FONT_SIZE * len(y_name.split("\n"))
+        left = math.ceil(y_name_gap + title_width + _PLOT_OUTER_GUTTER)
     else:
         # ``y_name_gap`` also encodes the estimated tick width. Remove the
         # title-specific allowance when there is no visible Y-axis name.
@@ -704,17 +720,57 @@ def _fixed_scientific_limits(limits: tuple[float, float]) -> bool:
     return any(_limits_match(limits, fixed) for fixed in set(FIXED_QUANTITY_Y_LIMITS.values()))
 
 
-def _tooltip_options(*, interactive: bool, trigger: str) -> dict[str, Any]:
+def _whole_numbers(values: Any | None) -> bool:
+    if values is None:
+        return False
+    finite = finite_values(values)
+    return bool(finite.size and np.all(np.abs(finite - np.round(finite)) < 1e-9))
+
+
+def _hover_formatter(*, integer_only: bool) -> str:
+    return (
+        "value => { const n = Number(value); if (!Number.isFinite(n)) return value; "
+        "if (n !== 0 && Math.abs(n) < 0.01) return n.toExponential(2); "
+        f"return {str(integer_only).lower()} && Number.isInteger(n) ? String(n) : n.toFixed(2); }}"
+    )
+
+
+def _visual_axis_endpoint(values: Any) -> float | None:
+    """Include a round zero-based bin boundary without extending arbitrary data."""
+    axis = np.unique(np.asarray(values, dtype=float).reshape(-1))
+    axis = axis[np.isfinite(axis)]
+    if axis.size < 2 or not math.isclose(float(axis[0]), 0, abs_tol=1e-9):
+        return None
+    if math.isclose(float(axis[-1]) / 100, round(float(axis[-1]) / 100), abs_tol=1e-9):
+        return None
+    steps = np.diff(axis)
+    if np.allclose(steps, steps[0], rtol=1e-8, atol=1e-9):
+        step = float(steps[0])
+    elif _whole_numbers(axis):
+        # Downsampled previews still retain a common underlying integer grid.
+        step = float(np.gcd.reduce(np.rint(steps).astype(np.int64)))
+    else:
+        return None
+    end = float(axis[-1]) + step
+    return end if end >= 100 and math.isclose(end / 100, round(end / 100), abs_tol=1e-9) else None
+
+
+def _tooltip_options(
+    *, interactive: bool, trigger: str, x_values: Any = None, values: Any = None,
+) -> dict[str, Any]:
     """Return consistently rounded hover values for every interactive plot."""
 
     return {
         "show": bool(interactive),
         "trigger": trigger,
         "confine": True,
-        ":valueFormatter": _TOOLTIP_VALUE_FORMATTER,
+        ":valueFormatter": _hover_formatter(integer_only=_whole_numbers(values)),
         "axisPointer": {
             "type": "line",
-            "label": {"show": bool(interactive), ":formatter": _TOOLTIP_POINTER_FORMATTER},
+            "label": {
+                "show": bool(interactive),
+                ":formatter": "params => (" + _hover_formatter(integer_only=_whole_numbers(x_values)) + ")(params.value)",
+            },
         },
     }
 
@@ -1083,6 +1139,8 @@ def _heatmap_tooltip_data(
     y_limits: tuple[float, float],
     log_z: bool,
     limit: int = MAX_HEATMAP_TOOLTIP_CELLS,
+    x_coordinates: Any = None,
+    y_coordinates: Any = None,
 ) -> list[list[float]]:
     """Build a bounded transparent hit grid over the heatmap raster.
 
@@ -1102,6 +1160,17 @@ def _heatmap_tooltip_data(
     column_edges = np.linspace(0, columns, sampled_columns + 1, dtype=int)
     x_edges = np.linspace(x_limits[0], x_limits[1], sampled_columns + 1)
     y_edges = np.linspace(y_limits[0], y_limits[1], sampled_rows + 1)
+
+    def representative_coordinates(coordinates: Any, edges: np.ndarray, size: int) -> np.ndarray | None:
+        if coordinates is None:
+            return None
+        axis = np.asarray(coordinates, dtype=float).reshape(-1)
+        centers = (edges[:-1] + edges[1:] - 1) / 2
+        indices = np.rint((centers + .5) * axis.size / size - .5).astype(int)
+        return axis[np.clip(indices, 0, axis.size - 1)]
+
+    x_centers = representative_coordinates(x_coordinates, column_edges, columns)
+    y_centers = representative_coordinates(y_coordinates, row_edges, rows)
     data: list[list[float]] = []
     for row in range(sampled_rows):
         for column in range(sampled_columns):
@@ -1121,8 +1190,8 @@ def _heatmap_tooltip_data(
             y_upper = float(y_edges[row + 1])
             data.append(
                 [
-                    (x_lower + x_upper) / 2.0,
-                    (y_lower + y_upper) / 2.0,
+                    float(x_centers[column]) if x_centers is not None else (x_lower + x_upper) / 2.0,
+                    float(y_centers[row]) if y_centers is not None else (y_lower + y_upper) / 2.0,
                     value,
                     x_lower,
                     y_lower,
@@ -1188,10 +1257,18 @@ def build_preview_plot_options(
     histogram_boundary: str = "left",
     x_limits: tuple[float, float] | None = None,
     z_limits: tuple[float, float] | None = None,
+    aspect_ratio: float | None = None,
+    line_type: str = "solid",
+    secondary_y_label: str | None = None,
+    secondary_y_limits: tuple[float, float] | None = None,
 ) -> dict[str, Any]:
     """Build bounded ECharts options for a line, histogram, boxplot, or heatmap."""
 
     title_options = {"show": False, "text": title}
+    if aspect_ratio is not None:
+        aspect_ratio = _positive_finite(aspect_ratio)
+        if aspect_ratio is None:
+            raise ValueError("Aspect ratio must be finite and positive.")
     axis_line = {"onZero": False, "lineStyle": {"color": "#a69e98"}}
     axis_tick = {
         "show": True,
@@ -1233,9 +1310,10 @@ def build_preview_plot_options(
             invert_z=bool(invert_z),
         )
         x_data_minimum, x_data_maximum = _data_axis_bounds(x_values, log_axis=log_x)
+        visual_end = _visual_axis_endpoint(x_axis) if not log_x and x_limits is None else None
         y_data_minimum, y_data_maximum = _data_axis_bounds(y_values, log_axis=log_y)
         x_minimum, x_maximum = _plot_axis_limits(
-            x_limits, (x_data_minimum, x_data_maximum), label="X", log_axis=log_x,
+            x_limits, (x_data_minimum, visual_end or x_data_maximum), label="X", log_axis=log_x,
         )
         y_minimum, y_maximum = _plot_axis_limits(
             y_limits, (y_data_minimum, y_data_maximum), label="Y", log_axis=log_y,
@@ -1264,6 +1342,7 @@ def build_preview_plot_options(
             "name": y_label,
             "nameLocation": "middle",
             "nameGap": y_name_gap,
+            "nameMoveOverlap": False,
             "nameTextStyle": _axis_name_options(),
             "inverse": bool(invert_y),
             "axisTick": axis_tick,
@@ -1316,6 +1395,7 @@ def build_preview_plot_options(
                 _compact_tick(display_minimum),
             ],
             "textGap": 5,
+            "padding": 0,
             # The raster is coloured in Python; do not recolour the transparent
             # hover grid which is appended as a second series below.
             "seriesIndex": 0,
@@ -1371,6 +1451,8 @@ def build_preview_plot_options(
                         x_limits=(x_data_minimum, x_data_maximum),
                         y_limits=(y_data_minimum, y_data_maximum),
                         log_z=log_z,
+                        x_coordinates=x_values,
+                        y_coordinates=y_values,
                     ),
                 }
             ]
@@ -1403,15 +1485,26 @@ def build_preview_plot_options(
             tick_lower=x_minimum,
             tick_upper=x_maximum,
         )
+        tooltip = _tooltip_options(interactive=interactive, trigger="item", x_values=x_values, values=sampled)
+        tooltip[":formatter"] = (
+            "params => { const v = params.value; "
+            f"const fx = ({_hover_formatter(integer_only=_whole_numbers(x_values))}); "
+            f"const fy = ({_hover_formatter(integer_only=_whole_numbers(y_values))}); "
+            f"const fz = ({_hover_formatter(integer_only=not log_z and _whole_numbers(sampled))}); "
+            f"return {json.dumps(escape(x_label or 'X') + ': ')} + fx(v[0]) + '<br>' + "
+            f"{json.dumps(escape(y_label or 'Y') + ': ')} + fy(v[1]) + '<br>' + "
+            f"(params.marker || '') + {json.dumps(escape(series_label or title or 'Value') + ': ')} + fz(v[2]); }}"
+        )
         return {
             "animation": False,
+            "dnascapeAspectRatio": aspect_ratio,
             "title": title_options,
-            "tooltip": _tooltip_options(interactive=interactive, trigger="item"),
+            "tooltip": tooltip,
             "graphic": (
                 [
                     {
                         "type": "text",
-                        "right": 2,
+                        "right": 1 + max(12, len(_compact_tick(display_maximum)) * 6, len(_compact_tick(display_minimum)) * 6) / 2,
                         "top": "middle",
                         "rotation": math.pi / 2,
                         "z": 10_000,
@@ -1432,7 +1525,7 @@ def build_preview_plot_options(
             "grid": _cartesian_grid(
                 heatmap_colorbar=bool(show_colorbar),
                 y_name_gap=y_name_gap,
-                has_y_name=bool(y_label),
+                y_name=y_label,
             ),
             "xAxis": heatmap_x_axis,
             "yAxis": heatmap_y_axis,
@@ -1559,6 +1652,7 @@ def build_preview_plot_options(
             ),
         )
         histogram_y_axis["nameGap"] = y_name_gap
+        histogram_y_axis["nameMoveOverlap"] = False
         _use_endpoint_safe_ticks(
             histogram_y_axis,
             data_lower=histogram_y_data_lower,
@@ -1628,6 +1722,7 @@ def build_preview_plot_options(
         ).strip().casefold().startswith("bottom")
         return {
             "animation": False,
+            "dnascapeAspectRatio": aspect_ratio,
             "title": title_options,
             "graphic": (
                 _histogram_statistics_graphic(
@@ -1637,10 +1732,10 @@ def build_preview_plot_options(
                 if show_histogram_statistics
                 else []
             ),
-            "tooltip": _tooltip_options(interactive=interactive, trigger="axis"),
+            "tooltip": _tooltip_options(interactive=interactive, trigger="axis", x_values=edges, values=counts),
             "grid": _cartesian_grid(
                 y_name_gap=y_name_gap,
-                has_y_name=bool(histogram_y_axis["name"]),
+                y_name=histogram_y_axis["name"],
                 bottom_legend=bottom_statistics,
             ),
             "xAxis": histogram_x_axis,
@@ -1740,6 +1835,7 @@ def build_preview_plot_options(
             ),
         )
         box_y_axis["nameGap"] = y_name_gap
+        box_y_axis["nameMoveOverlap"] = False
         _use_endpoint_safe_ticks(
             box_y_axis,
             data_lower=box_y_data_lower,
@@ -1751,11 +1847,12 @@ def build_preview_plot_options(
         box_x_limits = _plot_axis_limits(x_limits, None, label="X")
         return {
             "animation": False,
+            "dnascapeAspectRatio": aspect_ratio,
             "title": title_options,
-            "tooltip": _tooltip_options(interactive=interactive, trigger="item"),
+            "tooltip": _tooltip_options(interactive=interactive, trigger="item", values=[lower, q1, median, q3, upper]),
             "grid": _cartesian_grid(
                 y_name_gap=y_name_gap,
-                has_y_name=bool(y_label),
+                y_name=y_label,
             ),
             "xAxis": {
                 "type": "category",
@@ -1790,6 +1887,9 @@ def build_preview_plot_options(
 
     if plot_type != "Line":
         raise ValueError(f"Unknown preview plot type {plot_type!r}.")
+    dual_y_axes = secondary_y_label is not None
+    if dual_y_axes and (len(lines) != 2 or bands):
+        raise ValueError("Two Y axes require exactly two curves without filled bands.")
     if not lines:
         if values is None or x_axis is None:
             raise ValueError("Line preview requires values and a matching axis.")
@@ -1832,17 +1932,20 @@ def build_preview_plot_options(
                 "data": segments,
             }
         )
-    for line in lines:
+    for index, line in enumerate(lines):
         flattened = np.asarray(line.y, dtype=float).reshape(-1)
         line_x = np.asarray(line.x, dtype=float).reshape(-1)
         scalar = flattened.size == 1
         all_x_values.append(finite_values(line_x))
-        all_y_values.append(finite_values(flattened))
+        if not dual_y_axes or index == 0:
+            all_y_values.append(finite_values(flattened))
         line_options.append(
             {
                 "type": "scatter" if scalar else "line",
                 "name": line.name,
-                "symbol": "circle" if scalar else "none",
+                # ECharts substitutes a circle in line legends for "none".
+                # Hidden line markers retain a plain line legend instead.
+                "symbol": "circle" if scalar else "line",
                 "showSymbol": bool(scalar),
                 "symbolSize": 12 if scalar else 0,
                 "silent": not interactive,
@@ -1853,7 +1956,9 @@ def build_preview_plot_options(
                     "width": line.width if line.width is not None else line_width,
                     "color": line.color,
                     "opacity": line.opacity,
+                    "type": curve_dash_pattern(line.line_type or line_type),
                 },
+                **({"yAxisIndex": index} if dual_y_axes else {}),
                 "itemStyle": {"color": line.color, "opacity": line.opacity},
                 "emphasis": {"disabled": not interactive},
                 "data": _line_points(line.x, flattened),
@@ -1873,6 +1978,7 @@ def build_preview_plot_options(
         else nice_linear_limits(x_data_lower, x_data_upper)
     )
     custom_x_limits = x_limits is not None
+    visual_end = _visual_axis_endpoint(finite_x) if not log_x and not custom_x_limits else None
     x_limits = _plot_axis_limits(x_limits, automatic_x_limits, label="X", log_axis=log_x)
     finite_y_parts = [part for part in all_y_values if part.size]
     finite_y = np.concatenate(finite_y_parts) if finite_y_parts else np.asarray([], dtype=float)
@@ -1950,6 +2056,10 @@ def build_preview_plot_options(
         ),
     )
     y_axis_options["nameGap"] = y_name_gap
+    # ECharts 6 can move middle names farther from their ticks even with
+    # explicit grid margins. Our gap already includes the formatted ticks;
+    # moving it again clips the title at the left edge of the canvas.
+    y_axis_options["nameMoveOverlap"] = False
     _use_endpoint_safe_ticks(
         y_axis_options,
         data_lower=line_y_data_lower,
@@ -1965,7 +2075,26 @@ def build_preview_plot_options(
     ):
         if item not in legend_names:
             legend_names.append(item)
-    grid = _cartesian_grid(y_name_gap=y_name_gap, has_y_name=bool(y_label))
+    grid = _cartesian_grid(y_name_gap=y_name_gap, y_name=y_label)
+    rendered_y_axes: dict[str, Any] | list[dict[str, Any]] = y_axis_options
+    if dual_y_axes:
+        second = build_preview_plot_options(
+            plot_type="Line", title=title, x_label=x_label, y_label=secondary_y_label,
+            color=lines[1].color, palette=palette, histogram_bins=histogram_bins,
+            density=False, show_legend=False, show_colorbar=False, log_y=log_y,
+            invert_y=invert_y, y_limits=secondary_y_limits, lines=(lines[1],),
+            series_label=lines[1].name,
+            line_width=line_width, line_type=line_type, show_grid=False,
+            interactive=interactive, log_x=log_x,
+        )
+        right_axis = second["yAxis"]
+        right_axis["position"] = "right"
+        y_axis_options["position"] = "left"
+        for axis, line in zip((y_axis_options, right_axis), lines, strict=True):
+            axis["axisLine"] = {"onZero": False, "lineStyle": {"color": line.color}}
+            axis["nameTextStyle"] = {**axis["nameTextStyle"], "color": line.color}
+        grid["right"] = second["grid"]["left"]
+        rendered_y_axes = [y_axis_options, right_axis]
     legend_options = build_legend_options(
         legend_names,
         grid=grid,
@@ -2000,21 +2129,24 @@ def build_preview_plot_options(
         data_lower=x_data_lower,
         data_upper=x_data_upper,
         tick_lower=x_limits[0] if custom_x_limits else None,
-        tick_upper=x_limits[1] if custom_x_limits else None,
+        tick_upper=x_limits[1] if custom_x_limits else visual_end,
         log_axis=log_x,
     )
     return limit_curve_hover({
         "animation": False,
+        "dnascapeAspectRatio": aspect_ratio,
         "title": title_options,
         "tooltip": {
             **_tooltip_options(
                 interactive=interactive,
                 trigger=("item" if all(np.asarray(line.y).size == 1 for line in lines) else "axis"),
+                x_values=finite_x,
+                values=np.concatenate([finite_values(line.y) for line in lines]) if dual_y_axes else finite_y,
             ),
         },
         "legend": legend_options,
         "grid": grid,
         "xAxis": x_axis_options,
-        "yAxis": y_axis_options,
+        "yAxis": rendered_y_axes,
         "series": line_options,
     })

@@ -319,7 +319,6 @@ def test_output_defaults_use_scientific_domains_and_clean_dynamic_ticks() -> Non
     result = _result()
     for output_label, expected in (
         ("Fork directionality", (-1.0, 1.0)),
-        ("Origin efficiency", (0.0, 1.0)),
         ("Replicated fraction", (0.0, 1.0)),
     ):
         assert _default_y_limits(output_label) == expected
@@ -335,6 +334,13 @@ def test_output_defaults_use_scientific_domains_and_clean_dynamic_ticks() -> Non
             == expected
         )
 
+    assert _default_y_limits("Origin efficiency") is None
+    efficiency_limits = _automatic_y_limits(
+        result, output_label="Origin efficiency", view_mode="Default",
+        histogram_bins=60, density=False, log_y=False,
+    )
+    assert efficiency_limits[0] == 0.0
+    assert 0.6 < efficiency_limits[1] < 1.0
     assert _default_y_limits("Replication timing") is None
     automatic_limits = _automatic_y_limits(
         result,
@@ -578,7 +584,8 @@ def test_default_view_resolves_by_output_and_inversion_keeps_x_axis_at_bottom(
         assert options["xAxis"]["name"] == "Position (kb)"
         assert options["yAxis"]["name"] == "Time (min)"
         assert options["series"][0]["silent"] is True
-        assert options["tooltip"]["show"] is False
+        assert options["tooltip"]["show"] is True
+        assert options["series"][1]["silent"] is False
 
 
 def test_replication_timing_line_can_group_individual_profiles_and_full_ensemble_sd() -> None:
@@ -696,7 +703,7 @@ def test_empty_inter_origin_distribution_has_a_specific_actionable_message() -> 
         )
 
 
-def test_time_profiles_are_static_and_keep_rounded_numeric_axes() -> None:
+def test_time_profiles_offer_hover_and_keep_rounded_numeric_axes() -> None:
     from app.pages.simulation import _result_plot_options
 
     options = _result_plot_options(
@@ -719,8 +726,8 @@ def test_time_profiles_are_static_and_keep_rounded_numeric_axes() -> None:
     )
 
     assert options["series"][0]["type"] == "line"
-    assert options["series"][0]["silent"] is True
-    assert options["tooltip"]["show"] is False
+    assert options["series"][0]["silent"] is False
+    assert options["tooltip"]["show"] is True
     assert ":formatter" in options["xAxis"]["axisLabel"]
     assert ":formatter" in options["yAxis"]["axisLabel"]
 

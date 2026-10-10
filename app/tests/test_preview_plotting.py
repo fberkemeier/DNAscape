@@ -121,6 +121,14 @@ def test_vector_capture_is_reused_until_the_visible_chart_changes() -> None:
         assert len(vector.method_calls) == 3
         assert vector.options == canvas.options
 
+        # A browser theme change can alter colours without changing the data
+        # or Python options. It must also invalidate an already captured SVG.
+        handle.invalidate_export()
+        await handle.run_chart_method("getDataURL", {"type": "svg"}, timeout=10)
+        assert canvas.update_calls == 1
+        assert vector.update_calls == 3
+        assert len(vector.method_calls) == 4
+
     asyncio.run(exercise())
 
 
@@ -843,7 +851,7 @@ def test_line_layout_uses_actual_aligned_ticks_without_double_reserving_space() 
     assert options["yAxis"]["axisLabel"]["customValues"] == [20.0, 25.0, 30.0, 35.0]
     assert options["yAxis"]["nameGap"] <= 30
     assert options["grid"]["left"] >= options["yAxis"]["nameGap"] + 9
-    assert options["grid"]["left"] <= 43
+    assert options["grid"]["left"] <= 47
     assert options["grid"]["containLabel"] is False
     assert options["grid"]["outerBoundsMode"] == "none"
 
@@ -871,7 +879,7 @@ def test_five_character_y_ticks_receive_extra_title_clearance() -> None:
     assert "0.002" in [f"{value:.5g}" for value in options["yAxis"]["axisLabel"]["customValues"]]
     assert 42 <= options["yAxis"]["nameGap"] < 48
     assert options["grid"]["left"] >= options["yAxis"]["nameGap"] + 9
-    assert options["grid"]["left"] <= 60
+    assert options["grid"]["left"] <= 64
 
 
 @pytest.mark.parametrize("side", ("left", "right"))

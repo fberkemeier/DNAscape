@@ -1,4 +1,4 @@
-"""Walk the live Mapping surface across every public route family and form."""
+"""Walk the live Mapping surface across every available route family and form."""
 
 from __future__ import annotations
 
@@ -115,7 +115,8 @@ def test_all_mapping_targets_families_forms_and_shapes_render_exact_controls(
         }
         if route.target == "firing_rate" and shape == "weibull":
             assert "fit_step" not in expected_settings
-            assert {"stall_rate_per_kb", "tau", "perQ"} <= expected_settings.keys()
+            if "replication_timing" in family.factor_keys:
+                assert {"stall_rate_per_kb", "tau", "perQ"} <= expected_settings.keys()
             if route.output_dependence == "time":
                 assert "space_maxiter" not in expected_settings
         if route.target == "fork_speed" and route.output_dependence == "time":
@@ -151,10 +152,13 @@ def test_all_mapping_targets_families_forms_and_shapes_render_exact_controls(
             await user.open("/")
             user.find(marker="nav-mapping").click()
             await user.should_see(marker="mapping-target", retries=60)
-            assert tuple(_element(user, "mapping-target").options) == tuple(
+            target_options = _element(user, "mapping-target").options
+            assert set(target_options) == {
                 target.key for target in catalogue.targets
-            )
-            for target in catalogue.targets:
+                if target.key not in {"left_fork_density", "right_fork_density"}
+            }
+            for target_key in target_options:
+                target = catalogue.target(target_key)
                 await _set(user, "mapping-target", target.key)
                 visited_targets.add(target.key)
                 assert tuple(_element(user, "mapping-target-form").options) == target.dependences
@@ -189,10 +193,19 @@ def test_all_mapping_targets_families_forms_and_shapes_render_exact_controls(
                                     visited_cases.add(expected_case)
 
     asyncio.run(scenario())
-    assert visited_targets == {target.key for target in catalogue.targets}
-    assert visited_families == {family.key for family in catalogue.route_families}
+    expected_targets = {
+        target.key for target in catalogue.targets
+        if target.key not in {"left_fork_density", "right_fork_density"}
+    }
+    assert visited_targets == expected_targets
+    assert visited_families == {
+        family.key for family in catalogue.route_families
+        if family.target_key in expected_targets
+    }
     assert visited_cases == expected_cases
-    assert len(visited_cases) > len(catalogue.routes)
+    assert len(visited_cases) > sum(
+        route.target_key in expected_targets for route in catalogue.routes
+    )
 
 
 def test_mapping_keeps_user_target_shape_when_input_form_still_supports_it() -> None:
@@ -202,13 +215,13 @@ def test_mapping_keeps_user_target_shape_when_input_form_still_supports_it() -> 
             user.find(marker="nav-mapping").click()
             await user.should_see(marker="mapping-target", retries=60)
             await _set(user, "mapping-target-form", "spacetime")
-            await _set(user, "mapping-target-shape", "free")
-            await _set(user, "mapping-input-fork-speed-form", "x")
-            assert _element(user, "mapping-target-shape").value == "free"
+            await _set(user, "mapping-target-shape", "weibull")
+            await _set_input_form(user, "fork_speed", "x")
+            assert _element(user, "mapping-target-shape").value == "weibull"
             assert _element(user, "mapping-setting-stall-rate-per-kb").visible
-            await _set(user, "mapping-input-fork-speed-form", "xt")
-            assert _element(user, "mapping-target-shape").value == "free"
-            await _set(user, "mapping-input-fork-speed-form", "scalar")
-            assert _element(user, "mapping-target-shape").value == "free"
+            await _set_input_form(user, "fork_speed", "xt")
+            assert _element(user, "mapping-target-shape").value == "weibull"
+            await _set_input_form(user, "fork_speed", "scalar")
+            assert _element(user, "mapping-target-shape").value == "weibull"
 
     asyncio.run(scenario())

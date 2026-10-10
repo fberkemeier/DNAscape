@@ -248,6 +248,25 @@ def test_supplied_bounds_and_best_iterate_are_retained():
     assert result._rmap_info["fit_mse"] == min(result._rmap_info["fit_history"])
 
 
+def test_spatial_speed_progress_counts_initial_evaluation_as_iteration_zero():
+    messages, metrics = [], []
+    truth = 1.6 + .35 * np.sin(np.linspace(0, 2 * np.pi, 96, endpoint=False))
+    timing = map_firing_timing(.004, truth)
+    with progress_context(
+        report=lambda value, message: messages.append(message),
+        metric_report=lambda *metric: metrics.append(metric), suppress_output=True,
+    ):
+        result = map_timing_firing_spatial_speed(
+            {"replication_timing": timing, "firing_rate": .004},
+            maxiter=10, error=None, smoothw=None, refine_edge_kb=0., verbose=False,
+        )
+    assert len(result._rmap_info["fit_history"]) == 11
+    assert metrics[0][1:3] == (0, 10)
+    assert metrics[-1][1:3] == (10, 10)
+    assert all(metric[2] == 10 for metric in metrics)
+    assert not any("/11" in message for message in messages)
+
+
 @pytest.mark.parametrize("timing,firing,kwargs,match", [
     ([1., 2.], 0., {}, "positive firing rate"),
     ([1., 2.], .001, {"T0": 3.}, "greater than T0"),

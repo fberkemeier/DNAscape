@@ -45,6 +45,8 @@ def select_mapping_output(
     """Select a numeric member and verify that its declared axes match."""
 
     key = str(output_key).strip()
+    from .preview_inputs import input_preview_result
+    result = input_preview_result(result, key)
     value = result.outputs.get(key)
     if value is None:
         raise ValueError(f"Mapping output {key!r} is not available.")

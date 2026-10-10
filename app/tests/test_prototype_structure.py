@@ -338,7 +338,7 @@ def test_scientific_layout_hooks_keep_controls_aligned_and_actions_clear() -> No
         ".q-expansion-item__content > .nicegui-expansion-content",
     )
     assert nicegui_expansion_content["box-sizing"] == "border-box"
-    assert nicegui_expansion_content["padding"] == "0"
+    assert nicegui_expansion_content["padding"] == "0.15rem 0.35rem 0"
     assert nicegui_expansion_content["width"] == "100%"
     adjacent_expansion = _css_declarations(styles, ".dn-expansion + .dn-expansion")
     assert adjacent_expansion["margin-top"] != "0"
@@ -475,7 +475,7 @@ def test_simulation_output_selector_is_preview_owned_and_settings_are_compact() 
         "Fork speed",
         "Ensemble",
         "Timing & outputs",
-        "Fork behaviour",
+        "Origin & fork behaviour",
     ):
         assert f'ui.label("{group}")' in source
     for marker in ("simulation-stalling-settings", "simulation-factor-pool-settings"):

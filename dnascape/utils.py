@@ -239,7 +239,7 @@ def etaf(it, maxiter, start_time, done=None, label=None):
 def etaferr(it, maxiter, start_time, err, done=None, label="rmap"):
     elapsed = time.time() - start_time
     sims_left = maxiter - it
-    avg_time_per_sim = elapsed / it
+    avg_time_per_sim = elapsed / max(1, it)
     eta_sec = sims_left * avg_time_per_sim
     if done is None:
         done = it >= maxiter

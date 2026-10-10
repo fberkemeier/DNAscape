@@ -76,6 +76,7 @@ def plot_mapping_outputs(
 ) -> tuple[Path, ...]:
     """Write optional plots using the same chart specification as Mapping."""
     from .plotting import combined_mapping_plot_options, mapping_plot_options, write_plot_html
+    from .preview_inputs import input_preview_result
 
     folder = Path(directory)
     folder.mkdir(parents=True, exist_ok=True)
@@ -85,26 +86,37 @@ def plot_mapping_outputs(
         settings["output_key"] = results[0].result.primary_output if selected in {"", "primary"} else selected
         if "view" in options:
             actual_key = _output_key(results[0].result, selected)
-            output_form = results[0].result.output_forms.get(actual_key)
+            preview_result = input_preview_result(results[0].result, actual_key)
+            output_form = preview_result.output_forms.get(actual_key)
             requested_view = str(options["view"] or "Default")
             settings["plot_type"] = (
                 "Line" if selected.startswith("comparison:") else
                 "Heatmap" if output_form in {"t", "xt"} else
                 requested_view if requested_view in {"Histogram", "Boxplot"} else
-                "Histogram" if results[0].result.output_dependence == "ensemble" else "Line"
+                "Histogram" if preview_result.output_dependence == "ensemble" else "Line"
             )
     colors = {
         (item["dataset"], item["output"], int(item["series"])): item["color"]
         for item in options.get("colors", ())
     }
+    line_types = {
+        (item["dataset"], item["output"], int(item["series"])): item["line_type"]
+        for item in options.get("line_types", ())
+    }
+    curve_names = {
+        (item["dataset"], item["output"], int(item["series"])): item["name"]
+        for item in options.get("curve_names", ())
+    }
     display_names = {
-        named.key: named.name if options.get("name_style") == "full" else (named.short_name or named.name)
+        named.key: getattr(named, "curve_label", "") or (
+            named.name if options.get("name_style") == "full" else (named.short_name or named.name)
+        )
         for named in results
     }
     runtime = Path(echarts_path).read_text(encoding="utf-8") if echarts_path and Path(echarts_path).is_file() else None
     combined = len(results) > 1 and str(options.get("layout", "Combined")) == "Combined"
     charts = (
-        [("mapping_combined.html", combined_mapping_plot_options(results, colors=colors, display_names=display_names, **settings))]
+        [("mapping_combined.html", combined_mapping_plot_options(results, colors=colors, line_types=line_types, curve_names=curve_names, display_names=display_names, **settings))]
         if combined else
         [(f"mapping_{named.key}.html", mapping_plot_options(named.result, **settings)) for named in results]
     )

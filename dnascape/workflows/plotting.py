@@ -22,6 +22,7 @@ from .preview import (
     automatic_y_limits,
     build_legend_options,
     build_preview_plot_options,
+    curve_dash_pattern,
     finite_values,
     has_finite_values,
     limit_curve_hover,
@@ -115,6 +116,13 @@ def write_plot_html(
     if not np.isfinite(float(dpi)) or float(dpi) <= 0:
         raise ValueError("Plot export DPI must be a positive finite number.")
     pixel_ratio = max(1.0, min(4.0, float(dpi) / 96.0))
+    aspect_ratio = specification.get("dnascapeAspectRatio")
+    chart_size = "height: 360px;"
+    if aspect_ratio is not None:
+        aspect_ratio = float(aspect_ratio)
+        if not np.isfinite(aspect_ratio) or aspect_ratio <= 0:
+            raise ValueError("Plot aspect ratio must be a positive finite number.")
+        chart_size = f"height: auto; aspect-ratio: {aspect_ratio}; min-height: 240px;"
     destination.parent.mkdir(parents=True, exist_ok=True)
     options_json = json.dumps(
         _html_option_values(specification), ensure_ascii=True, allow_nan=False
@@ -135,7 +143,7 @@ def write_plot_html(
   <style>
     body {{ margin: 24px; color: #625c57; background: white; font-family: sans-serif; }}
     h1 {{ font-size: 18px; font-weight: 500; }}
-    #chart {{ width: 100%; height: 360px; }}
+    #chart {{ width: 100%; {chart_size} }}
     .exports {{ display: flex; gap: 8px; margin-top: 12px; }}
     button {{ padding: 6px 12px; cursor: pointer; }}
   </style>
@@ -181,8 +189,9 @@ def write_plot_html(
     }});
     document.getElementById('download-svg').addEventListener('click', () => {{
       const surface = document.createElement('div');
-      surface.style.cssText = 'position:absolute;left:-100000px;height:360px;';
+      surface.style.cssText = 'position:absolute;left:-100000px;';
       surface.style.width = chart.getWidth() + 'px';
+      surface.style.height = chart.getHeight() + 'px';
       document.body.appendChild(surface);
       const vector = echarts.init(surface, null, {{renderer: 'svg'}});
       vector.setOption(options);
@@ -224,7 +233,7 @@ _MSE_DIAGNOSTIC_KEY = "mse_diagnostic"
 
 _BATCH_COLOURS = (
     "#b03412",
-    "#2c7f77",
+    "#2596be",
     "#6f5a9c",
     "#c47a1b",
     "#3f6fa3",
@@ -315,7 +324,7 @@ def mapping_plot_options(
     legend_position: str = "Top right",
     show_grid: bool = True,
     y_limits: tuple[float, float] | None = None,
-    secondary_color: str = "#2c7f77",
+    secondary_color: str = "#2596be",
     log_x: bool = False,
     invert_x: bool = False,
     invert_z: bool = False,
@@ -327,10 +336,14 @@ def mapping_plot_options(
     histogram_boundary: str = "left",
     x_limits: tuple[float, float] | None = None,
     z_limits: tuple[float, float] | None = None,
+    aspect_ratio: float | None = None,
+    line_type: str = "solid",
 ) -> dict[str, Any]:
     """Build a bounded ECharts view for scalar, X, T, XT, and bundle outputs."""
 
     output_key = resolved_output_key(result, output_key)
+    from .preview_inputs import INPUT_PREFIX, input_preview_result, input_profile_label
+    result = input_preview_result(result, output_key)
 
     if output_key.startswith(_COMPARISON_PREFIX):
         fitted_key = output_key.removeprefix(_COMPARISON_PREFIX)
@@ -373,6 +386,7 @@ def mapping_plot_options(
             observed_axis = fitted_axis = axis
         return build_preview_plot_options(
             plot_type="Line",
+            aspect_ratio=aspect_ratio,
             title=title.strip() or "Observed vs fitted",
             x_limits=x_limits,
             x_label=x_label,
@@ -392,10 +406,11 @@ def mapping_plot_options(
                 PreviewLine("Fitted", fitted_axis, fitted, secondary_color),
             ),
             line_width=line_width,
+            line_type=line_type,
             show_markers=show_markers,
             legend_position=legend_position,
             show_grid=show_grid,
-            interactive=comparison.form != "t",
+            interactive=True,
             log_x=log_x,
             invert_x=invert_x,
         )
@@ -447,9 +462,9 @@ def mapping_plot_options(
         if span > 0:
             values = values / span
 
-    resolved_title = title.strip() or _OUTPUT_LABELS.get(
-        output_key,
-        output_key.replace("_", " ").title(),
+    resolved_title = title.strip() or (
+        input_profile_label(output_key) if output_key.startswith(INPUT_PREFIX)
+        else _OUTPUT_LABELS.get(output_key, output_key.replace("_", " ").title())
     )
     if plot_type == "Heatmap":
         output_form = str(getattr(result, "output_forms", {}).get(output_key, ""))
@@ -480,6 +495,7 @@ def mapping_plot_options(
             raise ValueError("Heatmap view requires a temporal or space-time mapping output.")
         return build_preview_plot_options(
             plot_type="Heatmap",
+            aspect_ratio=aspect_ratio,
             x_limits=x_limits,
             z_limits=z_limits,
             title=resolved_title,
@@ -500,7 +516,7 @@ def mapping_plot_options(
             x_axis=space_axis,
             y_axis=time_axis,
             show_grid=show_grid,
-            interactive=False,
+            interactive=True,
             log_x=log_x,
             invert_x=invert_x,
             invert_z=invert_z,
@@ -510,6 +526,7 @@ def mapping_plot_options(
     if plot_type == "Histogram":
         return build_preview_plot_options(
             plot_type="Histogram",
+            aspect_ratio=aspect_ratio,
             x_limits=x_limits,
             title=resolved_title,
             x_label=x_label,
@@ -540,6 +557,7 @@ def mapping_plot_options(
     if plot_type == "Boxplot":
         return build_preview_plot_options(
             plot_type="Boxplot",
+            aspect_ratio=aspect_ratio,
             x_limits=x_limits,
             title=resolved_title,
             x_label=x_label,
@@ -575,6 +593,7 @@ def mapping_plot_options(
         axis, flattened = _closed_periodic_profile(axis, flattened)
     return build_preview_plot_options(
         plot_type="Line",
+        aspect_ratio=aspect_ratio,
         x_limits=x_limits,
         title=resolved_title,
         x_label=x_label,
@@ -592,10 +611,11 @@ def mapping_plot_options(
         values=flattened,
         x_axis=axis,
         line_width=line_width,
+        line_type=line_type,
         show_markers=show_markers or (output_key == "fit_history" and flattened.size == 1),
         legend_position=legend_position,
         show_grid=show_grid,
-        interactive=output_form != "t" and dependence != "time",
+        interactive=True,
         log_x=log_x,
         invert_x=invert_x,
     )
@@ -617,6 +637,8 @@ def mapping_automatic_y_limits(
     """Return editable, data-derived bounds for the active mapping plot."""
 
     output_key = resolved_output_key(result, output_key)
+    from .preview_inputs import input_preview_result
+    result = input_preview_result(result, output_key)
 
     if output_key.startswith(_COMPARISON_PREFIX):
         comparison = getattr(result, "comparisons", {}).get(
@@ -672,6 +694,8 @@ def combined_mapping_plot_options(
     results: Sequence[Any],
     *,
     colors: Mapping[tuple[str, str, int], str] | None = None,
+    line_types: Mapping[tuple[str, str, int], str] | None = None,
+    curve_names: Mapping[tuple[str, str, int], str] | None = None,
     display_names: Mapping[str, str] | None = None,
     plot_options_builder: Callable[..., dict[str, Any]] | None = None,
     **plot_kwargs: Any,
@@ -719,6 +743,10 @@ def combined_mapping_plot_options(
             )
             line_style = dict(item.get("lineStyle", {}))
             line_style["color"] = curve_color
+            if not histogram:
+                line_style["type"] = curve_dash_pattern((line_types or {}).get(
+                    (named.key, output_key, series_index), str(plot_kwargs.get("line_type") or "solid"),
+                ))
             item["lineStyle"] = line_style
             item_style = dict(item.get("itemStyle", {}))
             item_style["color"] = curve_color
@@ -734,6 +762,7 @@ def combined_mapping_plot_options(
                 if len(series) == 1
                 else f"{result_name} · {original_name}"
             )
+            display_name = (curve_names or {}).get((named.key, output_key, series_index), display_name)
             item["name"] = display_name
             combined_names.append(display_name)
             combined_series.append(item)

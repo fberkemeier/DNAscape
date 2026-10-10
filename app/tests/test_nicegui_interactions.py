@@ -683,7 +683,7 @@ def test_plotting_commits_data_once_then_updates_plot_settings_live() -> None:
 
             assert chart().options["series"][0]["type"] == "line"
             assert chart().options["series"][0]["name"] == "signal"
-            assert chart().options["xAxis"]["name"] == "Position (bin)"
+            assert chart().options["xAxis"]["name"] == "Position (kb)"
 
             user.find("Plotting settings").click()
             await user.should_not_see("Curves")
@@ -890,7 +890,7 @@ def test_plotting_commits_data_once_then_updates_plot_settings_live() -> None:
             await wait_for_chart(lambda options: options["series"][0]["type"] == "custom")
             assert chart().options["series"][0]["type"] == "custom"
             assert chart().options["series"][0]["silent"] is True
-            assert chart().options["tooltip"]["show"] is False
+            assert chart().options["tooltip"]["show"] is True
             await user.should_see(marker="plotting-heatmap-palette")
             await user.should_see(marker="plotting-colorbar")
             await user.should_see(marker="plotting-log-z")
@@ -914,7 +914,9 @@ def test_plotting_commits_data_once_then_updates_plot_settings_live() -> None:
             assert chart().options["series"][0]["type"] == "custom"
 
             user.find(marker="action-plot").click()
-            await wait_for_chart(lambda options: len(options["series"]) == 2)
+            await wait_for_chart(lambda options: len(options["series"]) == 2 and all(
+                series["type"] == "line" for series in options["series"]
+            ))
             user.find("Curves").click()
             curves_expansion = next(
                 expansion
@@ -928,7 +930,17 @@ def test_plotting_commits_data_once_then_updates_plot_settings_live() -> None:
             assert [series["name"] for series in chart().options["series"]] == ["t0", "t1"]
             assert [series["type"] for series in chart().options["series"]] == ["line", "line"]
             assert chart().options["series"][0]["lineStyle"]["color"] == "#b03412"
-            assert chart().options["series"][1]["lineStyle"]["color"] == "#2c7f77"
+            assert chart().options["series"][1]["lineStyle"]["color"] == "#2596be"
+
+            assert chart().options["series"][0]["z"] > chart().options["series"][1]["z"]
+            name = next(iter(user.find(marker="plotting-curve-name-1").elements))
+            with user.client:
+                name.set_value("First profile")
+            await wait_for_chart(lambda options: options["series"][0]["name"] == "First profile")
+            assert chart().options["legend"]["data"][0] == "First profile"
+            with user.client:
+                name.set_value("")
+            await wait_for_chart(lambda options: options["series"][0]["name"] == "t0")
 
             await uploader.handle_uploads(
                 [
@@ -941,6 +953,29 @@ def test_plotting_commits_data_once_then_updates_plot_settings_live() -> None:
             )
             await user.should_see("other.csv", retries=30)
             assert len(chart().options["series"]) == 2
+
+            # Each file's controls and metadata belong directly below its row,
+            # with the bulk removal action after the final file's details.
+            for name, source_id in (("space_time.csv", 2), ("other.csv", 3)):
+                file_row = next(
+                    row for row in user.find(marker="plotting-data-upload-file").elements
+                    if row._props.get("title") == name
+                )
+                details = next(iter(user.find(
+                    marker=f"plotting-profile-source-{source_id}"
+                ).elements))
+                assert file_row.parent_slot is not None
+                assert details.parent_slot is file_row.parent_slot
+                children = file_row.parent_slot.children
+                assert children[children.index(file_row) + 1] is details
+            delete_all = next(iter(user.find(
+                marker="plotting-data-upload-delete-all"
+            ).elements))
+            assert delete_all.parent_slot is not None
+            assert children[-1] is delete_all.parent_slot.parent
+            with user.scope(marker="plotting-profile-source-3"):
+                await user.should_see("Dependence: Space")
+                await user.should_see("Array size: 2")
 
             user.find(marker="action-plot").click()
             await wait_for_chart(lambda options: len(options["series"]) == 3)
@@ -963,6 +998,8 @@ def test_plotting_commits_data_once_then_updates_plot_settings_live() -> None:
             )
             await user.should_see("Array size: 3", retries=30)
             assert len(user.find(marker="plotting-data-upload-file").elements) == 2
+            with user.scope(marker="plotting-profile-source-3"):
+                await user.should_see("Array size: 3")
             user.find(marker="action-plot").click()
             await wait_for_chart(
                 lambda options: options["series"][2]["data"]
@@ -979,6 +1016,7 @@ def test_plotting_commits_data_once_then_updates_plot_settings_live() -> None:
             assert len(user.find(marker="plotting-data-upload-remove").elements) == 2
             UserInteraction(user, {remove_button}, None).click()
             await user.should_not_see("other.csv", retries=30)
+            await user.should_not_see(marker="plotting-profile-source-3")
             assert len(chart().options["series"]) == 3
 
     asyncio.run(scenario())
@@ -1525,7 +1563,7 @@ def test_raw_output_fields_and_download_share_one_ordered_row() -> None:
                     ),
                 )
                 assert file_type.options == ["TSV", "TXT", "CSV", "NPY", "NPV", "NPZ"]
-                assert file_type.value == ("TSV" if slug == "mapping" else "NPY")
+                assert file_type.value == "TSV"
                 compression = cast(
                     Checkbox,
                     next(
@@ -1534,7 +1572,7 @@ def test_raw_output_fields_and_download_share_one_ordered_row() -> None:
                         if "raw-output-compression" in child._markers
                     ),
                 )
-                assert compression.value is (slug != "mapping")
+                assert compression.value is False
 
     asyncio.run(scenario())
 
@@ -1770,12 +1808,12 @@ def test_plot_controls_only_show_options_relevant_to_the_selected_view() -> None
             )
             assert dependence.value == "time"
             for marker in ("mapping-heatmap-palette", "mapping-colorbar", "mapping-log-z"):
-                await user.should_not_see(marker=marker)
+                await user.should_see(marker=marker)
             await user.should_not_see(marker="mapping-histogram-bins")
             await user.should_not_see(marker="mapping-histogram-bin-size")
             await user.should_not_see(marker="mapping-histogram-x-minimum")
             await user.should_not_see(marker="mapping-histogram-x-maximum")
-            await user.should_see(marker="mapping-line-width")
+            await user.should_not_see(marker="mapping-line-width")
             with user.client:
                 dependence.set_value("spacetime")
             await asyncio.sleep(0)
@@ -2253,7 +2291,8 @@ def test_detailed_simulation_switch_exposes_xt_plot_and_live_downloads(
             assert line_chart.options["yAxis"]["max"] == pytest.approx(automatic_limits[1])
             assert line_chart.options["xAxis"]["position"] == "bottom"
             assert line_chart.options["series"][0]["lineStyle"]["width"] == pytest.approx(1.8)
-            assert line_chart.options["series"][0]["symbol"] == "none"
+            assert line_chart.options["series"][0]["symbol"] == "line"
+            assert line_chart.options["series"][0]["showSymbol"] is False
             assert line_chart.options["xAxis"]["splitLine"]["show"] is True
             assert line_chart.options["legend"]["right"] == 28
             assert line_chart.options["grid"]["right"] == 24
@@ -2261,7 +2300,7 @@ def test_detailed_simulation_switch_exposes_xt_plot_and_live_downloads(
                 "nameGap"
             ]
             assert line_chart.options["grid"]["containLabel"] is False
-            assert line_chart.options["xAxis"]["nameGap"] == 32
+            assert line_chart.options["xAxis"]["nameGap"] == 28
             assert 28 <= line_chart.options["yAxis"]["nameGap"] <= 82
             assert line_chart.options["title"]["show"] is False
             view = cast(
@@ -2306,7 +2345,8 @@ def test_detailed_simulation_switch_exposes_xt_plot_and_live_downloads(
                 next(iter(user.find(marker="simulation-result-plot").elements)),
             )
             assert styled_chart.options["series"][0]["lineStyle"]["width"] == pytest.approx(3.2)
-            assert styled_chart.options["series"][0]["symbol"] == "none"
+            assert styled_chart.options["series"][0]["symbol"] == "line"
+            assert styled_chart.options["series"][0]["showSymbol"] is False
             assert styled_chart.options["xAxis"]["splitLine"]["show"] is False
             assert styled_chart.options["yAxis"]["splitLine"]["show"] is False
 
@@ -2562,7 +2602,7 @@ def test_detailed_simulation_switch_exposes_xt_plot_and_live_downloads(
             assert chart.options["yAxis"]["min"] == pytest.approx(0.0)
             assert chart.options["yAxis"]["max"] == pytest.approx(20.0)
             assert chart.options["series"][0]["silent"] is True
-            assert chart.options["tooltip"]["show"] is False
+            assert chart.options["tooltip"]["show"] is True
             assert chart.options["xAxis"]["position"] == "bottom"
 
             for axis, limits in (("x", (-1.0, 3.0)), ("y", (-10.0, 40.0)), ("z", (0.2, 0.8))):
@@ -2617,15 +2657,12 @@ def test_detailed_simulation_switch_exposes_xt_plot_and_live_downloads(
             assert len(raw_exports) == 1
             output_key, file_format, compression, requested_name, artifact = raw_exports[0]
             assert output_key == "replicated_fraction_xt"
-            assert file_format == "NPY"
-            assert compression == "gzip"
+            assert file_format == "TSV"
+            assert compression == "none"
             assert requested_name == "rsim_rf-xt"
-            assert artifact.filename == "rsim_rf-xt.npy.gz"
+            assert artifact.filename == "rsim_rf-xt.tsv"
             assert artifact.data
-            values = np.load(
-                io.BytesIO(gzip.decompress(artifact.data)),
-                allow_pickle=False,
-            )
+            values = np.loadtxt(io.BytesIO(artifact.data), delimiter="\t", skiprows=1)
             np.testing.assert_array_equal(
                 values,
                 space_time_fraction,
@@ -2637,8 +2674,8 @@ def test_detailed_simulation_switch_exposes_xt_plot_and_live_downloads(
                 if len(raw_exports) >= 2:
                     break
                 await asyncio.sleep(0.02)
-            assert raw_exports[1][2] == "none"
-            assert raw_exports[1][4].filename.endswith(".npy")
+            assert raw_exports[1][2] == "gzip"
+            assert raw_exports[1][4].filename.endswith(".tsv.gz")
 
     asyncio.run(scenario())
 
@@ -2763,6 +2800,21 @@ def test_uploaded_firing_rate_and_fork_speed_reach_simulation_worker(
             assert np.asarray(requests[0].firing_rate).shape == (3,)
             assert np.asarray(requests[0].fork_speed).shape == (1, 3)
 
+            output = _select_by_marker(user, "simulation-output")
+            assert "Firing rate (input)" in output.options
+            assert "Fork speed (input)" in output.options
+            for label, expected in (
+                ("Firing rate (input)", [0.1, 0.2, 0.3]),
+                ("Fork speed (input)", [1.1, 1.2, 1.3]),
+            ):
+                with user.client:
+                    output.set_value(label)
+                await asyncio.sleep(0)
+                chart = next(iter(user.find(marker="simulation-result-plot").elements))
+                np.testing.assert_allclose(
+                    [point[1] for point in chart.options["series"][0]["data"]], expected,
+                )
+
     asyncio.run(scenario())
 
 
@@ -2863,6 +2915,15 @@ def test_simulation_batch_runs_all_profiles_and_keeps_atomic_preview(
             # outbox tick before the refreshable curve controls.
             await user.should_see(marker="simulation-dataset-color-1", retries=30)
             await user.should_see(marker="simulation-dataset-color-2", retries=30)
+            name = next(iter(user.find(marker="simulation-dataset-name-1").elements))
+            with user.client:
+                name.set_value("First simulation")
+            await asyncio.sleep(0)
+            renamed = next(iter(user.find(marker="simulation-result-plot").elements))
+            assert renamed.options["series"][0]["name"] == "First simulation"
+            with user.client:
+                name.set_value("")
+            await asyncio.sleep(0)
             await user.should_see(marker="simulation-batch-raw-surface")
             user.find("Raw data").click()
             await user.should_see(marker="simulation-batch-raw-1")

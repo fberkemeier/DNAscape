@@ -10,7 +10,7 @@ from __future__ import annotations
 import math
 import time
 from collections.abc import Callable, Mapping
-from dataclasses import dataclass, replace
+from dataclasses import dataclass, field, replace
 from threading import Lock
 from typing import Any, cast
 
@@ -115,6 +115,8 @@ class ConstantSimulationResult:
     replication_timing_std: np.ndarray | None = None
     inter_origin_distance_count: int = 0
     inter_origin_distances_truncated: bool = False
+    input_forms: Mapping[str, str] = field(default_factory=dict)
+    input_axes: Mapping[str, tuple[np.ndarray, np.ndarray]] = field(default_factory=dict)
 
 
 @dataclass(frozen=True)
@@ -586,7 +588,7 @@ def run_constant_simulation(
         for array in (position_kb, validated.time_grid):
             array.setflags(write=False)
         report(1.0, "Simulation complete")
-        return ConstantSimulationResult(
+        result = ConstantSimulationResult(
             position_kb=position_kb,
             replication_timing=replication_timing,
             elapsed_seconds=float(time.perf_counter() - started),
@@ -601,5 +603,8 @@ def run_constant_simulation(
             inter_origin_distance_count=inter_origin_distance_count,
             inter_origin_distances_truncated=inter_origin_distances_truncated,
         )
+        from .preview_inputs import add_simulation_input_previews
+
+        return add_simulation_input_previews(result, request)
     finally:
         _RUN_LOCK.release()

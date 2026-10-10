@@ -17,6 +17,7 @@ import numpy as np
 from .batch import (
     BatchSourceSummary,
     CombinationSource,
+    combination_curve_label,
     combination_names,
     plan_batch_sources,
     plan_combination_indices,
@@ -62,6 +63,7 @@ class _MappingBatchCase:
     item_indices: tuple[int, ...]
     short_name: str = ""
     short_export_stem: str = ""
+    curve_label: str = ""
 
 
 @dataclass(frozen=True, slots=True)
@@ -74,6 +76,7 @@ class _NamedMappingResult:
     result: MappingResult
     short_name: str = ""
     short_export_stem: str = ""
+    curve_label: str = ""
 
 
 def _friendly_input_key(key: str) -> str:
@@ -229,6 +232,7 @@ def _plan_mapping_cases(
                 item_indices=tuple(indices),
                 short_name=identity.short,
                 short_export_stem=short_export_stem,
+                curve_label=combination_curve_label(sources, indices),
             )
         )
     return tuple(cases)
@@ -587,6 +591,7 @@ def run_mapping_recipe(
         result = run_mapping(request, report_case, check_cancelled)
         completed.append(NamedMappingResult(
             case.key, case.name, case.export_stem, result, case.short_name, case.short_export_stem,
+            case.curve_label,
         ))
     return tuple(completed)
 

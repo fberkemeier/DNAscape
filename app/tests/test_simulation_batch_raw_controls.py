@@ -172,6 +172,20 @@ def test_simulation_batch_raw_rows_are_independent_and_bulk_uses_each_preference
             await user.should_see("Files: 2", retries=40)
             user.find(marker="action-simulate").click()
             await user.should_see("2 datasets complete", retries=60)
+            user.find("Plotting settings").click()
+            shared_type = next(iter(user.find(marker="simulation-curve-type").elements))
+            with user.client:
+                shared_type.set_value("dashed")
+            await asyncio.sleep(0)
+            user.find("Curves").click()
+            individual_type = next(iter(user.find(marker="simulation-dataset-curve-type-2").elements))
+            assert "default" not in individual_type.options
+            assert individual_type.value == "dashed"
+            with user.client:
+                individual_type.set_value("dashdot")
+            await asyncio.sleep(0)
+            chart = next(iter(user.find(marker="simulation-result-plot").elements))
+            assert [series["lineStyle"]["type"] for series in chart.options["series"]] == ["dashed", [8, 4, 2, 4]]
             # The completion message is the readiness contract: every batch
             # result row must already exist when it becomes visible.
             assert len(user.find(marker="simulation-batch-raw-row-1").elements) == 1

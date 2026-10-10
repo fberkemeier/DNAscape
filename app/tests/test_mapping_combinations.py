@@ -56,6 +56,9 @@ def test_pairwise_cases_broadcast_singleton_and_use_target_first_names() -> None
     )
 
     assert tuple(case.item_indices for case in cases) == ((0, 0), (1, 0))
+    assert tuple(case.curve_label for case in cases) == (
+        "Replication timing 1", "Replication timing 2",
+    )
     assert tuple(case.name for case in cases) == (
         "Firing rate · Replication timing: sample_a · Fork speed: 1.4 kb/min",
         "Firing rate · Replication timing: sample_b · Fork speed: 1.4 kb/min",
@@ -90,6 +93,14 @@ def test_all_combinations_have_deterministic_cartesian_order() -> None:
         (1, 0),
         (1, 1),
         (1, 2),
+    )
+    assert tuple(case.curve_label for case in cases) == (
+        "Replication timing 1 · Fork speed 1",
+        "Replication timing 1 · Fork speed 2",
+        "Replication timing 1 · Fork speed 3",
+        "Replication timing 2 · Fork speed 1",
+        "Replication timing 2 · Fork speed 2",
+        "Replication timing 2 · Fork speed 3",
     )
     assert tuple(
         ("timing_b" in case.name, value in case.name)

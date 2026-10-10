@@ -338,6 +338,8 @@ def select_result_output(
     """Select one numeric result and infer or validate its scientific axes."""
 
     key = str(output_key).strip()
+    from .preview_inputs import INPUT_PREFIX, input_preview_result, input_profile_label
+    result = input_preview_result(result, key)
     value = result.outputs.get(key)
     if value is None and key == "replication_timing":
         value = result.replication_timing
@@ -352,14 +354,17 @@ def select_result_output(
 
     position = _validated_axis(result.position_kb, "position")
     time = _validated_axis(result.time_grid, "time", allow_empty=True)
-    inferred_kind = axis_kind or _infer_axis_kind(
+    input_kind = {"x": "space", "t": "time", "xt": "xt"}.get(
+        getattr(result, "input_forms", {}).get(key)
+    )
+    inferred_kind = axis_kind or input_kind or _infer_axis_kind(
         key,
         values,
         position_size=position.size,
         time_size=time.size,
         replicates=int(result.replicates),
     )
-    label = _OUTPUT_LABELS.get(key, _humanize(key))
+    label = input_profile_label(key) if key.startswith(INPUT_PREFIX) else _OUTPUT_LABELS.get(key, _humanize(key))
 
     if inferred_kind == "xt":
         if values.ndim != 2 or time.size == 0:

@@ -133,6 +133,7 @@ def test_constants_match_page_combination_order_names_and_override_controls(mode
         assert case.key == expected.key
         assert case.name == expected.name
         assert case.short_name == expected.short_name
+        assert case.curve_label == expected.curve_label
         assert case.export_stem == expected.export_stem
         assert case.short_export_stem == expected.short_export_stem
         assert case.item_indices == expected.item_indices

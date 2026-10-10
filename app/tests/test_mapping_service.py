@@ -121,6 +121,8 @@ def test_directionality_speed_route_exposes_complete_preview_and_exports() -> No
     assert tuple(_result_preview_outputs(result)) == (
         "fork_speed",
         "replication_timing_fit",
+        "input:replication_timing",
+        "input:fork_directionality",
         "comparison:replication_timing_fit",
         "residual",
         "fit_history",
