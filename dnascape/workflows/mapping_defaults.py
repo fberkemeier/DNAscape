@@ -7,6 +7,8 @@ Benchmark scripts and tuning reports are kept locally outside version control.
 
 from dataclasses import replace
 
+DEFAULT_MAPPING_MAX_TIME = 1200.0
+
 
 def mapping_defaults(route, settings, shape=None):
     overrides: dict[str, float | int] = {
@@ -14,9 +16,12 @@ def mapping_defaults(route, settings, shape=None):
         if item.key.endswith("sim_number") and item.has_default
         and (item.default is not None or item.key != "sim_number")
     }
-    if route.target == "kinetic_fields":
-        overrides.update(maxiter=20, spatial_knots=12, temporal_knots=4, regularization=0.001)
-    elif route.target == "firing_rate" and shape == "weibull":
+    if {"time_grid", "max_time"} <= {item.key for item in settings}:
+        # Forward fields need a finite clock even when every input is static.
+        # Leave explicit grids optional; the workflow derives their default
+        # from this limit and the chosen temporal resolution.
+        overrides["max_time"] = DEFAULT_MAPPING_MAX_TIME
+    if route.target == "firing_rate" and shape == "weibull":
         overrides.update(
             maxiter=20 if route.output_dependence == "spacetime" else 10,
             alpha_smooth=0.1,

@@ -255,32 +255,6 @@ def test_request_accepts_new_periodic_forward_routes(method: str) -> None:
     assert prepared.assumptions["perQ"] is True
 
 
-def test_initial_kinetics_text_is_parsed_into_numeric_fields_before_dispatch() -> None:
-    prepared = validate_mapping_request(
-        MappingRequest(
-            route=mapping_route("timing_to_joint_spacetime_kinetic_fields"),
-            inputs={"replication_timing": np.arange(4) + 10.0},
-            input_forms={"replication_timing": "x"},
-            settings={"initial_kinetics": '{"firing_rate": 0.001, "fork_speed": 1.4}'},
-        )
-    )
-    assert prepared.assumptions["initial_kinetics"]["firing_rate"] == 0.001
-    assert prepared.assumptions["initial_kinetics"]["fork_speed"] == 1.4
-
-
-@pytest.mark.parametrize("payload", ["not JSON", "[]", '{"unrelated": 1}', '{"fork_speed": 0}'])
-def test_invalid_initial_kinetics_text_fails_before_dispatch(payload: str) -> None:
-    with pytest.raises(ValueError, match="Initial"):
-        validate_mapping_request(
-            MappingRequest(
-                route=mapping_route("timing_to_joint_spacetime_kinetic_fields"),
-                inputs={"replication_timing": np.arange(4) + 10.0},
-                input_forms={"replication_timing": "x"},
-                settings={"initial_kinetics": payload},
-            )
-        )
-
-
 @pytest.mark.parametrize("whole_region", [False, True])
 def test_prepared_bundle_preserves_nonzero_origin_resolution_and_time_axis(
     whole_region: bool,
@@ -590,10 +564,9 @@ def _input_value(key: str, form: DataForm) -> Any:
 
 
 def _fake_values(route: MappingRoute) -> Any:
-    if route.target == "kinetic_fields":
+    if route.method == "timing_and_speed_to_spacetime_firing_rate":
         return {
             "firing_rate": np.ones((4, 3)),
-            "fork_speed": np.full((4, 3), 1.4),
             "replication_timing_fit": np.arange(4, dtype=float),
             "fit_history": np.asarray([2.0, 1.0]),
             "time_grid": np.asarray([0.0, 5.0, 10.0]),
@@ -679,7 +652,7 @@ def test_every_public_exact_route_is_generically_dispatched_with_role_split(
 def test_bundle_and_fit_metadata_are_exposed_with_member_forms_and_axes(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    route = mapping_route("timing_to_joint_spacetime_kinetic_fields")
+    route = mapping_route("timing_and_speed_to_spacetime_firing_rate")
 
     def fake_rmap(**_kwargs: Any) -> dict[str, Any]:
         return {
@@ -692,8 +665,8 @@ def test_bundle_and_fit_metadata_are_exposed_with_member_forms_and_axes(
     result = run_mapping(
         MappingRequest(
             route=route,
-            inputs={"replication_timing": np.arange(14, dtype=float) + 5},
-            input_forms={"replication_timing": "x"},
+            inputs={"replication_timing": np.arange(14, dtype=float) + 5, "fork_speed": 1.4},
+            input_forms={"replication_timing": "x", "fork_speed": "scalar"},
             region_start_kb=10,
             region_end_kb=14,
             resolution_x=1,

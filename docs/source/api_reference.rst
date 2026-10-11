@@ -88,11 +88,10 @@ Canonical feature names include:
 
 * ``firing_rate``
 * ``fork_speed``
-* ``kinetic_fields``
 * ``replication_timing``
 * ``fork_directionality``
 * ``replicated_fraction`` / ``replicated_fraction_xt``
-* ``fork_density`` / ``fork_densities_xt``
+* ``fork_densities_xt``
 * ``initiation_events`` / ``initiation_events_xt``
 * ``coalescence_events`` / ``coalescence_events_xt``
 * ``origin_efficiency``

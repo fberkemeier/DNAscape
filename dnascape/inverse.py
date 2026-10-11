@@ -263,14 +263,11 @@ def _make_field(
     return _Field(form, bx, bt, coefficients.reshape(-1), bounds, offset)
 
 
-def fit_timing_kinetics(
+def fit_timing_fork_speed(
     observed_timing,
     *,
-    firing_form="space",
+    firing_rate,
     speed_form="constant",
-    firing_rate=None,
-    fork_speed=None,
-    initial_firing_rate=None,
     initial_fork_speed=1.4,
     resolution=1.0,
     resolution_time=2.0,
@@ -281,21 +278,19 @@ def fit_timing_kinetics(
     spatial_knots=12,
     temporal_knots=4,
     regularization=0.001,
-    speed_anchor=0.1,
-    firing_bounds=None,
     speed_bounds=(0.2, 6.0),
     tolerance=1e-5,
     verbose=False,
 ):
-    """Fit one or both kinetic fields to timing under explicit constraints.
+    """Fit fork speed to timing while holding the supplied firing rate fixed.
 
-    A supplied ``firing_rate`` or ``fork_speed`` is held fixed. Forms select
-    the fitted field parameterizations, never inferred from ambiguous shapes.
-    ``speed_anchor`` anchors the mean log speed to the initial value only when
-    both fields are inferred. ``fit_mse`` always excludes regularization.
+    ``speed_form`` selects the fitted field parameterization.
+    ``fit_mse`` always excludes regularization.
     Timing is the mean-field survival integral over the supplied/generated
     time grid; ``unreplicated_at_end`` reports a possibly truncated horizon.
     """
+    if firing_rate is None:
+        raise ValueError("Firing rate must be supplied when fitting fork speed.")
     observed = np.asarray(observed_timing, dtype=float)
     if observed.ndim != 1 or not observed.size or not np.any(np.isfinite(observed)):
         raise ValueError("observed_timing must be a non-empty vector with finite observations.")
@@ -307,9 +302,8 @@ def fit_timing_kinetics(
         or resolution_time <= 0
     ):
         raise ValueError("Spatial and temporal resolutions must be finite and positive.")
-    for name, value in (("regularization", regularization), ("speed_anchor", speed_anchor)):
-        if not np.isfinite(value) or value < 0:
-            raise ValueError(f"{name} must be finite and nonnegative.")
+    if not np.isfinite(regularization) or regularization < 0:
+        raise ValueError("regularization must be finite and nonnegative.")
     if (
         not np.isfinite(maxiter)
         or int(maxiter) != maxiter
@@ -328,7 +322,7 @@ def fit_timing_kinetics(
     if time_grid is None:
         supplied_lengths = {
             array.shape[1]
-            for value in (firing_rate, fork_speed)
+            for value in (firing_rate,)
             if value is not None
             for array in (np.asarray(value),)
             if array.ndim == 2 and array.shape[1] > 1
@@ -350,17 +344,15 @@ def fit_timing_kinetics(
         or np.any(np.diff(t) <= 0)
     ):
         raise ValueError("time_grid must begin at zero and be finite and strictly increasing.")
-    firing_form, speed_form = _form(firing_form), _form(speed_form)
+    speed_form = _form(speed_form)
     speed_bounds = (0.2, 6.0) if speed_bounds is None else tuple(map(float, speed_bounds))
-    firing_bounds = (1e-9, 1.0) if firing_bounds is None else tuple(map(float, firing_bounds))
-    for name, bounds in (("firing_bounds", firing_bounds), ("speed_bounds", speed_bounds)):
-        if len(bounds) != 2 or not np.all(np.isfinite(bounds)) or not 0 < bounds[0] < bounds[1]:
-            raise ValueError(f"{name} must contain finite positive increasing bounds.")
+    if len(speed_bounds) != 2 or not np.all(np.isfinite(speed_bounds)) or not 0 < speed_bounds[0] < speed_bounds[1]:
+        raise ValueError("speed_bounds must contain finite positive increasing bounds.")
     if initial_fork_speed is None:
         initial_fork_speed = 1.4
         supplied_firing = np.asarray(firing_rate) if firing_rate is not None else None
         if (
-            speed_form == "space" and fork_speed is None
+            speed_form == "space"
             and supplied_firing is not None and supplied_firing.size == 1
         ):
             rate = float(supplied_firing.reshape(-1)[0])
@@ -382,15 +374,12 @@ def fit_timing_kinetics(
                         np.arange(observed.size), np.flatnonzero(valid),
                         np.clip(local_speed, *speed_bounds),
                     )
-    speed_reference = float(np.median(np.asarray(initial_fork_speed)))
     _report_progress(.04, "Preparing kinetic fields...")
-    if initial_firing_rate is None:
-        initial_firing_rate = np.pi / (4 * speed_reference * np.median(relative) ** 2)
     first = _make_field(
-        firing_form,
+        "space",
         firing_rate,
-        initial_firing_rate,
-        firing_bounds,
+        None,
+        (1e-9, 1.0),
         observed.size,
         t,
         resolution_time,
@@ -401,7 +390,7 @@ def fit_timing_kinetics(
     )
     second = _make_field(
         speed_form,
-        fork_speed,
+        None,
         initial_fork_speed,
         speed_bounds,
         observed.size,
@@ -439,12 +428,6 @@ def fit_timing_kinetics(
             row[left], row[right] = -1, 1
             penalty_rows.append(np.sqrt(regularization / max(len(pairs), 1)) * row)
     penalty = np.asarray(penalty_rows).reshape(-1, initial.size)
-    anchor_row = np.zeros((0, initial.size))
-    anchor_target = np.zeros(0)
-    if first.count and second.count and speed_anchor:
-        anchor_row = np.zeros((1, initial.size))
-        anchor_row[0, second.offset :] = np.sqrt(speed_anchor) / second.count
-        anchor_target = anchor_row @ initial
     scale = max(float(np.median(relative)), 1.0) * np.sqrt(np.count_nonzero(valid))
     cache = {}
     history = []
@@ -454,7 +437,7 @@ def fit_timing_kinetics(
         if "parameters" in cache and np.array_equal(parameters, cache["parameters"]):
             return cache["residual"], cache["jacobian"]
         evaluation = len(history) + 1
-        label = "Fitting fork speed" if firing_rate is not None else "Fitting kinetics"
+        label = "Fitting fork speed"
 
         def report_step(fraction):
             _report_progress(
@@ -472,11 +455,11 @@ def fit_timing_kinetics(
         mse = float(np.mean(residual**2))
         history.append(mse)
         if _fit_progress_enabled(verbose):
-            etaferr(len(history), int(maxiter), started, mse, label="rmap constrained kinetics")
+            etaferr(len(history), int(maxiter), started, mse, label="rmap constrained fork speed")
         full_residual = np.concatenate(
-            [residual / scale, penalty @ parameters, anchor_row @ parameters - anchor_target]
+            [residual / scale, penalty @ parameters]
         )
-        full_jacobian = np.vstack([jacobian[valid] / scale, penalty, anchor_row])
+        full_jacobian = np.vstack([jacobian[valid] / scale, penalty])
         cache.update(
             parameters=parameters.copy(),
             residual=full_residual,
@@ -514,7 +497,6 @@ def fit_timing_kinetics(
     return {
         "firing_rate": first.output(firing),
         "fork_speed": second.output(speed),
-        "firing_form": firing_form,
         "speed_form": speed_form,
         "time_grid": t,
         "replication_timing_fit": prediction,
@@ -527,65 +509,8 @@ def fit_timing_kinetics(
         "fit_objective": float(np.dot(cache["residual"], cache["residual"])),
         "unreplicated_at_end": float(np.max(1 - cache["completion"])),
         "regularization": float(regularization),
-        "speed_anchor": float(speed_anchor),
-        "identifiability": "Regularized effective kinetics; timing alone does not uniquely identify both fields.",
         "forward_model": "deterministic mean-field fork transport",
     }
-
-
-def map_timing_joint_kinetics(
-    observed_timing,
-    firing_form="space",
-    speed_form="constant",
-    resolution=1.0,
-    resolution_time=2.0,
-    time_grid=None,
-    T0=0.0,
-    initial_firing_rate=None,
-    initial_fork_speed=None,
-    initial_kinetics=None,
-    firing_bounds=None,
-    speed_bounds=(0.2, 6.0),
-    spatial_knots=12,
-    temporal_knots=4,
-    regularization=0.001,
-    speed_anchor=0.1,
-    maxiter=20,
-    tolerance=1e-5,
-    perQ=False,
-    verbose=False,
-):
-    """Joint timing inverse for every pair of constant/x/t/xt kinetic forms."""
-    if initial_kinetics is not None:
-        if not isinstance(initial_kinetics, dict):
-            raise ValueError("initial_kinetics must be a dictionary when supplied.")
-        if initial_firing_rate is None:
-            initial_firing_rate = initial_kinetics.get("firing_rate")
-        if initial_fork_speed is None:
-            initial_fork_speed = initial_kinetics.get("fork_speed")
-    if initial_fork_speed is None:
-        initial_fork_speed = 1.4
-    return fit_timing_kinetics(
-        observed_timing,
-        firing_form=firing_form,
-        speed_form=speed_form,
-        resolution=resolution,
-        resolution_time=resolution_time,
-        time_grid=time_grid,
-        T0=T0,
-        initial_firing_rate=initial_firing_rate,
-        initial_fork_speed=initial_fork_speed,
-        firing_bounds=firing_bounds,
-        speed_bounds=speed_bounds,
-        spatial_knots=spatial_knots,
-        temporal_knots=temporal_knots,
-        regularization=regularization,
-        speed_anchor=speed_anchor,
-        maxiter=maxiter,
-        tolerance=tolerance,
-        perQ=perQ,
-        verbose=verbose,
-    )
 
 
 def map_timing_and_firing_to_speed(
@@ -611,7 +536,7 @@ def map_timing_and_firing_to_speed(
 
     if target_shape != "best":
         raise ValueError("The constrained fork-speed route supports target_shape='best'.")
-    info = fit_timing_kinetics(
+    info = fit_timing_fork_speed(
         source["replication_timing"],
         firing_rate=source["firing_rate"],
         speed_form=target_form,
@@ -645,4 +570,4 @@ def map_timing_and_firing_to_speed(
     )
 
 
-__all__ = ["fit_timing_kinetics", "map_timing_joint_kinetics", "map_timing_and_firing_to_speed"]
+__all__ = ["fit_timing_fork_speed", "map_timing_and_firing_to_speed"]

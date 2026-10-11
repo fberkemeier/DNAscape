@@ -119,7 +119,7 @@ async def _assert_family_surface(user: Any, family: MappingRouteFamily) -> Mappi
 async def _assert_setting_present(user: Any, route: MappingRoute, key: str) -> None:
     """Assert a route setting is rendered with its exact nullable/default semantics."""
 
-    setting = route.setting(key)
+    setting = next(item for item in route.active_settings() if item.key == key)
     marker = f"mapping-setting-{_slug(key)}"
     needs_override = (not setting.required) and (
         not setting.has_default or (setting.nullable and setting.default is None)
@@ -132,11 +132,10 @@ async def _assert_setting_present(user: Any, route: MappingRoute, key: str) -> N
 
 
 def test_expensive_mapping_settings_start_with_interactive_effort() -> None:
-    route = mapping_route("timing_to_joint_spacetime_kinetic_fields")
+    route = mapping_route("timing_and_speed_to_spacetime_firing_rate")
     defaults = {item.key: _setting_value(item) for item in route.active_settings()}
     assert defaults["maxiter"] == 20
-    assert defaults["spatial_knots"] == 12
-    assert not {"space_init_sim_number", "joint_sim_number"} & defaults.keys()
+    assert defaults["alpha_smooth"] == 0.1
 
     single_simulation = mapping_route("firing_and_speed_to_timing_simulation")
     assert next(_setting_value(item) for item in single_simulation.active_settings()
@@ -273,6 +272,11 @@ def test_mapping_target_dependence_route_and_form_selectors_follow_the_catalog()
                 "Firing rate", "Fork speed", "Replication timing",
                 "Fork directionality", "Fork densities",
             )
+            assert tuple(target_control.options.values())[-4:] == (
+                "Inter-origin distance (sim)", "S-phase duration (sim)",
+                "Completion time (sim)", "Number of origins (sim)",
+            )
+            assert not {"kinetic_fields", "fork_density"} & target_control.options.keys()
             assert target_control.value == "firing_rate"
             initial_family = _mapping_route_families_for_ui("firing_rate", "space")[0]
             await _assert_family_surface(user, initial_family)
@@ -679,6 +683,128 @@ def test_compatible_target_and_output_changes_retain_uploaded_profiles() -> None
     asyncio.run(scenario())
 
 
+def test_whole_region_updates_boundaries_on_upload_and_bin_width_changes() -> None:
+    async def scenario() -> None:
+        async with user_simulation(index) as user:
+            await user.open("/")
+            user.find(marker="nav-mapping").click()
+            user.find("Region").click()
+            start = cast(Number, next(iter(user.find(marker="mapping-region-start").elements)))
+            end = cast(Number, next(iter(user.find(marker="mapping-region-end").elements)))
+            whole = next(iter(user.find(marker="mapping-whole-region").elements))
+            periodic_slot = next(iter(user.find(marker="mapping-periodic-slot").elements))
+            periodic = next(iter(user.find(marker="mapping-setting-perq").elements))
+            assert whole.parent_slot is periodic_slot.parent_slot
+            assert periodic.parent_slot.parent.parent_slot.parent is periodic_slot
+            assert whole.parent_slot.children.index(whole) < whole.parent_slot.children.index(periodic_slot)
+
+            assert user.client is not None
+            with user.client:
+                start.set_value(2.0)
+                end.set_value(4.0)
+            user.find(marker="mapping-whole-region").click()
+            assert start.value == 0.0
+            assert start._props["disable"] is True
+            assert end._props["disable"] is True
+            uploader = cast(Upload, next(iter(user.find(marker="source-replication-timing-upload").elements)))
+            await uploader.handle_uploads([
+                Upload.SmallFileUpload("timing.tsv", "text/tab-separated-values", b"timing\n8\n7\n9\n6\n5\n4\n3\n"),
+            ])
+            await user.should_see("Array size: 7 x 1", retries=20)
+            assert end.value == 7.0
+            resolution = cast(Number, next(iter(user.find(marker="mapping-setting-resolution").elements)))
+            with user.client:
+                resolution.set_value(2.0)
+            assert end.value == 14.0
+
+            await uploader.handle_uploads([
+                Upload.SmallFileUpload("timing.tsv", "text/tab-separated-values", b"timing\n8\n7\n9\n"),
+            ])
+            await user.should_see("Array size: 3 x 1", retries=20)
+            assert end.value == 6.0
+            user.find(marker="mapping-whole-region").click()
+            assert not start._props.get("disable", False)
+            assert not end._props.get("disable", False)
+            with user.client:
+                start.set_value(1.0)
+                end.set_value(5.0)
+            await uploader.handle_uploads([
+                Upload.SmallFileUpload("timing.tsv", "text/tab-separated-values", b"timing\n8\n7\n9\n6\n"),
+            ])
+            await user.should_see("Array size: 4 x 1", retries=20)
+            assert (start.value, end.value) == (1.0, 5.0)
+
+    asyncio.run(scenario())
+
+
+def test_whole_region_uses_shortest_spatial_input_and_ignores_temporal_inputs() -> None:
+    import io
+
+    import numpy as np
+
+    async def scenario() -> None:
+        async with user_simulation(index) as user:
+            await user.open("/")
+            user.find(marker="nav-mapping").click()
+            await _set_select(user, "mapping-target", "fork_speed")
+            await _set_select(user, "mapping-input-firing-rate-form", "x")
+            timing_upload = cast(Upload, next(iter(user.find(marker="source-replication-timing-upload").elements)))
+            await timing_upload.handle_uploads([
+                Upload.SmallFileUpload("timing.tsv", "text/tab-separated-values", b"timing\n8\n7\n9\n6\n5\n4\n"),
+            ])
+            await user.should_see(marker="mapping-input-replication-timing-detected-data", retries=20)
+            firing_upload = cast(Upload, next(iter(user.find(marker="source-firing-rate-upload").elements)))
+            payload = io.BytesIO()
+            np.save(payload, np.full(4, 0.001))
+            await firing_upload.handle_uploads([
+                Upload.SmallFileUpload("firing.npy", "application/octet-stream", payload.getvalue()),
+            ])
+            await user.should_see(marker="mapping-input-firing-rate-detected-data", retries=20)
+            user.find("Region").click()
+            user.find(marker="mapping-whole-region").click()
+            end = cast(Number, next(iter(user.find(marker="mapping-region-end").elements)))
+            assert end.value == 4.0
+            await _set_select(user, "mapping-input-firing-rate-form", "t")
+            assert end.value == 6.0
+            await _set_select(user, "mapping-input-firing-rate-form", "xt")
+            firing_upload = cast(Upload, next(iter(user.find(marker="source-firing-rate-upload").elements)))
+            payload = io.BytesIO()
+            np.save(payload, np.full((3, 5), 0.001))
+            await firing_upload.handle_uploads([
+                Upload.SmallFileUpload("firing.npy", "application/octet-stream", payload.getvalue()),
+            ])
+            await user.should_see("Array size: 3 x 5", retries=20)
+            assert end.value == 3.0
+
+    asyncio.run(scenario())
+
+
+def test_whole_region_tracks_selected_numpy_archive_array() -> None:
+    import io
+
+    import numpy as np
+
+    async def scenario() -> None:
+        async with user_simulation(index) as user:
+            await user.open("/")
+            user.find(marker="nav-mapping").click()
+            uploader = cast(Upload, next(iter(user.find(marker="source-replication-timing-upload").elements)))
+            payload = io.BytesIO()
+            np.savez(payload, long=np.arange(9.0), short=np.arange(4.0))
+            await uploader.handle_uploads([
+                Upload.SmallFileUpload("timing.npz", "application/octet-stream", payload.getvalue()),
+            ])
+            await user.should_see(marker="mapping-input-replication-timing-detected-data", retries=20)
+            user.find("Region").click()
+            user.find(marker="mapping-whole-region").click()
+            end = cast(Number, next(iter(user.find(marker="mapping-region-end").elements)))
+            assert end.value == 9.0
+            await _set_select(user, "mapping-input-replication-timing-array-key", "short")
+            assert end.value == 4.0
+
+    asyncio.run(scenario())
+
+
 def test_mapping_settings_refresh_to_only_assumptions_accepted_by_the_route() -> None:
     async def scenario() -> None:
         async with user_simulation(index) as user:
@@ -687,6 +813,15 @@ def test_mapping_settings_refresh_to_only_assumptions_accepted_by_the_route() ->
             await user.should_see(marker="mapping-target", retries=60)
             user.find("Region").click()
             user.find("Mapping settings").click()
+
+            fitting = next(iter(user.find(marker="mapping-settings-fitting").elements))
+            simulation = next(iter(user.find(marker="mapping-settings-simulation").elements))
+            assert fitting.parent_slot.children[:2] == [fitting, simulation]
+            settings = next(iter(user.find(marker="mapping-settings").elements))
+            settings_container = settings.parent_slot.parent
+            show_plot = next(iter(user.find(marker="mapping-show-plot").elements))
+            assert settings_container.parent_slot is show_plot.parent_slot
+            assert show_plot.parent_slot.children.index(settings_container) < show_plot.parent_slot.children.index(show_plot)
 
             # Default route is a fit: expose fit controls, not unrelated PDE/simulation ones.
             route = mapping_route("timing_and_speed_to_firing_rate")
@@ -730,8 +865,18 @@ def test_mapping_settings_refresh_to_only_assumptions_accepted_by_the_route() ->
             route = mapping_route("firing_and_speed_to_replicated_fraction_xt_lightcone")
             for key in ("resolution", "resolution_time", "time_grid", "max_time"):
                 await _assert_setting_present(user, route, key)
+            maximum_time = next(iter(user.find(marker="mapping-setting-max-time").elements))
+            assert maximum_time.value == 1200.0
+            await user.should_not_see(marker="mapping-setting-max-time-override")
             for marker in ("sim-number", "fit-step", "cfl", "region-names"):
                 await user.should_not_see(marker=f"mapping-setting-{marker}")
+
+            await _set_select(user, "mapping-target", "fork_densities")
+            density_route = mapping_route("firing_and_speed_to_directional_fork_densities_xt_mean_field")
+            await _assert_setting_present(user, density_route, "max_time")
+            maximum_time = next(iter(user.find(marker="mapping-setting-max-time").elements))
+            assert maximum_time.value == 1200.0
+            await user.should_not_see(marker="mapping-setting-max-time-override")
 
             await _set_select(user, "mapping-target", "coalescence_events")
             await _set_select(user, "mapping-target-form", "spacetime")
@@ -903,10 +1048,9 @@ def test_mapping_preview_and_raw_filename_follow_the_selected_output() -> None:
             assert y_label.value == "Time (min)"
             assert view.value == "Default"
 
-            await _set_select(user, "mapping-target", "kinetic_fields")
+            await _set_select(user, "mapping-target", "firing_rate")
             assert _option_keys(output) == (
                 "firing_rate",
-                "fork_speed",
                 "replication_timing_fit",
                 "comparison:replication_timing_fit",
                 "fit_diagnostic",

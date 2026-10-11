@@ -94,7 +94,6 @@ _PUBLIC_BY_MODULE = {
         "map_timing_firing_spatial_speed_simulated",
         "map_timing_firing_temporal_speed_simulated",
         "map_timing_firing_spacetime_speed_simulated",
-        "map_timing_joint_spacetime_kinetics",
         "rfit",
     ),
     "routing": (

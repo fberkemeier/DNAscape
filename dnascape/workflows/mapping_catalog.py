@@ -636,6 +636,7 @@ class MappingTarget:
     variants: tuple[TargetVariant, ...]
     default_dependence: str
     prepared_result_only: bool = False
+    requires_simulation: bool = False
 
     @property
     def dependences(self) -> tuple[str, ...]:
@@ -759,12 +760,10 @@ class MappingCatalog:
 _FEATURE_LABELS = {
     "firing_rate": "Firing rate",
     "fork_speed": "Fork speed",
-    "kinetic_fields": "Joint kinetic fields",
     "replication_timing": "Replication timing",
     "fork_directionality": "Fork directionality",
     "replicated_fraction": "Replicated fraction",
     "replicated_fraction_xt": "Replicated fraction",
-    "fork_density": "Total fork density",
     "fork_density_xt": "Total fork density",
     "fork_densities": "Directional fork densities",
     "fork_densities_xt": "Directional fork densities",
@@ -830,7 +829,7 @@ _SETTING_DESCRIPTIONS = {
     "resolution_time": "Temporal resolution used for time-dependent fields.",
     "time_grid": "Explicit time axis; leave automatic to derive it from the time controls.",
     "T0": "Reference start time for converting timing values to relative time.",
-    "max_time": "Optional end of the computed time domain.",
+    "max_time": "End of the computed time domain when no input time axis is supplied.",
     "max_rep_time": "Maximum replication time allowed by the selected route.",
     "n_bins": "Number of spatial bins, derived from the selected region when omitted.",
     "genome_length": "Genome or interval length used to infer the number of bins.",
@@ -851,13 +850,8 @@ _SETTING_DESCRIPTIONS = {
         "Noise-adaptive smoothness penalty on spatial fork speeds in the integrated "
         "timing fit using supplied directionality; zero disables the penalty."
     ),
-    "firing_bounds": "Lower and upper bounds for jointly fitted firing rates.",
+    "firing_bounds": "Lower and upper bounds for fitted firing rates.",
     "initial_fork_speed": "Starting fork-speed value for fitting, in kb/min.",
-    "initial_firing_rate": "Initial firing-rate value for joint kinetic fitting.",
-    "initial_kinetics": (
-        "Optional initial fields as a JSON object, for example "
-        '{"firing_rate": 0.001, "fork_speed": 1.4}; arrays are also accepted.'
-    ),
     "space_fit_step": "Spatial-phase fitting update size.",
     "space_maxiter": "Maximum number of spatial-phase fitting iterations.",
     "temporal_smoothw": "Optional smoothing window for time-dependent profiles.",
@@ -871,25 +865,14 @@ _SETTING_DESCRIPTIONS = {
     "spacetime_update": "Use factorized space/time phases or mixed local corrections.",
     "spacetime_order": "Order of the spatial and temporal phases in a factorized fit.",
     "spacetime_kernel_t": "Temporal kernel width for mixed space-time corrections.",
-    "space_init_fit_step": "Spatial update size for the initial joint-kinetics fit.",
-    "space_init_maxiter": "Iterations in the initial joint-kinetics spatial fit.",
-    "space_init_sim_number": "Simulations per initial joint-kinetics iteration.",
-    "joint_maxiter": "Iterations used to fit firing rate and fork speed together.",
-    "joint_sim_number": "Simulations per joint kinetic-fitting iteration.",
-    "firing_space_fit_step": "Spatial update size for firing rate in joint fitting.",
-    "firing_time_fit_step": "Temporal update size for firing rate in joint fitting.",
-    "speed_space_fit_step": "Spatial update size for fork speed in joint fitting.",
-    "speed_time_fit_step": "Temporal update size for fork speed in joint fitting.",
     "weibull_shape": "Weibull shape parameter; 1 is exponential and 2 is linear hazard.",
     "weibull_delay": "Activation delay for a Weibull firing-rate target.",
     "fit_weibull_shape": "Fit the Weibull shape as well as the rate field.",
     "alpha_smooth": "Smoothness regularisation applied to log(alpha).",
     "alpha_prior": "Prior strength keeping log(alpha) near its initial estimate.",
     "floor": "Lower numerical floor for fitted firing-rate fields.",
-    "firing_floor": "Lower numerical floor for jointly fitted firing rates.",
     "unreplicated_floor": "Numerical floor when conditioning on unreplicated DNA.",
     "smoothw": "Spatial smoothing window for fitted profiles.",
-    "spatial_smoothw": "Spatial smoothing window used in joint kinetic fitting.",
     "refine_ratio_bounds": "Lower and upper bounds for timing-ratio refinement updates.",
     "refine_edge_kb": (
         "Maximum non-periodic endpoint context used to stabilize the forward fit. "
@@ -913,12 +896,9 @@ _SETTING_DESCRIPTIONS = {
 }
 
 _SETTING_LABELS = {
-    "firing_form": "Firing-rate dependence",
-    "speed_form": "Fork-speed dependence",
     "spatial_knots": "Spatial control points",
     "temporal_knots": "Temporal control points",
     "regularization": "Smoothness penalty",
-    "speed_anchor": "Speed-scale anchor strength",
     "tolerance": "Convergence tolerance",
     "tail_policy": "Unobserved completion tail",
     "initial_policy": "Initial replication state",
@@ -939,12 +919,9 @@ _SETTING_LABELS = {
 }
 
 _SETTING_DESCRIPTIONS.update({
-    "firing_form": "Dependence of the inferred firing rate; time data alone cannot uniquely identify both kinetic fields.",
-    "speed_form": "Dependence of the inferred fork speed. Simpler fields require fewer fitted parameters.",
     "spatial_knots": "Number of spatial control points in the positive interpolated kinetic field; capped by available bins.",
     "temporal_knots": "Number of temporal control points; more points permit variation that timing alone may not constrain.",
     "regularization": "Penalty on differences between neighboring log-kinetic control points, relative to normalized timing error.",
-    "speed_anchor": "Penalty anchoring the geometric mean fork speed to the initial speed; provides an explicit scale constraint in joint fits.",
     "tolerance": "Relative objective and step convergence tolerance of the bounded analytic-gradient fitter.",
     "tail_policy": "Require observed completion, report a restricted mean at the last sample, or extrapolate an exponential survival tail.",
     "initial_policy": "Require an initially unreplicated sample or condition timing on the DNA still unreplicated at the first sample.",
@@ -995,7 +972,6 @@ _SETTING_CATEGORIES: dict[str, SettingCategory] = {
 }
 
 _SETTING_LOCATIONS: dict[str, SettingLocation] = {
-    "initial_kinetics": "derived",  # compatibility alias for the explicit initialization fields
     **{
         name: "region"
         for name in (
@@ -1036,10 +1012,6 @@ _INTEGER_SETTINGS = {
     "temporal_maxiter",
     "temporal_sim_number",
     "spacetime_sim_number",
-    "space_init_maxiter",
-    "space_init_sim_number",
-    "joint_maxiter",
-    "joint_sim_number",
     "seed",
     "refine_seed",
     "n_bins",
@@ -1053,7 +1025,7 @@ _PAIR_SETTINGS = {
     "interval_kb",
 }
 _LIST_SETTINGS = {"time_grid", "x_array"}
-_TEXT_SETTINGS = {"initial_kinetics", "region_names"}
+_TEXT_SETTINGS = {"region_names"}
 _POSITIVE_SETTINGS = {
     "tolerance",
     "resolution",
@@ -1064,11 +1036,6 @@ _POSITIVE_SETTINGS = {
     "spacetime_fit_step",
     "spacetime_space_fit_step",
     "spacetime_time_fit_step",
-    "space_init_fit_step",
-    "firing_space_fit_step",
-    "firing_time_fit_step",
-    "speed_space_fit_step",
-    "speed_time_fit_step",
     "weibull_shape",
     "spacetime_kernel_t",
     "initial_fork_speed",
@@ -1080,7 +1047,6 @@ _NONNEGATIVE_SETTINGS = {
     "tail_tolerance",
     "density_floor",
     "regularization",
-    "speed_anchor",
     "T0",
     "max_time",
     "max_rep_time",
@@ -1092,17 +1058,14 @@ _NONNEGATIVE_SETTINGS = {
     "alpha_smooth",
     "alpha_prior",
     "floor",
-    "firing_floor",
     "unreplicated_floor",
     "smoothw",
-    "spatial_smoothw",
     "temporal_smoothw",
     "refine_edge_kb",
     "refine_seed",
     "stall_rate",
     "stall_rate_per_kb",
     "ffiring_recycle",
-    "initial_firing_rate",
 }
 _SETTING_UNITS = {
     "resolution": "kb/bin",
@@ -1207,15 +1170,10 @@ _SETTING_FALLBACK_DEFAULTS: dict[str, Any] = {
     "spacetime_order": "crossed",
     "spacetime_kernel_t": 1.0,
     "sim_number": 100,
-    "space_init_maxiter": 10,
-    "space_init_sim_number": 100,
-    "joint_maxiter": 10,
-    "joint_sim_number": 100,
     "stall_rate_per_kb": 0.0,
 }
 
 _FIXED_OUTPUTS: dict[str, tuple[DataForm, str]] = {
-    "kinetic_fields": ("bundle", "spacetime"),
     "replication_timing": ("x", "space"),
     "replicated_fraction": ("t", "time"),
     "replicated_fraction_xt": ("xt", "spacetime"),
@@ -1223,7 +1181,6 @@ _FIXED_OUTPUTS: dict[str, tuple[DataForm, str]] = {
     "fork_densities_xt": ("bundle", "spacetime"),
     "right_fork_density_xt": ("xt", "spacetime"),
     "left_fork_density_xt": ("xt", "spacetime"),
-    "fork_density_xt": ("xt", "spacetime"),
     "initiation_events": ("x", "space"),
     "initiation_events_xt": ("xt", "spacetime"),
     "initiation_pdf": ("x", "space"),
@@ -1324,7 +1281,11 @@ def _target_output(spec: Any) -> tuple[DataForm, str]:
 
 
 def _target_shapes(spec: Any) -> tuple[str, ...]:
-    if spec.target == "firing_rate" and dict(spec.default_assumptions).get("target_form") in {"time", "spacetime"}:
+    if (
+        spec.target == "firing_rate"
+        and "target_shape" in (*spec.required_assumptions, *spec.optional_assumptions)
+        and dict(spec.default_assumptions).get("target_form") in {"time", "spacetime"}
+    ):
         return ("weibull",)
     for name, values in spec.assumption_values:
         if name == "target_shape":
@@ -1588,10 +1549,7 @@ def _signature_defaults(spec: Any) -> dict[str, Any]:
             # An outer None is a meaningful automatic/inherited value. A
             # helper's unrelated numeric default must never override it.
             inferred.setdefault(name, value)
-    if (
-        selected_branch is not None
-        or getattr(spec.func, "__name__", "") == "map_timing_to_kinetic_fields"
-    ):
+    if selected_branch is not None:
         # Global controls are optional aliases applied before delegation.
         # Sending a fabricated default would override phase-specific settings.
         inferred.update({name: None for name in ("fit_step", "maxiter", "sim_number")})
@@ -1975,6 +1933,7 @@ def _build_targets(
                 variants=tuple(variants),
                 default_dependence=default_dependence,
                 prepared_result_only=all(item.prepared_result_only for item in variants),
+                requires_simulation=all(route.method.endswith("_simulation") for route in grouped_routes),
             )
         )
     return tuple(targets)

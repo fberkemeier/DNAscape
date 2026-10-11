@@ -508,6 +508,13 @@ body.body--dark .dn-about-logo {
   scrollbar-width: none;
 }
 
+/* Keep the logo and footer in place; only navigation yields on short screens. */
+.dn-drawer-content > .dn-logo-link,
+.dn-drawer-content > .dn-sidebar-links,
+.dn-drawer-content > .dn-version {
+  flex-shrink: 0;
+}
+
 .dn-drawer .q-drawer__content {
   box-sizing: border-box;
   height: 100dvh !important;
@@ -580,14 +587,21 @@ body.body--dark .dn-logo-link .dn-sidebar-logo {
 }
 
 .dn-nav-list {
+  flex: 0 1 auto;
   gap: 0.16rem;
+  min-height: 0;
+  overflow-x: hidden;
+  overflow-y: auto;
   padding: 0.05rem 0.1rem 0;
+  scrollbar-color: color-mix(in srgb, var(--dn-muted) 45%, transparent) transparent;
+  scrollbar-width: thin;
   width: 100%;
 }
 
 .dn-nav-button {
   border-radius: 7px !important;
   color: var(--dn-text) !important;
+  flex-shrink: 0;
   font-size: 0.98rem !important;
   font-weight: 400;
   justify-content: flex-start !important;
@@ -2586,9 +2600,15 @@ body.body--dark .dn-brand-color-swatch {
 .dn-mapping-region-scope {
   align-items: center;
   display: flex;
+  gap: 0.85rem;
   margin-bottom: 0.38rem;
   min-height: 2rem;
   width: 100%;
+}
+
+.dn-mapping-periodic-slot {
+  align-items: center;
+  display: flex;
 }
 
 .dn-mapping-whole-region {
@@ -4681,35 +4701,6 @@ body.body--dark .dn-main-logo-frame .dn-main-logo {
     max-width: none;
     min-width: 0;
     width: 100%;
-  }
-}
-
-@media (max-height: 620px) {
-  .dn-drawer-content {
-    padding-bottom: 0.8rem;
-  }
-
-  .dn-drawer-content > .q-space {
-    display: none;
-  }
-
-  .dn-nav-list {
-    flex: 1 1 auto;
-    min-height: 5rem;
-    overflow-x: hidden;
-    overflow-y: auto;
-    scrollbar-color: color-mix(in srgb, var(--dn-muted) 45%, transparent) transparent;
-    scrollbar-gutter: stable;
-    scrollbar-width: thin;
-  }
-
-  .dn-sidebar-links {
-    flex: 0 0 auto;
-    margin-top: 0.45rem;
-  }
-
-  .dn-version {
-    flex: 0 0 auto;
   }
 }
 

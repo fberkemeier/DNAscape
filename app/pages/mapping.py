@@ -166,9 +166,9 @@ _SCALAR_UNITS = {
 }
 
 _SETTING_CATEGORY_LABELS = {
-    "domain": "Grid & domain",
     "fitting": "Fitting",
     "simulation": "Simulation",
+    "domain": "Grid & domain",
     "numerics": "Numerics",
     "integration": "Integration",
     "advanced": "Advanced",
@@ -190,12 +190,6 @@ _OUTPUT_LABELS = {
 }
 
 _BUNDLE_OUTPUTS = {
-    "kinetic_fields": (
-        "firing_rate",
-        "fork_speed",
-        "replication_timing_fit",
-        "fit_history",
-    ),
     "fork_densities": (
         "fork_density_xt",
         "left_fork_density_xt",
@@ -364,13 +358,14 @@ _MAPPING_TARGET_ORDER = (
 _MAPPING_TARGETS = tuple(
     sorted(
         (
-            replace(target, label="Fork densities")
-            if target.key == "fork_densities"
-            else target
+            replace(target, label=(
+                "Fork densities" if target.key == "fork_densities" else target.label
+            ) + (" (sim)" if target.requires_simulation else ""))
             for target in mapping_targets()
             if target.key not in {"left_fork_density", "right_fork_density"}
         ),
         key=lambda target: (
+            target.requires_simulation,
             _MAPPING_TARGET_ORDER.index(target.key)
             if target.key in _MAPPING_TARGET_ORDER
             else len(_MAPPING_TARGET_ORDER)
@@ -404,7 +399,7 @@ def _mapping_method_name(method: str) -> str:
         if token in method:
             return label
     source, _separator, target = method.partition("_to_")
-    if "timing" in source and any(key in target for key in ("firing", "fork_speed", "kinetic")):
+    if "timing" in source and any(key in target for key in ("firing", "fork_speed")):
         dependence = (
             "Space-time" if "spacetime" in target else "Temporal" if "time_" in target
             else "Constant" if "constant" in target else "Spatial"
@@ -572,7 +567,6 @@ def _preview_outputs(route: MappingRoute) -> dict[str, str]:
     if "replication_timing" in input_keys and route.target_key in {
         "firing_rate",
         "fork_speed",
-        "kinetic_fields",
     }:
         outputs.setdefault("replication_timing_fit", "Replication timing fit")
         outputs[f"{_COMPARISON_PREFIX}replication_timing_fit"] = (
@@ -934,24 +928,6 @@ def _render_route_setting_groups(
                 if controls[key].override is not None:
                     controls[key].override.on_value_change(sync_spatial_firing_step)
         sync_spatial_firing_step()
-    if route.target == "kinetic_fields" and {"firing_form", "speed_form"} <= controls.keys():
-        def sync_kinetic_controls() -> None:
-            forms = {controls[key].control.value for key in ("firing_form", "speed_form")}
-            applicable = {
-                "spatial_knots": bool(forms & {"space", "spacetime"}),
-                "temporal_knots": bool(forms & {"time", "spacetime"}),
-                "regularization": forms != {"constant"},
-            }
-            for key, active in applicable.items():
-                if key in controls:
-                    controls[key].active = active
-                    holder = controls[key].holder
-                    if holder is not None:
-                        holder.set_visibility(active)
-
-        for key in ("firing_form", "speed_form"):
-            controls[key].control.on_value_change(sync_kinetic_controls)
-        sync_kinetic_controls()
     if route.target == "firing_rate" and "spacetime_update" in controls:
         def sync_firing_update_controls() -> None:
             mixed = controls["spacetime_update"].control.value == "mixed"
@@ -2132,6 +2108,57 @@ def _selected_upload_value(live: _MappingInputControl) -> Any:
     )
 
 
+def _mapping_whole_region_end(
+    inputs: Mapping[str, _MappingInputControl], resolution_x: float,
+) -> float | None:
+    """Read the shortest spatial extent from inspected metadata, without parsing data."""
+
+    lengths: list[int] = []
+    for live in inputs.values():
+        if live.override is not None and not bool(live.override.value):
+            continue
+        form = str(live.form.value)
+        if live.surface.get("prepared_only"):
+            selected = live.surface.get("prepared_selection")
+            named = live.surface.get("prepared_results", {}).get(getattr(selected, "value", None))
+            if named is not None:
+                axis = named.result.x_axis
+                if axis.size:
+                    lengths.append(int(axis.size))
+                    if axis.size > 1:
+                        resolution_x = float(axis[1] - axis[0])
+            continue
+        if form not in {"x", "xt"}:
+            continue
+        selections = live.surface.get("selection_values", {})
+        for inspection in live.surface.get("inspections", ()):
+            # Genomic interval records are not spatial bins. Their extent is
+            # available after the existing track preparation on Map.
+            if inspection.source_format in {"bedgraph", "bigwig"}:
+                continue
+            shape = inspection.shape
+            selected = selections.get(inspection.name, {})
+            key = selected.get("array_key") or inspection.default_array_key or "values"
+            array = inspection._array_data.get(key)
+            if array is not None:
+                shape = array.shape
+            if not shape:
+                continue
+            # NumPy row vectors can be used as spatial profiles. Table columns
+            # always retain their row count; XT matrices use their first axis.
+            size = (
+                math.prod(shape)
+                if form == "x" and array is not None and len(shape) == 2 and 1 in shape
+                else shape[0]
+            )
+            if size > 0:
+                lengths.append(int(size))
+    if not lengths or not math.isfinite(resolution_x) or resolution_x <= 0:
+        return None
+    end = min(lengths) * resolution_x
+    return end if math.isfinite(end) else None
+
+
 def _read_mapping_input(live: _MappingInputControl) -> Any:
     form = str(live.form.value)
     if live.override is not None and not bool(live.override.value):
@@ -2972,7 +2999,7 @@ def render(_navigate: Callable[[str], None]) -> None:
                         invalidate_mapping_result()
                         if latest_result is not None:
                             return
-                        mapping_stats["Dependence"].text = "Per field" if route.target == "kinetic_fields" else _DEPENDENCE_LABELS.get(
+                        mapping_stats["Dependence"].text = _DEPENDENCE_LABELS.get(
                             str(dependence_control.value),
                             str(dependence_control.value).replace("_", " ").title(),
                         )
@@ -3283,8 +3310,7 @@ def render(_navigate: Callable[[str], None]) -> None:
                         target = mapping_target(str(target_control.value))
                         dependence_control.options = _select_options(
                             target.dependences,
-                            {**_DEPENDENCE_LABELS, "spacetime": "Per field"}
-                            if target.key == "kinetic_fields" else _DEPENDENCE_LABELS,
+                            _DEPENDENCE_LABELS,
                         )
                         dependence_control.value = target.default_dependence
                         dependence_control.update()
@@ -3315,6 +3341,11 @@ def render(_navigate: Callable[[str], None]) -> None:
                             .mark("mapping-whole-region")
                             .tooltip("Use the first points of every profile, from 0 to the shortest profile's length.")
                         )
+                        periodic_slot = (
+                            ui.element("div")
+                            .classes("dn-mapping-periodic-slot")
+                            .mark("mapping-periodic-slot")
+                        )
                     with (
                         ui.element("div")
                         .classes("dn-mapping-window-grid")
@@ -3339,6 +3370,29 @@ def render(_navigate: Callable[[str], None]) -> None:
                             .mark("mapping-region-end")
                         )
 
+                    def sync_whole_region_bounds() -> None:
+                        if not bool(whole_region.value):
+                            return
+                        route = selected_route_state["route"]
+                        resolution = region_setting_controls.get("resolution")
+                        if resolution is not None and (
+                            resolution.override is None or bool(resolution.override.value)
+                        ):
+                            value = resolution.control.value
+                        else:
+                            value = route.setting_defaults_dict.get("resolution")
+                            value = 1.0 if value is None else value
+                        try:
+                            end = _mapping_whole_region_end(
+                                mapping_input_controls, float(value),
+                            )
+                        except (TypeError, ValueError):
+                            end = None  # Allow an incomplete bin-width edit.
+                        if region_start.value != 0.0:
+                            region_start.set_value(0.0)
+                        if end is not None and region_end.value != end:
+                            region_end.set_value(end)
+
                     @ui.refreshable
                     def render_region_settings() -> None:
                         route = selected_route_state["route"]
@@ -3346,6 +3400,7 @@ def render(_navigate: Callable[[str], None]) -> None:
                             retained_spatial_resolution["value"] = (
                                 region_setting_controls["resolution"].control.value
                             )
+                        periodic_slot.clear()
                         region_setting_controls.clear()
                         with (
                             ui.element("div")
@@ -3361,6 +3416,9 @@ def render(_navigate: Callable[[str], None]) -> None:
                                     on_change=lambda: invalidate_mapping_result(),
                                 )
                             )
+                        periodic = region_setting_controls.get("perQ")
+                        if periodic is not None and periodic.holder is not None:
+                            periodic.holder.move(periodic_slot)
                         # Bin width describes the uploaded data, so input-form
                         # changes must not reset it and shift Start/End indices.
                         if (
@@ -3370,28 +3428,11 @@ def render(_navigate: Callable[[str], None]) -> None:
                             region_setting_controls["resolution"].control.set_value(
                                 retained_spatial_resolution["value"]
                             )
+                        sync_whole_region_bounds()
 
                     render_region_settings()
 
                 with expansion("Mapping settings", icon="tune"):
-                    show_plot = ui.checkbox("Show Plot", value=True).mark("mapping-show-plot")
-                    show_plot.on_value_change(lambda: render_latest_result())
-                    with ui.element("div").classes("dn-mapping-settings-grid"):
-                        _region_missing = (
-                            ui.select(
-                                {
-                                    "error": "Report error",
-                                    "interpolate": "Interpolate",
-                                    "zero": "Replace with zero",
-                                },
-                                value="error",
-                                label="Missing values",
-                            )
-                            .props("dense options-dense")
-                            .classes("dn-field")
-                            .mark("mapping-region-missing")
-                        )
-
                     @ui.refreshable
                     def render_mapping_settings() -> None:
                         route = selected_route_state["route"]
@@ -3416,6 +3457,23 @@ def render(_navigate: Callable[[str], None]) -> None:
                             )
 
                     render_mapping_settings()
+                    show_plot = ui.checkbox("Show Plot", value=True).mark("mapping-show-plot")
+                    show_plot.on_value_change(lambda: render_latest_result())
+                    with ui.element("div").classes("dn-mapping-settings-grid"):
+                        _region_missing = (
+                            ui.select(
+                                {
+                                    "error": "Report error",
+                                    "interpolate": "Interpolate",
+                                    "zero": "Replace with zero",
+                                },
+                                value="error",
+                                label="Missing values",
+                            )
+                            .props("dense options-dense")
+                            .classes("dn-field")
+                            .mark("mapping-region-missing")
+                        )
 
                 def render_mapping_code_menu() -> None:
                     ui.menu_item(
@@ -4034,6 +4092,7 @@ def render(_navigate: Callable[[str], None]) -> None:
 
                     if running:
                         return
+                    sync_whole_region_bounds()
                     if latest_result is None:
                         status.text = "Ready"
 
@@ -4069,7 +4128,7 @@ def render(_navigate: Callable[[str], None]) -> None:
                         preview_output.enable()
                     preview_output.update()
                     primary = np.asarray(latest_result.outputs[latest_result.primary_output])
-                    mapping_stats["Dependence"].text = "Per field" if latest_result.target == "kinetic_fields" else _DEPENDENCE_LABELS.get(
+                    mapping_stats["Dependence"].text = _DEPENDENCE_LABELS.get(
                         latest_result.output_dependence,
                         latest_result.output_dependence.replace("_", " ").title(),
                     )
@@ -4971,6 +5030,17 @@ def render(_navigate: Callable[[str], None]) -> None:
                             prepared_calls.append(checked)
                         check_cancelled()
 
+                        if use_whole_region:
+                            # Use validated, binned extents for genomic tracks
+                            # and other inputs whose upload metadata is incomplete.
+                            ends = [
+                                checked.spatial_size * checked.resolution_x
+                                for checked in prepared_calls
+                                if checked.spatial_size > 0
+                            ]
+                            if ends and region_end.value != min(ends):
+                                region_end.set_value(min(ends))
+
                         staged_results: list[_NamedMappingResult] = []
                         total_requests = len(requests)
                         for index, (case, request) in enumerate(requests):
@@ -5073,7 +5143,7 @@ def render(_navigate: Callable[[str], None]) -> None:
                         apply_preview_output()
 
                         primary = np.asarray(result.outputs[result.primary_output])
-                        mapping_stats["Dependence"].text = "Per field" if result.target == "kinetic_fields" else _DEPENDENCE_LABELS.get(
+                        mapping_stats["Dependence"].text = _DEPENDENCE_LABELS.get(
                             result.output_dependence,
                             result.output_dependence.replace("_", " ").title(),
                         )
@@ -5424,6 +5494,7 @@ def render(_navigate: Callable[[str], None]) -> None:
 
                 def sync_whole_region() -> None:
                     if bool(whole_region.value):
+                        sync_whole_region_bounds()
                         region_start.disable()
                         region_end.disable()
                     else:
@@ -5438,7 +5509,7 @@ def render(_navigate: Callable[[str], None]) -> None:
                     restored_primary = np.asarray(
                         latest_result.outputs[latest_result.primary_output]
                     )
-                    mapping_stats["Dependence"].text = "Per field" if latest_result.target == "kinetic_fields" else _DEPENDENCE_LABELS.get(
+                    mapping_stats["Dependence"].text = _DEPENDENCE_LABELS.get(
                         latest_result.output_dependence,
                         latest_result.output_dependence.replace("_", " ").title(),
                     )

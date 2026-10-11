@@ -1,36 +1,11 @@
 """Mapping integration for constrained kinetics and partially identified inverses."""
 
-from itertools import product
-
 import numpy as np
 import pytest
 
 from app.mapping_catalog import mapping_route
 from app.mapping_service import MappingRequest, run_mapping
 from app.pages.mapping import _setting_value
-from dnascape.mapping import map_fork_densities_xt
-
-
-@pytest.mark.parametrize("firing_form,speed_form", tuple(product(
-    ("constant", "space", "time", "spacetime"), repeat=2,
-)))
-def test_joint_result_preserves_independent_forms_and_identifiability(firing_form, speed_form):
-    time = np.arange(0., 63., 3.)
-    fields = map_fork_densities_xt(.008, 1.4, n_bins=12, time_grid=time)
-    timing = np.trapezoid(1 - fields["replicated_fraction_xt"], x=time, axis=1)
-    result = run_mapping(MappingRequest(
-        route=mapping_route("timing_to_joint_spacetime_kinetic_fields"),
-        inputs={"replication_timing": timing}, input_forms={"replication_timing": "x"},
-        settings={"firing_form": firing_form, "speed_form": speed_form,
-                  "time_grid": time, "maxiter": 10},
-    ))
-    expected_forms = {"constant": "scalar", "space": "x", "time": "t", "spacetime": "xt"}
-    for key, form in (("firing_rate", firing_form), ("fork_speed", speed_form)):
-        assert result.output_forms[key] == expected_forms[form]
-        assert np.all(result.outputs[key] > 0)
-    assert "does not uniquely identify" in result.diagnostics["identifiability"]
-    assert "optimizer_evaluations" not in result.outputs
-    assert result.fit_mse is not None and result.fit_mse < .02
 
 
 def test_inverse_keeps_unidentifiable_mask_instead_of_fabricating_values():
@@ -46,11 +21,6 @@ def test_inverse_keeps_unidentifiable_mask_instead_of_fabricating_values():
 
 
 def test_active_solver_defaults_are_displayed_without_a_global_iteration_cap():
-    joint = mapping_route("timing_to_joint_spacetime_kinetic_fields")
-    defaults = {item.key: _setting_value(item) for item in joint.active_settings()}
-    assert defaults["maxiter"] == 20
-    assert defaults["spatial_knots"] == 12
-    assert defaults["regularization"] == .001
     for dependence, method in (
         ("constant", "timing_and_firing_to_constant_fork_speed"),
         ("space", "timing_and_time_firing_to_spatial_fork_speed"),

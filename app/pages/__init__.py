@@ -1,9 +1,21 @@
-"""Load workflow pages when opened instead of during server startup."""
+"""Preload expensive workflow modules; render pages only when opened."""
 
 from __future__ import annotations
 
 from collections.abc import Callable
 from importlib import import_module
+
+
+def preload_workflow_pages() -> None:
+    """Cache expensive imports before serving clients, without creating UI.
+
+    Mapping builds its scientific catalogue at import time. Data Manager also
+    has a measurable first-import cost; the remaining pages stay lazy.
+    Python's module cache makes repeated calls harmless.
+    """
+
+    for module_name in ("mapping", "data_management"):
+        import_module(f"{__name__}.{module_name}")
 
 
 def _lazy_renderer(module_name: str) -> Callable[[Callable[[str], None]], None]:
@@ -22,4 +34,4 @@ PAGE_RENDERERS = {
     "resources": _lazy_renderer("resources"),
 }
 
-__all__ = ["PAGE_RENDERERS"]
+__all__ = ["PAGE_RENDERERS", "preload_workflow_pages"]

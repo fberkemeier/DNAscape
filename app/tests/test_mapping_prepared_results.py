@@ -102,6 +102,12 @@ def test_mapping_reuses_prepared_bundle_across_downstream_targets(
             prepared = control("mapping-input-fork-densities-prepared-select")
             assert prepared.enabled
             assert len(prepared.options) == 1
+            await set_value("mapping-whole-region", True)
+            assert control("mapping-region-start").value == 0.0
+            assert control("mapping-region-end").value == 16.0
+            await set_value("mapping-whole-region", False)
+            await set_value("mapping-region-start", 20.0)
+            await set_value("mapping-region-end", 36.0)
             await map_and_wait(2)
             bundle = requests[1].inputs["fork_densities"]
             assert requests[1].input_forms["fork_densities"] == "bundle"

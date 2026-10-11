@@ -230,18 +230,18 @@ def test_non_rdata_vector_semantics_use_space_storage_metadata(
 
 
 def test_bundle_member_selection_and_dynamic_filename() -> None:
-    firing = np.ones((2, 3), dtype=float)
-    speed = np.full((2, 3), 1.4)
+    right = np.ones((2, 3), dtype=float)
+    left = np.full((2, 3), 1.4)
     result = MappingResult(
-        target="kinetic_fields",
-        target_key="kinetic_fields",
-        target_label="Joint kinetic fields",
-        method="joint",
+        target="fork_densities_xt",
+        target_key="fork_densities",
+        target_label="Fork densities",
+        method="firing_and_speed_to_directional_fork_densities_xt_mean_field",
         output_form="bundle",
         output_dependence="spacetime",
-        primary_output="firing_rate",
-        outputs=MappingProxyType({"firing_rate": firing, "fork_speed": speed}),
-        output_forms=MappingProxyType({"firing_rate": "xt", "fork_speed": "xt"}),
+        primary_output="right_fork_density_xt",
+        outputs=MappingProxyType({"right_fork_density_xt": right, "left_fork_density_xt": left}),
+        output_forms=MappingProxyType({"right_fork_density_xt": "xt", "left_fork_density_xt": "xt"}),
         x_axis=np.asarray([0.0, 1.0]),
         time_axis=np.asarray([0.0, 5.0, 10.0]),
         region_labels=(),
@@ -249,11 +249,11 @@ def test_bundle_member_selection_and_dynamic_filename() -> None:
         assumptions=MappingProxyType({}),
     )
 
-    selected = select_mapping_output(result, "fork_speed")
-    np.testing.assert_array_equal(selected.values, speed)
-    artifact = build_mapping_raw_export(result, "fork_speed", "npy")
-    assert artifact.filename == "rmap_fs.npy"
-    np.testing.assert_array_equal(np.load(io.BytesIO(artifact.data), allow_pickle=False), speed)
+    selected = select_mapping_output(result, "left_fork_density_xt")
+    np.testing.assert_array_equal(selected.values, left)
+    artifact = build_mapping_raw_export(result, "left_fork_density_xt", "npy")
+    assert artifact.filename == "rmap_lfd-xt.npy"
+    np.testing.assert_array_equal(np.load(io.BytesIO(artifact.data), allow_pickle=False), left)
 
 
 def test_mse_history_exports_as_an_ordinary_numeric_array() -> None:

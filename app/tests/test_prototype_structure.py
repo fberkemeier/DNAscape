@@ -384,7 +384,7 @@ def test_scientific_layout_hooks_keep_controls_aligned_and_actions_clear() -> No
     assert 'classes("dn-action-dock")' in common
 
 
-def test_navigation_theme_and_compact_height_styles_are_explicit() -> None:
+def test_navigation_theme_and_viewport_height_styles_are_explicit() -> None:
     styles = (APP_DIR / "static" / "styles.css").read_text(encoding="utf-8")
 
     drawer_toggle = _css_declarations(styles, ".dn-drawer-toggle")
@@ -398,11 +398,12 @@ def test_navigation_theme_and_compact_height_styles_are_explicit() -> None:
 
     drawer_content = _css_declarations(styles, ".dn-drawer-content")
     assert drawer_content["overflow-y"] == "hidden"
-    compact_height = styles[styles.index("@media (max-height: 620px)") :]
-    compact_drawer_content = _css_declarations(compact_height, ".dn-drawer-content")
-    assert compact_drawer_content.get("overflow-y", "hidden") == "hidden"
-    compact_nav = _css_declarations(compact_height, ".dn-nav-list")
-    assert compact_nav["overflow-y"] == "auto"
+    assert drawer_content["padding"] == "0.9rem 0.9rem 3rem"
+    assert "@media (max-height: 620px)" not in styles
+    navigation = _css_declarations(styles, ".dn-nav-list")
+    assert navigation["overflow-y"] == "auto"
+    assert navigation["min-height"] == "0"
+    assert navigation["flex"] == "0 1 auto"
 
     dark_nav = _css_declarations(styles, "body.body--dark .dn-nav-button")
     assert dark_nav["color"] == "var(--dn-text) !important"

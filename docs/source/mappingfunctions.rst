@@ -48,7 +48,6 @@ Common targets:
 
 * ``firing_rate``
 * ``fork_speed``
-* ``kinetic_fields``
 * ``replication_timing``
 * ``fork_directionality``
 * ``replicated_fraction`` / ``replicated_fraction_xt``

@@ -224,10 +224,6 @@ def map_bundle_to_left(bundle):
     return _bundle_field(bundle, "left_fork_density_xt").copy()
 
 
-def map_bundle_to_total(bundle):
-    return _bundle_field(bundle, "fork_density_xt").copy()
-
-
 def _coalescence_pdf(source, *, resolution, x_array, resolution_time, time_grid, unreplicated_floor):
     events = map_coalescence_events_xt(
         source["fork_speed"], source["replicated_fraction_xt"],

@@ -45,6 +45,54 @@ def _mapped_result(request: MappingRequest, values: np.ndarray) -> MappingResult
     )
 
 
+def test_whole_region_end_uses_binned_track_extent(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from app.pages import mapping as mapping_page
+
+    requests: list[MappingRequest] = []
+
+    def fake_run(request: MappingRequest, _report: Any, _cancel: Any) -> MappingResult:
+        requests.append(request)
+        values = np.asarray(request.inputs["replication_timing"])
+        assert values.size == 6
+        return _mapped_result(request, np.full(values.size, 0.001))
+
+    monkeypatch.setattr(mapping_page, "run_mapping", fake_run)
+
+    async def scenario() -> None:
+        async with user_simulation(index) as user:
+            await user.open("/")
+            user.find(marker="nav-mapping").click()
+            await user.should_see(marker="mapping-target", retries=60)
+            uploader = cast(
+                Upload,
+                next(iter(user.find(marker="source-replication-timing-upload").elements)),
+            )
+            await uploader.handle_uploads([
+                Upload.SmallFileUpload(
+                    "timing.bedgraph", "text/plain",
+                    b"chr1 0 2000 8.0\nchr1 2000 6000 6.0\n",
+                ),
+            ])
+            await user.should_see(
+                marker="mapping-input-replication-timing-track-options", retries=40,
+            )
+            user.find("Region").click()
+            end = cast(Number, next(iter(user.find(marker="mapping-region-end").elements)))
+            with user.client:
+                end.set_value(12.0)
+            user.find(marker="mapping-whole-region").click()
+            assert end.value == 12.0  # Two track records do not mean two bins.
+            user.find(marker="action-map").click()
+            await user.should_see(marker="mapping-result-plot", retries=60)
+            assert end.value == 6.0
+            assert len(requests) == 1
+            assert requests[0].whole_genome is True
+
+    asyncio.run(scenario())
+
+
 def test_combined_mapping_colors_every_curve_and_limits_dense_hover(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -737,6 +785,8 @@ def test_spatial_speed_submit_aligns_profiles_and_keeps_selected_boundaries(
 
             if firing_form == "x":
                 await set_value("mapping-whole-region", True)
+                assert control("mapping-region-start").value == 0.0
+                assert control("mapping-region-end").value == 20.0
                 user.find(marker="action-map").click()
                 assert await asyncio.to_thread(whole_finished.wait, 5)
                 await user.should_see("Complete in", retries=60)
@@ -746,8 +796,8 @@ def test_spatial_speed_submit_aligns_profiles_and_keeps_selected_boundaries(
                 np.testing.assert_array_equal(calls[1]["source"]["replication_timing"], timing[:10])
                 np.testing.assert_array_equal(calls[1]["source"]["firing_rate"], local_firing)
                 np.testing.assert_array_equal(results[1].x_axis, np.arange(10) * 2.0)
-                assert control("mapping-region-start").value == 24.0
-                assert control("mapping-region-end").value == selected_end
+                assert control("mapping-region-start").value == 0.0
+                assert control("mapping-region-end").value == 20.0
 
     asyncio.run(scenario())
 

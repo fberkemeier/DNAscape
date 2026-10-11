@@ -52,7 +52,7 @@ Quantities
 ``replicated_fraction_xt``
    Local replicated fraction across position and time.
 
-``fork_density`` / ``fork_densities_xt``
+``fork_densities_xt``
    Active fork density, optionally split by direction.
 
 ``origin_efficiency``

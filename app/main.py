@@ -17,7 +17,7 @@ from app.export_settings import (
 )
 from app.icons import OUTLINE_ICON_SVGS, PLOT_ICON_SVG
 from app.page_activity import current_page_activity
-from app.pages import PAGE_RENDERERS
+from app.pages import PAGE_RENDERERS, preload_workflow_pages
 from app.settings_dialog import settings_dialog as create_settings_dialog
 
 APP_DIR = Path(__file__).resolve().parent
@@ -664,6 +664,7 @@ def _show_browser() -> bool:
 def main() -> None:
     """Start the local-only interface; browser launch is explicitly opt-in."""
 
+    preload_workflow_pages()
     ui.run(
         title="DNAscape",
         favicon=str(ASSET_DIR / "dnascape_logo_tab.png"),

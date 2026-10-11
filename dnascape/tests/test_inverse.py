@@ -8,8 +8,7 @@ import pytest
 from dnascape.inverse import (
     _make_field,
     _mean_field_timing,
-    fit_timing_kinetics,
-    map_timing_joint_kinetics,
+    fit_timing_fork_speed,
 )
 from dnascape.mapping import map_fork_densities_xt
 
@@ -43,45 +42,12 @@ def test_mean_field_prediction_and_analytic_gradient_match_independent_forward(p
         np.testing.assert_allclose(jacobian[:, column], (plus - minus) / 2e-6, rtol=2e-4, atol=2e-5)
 
 
-@pytest.mark.parametrize(
-    "firing_form,speed_form", tuple(product(("constant", "space", "time", "spacetime"), repeat=2))
-)
-def test_all_sixteen_joint_form_pairs_return_bounded_fields_and_reduce_timing_error(
-    firing_form, speed_form
-):
-    n = 12
-    t = np.arange(0.0, 63.0, 3.0)
-    forward = map_fork_densities_xt(0.008, 1.4, n_bins=n, resolution=4, time_grid=t)
-    observed = np.trapezoid(1 - forward["replicated_fraction_xt"], x=t, axis=1)
-    result = map_timing_joint_kinetics(
-        observed,
-        firing_form=firing_form,
-        speed_form=speed_form,
-        resolution=4,
-        resolution_time=3,
-        time_grid=t,
-        spatial_knots=3,
-        temporal_knots=2,
-        initial_firing_rate=0.004,
-        maxiter=16,
-    )
-    shapes = {"constant": (), "space": (n,), "time": (1, len(t)), "spacetime": (n, len(t))}
-    for key, form in (("firing_rate", firing_form), ("fork_speed", speed_form)):
-        values = np.asarray(result[key])
-        assert values.shape == shapes[form]
-        assert np.all(np.isfinite(values)) and np.all(values > 0)
-    assert result["fit_mse"] < result["fit_history"][0] * 0.02
-    assert result["fit_mse"] < 0.02
-    assert "does not uniquely identify" in result["identifiability"]
-    assert result["optimizer_evaluations"] <= 16
-
-
 @pytest.mark.parametrize("speed_form", ["constant", "space", "time", "spacetime"])
 def test_periodic_speed_inverse_fits_all_output_forms_against_independent_model(speed_form):
     t = np.arange(0.0, 63.0, 3.0)
     forward = map_fork_densities_xt(0.008, 1.8, n_bins=12, resolution=4, time_grid=t, perQ=True)
     observed = np.trapezoid(1 - forward["replicated_fraction_xt"], x=t, axis=1)
-    result = fit_timing_kinetics(
+    result = fit_timing_fork_speed(
         observed,
         firing_rate=0.008,
         speed_form=speed_form,
@@ -100,8 +66,8 @@ def test_periodic_speed_inverse_fits_all_output_forms_against_independent_model(
 
 def test_inverse_validates_positive_bounds_and_reports_truncated_time_horizon():
     with pytest.raises(ValueError, match="positive increasing"):
-        fit_timing_kinetics(np.full(8, 10.0), speed_bounds=(-1, 4))
-    result = fit_timing_kinetics(
+        fit_timing_fork_speed(np.full(8, 10.0), firing_rate=0.008, speed_bounds=(-1, 4))
+    result = fit_timing_fork_speed(
         np.full(8, 10.0),
         firing_rate=1e-5,
         time_grid=np.arange(4.0),
@@ -155,28 +121,6 @@ def test_uniform_mean_field_timing_converges_to_closed_form_gaussian_survival():
     assert errors[1] / exact < 0.005
 
 
-def test_joint_initial_bundle_is_supported_and_explicit_initial_values_take_precedence():
-    observed = np.full(8, 10.0)
-    bundled = map_timing_joint_kinetics(
-        observed,
-        firing_form="constant",
-        initial_kinetics={"firing_rate": 0.006, "fork_speed": 2.0},
-        maxiter=1,
-    )
-    assert bundled["fork_speed"] == pytest.approx(2.0)
-    assert bundled["firing_rate"] == pytest.approx(0.006)
-    explicit = map_timing_joint_kinetics(
-        observed,
-        firing_form="constant",
-        initial_kinetics={"firing_rate": 0.006, "fork_speed": 2.0},
-        initial_firing_rate=0.003,
-        initial_fork_speed=1.4,
-        maxiter=1,
-    )
-    assert explicit["fork_speed"] == pytest.approx(1.4)
-    assert explicit["firing_rate"] == pytest.approx(0.003)
-
-
 @pytest.mark.parametrize(
     "source_form,target_form", tuple(product(("constant", "space", "time", "spacetime"), repeat=2))
 )
@@ -204,7 +148,7 @@ def test_public_rmap_speed_inverse_supports_every_source_and_target_form_periodi
             "resolution": 4,
             "time_grid": t,
             "perQ": True,
-            "maxiter": 8,
+            "maxiter": 16,
         },
         return_info=True,
     )

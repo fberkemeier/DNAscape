@@ -20,9 +20,8 @@ from .fitting import (
     map_timing_firing,
     map_timing_firing_spacetime,
     map_timing_firing_time,
-    map_timing_joint_spacetime_kinetics,
 )
-from .inverse import map_timing_and_firing_to_speed, map_timing_joint_kinetics
+from .inverse import map_timing_and_firing_to_speed
 from .mapping import (
     map_coalescence_events_profile,
     map_coalescence_events_xt,
@@ -64,13 +63,6 @@ _FEATURE_ALIASES = {
     "fork_speeds": "fork_speed",
     "ori_rate": "firing_rate",
     "origin_rate": "firing_rate",
-    "kinetics": "kinetic_fields",
-    "replication_kinetics": "kinetic_fields",
-    "kinetic_profile": "kinetic_fields",
-    "kinetic_profiles": "kinetic_fields",
-    "firing_and_fork_speed": "kinetic_fields",
-    "firing_rate_and_fork_speed": "kinetic_fields",
-    "initiation_and_fork_speed": "kinetic_fields",
     "eff": "origin_efficiency",
     "efficiency": "origin_efficiency",
     "origin_usage": "origin_efficiency",
@@ -104,7 +96,6 @@ _FEATURE_ALIASES = {
     "phi_c_x": "coalescence_pdf",
     "right_moving_fork_density": "right_fork_density",
     "left_moving_fork_density": "left_fork_density",
-    "total_fork_density": "fork_density",
     "total_fork_density_xt": "fork_density_xt",
     "directional_fork_densities": "fork_densities_xt",
     "directional_fork_densities_xt": "fork_densities_xt",
@@ -113,11 +104,9 @@ _FEATURE_ALIASES = {
 _CANONICAL_FEATURES = {
     "firing_rate",
     "fork_speed",
-    "kinetic_fields",
     "replication_timing",
     "fork_directionality",
     "replicated_fraction",
-    "fork_density",
     "fork_density_xt",
     "fork_densities_xt",
     "right_fork_density",
@@ -143,12 +132,10 @@ _CANONICAL_FEATURES = {
 _FEATURE_DESCRIPTIONS = {
     "firing_rate": "Initiation-rate density to infer or supply, in min^-1 kb^-1.",
     "fork_speed": "Fork progression speed to infer or supply.",
-    "kinetic_fields": "Jointly fitted firing-rate and fork-speed fields.",
     "replication_timing": "Replication timing along genomic position.",
     "fork_directionality": "Net fork movement directionality along position.",
     "replicated_fraction": "Fraction of replicated DNA over time.",
     "replicated_fraction_xt": "Space-time replicated-fraction field.",
-    "fork_density": "Spatial-mean active fork density over time, or time-integrated density along position.",
     "fork_density_xt": "Space-time active fork-density field.",
     "fork_densities_xt": "Right- and left-moving space-time fork-density fields.",
     "right_fork_density": "Spatial-mean right-moving density over time, or time-integrated density along position.",
@@ -198,8 +185,6 @@ _ASSUMPTION_DESCRIPTIONS = {
         "timing fit using supplied fork directionality."
     ),
     "initial_fork_speed": "Starting fork-speed value or profile for fork-speed fitting.",
-    "initial_firing_rate": "Starting firing-rate value or field for joint kinetic fitting.",
-    "initial_kinetics": "Dictionary with initial firing_rate and/or fork_speed fields.",
     "space_fit_step": "Spatial x-phase update size; overrides fit_step for x-only initialization or refinement.",
     "space_maxiter": "Number of x-phase iterations; for mixed x,t fits it contributes to the mixed iteration count.",
     "temporal_smoothw": "Optional smoothing window for t-dependent profiles.",
@@ -239,18 +224,6 @@ _ASSUMPTION_DESCRIPTIONS = {
     "unreplicated_floor": "Numerical floor for conditioning coalescence on unreplicated DNA.",
     "genome_length": "Genome or interval length, in kb, used to infer n_bins.",
     "interval_kb": "Genomic interval, in kb, used to infer or select a region.",
-    "space_init_fit_step": "x-phase update size for the initial joint-kinetics firing fit.",
-    "space_init_maxiter": "Iterations for the initial joint-kinetics x fit.",
-    "space_init_sim_number": "Simulation count for the initial joint-kinetics x fit.",
-    "joint_maxiter": "Iterations for simultaneous firing-rate and fork-speed fitting.",
-    "joint_sim_number": "Simulations per joint fitting iteration.",
-    "firing_space_fit_step": "x update size for firing rate in joint fitting.",
-    "firing_time_fit_step": "t update size for firing rate in joint fitting.",
-    "speed_space_fit_step": "x update size for fork speed in joint fitting.",
-    "speed_time_fit_step": "t update size for fork speed in joint fitting.",
-    "firing_bounds": "Allowed lower and upper bounds for firing-rate fields.",
-    "firing_floor": "Lower numerical floor for joint-fitted firing-rate fields.",
-    "spatial_smoothw": "x smoothing window used in joint kinetic fitting.",
     "spatial_average": "Spatial averaging: bins weights every supplied bin equally; trapezoid integrates between supplied positions and divides by the sampled span.",
     "tail_policy": "Timing beyond the observation window: require_complete rejects unfinished replication, truncate reports a restricted mean, exponential extrapolates the final survival decay.",
     "tail_tolerance": "Maximum residual unreplicated fraction treated as completed when integrating timing.",
@@ -260,12 +233,8 @@ _ASSUMPTION_DESCRIPTIONS = {
     "density_floor": "Fork-density values at or below this threshold cannot identify local fork speed.",
     "derivative_method": "Temporal derivative on the supplied time grid: local polynomial gradient or forward interval slopes with the final slope repeated.",
     "invalid_policy": "Unidentifiable inverse values: mask with NaN, fill with zero, or raise an error. Validity masks and counts accompany the result metadata.",
-    "firing_form": "Dependence of the jointly fitted firing field: constant, space, time, or spacetime.",
-    "speed_form": "Dependence of the jointly fitted fork-speed field: constant, space, time, or spacetime.",
     "spatial_knots": "Number of control points for spatial variation in constrained kinetic fitting.",
-    "temporal_knots": "Number of control points for temporal variation in constrained kinetic fitting.",
     "regularization": "Smoothness penalty on logarithmic kinetic-field control points.",
-    "speed_anchor": "Penalty anchoring the joint speed scale to its initial value; timing alone does not identify a unique kinetic decomposition.",
     "tolerance": "Positive convergence tolerance used by the constrained least-squares optimizer.",
 }
 
@@ -287,13 +256,10 @@ _ASSUMPTION_ORDER = (
     "regions",
     "region_names",
     "neighbourhood_range",
-    "initial_firing_rate",
     "initial_fork_speed",
-    "initial_kinetics",
     "rate_bounds",
     "speed_bounds",
     "speed_regularization",
-    "firing_bounds",
     "alpha_smooth",
     "alpha_prior",
     "fit_step",
@@ -311,22 +277,11 @@ _ASSUMPTION_ORDER = (
     "spacetime_update",
     "spacetime_order",
     "spacetime_kernel_t",
-    "space_init_fit_step",
-    "space_init_maxiter",
-    "space_init_sim_number",
-    "joint_maxiter",
-    "joint_sim_number",
-    "firing_space_fit_step",
-    "firing_time_fit_step",
-    "speed_space_fit_step",
-    "speed_time_fit_step",
     "err_threshold",
     "deviation_threshold",
     "floor",
     "unreplicated_floor",
-    "firing_floor",
     "smoothw",
-    "spatial_smoothw",
     "refine_ratio_bounds",
     "refine_edge_kb",
     "refine_seed",
@@ -355,10 +310,6 @@ _ASSUMPTION_FALLBACK_DEFAULTS = {
     "spacetime_order": "crossed",
     "spacetime_kernel_t": 1.0,
     "sim_number": 100,
-    "space_init_maxiter": 10,
-    "space_init_sim_number": 100,
-    "joint_maxiter": 10,
-    "joint_sim_number": 100,
     "refine_edge_kb": 1000,
     "stall_rate_per_kb": 0.0,
 }
@@ -378,7 +329,6 @@ _FORM_DESCRIPTIONS = {
 _PUBLIC_MAPPING_TARGETS = (
     "firing_rate",
     "fork_speed",
-    "kinetic_fields",
     "replication_timing",
     "replicated_fraction_xt",
     "replicated_fraction",
@@ -386,8 +336,6 @@ _PUBLIC_MAPPING_TARGETS = (
     "fork_densities_xt",
     "right_fork_density_xt",
     "left_fork_density_xt",
-    "fork_density_xt",
-    "fork_density",
     "right_fork_density",
     "left_fork_density",
     "initiation_events_xt",
@@ -466,16 +414,6 @@ _ASSUMPTION_ALIASES = {
     "kernel_xt_t": "spacetime_kernel_t",
     "xt_t_kernel": "spacetime_kernel_t",
     "spacetime_kernel_t": "spacetime_kernel_t",
-    "fit_step_init_x": "space_init_fit_step",
-    "maxiter_init_x": "space_init_maxiter",
-    "sim_number_init_x": "space_init_sim_number",
-    "maxiter_joint": "joint_maxiter",
-    "sim_number_joint": "joint_sim_number",
-    "fit_step_firing_x": "firing_space_fit_step",
-    "fit_step_firing_t": "firing_time_fit_step",
-    "fit_step_speed_x": "speed_space_fit_step",
-    "fit_step_speed_t": "speed_time_fit_step",
-    "smoothw_x": "spatial_smoothw",
     "periodic": "perQ",
     "perq": "perQ",
     "positions": "x_array",
@@ -1131,13 +1069,6 @@ def map_firing_and_speed_to_left_fork_density_xt(source, **kwargs):
     )["left_fork_density_xt"]
 
 
-def map_firing_and_speed_to_total_fork_density_xt(source, **kwargs):
-    return map_firing_and_speed_to_fork_densities_xt(
-        source,
-        **kwargs,
-    )["fork_density_xt"]
-
-
 def map_fork_density_bundle_to_directionality(fork_densities, **kwargs):
     return map_fork_densities_directionality(
         fork_densities["right_fork_density_xt"],
@@ -1309,40 +1240,6 @@ _TIMING_TO_GENERAL_SPEED_OPTIONS = _TIMING_TO_SPATIAL_SPEED_OPTIONS | {
     "refine_verbose",
 }
 
-_TIMING_TO_JOINT_KINETICS_OPTIONS = {
-    "resolution",
-    "resolution_time",
-    "time_grid",
-    "T0",
-    "initial_firing_rate",
-    "initial_fork_speed",
-    "initial_kinetics",
-    "target_form",
-    "fit_step",
-    "maxiter",
-    "error",
-    "sim_number",
-    "space_init_fit_step",
-    "space_init_maxiter",
-    "space_init_sim_number",
-    "joint_maxiter",
-    "joint_sim_number",
-    "firing_space_fit_step",
-    "firing_time_fit_step",
-    "speed_space_fit_step",
-    "speed_time_fit_step",
-    "firing_bounds",
-    "speed_bounds",
-    "firing_floor",
-    "refine_ratio_bounds",
-    "refine_edge_kb",
-    "refine_seed",
-    "spatial_smoothw",
-    "temporal_smoothw",
-    "perQ",
-    "verbose",
-    "print_every",
-}
 
 _DIRECTIONALITY_OPTIONS = {
     "resolution",
@@ -1635,24 +1532,6 @@ def map_timing_and_general_firing_to_spacetime_speed(source, **kwargs):
     )
     return _fitting.map_timing_firing_spacetime_speed_simulated(
         source, _firing_rate_is_density=True, **options,
-    )
-
-
-def map_timing_to_kinetic_fields(timing, **kwargs):
-    options = _options(kwargs, _TIMING_TO_JOINT_KINETICS_OPTIONS)
-    if "maxiter" in options:
-        options.setdefault("joint_maxiter", options.pop("maxiter"))
-    if "sim_number" in options:
-        options.setdefault("joint_sim_number", options.pop("sim_number"))
-    if "fit_step" in options:
-        fit_step = options.pop("fit_step")
-        options.setdefault("firing_space_fit_step", fit_step)
-        options.setdefault("firing_time_fit_step", fit_step)
-        options.setdefault("speed_space_fit_step", fit_step)
-        options.setdefault("speed_time_fit_step", fit_step)
-    return map_timing_joint_spacetime_kinetics(
-        timing,
-        **options,
     )
 
 
@@ -2463,7 +2342,6 @@ class DataTypeMapper:
     def _ensure_fork_density_routes(self):
         targets = {
             "fork_densities_xt",
-            "fork_density_xt",
             "right_fork_density_xt",
             "left_fork_density_xt",
         }
@@ -2506,12 +2384,6 @@ class DataTypeMapper:
                 "firing_and_speed_to_left_fork_density_xt_mean_field",
                 "Mean-field map of the left-moving fork-density field.",
             ),
-            (
-                "fork_density_xt",
-                map_firing_and_speed_to_total_fork_density_xt,
-                "firing_and_speed_to_total_fork_density_xt_mean_field",
-                "Mean-field map of the total active fork-density field.",
-            ),
         )
         for target, func, method, description in routes:
             if method in methods:
@@ -2553,7 +2425,6 @@ class DataTypeMapper:
             self._ensure_coalescence_event_routes()
         if target in {
             "fork_densities_xt",
-            "fork_density_xt",
             "right_fork_density_xt",
             "left_fork_density_xt",
         }:
@@ -2755,16 +2626,6 @@ class DataTypeMapper:
             "spacetime_time_fit_step": "fit_step_xt_t",
             "spacetime_sim_number": "sim_number_xt",
             "spacetime_kernel_t": "kernel_xt_t",
-            "space_init_fit_step": "fit_step_init_x",
-            "space_init_maxiter": "maxiter_init_x",
-            "space_init_sim_number": "sim_number_init_x",
-            "joint_maxiter": "maxiter_joint",
-            "joint_sim_number": "sim_number_joint",
-            "firing_space_fit_step": "fit_step_firing_x",
-            "firing_time_fit_step": "fit_step_firing_t",
-            "speed_space_fit_step": "fit_step_speed_x",
-            "speed_time_fit_step": "fit_step_speed_t",
-            "spatial_smoothw": "smoothw_x",
         }
         return display_names.get(name, name)
 
@@ -3834,28 +3695,6 @@ rmap.register(
 )
 rmap.register(
     "replication_timing",
-    "kinetic_fields",
-    map_timing_joint_kinetics,
-    method="timing_to_joint_spacetime_kinetic_fields",
-    optional_assumptions=(
-        "firing_form", "speed_form", "resolution", "resolution_time", "time_grid", "T0",
-        "initial_firing_rate", "initial_fork_speed", "initial_kinetics", "firing_bounds", "speed_bounds",
-        "spatial_knots", "temporal_knots", "regularization", "speed_anchor",
-        "maxiter", "tolerance", "perQ", "verbose", "target_form",
-    ),
-    default_assumptions={
-        "verbose": False, "target_form": "spacetime", "firing_form": "space", "speed_form": "constant",
-    },
-    source_kinds=(("replication_timing", ("x",)),),
-    assumption_values=(
-        ("target_form", ("spacetime",)),
-        ("firing_form", ("constant", "space", "time", "spacetime")),
-        ("speed_form", ("constant", "space", "time", "spacetime")),
-    ),
-    description="Regularized joint firing-rate and fork-speed fit with independent dependence choices (all 16 pairs).",
-)
-rmap.register(
-    "replication_timing",
     "fork_directionality",
     map_timing_directionality,
     method="timing_to_directionality",
@@ -4440,12 +4279,6 @@ for _target, _func, _method, _description in (
         "firing_and_speed_to_left_fork_density_xt_mean_field",
         "Mean-field map of the left-moving fork-density field.",
     ),
-    (
-        "fork_density_xt",
-        map_firing_and_speed_to_total_fork_density_xt,
-        "firing_and_speed_to_total_fork_density_xt_mean_field",
-        "Mean-field map of the total active fork-density field.",
-    ),
 ):
     rmap.register(
         ("firing_rate", "fork_speed"),
@@ -4499,7 +4332,6 @@ for _target, _func in (
     ("replicated_fraction_xt", _conversions.map_bundle_to_fraction),
     ("right_fork_density_xt", _conversions.map_bundle_to_right),
     ("left_fork_density_xt", _conversions.map_bundle_to_left),
-    ("fork_density_xt", _conversions.map_bundle_to_total),
 ):
     rmap.register(
         "fork_densities_xt", _target, _func,
@@ -4533,7 +4365,7 @@ def _density_summary_mapper(member, source_kind, dependence):
     return mapper
 
 
-for _target in ("fork_density", "right_fork_density", "left_fork_density"):
+for _target in ("right_fork_density", "left_fork_density"):
     _member = f"{_target}_xt"
     for _dependence in ("time", "space"):
         _reduction_defaults = (

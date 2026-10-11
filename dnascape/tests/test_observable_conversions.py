@@ -253,7 +253,7 @@ def test_fraction_validation_rejects_nonfields_missing_and_nonphysical_values(ba
 
 
 @pytest.mark.parametrize("member,dependence,source_kind", list(itertools.product(
-    ("fork_density_xt", "right_fork_density_xt", "left_fork_density_xt"),
+    ("right_fork_density_xt", "left_fork_density_xt"),
     ("time", "space"), ("field", "bundle", "forward"),
 )))
 def test_density_summaries_match_field_integrals(member, dependence, source_kind):
@@ -276,8 +276,6 @@ def test_density_summaries_match_field_integrals(member, dependence, source_kind
 def test_bundle_extraction_and_summaries_preserve_original_arrays():
     right = np.arange(12., dtype=float).reshape(3, 4)
     bundle = {"right_fork_density_xt": right, "left_fork_density_xt": right / 2., "replicated_fraction_xt": np.zeros_like(right)}
-    total = rmap(source={"fork_densities_xt": bundle}, target="fork_density_xt")
-    np.testing.assert_allclose(total, right * 1.5)
     extracted = rmap(source={"fork_densities_xt": bundle}, target="right_fork_density_xt")
     extracted[:] = 0.
     assert bundle["right_fork_density_xt"][2, 3] == 11.

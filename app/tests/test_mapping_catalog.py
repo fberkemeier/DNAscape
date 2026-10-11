@@ -31,9 +31,9 @@ from app.mapping_catalog import (
 )
 from dnascape import rmap
 
-EXPECTED_PUBLIC_TARGET_COUNT = 27
-EXPECTED_IMPLEMENTED_METHOD_COUNT = 114
-EXPECTED_FRIENDLY_TARGET_COUNT = 19
+EXPECTED_PUBLIC_TARGET_COUNT = 24
+EXPECTED_IMPLEMENTED_METHOD_COUNT = 105
+EXPECTED_FRIENDLY_TARGET_COUNT = 17
 
 
 def _records(table: Any) -> tuple[dict[str, Any], ...]:
@@ -152,7 +152,7 @@ def test_route_families_are_factor_only_and_partition_all_exact_methods() -> Non
     )
 
     assert catalog.route_family_count > 0
-    assert catalog.route_family_count == 84
+    assert catalog.route_family_count == 75
     assert len(represented_methods) == EXPECTED_IMPLEMENTED_METHOD_COUNT
     assert len(represented_methods) == len(set(represented_methods))
     assert set(represented_methods) == set(catalog.methods)
@@ -190,6 +190,29 @@ def test_route_families_are_factor_only_and_partition_all_exact_methods() -> Non
             assert len(labels) == len(set(labels))
 
 
+def test_removed_targets_have_no_routes_and_only_simulation_targets_are_marked() -> None:
+    catalog = get_mapping_catalog()
+    removed = {"kinetic_fields", "fork_density", "fork_density_xt"}
+    assert not removed & set(catalog.public_target_ids)
+    assert all(route.target not in removed for route in rmap.routes())
+    assert {target.key for target in catalog.targets if target.requires_simulation} == {
+        "inter_origin_distance", "s_phase_duration", "completion_time", "num_origins",
+    }
+    for target in catalog.targets:
+        assert target.requires_simulation == all(
+            route.method.endswith("_simulation") for route in catalog.routes_for(target.key)
+        )
+
+
+def test_direct_firing_inverse_keeps_its_controls_without_a_parametric_shape() -> None:
+    route = mapping_route("initiation_events_and_fraction_to_firing_rate_local_inverse")
+    assert route.target_shapes == ()
+    assert route.default_target_shape is None
+    assert {item.key for item in route.active_settings()} == {
+        "unreplicated_floor", "invalid_policy",
+    }
+
+
 def test_same_feature_reductions_name_the_source_dependence_and_never_offer_identity() -> None:
     catalog = get_mapping_catalog()
     reductions = []
@@ -204,11 +227,10 @@ def test_same_feature_reductions_name_the_source_dependence_and_never_offer_iden
         for route in family.variants:
             assert route.output_form not in route.inputs[0].forms
 
-    # These are eleven actual field reductions, not same-form copies.
-    assert len(reductions) == 11
+    assert len(reductions) == 9
     assert {family.target_key for family in reductions} == {
         "initiation_events", "initiation_pdf", "coalescence_events", "coalescence_pdf",
-        "replicated_fraction", "fork_density", "right_fork_density", "left_fork_density",
+        "replicated_fraction", "right_fork_density", "left_fork_density",
     }
 
 

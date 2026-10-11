@@ -12,7 +12,6 @@ from __future__ import annotations
 
 import gzip
 import io
-import json
 import math
 import tempfile
 import time
@@ -821,36 +820,6 @@ def _normalise_setting(
             normalized = tuple(str(part).strip() for part in value if str(part).strip())
         if not normalized:
             raise ValueError("Region names must not be empty.")
-    elif key == "initial_kinetics":
-        if isinstance(value, str):
-            if len(value) > MAX_INPUT_BYTES:
-                raise ValueError("Initial kinetics exceeds the local input limit.")
-            try:
-                value = json.loads(value)
-            except (json.JSONDecodeError, RecursionError) as exc:
-                raise ValueError(
-                    "Initial kinetics must be a JSON object, for example "
-                    '{"firing_rate": 0.001, "fork_speed": 1.4}.'
-                ) from exc
-        if (
-            not isinstance(value, Mapping)
-            or not value
-            or set(value) - {"firing_rate", "fork_speed"}
-        ):
-            raise ValueError("Initial kinetics must contain firing_rate and/or fork_speed.")
-        normalized = _normalise_bundle(value, setting.label)
-        for field_key, field_value in normalized.items():
-            if isinstance(field_value, Mapping):
-                raise ValueError(f"Initial {field_key} must be a numeric field.")
-            field_array = np.asarray(field_value)
-            if field_array.ndim > 2:
-                raise ValueError(f"Initial {field_key} must be a scalar, vector, or matrix.")
-            if (
-                np.any(~np.isfinite(field_array))
-                or np.any(field_array < 0)
-                or (field_key == "fork_speed" and np.any(field_array == 0))
-            ):
-                raise ValueError(f"Initial {field_key} contains invalid kinetic values.")
     else:
         normalized = str(value).strip()
         if not normalized:
@@ -982,6 +951,45 @@ def _apply_domain(
     if n_bins_value is not None and int(n_bins_value) > MAX_SPATIAL_POINTS:
         raise ValueError(f"Spatial bins exceed the local limit of {MAX_SPATIAL_POINTS:,}.")
     return start, resolution_x, resolution_t
+
+
+def _apply_time_domain(
+    assumptions: dict[str, Any],
+    settings: Mapping[str, MappingSetting],
+    *,
+    resolution_t: float,
+    input_time_points: int,
+) -> None:
+    """Give forward mappings a bounded clock while retaining supplied axes."""
+    if not {"time_grid", "max_time"} <= settings.keys():
+        return
+    maximum = assumptions.get("max_time", assumptions.get("max_rep_time"))
+    if maximum is None:
+        maximum = settings["max_time"].default
+    if maximum is None:
+        return
+    maximum = float(maximum)
+    if not math.isfinite(maximum) or maximum <= 0:
+        raise ValueError("Maximum time must be finite and positive.")
+    assumptions["max_time"] = maximum
+    if assumptions.get("time_grid") is not None:
+        return
+    if input_time_points:
+        # Temporal uploads define their own length. A default forward limit
+        # must not resample them or contradict their intrinsic time axis.
+        grid = np.arange(input_time_points, dtype=float) * resolution_t
+    else:
+        intervals = maximum / resolution_t
+        if not math.isfinite(intervals) or intervals > MAX_TIME_POINTS - 1:
+            raise ValueError(
+                "The requested time grid exceeds the local limit of "
+                f"{MAX_TIME_POINTS:,} points. Increase the time step or shorten the time domain."
+            )
+        steps = int(math.floor(intervals))
+        grid = np.arange(steps + 1, dtype=float) * resolution_t
+        # A partial final interval ends exactly at the requested maximum.
+        grid = np.append(grid[grid < maximum], maximum)
+    assumptions["time_grid"] = _readonly(grid)
 
 
 def _validate_grid(
@@ -1224,6 +1232,10 @@ def validate_mapping_request(
         input_spatial_points=input_spatial_points,
         spatial_selection=spatial_selection,
     )
+    _apply_time_domain(
+        assumptions, active_settings,
+        resolution_t=resolution_t, input_time_points=input_time_points,
+    )
     _validate_grid(
         assumptions,
         input_spatial_points=input_spatial_points,
@@ -1359,8 +1371,6 @@ def _collect_result_outputs(
 
     if route.target in outputs:
         primary = route.target
-    elif route.target == "kinetic_fields" and "firing_rate" in outputs:
-        primary = "firing_rate"
     elif route.target == "fork_densities_xt" and "replicated_fraction_xt" in outputs:
         primary = "replicated_fraction_xt"
     else:
@@ -1368,16 +1378,7 @@ def _collect_result_outputs(
 
     forms: dict[str, DataForm] = {}
     for key, array in outputs.items():
-        kinetic_form = None
-        if route.target == "kinetic_fields" and key in {"firing_rate", "fork_speed"}:
-            metadata_key = "firing_form" if key == "firing_rate" else "speed_form"
-            metadata = values if isinstance(values, Mapping) else info
-            kinetic_form = {
-                "constant": "scalar", "space": "x", "time": "t", "spacetime": "xt",
-            }.get(str(metadata.get(metadata_key, "")))
-        if kinetic_form is not None:
-            forms[key] = cast(DataForm, kinetic_form)
-        elif key.endswith("_xt") or (
+        if key.endswith("_xt") or (
             route.output_form in {"xt", "bundle"}
             and key in {"firing_rate", "fork_speed"}
             and array.ndim == 2

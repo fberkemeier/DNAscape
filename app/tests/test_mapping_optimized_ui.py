@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import asyncio
-from itertools import product
 from typing import Any
 
 import numpy as np
@@ -11,7 +10,6 @@ import pytest
 from nicegui.testing import user_simulation
 
 from app.main import index
-from app.mapping_catalog import get_mapping_catalog
 from app.mapping_service import MappingRequest, MappingResult, run_mapping
 from app.pages import mapping as mapping_page
 
@@ -73,109 +71,27 @@ def test_static_firing_step_adapts_to_stalling_and_preserves_user_choice(
     asyncio.run(scenario())
 
 
-def test_joint_kinetic_forms_keep_one_family_and_only_read_applicable_controls(
+def test_time_and_spacetime_firing_use_the_visible_weibull_controls(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     latest = _record_settings(monkeypatch)
-    catalog = get_mapping_catalog()
-    families = catalog.route_families_for("kinetic_fields", "spacetime")
-    assert len(families) == 1
 
     async def scenario() -> None:
         async with user_simulation(index) as user:
             await user.open("/")
             user.find(marker="nav-mapping").click()
             await user.should_see(marker="mapping-target", retries=60)
-            await _set(user, "mapping-target", "kinetic_fields")
-            assert tuple(_element(user, "mapping-route").options) == (families[0].key,)
-            for firing_form, speed_form in product(
-                ("constant", "space", "time", "spacetime"), repeat=2,
-            ):
-                await _set(user, "mapping-setting-firing-form", firing_form)
-                await _set(user, "mapping-setting-speed-form", speed_form)
+            for dependence, iterations in (("spacetime", 20), ("time", 10)):
+                await _set(user, "mapping-target-form", dependence)
                 controls = latest["settings"] | latest["region"]
-                assert "initial_kinetics" not in controls
-                forms = {firing_form, speed_form}
-                applicable = {
-                    "spatial_knots": bool(forms & {"space", "spacetime"}),
-                    "temporal_knots": bool(forms & {"time", "spacetime"}),
-                    "regularization": forms != {"constant"},
-                }
-                read = {}
-                for key, control in controls.items():
-                    try:
-                        read[key] = mapping_page._read_setting(control)
-                    except KeyError:
-                        pass
-                assert read["firing_form"] == firing_form
-                assert read["speed_form"] == speed_form
-                for key, active in applicable.items():
-                    assert controls[key].active == active, (forms, key)
-                    assert controls[key].holder.visible == active, (forms, key)
-                    assert (key in read) == active, (forms, key)
-                    if not active:
-                        with pytest.raises(KeyError):
-                            mapping_page._read_setting(controls[key])
-                assert _element(user, "mapping-route").value == families[0].key
-
-    asyncio.run(scenario())
-
-
-def test_free_spacetime_firing_update_mode_reads_only_its_visible_controls(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    latest = _record_settings(monkeypatch)
-    mixed_values = {
-        "spacetime_fit_step": .2, "spacetime_sim_number": 32,
-        "spacetime_kernel_t": 2.,
-    }
-    factorized_values = {"spacetime_order": "space_then_time", "temporal_sim_number": 16}
-
-    async def scenario() -> None:
-        async with user_simulation(index) as user:
-            await user.open("/")
-            user.find(marker="nav-mapping").click()
-            await user.should_see(marker="mapping-target", retries=60)
-            await _set(user, "mapping-target-form", "spacetime")
-            await _set(user, "mapping-target-shape", "free")
-            for mode in ("mixed", "factorized", "mixed", "factorized"):
-                await _set(user, "mapping-setting-spacetime-update", mode)
-                controls = latest["settings"] | latest["region"]
-                assert not {"spacetime_space_fit_step", "spacetime_time_fit_step"} & controls.keys()
-                active_values = mixed_values if mode == "mixed" else factorized_values
-                for key in mixed_values | factorized_values:
-                    active = key in active_values
-                    live = controls[key]
-                    assert live.active == active, (mode, key)
-                    assert live.holder.visible == active, (mode, key)
-                    if active:
-                        if live.override is not None:
-                            await _set(user, f"mapping-setting-{key.replace('_', '-')}-override", True)
-                        await _set(user, f"mapping-setting-{key.replace('_', '-')}", active_values[key])
-                    else:
-                        with pytest.raises(KeyError):
-                            mapping_page._read_setting(live)
-                # Parameters entered during the previous mode remain in their
-                # widgets, but must not leak into the submitted settings.
-                read = {}
-                for key, live in controls.items():
-                    try:
-                        read[key] = mapping_page._read_setting(live)
-                    except KeyError:
-                        pass
-                assert read["spacetime_update"] == mode
-                assert read["space_maxiter"] == 30
-                assert read["temporal_maxiter"] == 30
-                for key in mixed_values | factorized_values:
-                    assert (key in read) == (key in active_values), (mode, key)
-                    if key in active_values:
-                        assert read[key] == active_values[key]
-
-            await _set(user, "mapping-target-shape", "weibull")
-            assert mapping_page._read_setting(latest["settings"]["maxiter"]) == 20
-            assert mapping_page._read_setting(latest["settings"]["alpha_smooth"]) == .1
-            await _set(user, "mapping-target-form", "time")
-            assert mapping_page._read_setting(latest["settings"]["maxiter"]) == 10
+                assert mapping_page._read_setting(controls["maxiter"]) == iterations
+                assert not {
+                    "spacetime_update", "spacetime_order", "space_maxiter",
+                    "temporal_maxiter", "spacetime_kernel_t",
+                } & controls.keys()
+                if dependence == "spacetime":
+                    assert mapping_page._read_setting(controls["alpha_smooth"]) == .1
+                await user.should_not_see(marker="mapping-target-shape")
 
     asyncio.run(scenario())
 
@@ -237,6 +153,8 @@ def test_fully_unidentifiable_inverse_maps_and_previews_without_fabricated_point
             await user.should_see(marker="mapping-target", retries=60)
             await _set(user, "mapping-target-form", "spacetime")
             await _set(user, "mapping-route", "firing_rate--spacetime--initiation_events-and-replicated_fraction")
+            user.find("Mapping settings").click()
+            await user.should_see(marker="mapping-setting-invalid-policy", retries=30)
             await _set(user, "mapping-region-start", 0.)
             await _set(user, "mapping-region-end", 4.)
             assert _element(user, "mapping-setting-invalid-policy").value == "mask"
