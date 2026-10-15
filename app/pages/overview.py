@@ -29,8 +29,8 @@ WORKFLOWS = (
     ),
     (
         "plotting",
-        "Plotting",
-        "Create polished previews of input profiles, inferred features, simulations, and exports.",
+        "Analysis",
+        "Plot and compare datasets, and perform statistical analyses.",
         None,
     ),
     (

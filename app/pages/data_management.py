@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import math
 import time
 import zipfile
 from collections.abc import Callable, Mapping, Sequence
@@ -27,10 +28,12 @@ from app.data_conversion_service import (
     TrackInspection,
     convert_data,
     inspect_track,
+    inspect_repliseq,
     transcode_conversion_artifact,
 )
 from app.export_settings import get_export_settings
 from app.mapping_catalog import RDATA_UPLOAD_ACCEPT
+from app.notifications import notify
 from app.mapping_uploads import (
     UploadInspection,
     inspect_upload,
@@ -67,6 +70,7 @@ from app.simulation_exports import (
 _NATURAL = "__natural__"
 _MATRIX = "__matrix__"
 _TABLE = "__table__"
+_REPLISEQ_TIMING = "__repliseq_timing__"
 _COLUMN_PREFIX = "column:"
 _ARRAY_PREFIX = "array:"
 _FORM_LABELS = {
@@ -99,13 +103,15 @@ _TRACK_AGGREGATIONS = {
     "coverage": "Coverage",
     "std": "Standard deviation",
 }
-_TRACK_MISSING = {
-    "nan": "Keep empty bins",
+_PROFILE_MISSING = {
+    "ignore": "Keep empty values",
     "zero": "Fill with zero",
     "fill": "Fill with a value",
     "min": "Fill with minimum",
     "max": "Fill with maximum",
+    "error": "Stop if detected",
 }
+_TRACK_MISSING = {"nan" if key == "ignore" else key: label for key, label in _PROFILE_MISSING.items()}
 _TRACK_INTERPOLATION = {
     "none": "None",
     "linear": "Linear",
@@ -171,6 +177,10 @@ _SNS_EXAMPLE_URL = (
 _OKSEQ_EXAMPLE_URL = (
     "https://raw.githubusercontent.com/CL-CHEN-Lab/OK-Seq/master/"
     "published_results/K562/K562_merged_hmm_RFD_cutoff10_bs1kb_sorted.bw"
+)
+_H1_REPLISEQ_EXAMPLE_URL = (
+    "https://ftp.ncbi.nlm.nih.gov/geo/series/GSE137nnn/GSE137764/suppl/"
+    "GSE137764%5FH1%5FGaussiansGSE137764%5Fmooth%5Fscaled%5Fautosome%2Emat%2Egz"
 )
 _MAX_RETAINED_SOURCE_COUNT = 128
 _MAX_RETAINED_SOURCE_BYTES = DEFAULT_BATCH_ARCHIVE_SOURCE_BYTES
@@ -448,6 +458,8 @@ def _selection_options(inspection: UploadInspection) -> Mapping[str, str]:
         )
     if inspection.source_format in {"csv", "tsv"}:
         options[_TABLE] = "Full table"
+    if inspection.source_layout == "geo_repliseq":
+        options[_REPLISEQ_TIMING] = "Replication timing (S1–S16)"
     if not options:
         options[_NATURAL] = "Profile"
     return options
@@ -455,6 +467,8 @@ def _selection_options(inspection: UploadInspection) -> Mapping[str, str]:
 
 def _default_selection(inspection: UploadInspection) -> str:
     options = _selection_options(inspection)
+    if inspection.source_layout == "geo_repliseq" and _TABLE in options:
+        return _TABLE
     if inspection.source_format in {"bigwig", "bedgraph"}:
         preferred = (
             f"{_COLUMN_PREFIX}{inspection.default_column}"
@@ -475,6 +489,8 @@ def _default_selection(inspection: UploadInspection) -> str:
 
 
 def _selected_data(inspection: UploadInspection, token: str) -> _SelectedData:
+    if token == _REPLISEQ_TIMING and inspection.source_layout == "geo_repliseq":
+        return _SelectedData("x", (int(inspection.shape[0]),))
     if inspection.source_format in {"bigwig", "bedgraph"}:
         column = token.removeprefix(_COLUMN_PREFIX) if token.startswith(_COLUMN_PREFIX) else None
         return _SelectedData("track", tuple(inspection.shape or ()), value_column=column)
@@ -580,6 +596,9 @@ def _selected_value_name(
     feature: str,
 ) -> str:
     """Keep a source label when one exists and otherwise use a useful fallback."""
+
+    if source.selection == _REPLISEQ_TIMING:
+        return "replication_timing"
 
     candidates = (
         details.value_column,
@@ -741,7 +760,7 @@ def render(_navigate: Callable[[str], None]) -> None:
         "target_format": "tsv",
         "output_name": _DATA_FILE_STEM,
         "decimal_places": 6,
-        "missing_policy": "ignore",
+        "missing_policy": "zero",
         "chromosome_scope": "single",
         "chromosome": None,
         "start": 0,
@@ -762,6 +781,8 @@ def render(_navigate: Callable[[str], None]) -> None:
         "threshold_max": None,
         "scale": 1.0,
         "show_preview": False,
+        "repliseq_timing_method": "sigmoid",
+        "s_phase_duration_min": 600.0,
     }
 
     def source_mode() -> str:
@@ -798,7 +819,13 @@ def render(_navigate: Callable[[str], None]) -> None:
         return selected
 
     def selected_data(source: _DataManagerSource) -> _SelectedData:
-        return _selected_data(source.inspection, source.selection)
+        details = _selected_data(source.inspection, source.selection)
+        if source.selection == _REPLISEQ_TIMING and source.track_inspection is not None:
+            regions = {region.chromosome: region for region in source.track_inspection.regions}
+            region = regions.get(str(settings["chromosome"]), next(iter(regions.values())))
+            bin_size = int(dict(source.track_inspection.metadata)["native_bin_size_bp"])
+            return _SelectedData("x", (math.ceil(region.end / bin_size),))
+        return details
 
     def unresolved_link_rows() -> tuple[_RemoteLinkInput, ...]:
         if source_mode() != "url":
@@ -886,7 +913,7 @@ def render(_navigate: Callable[[str], None]) -> None:
                         metadata: Mapping[str, Any] | None = None,
                     ) -> bool:
                         if conversion_running:
-                            ui.notify(
+                            notify(
                                 "Wait for the current conversion to finish before changing "
                                 "the sources.",
                                 type="warning",
@@ -909,7 +936,7 @@ def render(_navigate: Callable[[str], None]) -> None:
                             existing is None
                             and len(retained_sources) >= _MAX_RETAINED_SOURCE_COUNT
                         ):
-                            ui.notify(
+                            notify(
                                 "Remove a retained source before adding another one.",
                                 type="warning",
                             )
@@ -924,7 +951,7 @@ def render(_navigate: Callable[[str], None]) -> None:
                             > _MAX_RETAINED_SOURCE_BYTES
                         ):
                             maximum_mib = _MAX_RETAINED_SOURCE_BYTES / 1024**2
-                            ui.notify(
+                            notify(
                                 "Retained source files are limited to "
                                 f"{maximum_mib:g} MiB in one local workspace. "
                                 "Remove files you no longer need and try again.",
@@ -934,6 +961,8 @@ def render(_navigate: Callable[[str], None]) -> None:
                         convert_button.disable()
                         try:
                             candidate_track = None
+                            if candidate.source_layout == "geo_repliseq":
+                                candidate_track = await run.io_bound(inspect_repliseq, candidate)
                             if candidate.source_format in {"bigwig", "bedgraph"}:
                                 candidate_track = await run.io_bound(inspect_track, candidate)
                                 if candidate_track is None:
@@ -941,9 +970,11 @@ def render(_navigate: Callable[[str], None]) -> None:
                                         "Track inspection stopped before returning chromosome data."
                                     )
                             candidate_selection = _default_selection(candidate)
+                            if candidate.source_layout == "geo_repliseq" and settings["feature"] == "replication_timing":
+                                candidate_selection = _REPLISEQ_TIMING
                             _selected_data(candidate, candidate_selection)
                         except (OSError, RuntimeError, TypeError, ValueError) as exc:
-                            ui.notify(str(exc), type="negative")
+                            notify(str(exc), type="negative")
                             set_convert_enabled()
                             return False
 
@@ -991,6 +1022,8 @@ def render(_navigate: Callable[[str], None]) -> None:
                                 start=region.start,
                                 end=region.end,
                             )
+                            if candidate.source_layout == "geo_repliseq":
+                                settings["bin_size"] = int(dict(candidate_track.metadata)["native_bin_size_bp"])
                             _apply_track_defaults(
                                 settings, str(settings["feature"]), candidate,
                                 candidate_track.backend,
@@ -1001,7 +1034,7 @@ def render(_navigate: Callable[[str], None]) -> None:
                     async def uploaded(event: Any) -> bool:
                         nonlocal upload_inspection_running
                         if conversion_running:
-                            ui.notify("A conversion is already running.", type="warning")
+                            notify("A conversion is already running.", type="warning")
                             return False
                         upload_inspection_running = True
                         convert_button.disable()
@@ -1016,7 +1049,7 @@ def render(_navigate: Callable[[str], None]) -> None:
                                 source_id=f"upload:{candidate.name}",
                             )
                         except (OSError, RuntimeError, TypeError, ValueError) as exc:
-                            ui.notify(str(exc), type="negative")
+                            notify(str(exc), type="negative")
                             return False
                         finally:
                             upload_inspection_running = False
@@ -1024,7 +1057,7 @@ def render(_navigate: Callable[[str], None]) -> None:
 
                     async def cleared(event: Any) -> None:
                         if conversion_running:
-                            ui.notify("A conversion is already running.", type="warning")
+                            notify("A conversion is already running.", type="warning")
                             return
                         name = str(getattr(event, "name", ""))
                         if name:
@@ -1064,7 +1097,7 @@ def render(_navigate: Callable[[str], None]) -> None:
                         requested_mode = str(event.value)
                         if conversion_running or upload_inspection_running or remote_inspections:
                             source_tabs.set_value(source_mode())
-                            ui.notify(
+                            notify(
                                 "Wait for the current source operation to finish before changing "
                                 "the source type.",
                                 type="warning",
@@ -1089,9 +1122,9 @@ def render(_navigate: Callable[[str], None]) -> None:
                     ):
                         with ui.tab_panel("upload"):
                             source_controls["uploader"] = data_upload(
-                                accept=f"{RDATA_UPLOAD_ACCEPT},.bed",
+                                accept=f"{RDATA_UPLOAD_ACCEPT},.bed,.mat,.map",
                                 accepted_formats=(
-                                    "CSV, TSV, TXT, NPY, NPV, NPZ, BED, bedGraph, BigWig, GZ"
+                                    "CSV, TSV, TXT, NPY, NPV, NPZ, BED, bedGraph, BigWig, GEO MAT, GZ"
                                 ),
                                 marker="data-manager-upload",
                                 show_accepted_formats=False,
@@ -1193,7 +1226,7 @@ def render(_navigate: Callable[[str], None]) -> None:
                                         remove: Any = remove_button,
                                     ) -> None:
                                         if conversion_running:
-                                            ui.notify(
+                                            notify(
                                                 "A conversion is already running.",
                                                 type="warning",
                                             )
@@ -1205,7 +1238,7 @@ def render(_navigate: Callable[[str], None]) -> None:
                                         if first_row:
                                             settings["source_url"] = url
                                         if not url:
-                                            ui.notify(
+                                            notify(
                                                 "Paste a public file link first.",
                                                 type="warning",
                                             )
@@ -1254,7 +1287,7 @@ def render(_navigate: Callable[[str], None]) -> None:
                                             )
                                             if adopted:
                                                 row.source_id = source_id
-                                                ui.notify(
+                                                notify(
                                                     f"{candidate.name} is ready.",
                                                     type="positive",
                                                 )
@@ -1265,7 +1298,7 @@ def render(_navigate: Callable[[str], None]) -> None:
                                             TypeError,
                                             ValueError,
                                         ) as exc:
-                                            ui.notify(str(exc), type="negative")
+                                            notify(str(exc), type="negative")
                                         finally:
                                             remote_inspections.discard(row.row_id)
                                             if not progress.is_deleted:
@@ -1288,7 +1321,7 @@ def render(_navigate: Callable[[str], None]) -> None:
                                     ) -> None:
                                         nonlocal next_remote_link_id
                                         if conversion_running or remote_inspections:
-                                            ui.notify(
+                                            notify(
                                                 "Wait for the current link operation to finish.",
                                                 type="warning",
                                             )
@@ -1362,13 +1395,13 @@ def render(_navigate: Callable[[str], None]) -> None:
                                 def add_remote_link() -> None:
                                     nonlocal next_remote_link_id
                                     if conversion_running or remote_inspections:
-                                        ui.notify(
+                                        notify(
                                             "Wait for the current link operation to finish.",
                                             type="warning",
                                         )
                                         return
                                     if len(remote_link_inputs) >= _MAX_RETAINED_SOURCE_COUNT:
-                                        ui.notify(
+                                        notify(
                                             "Remove a link row before adding another one.",
                                             type="warning",
                                         )
@@ -1392,7 +1425,7 @@ def render(_navigate: Callable[[str], None]) -> None:
 
                             render_remote_links()
                             ui.label(
-                                "Paste public HTTPS links to BigWig, BED, or bedGraph files. "
+                                "Paste public HTTPS links to profile tables, GEO Repli-seq matrices, or genomic tracks. "
                                 "Private-network and sign-in links are not supported."
                             ).classes("dn-data-manager-url-help")
 
@@ -1408,7 +1441,7 @@ def render(_navigate: Callable[[str], None]) -> None:
                                     or upload_inspection_running
                                     or remote_inspections
                                 ):
-                                    ui.notify(
+                                    notify(
                                         "Wait for the current source operation to finish.",
                                         type="warning",
                                     )
@@ -1470,7 +1503,15 @@ def render(_navigate: Callable[[str], None]) -> None:
                                     url=_OKSEQ_EXAMPLE_URL,
                                     feature="fork_directionality",
                                     aggregation="mean",
-                                    track_missing="nan",
+                                    track_missing="zero",
+                                )
+
+                            async def use_h1_repliseq_example() -> None:
+                                settings["repliseq_timing_method"] = "sigmoid"
+                                settings["s_phase_duration_min"] = 600.0
+                                await use_link_example(
+                                    url=_H1_REPLISEQ_EXAMPLE_URL,
+                                    feature="replication_timing",
                                 )
 
                             with (
@@ -1518,10 +1559,21 @@ def render(_navigate: Callable[[str], None]) -> None:
                                         "read-count cutoff 10; uncovered bins remain missing"
                                     )
                                 )
+                                h1_example_button = (
+                                    ui.button(
+                                        "Example: GEO 16-fraction Repli-seq (MAT) - H1",
+                                        icon="science", on_click=use_h1_repliseq_example,
+                                    )
+                                    .props("flat dense no-caps")
+                                    .classes("dn-data-manager-example-link")
+                                    .mark("use-h1-repliseq-data-example")
+                                    .tooltip("GSE137764 H1 hESCs: S1–S16, hg38, 50 kb bins; extract chromosome-specific timing")
+                                )
                             link_examples.visible = get_export_settings().show_examples
                             source_controls["encode-example"] = encode_example_button
                             source_controls["bedgraph-example"] = bedgraph_example_button
                             source_controls["okseq-example"] = okseq_example_button
+                            source_controls["h1-repliseq-example"] = h1_example_button
 
                     @ui.refreshable
                     def render_source_details() -> None:
@@ -1595,6 +1647,13 @@ def render(_navigate: Callable[[str], None]) -> None:
                                 if profile_select.value is None:
                                     return
                                 current_source.selection = str(profile_select.value)
+                                if current_source.selection == _REPLISEQ_TIMING:
+                                    _apply_feature_defaults(settings, "replication_timing")
+                                    if not current_source.output_name_customized:
+                                        current_source.output_name = _automatic_output_name(
+                                            current_source.inspection.name, "replication_timing",
+                                        )
+                                    settings["output_name"] = current_source.output_name
                                 await refresh_active_source_views()
 
                             profile_select.on_value_change(profile_changed)
@@ -1613,10 +1672,12 @@ def render(_navigate: Callable[[str], None]) -> None:
                                 ui.label(f"Datasets: {len(candidates)}").classes(
                                     "dn-mapping-detected-summary"
                                 )
-                            ui.label(
-                                "Format: "
-                                f"{_source_format_label(current_source.inspection.source_format)}"
-                            ).classes("dn-mapping-detected-summary")
+                            format_label = (
+                                "GEO Repli-seq MAT"
+                                if current_source.inspection.source_layout == "geo_repliseq"
+                                else _source_format_label(current_source.inspection.source_format)
+                            )
+                            ui.label(f"Format: {format_label}").classes("dn-mapping-detected-summary")
                             ui.label(
                                 "Size: "
                                 f"{_file_size_text(len(current_source.inspection.content))}"
@@ -1627,7 +1688,7 @@ def render(_navigate: Callable[[str], None]) -> None:
                                 "dn-mapping-detected-summary "
                                 "dn-mapping-detected-dependence"
                             )
-                            if current_source.track_inspection is not None:
+                            if current_source.track_inspection is not None and details.form == "track":
                                 region = current_source.track_inspection.regions[0]
                                 estimated_bins = max(
                                     1,
@@ -1649,6 +1710,12 @@ def render(_navigate: Callable[[str], None]) -> None:
                             else:
                                 ui.label(
                                     f"Array size: {_shape_text(details.shape)}"
+                                ).classes("dn-mapping-detected-summary")
+                            if current_source.inspection.source_layout == "geo_repliseq" and current_source.track_inspection is not None:
+                                native_bin = int(dict(current_source.track_inspection.metadata)["native_bin_size_bp"])
+                                ui.label(
+                                    f"Chromosomes: {len(current_source.track_inspection.regions)}; "
+                                    f"resolution: {native_bin / 1000:g} kb/bin"
                                 ).classes("dn-mapping-detected-summary")
                             if current_source.remote_metadata:
                                 ui.label("Source: Public link").classes(
@@ -1768,67 +1835,34 @@ def render(_navigate: Callable[[str], None]) -> None:
                                     .classes("dn-data-manager-polishing-column")
                                     .mark("data-manager-missing-column")
                                 ):
-                                    if missing_kind == "track":
-                                        controls["track_missing"] = (
-                                            ui.select(
-                                                _TRACK_MISSING,
-                                                value=settings["track_missing"],
-                                                label="Empty bins",
-                                            )
-                                            .props("dense options-dense")
-                                            .classes("dn-field")
-                                            .mark("data-manager-track-missing")
+                                    missing_key = "track_missing" if missing_kind == "track" else "missing_policy"
+                                    controls[missing_key] = (
+                                        ui.select(
+                                            _TRACK_MISSING if missing_kind == "track" else _PROFILE_MISSING,
+                                            value=settings[missing_key], label="Missing values",
                                         )
-                                        controls["track_missing"].tooltip(
-                                            "Minimum and maximum use each chromosome's values "
-                                            "after thresholding and smoothing, before value scaling. "
-                                            "Zero and custom-value fills are applied after scaling."
-                                        )
-                                        controls["fill_value"] = (
-                                            ui.number(
-                                                label="Fill value",
-                                                value=settings["fill_value"],
-                                            )
-                                            .props("dense")
-                                            .classes("dn-field")
-                                            .mark("data-manager-fill-value")
-                                        )
-                                        controls["fill_value"].set_visibility(
-                                            settings["track_missing"] == "fill"
-                                        )
+                                        .props("dense options-dense")
+                                        .classes("dn-field")
+                                        .mark(f"data-manager-{missing_kind}-missing")
+                                    )
+                                    controls[missing_key].tooltip(
+                                        "Minimum and maximum use each profile's finite values "
+                                        "after thresholding and smoothing, before scaling. "
+                                        "Zero and custom values fill after scaling. "
+                                        "Stop if detected rejects missing values."
+                                    )
+                                    controls["fill_value"] = (
+                                        ui.number(label="Fill value", value=settings["fill_value"])
+                                        .props("dense").classes("dn-field").mark("data-manager-fill-value")
+                                    )
+                                    controls["fill_value"].set_visibility(settings[missing_key] == "fill")
 
-                                        def missing_changed() -> None:
-                                            store_control("track_missing")
-                                            controls["fill_value"].set_visibility(
-                                                str(controls["track_missing"].value)
-                                                == "fill"
-                                            )
+                                    def missing_changed() -> None:
+                                        store_control(missing_key)
+                                        controls["fill_value"].set_visibility(controls[missing_key].value == "fill")
 
-                                        controls["track_missing"].on_value_change(
-                                            missing_changed
-                                        )
-                                        controls["fill_value"].on_value_change(
-                                            lambda: store_control("fill_value")
-                                        )
-                                    else:
-                                        controls["missing_policy"] = (
-                                            ui.select(
-                                                {
-                                                    "ignore": "Keep missing values",
-                                                    "error": "Stop if values are missing",
-                                                    "interpolate": "Interpolate",
-                                                    "zero": "Fill with zero",
-                                                },
-                                                value=settings["missing_policy"],
-                                                label="Missing values",
-                                            )
-                                            .props("dense options-dense")
-                                            .classes("dn-field")
-                                            .mark("data-manager-profile-missing")
-                                        )
-                                        controls["missing_policy"].on_value_change(
-                                            lambda: store_control("missing_policy")
-                                        )
+                                    controls[missing_key].on_value_change(missing_changed)
+                                    controls["fill_value"].on_value_change(lambda: store_control("fill_value"))
 
                                 if not polishable:
                                     return
@@ -2036,19 +2070,55 @@ def render(_navigate: Callable[[str], None]) -> None:
                                     lambda name=name: store_control(name)
                                 )
 
+                        if current_source.selection == _REPLISEQ_TIMING:
+                            summary = current_source.track_inspection
+                            assert summary is not None
+                            chromosome_names = [region.chromosome for region in summary.regions]
+                            if settings["chromosome"] not in chromosome_names:
+                                settings["chromosome"] = chromosome_names[0]
+                            ui.label("Timing extraction").classes("dn-setting-group-title")
+                            with ui.element("div").classes("dn-data-manager-binning-grid"):
+                                controls["chromosome"] = (
+                                    ui.select(chromosome_names, value=settings["chromosome"], label="Chromosome")
+                                    .props("dense options-dense").classes("dn-field").mark("data-manager-chromosome")
+                                )
+                                controls["repliseq_timing_method"] = (
+                                    ui.select({"sigmoid": "Sigmoid fit (T50)", "mean": "Signal-weighted mean"},
+                                              value=settings["repliseq_timing_method"], label="Timing method")
+                                    .props("dense options-dense").classes("dn-field").mark("data-manager-repliseq-timing-method")
+                                )
+                                controls["s_phase_duration_min"] = (
+                                    ui.number(label="S-phase duration (min)", value=settings["s_phase_duration_min"], min=1, step=30)
+                                    .props("dense").classes("dn-field").mark("data-manager-s-phase-duration")
+                                )
+                            native_bin = int(dict(summary.metadata)["native_bin_size_bp"])
+                            ui.label(
+                                f"16 equal S-phase intervals; {native_bin / 1000:g} kb bins. "
+                                "T50 fits the cumulative signal and takes 50% replication. "
+                                "Incomplete or empty bins remain missing."
+                            ).classes("dn-data-manager-section-guidance")
+                            controls["repliseq_timing_method"].tooltip(
+                                "T50 follows the paper's sigmoid fit. The mean weights equal-interval midpoints by the measured signal."
+                            )
+                            async def repliseq_chromosome_changed() -> None:
+                                store_control("chromosome")
+                                await refresh_active_source_views()
+
+                            controls["chromosome"].on_value_change(repliseq_chromosome_changed)
+                            for name in ("repliseq_timing_method", "s_phase_duration_min"):
+                                controls[name].on_value_change(lambda name=name: store_control(name))
+
                         if (
                             details.form != "track"
                             or current_source.track_inspection is None
                         ):
-                            if details.form != "table":
-                                ui.label("Values").classes(
-                                    "dn-setting-group-title dn-data-manager-setting-heading"
-                                )
-                                render_value_controls(
-                                    missing_kind="profile",
-                                    polishable=details.form in _POLISHABLE_FORMS,
-                                )
-                            else:
+                            ui.label("Values").classes(
+                                "dn-setting-group-title dn-data-manager-setting-heading"
+                            )
+                            render_value_controls(
+                                missing_kind="profile", polishable=details.form in _POLISHABLE_FORMS,
+                            )
+                            if details.form == "table":
                                 ui.label("Table columns and labels will be preserved.").classes(
                                     "dn-data-manager-section-guidance"
                                 )
@@ -2258,7 +2328,7 @@ def render(_navigate: Callable[[str], None]) -> None:
 
         async def download_preview_plot(file_format: str) -> None:
             if not converted_results or result_chart is None:
-                ui.notify("Convert data before downloading a plot.", type="warning")
+                notify("Convert data before downloading a plot.", type="warning")
                 return
             try:
                 dpi = int(get_export_settings().plot_dpi)
@@ -2285,7 +2355,7 @@ def render(_navigate: Callable[[str], None]) -> None:
                 if artifact is None or not artifact.data:
                     raise RuntimeError("Plot export stopped before returning data.")
             except (RuntimeError, TimeoutError, TypeError, ValueError) as exc:
-                ui.notify(str(exc), type="negative")
+                notify(str(exc), type="negative")
                 return
             cache_artifact(
                 artifact,
@@ -2426,7 +2496,7 @@ def render(_navigate: Callable[[str], None]) -> None:
 
                                 bundled = await run.io_bound(prepare_archive)
                             except (OSError, RuntimeError, ValueError, zipfile.BadZipFile) as exc:
-                                ui.notify(str(exc), type="negative")
+                                notify(str(exc), type="negative")
                                 return
                             ui.download(
                                 bundled.data,
@@ -2460,7 +2530,7 @@ def render(_navigate: Callable[[str], None]) -> None:
                                             compress=bool(controls.compress.value),
                                         )
                                     except (OSError, RuntimeError, ValueError) as exc:
-                                        ui.notify(str(exc), type="negative")
+                                        notify(str(exc), type="negative")
                                         return
                                     ui.download(
                                         artifact.data,
@@ -2583,6 +2653,18 @@ def render(_navigate: Callable[[str], None]) -> None:
             minimum=0,
         )
         kwargs: dict[str, Any] = {}
+        if source.selection == _REPLISEQ_TIMING:
+            chromosome = str(controls["chromosome"].value or "")
+            if source.track_inspection is None or chromosome not in {
+                region.chromosome for region in source.track_inspection.regions
+            }:
+                raise ValueError(f"{current.name} does not contain chromosome {chromosome}.")
+            kwargs.update(
+                chromosome=chromosome,
+                repliseq_timing_method=str(controls["repliseq_timing_method"].value),
+                s_phase_duration_min=_number(controls["s_phase_duration_min"], "S-phase duration"),
+                memory_limit_mb=get_export_settings().conversion_memory_limit_mb,
+            )
         if details.form == "track":
             track_summary = source.track_inspection
             if track_summary is None:
@@ -2601,7 +2683,6 @@ def render(_navigate: Callable[[str], None]) -> None:
                 bin_size=_integer(controls["bin_size"], "Bin size", minimum=1),
                 aggregation=aggregation,
                 track_missing=str(controls["track_missing"].value),
-                fill_value=_number(controls["fill_value"], "Fill value"),
                 interpolation=str(controls["interpolation"].value),
             )
             if chromosome_scope == "single":
@@ -2689,8 +2770,9 @@ def render(_navigate: Callable[[str], None]) -> None:
             missing_policy=(
                 str(controls["missing_policy"].value)
                 if "missing_policy" in controls
-                else "ignore"
+                else "zero"
             ),
+            fill_value=_number(controls["fill_value"], "Fill value"),
             decimal_places=decimal_places,
             value_name=_selected_value_name(
                 source,
@@ -2698,10 +2780,12 @@ def render(_navigate: Callable[[str], None]) -> None:
                 str(settings["feature"]),
             ),
             genome_build=None,
-            units=None,
+            units="min" if source.selection == _REPLISEQ_TIMING else None,
             source_url=str(source.remote_metadata.get("final_url") or "") or None,
             biological_role=str(settings["feature"]),
-            semantic_note=_FEATURE_HINTS[str(settings["feature"])],
+            semantic_note=("Timing from sixteen equally spaced S-phase fractions. "
+                           "Default T50 is the midpoint of a cumulative sigmoid fit."
+                           if source.selection == _REPLISEQ_TIMING else _FEATURE_HINTS[str(settings["feature"])]),
             **kwargs,
         )
 
@@ -2739,6 +2823,8 @@ def render(_navigate: Callable[[str], None]) -> None:
                     str(settings["feature"]),
                 )
             )
+            if source.selection == _REPLISEQ_TIMING:
+                base += "_" + str(controls["chromosome"].value)
             requested_output_names.append(base or f"{_DATA_FILE_STEM}_{index}")
 
         output_names = _unique_conversion_output_names(
@@ -2769,7 +2855,7 @@ def render(_navigate: Callable[[str], None]) -> None:
                 convert_button.disable()
             return
         if upload_inspection_running or remote_inspections:
-            ui.notify(
+            notify(
                 "Wait for the sources to finish loading before converting.",
                 type="warning",
             )
@@ -2885,22 +2971,15 @@ def render(_navigate: Callable[[str], None]) -> None:
                 detail = "; ".join(
                     f"{name}: {message}" for name, message in failures
                 )
-                ui.notify(
+                notify(
                     f"Converted {len(completed)} of {total}. "
                     f"Could not convert {failed_names}. {detail}",
                     type="warning" if completed else "negative",
                 )
             else:
                 conversion_status.text = f"Complete in {elapsed:.2f} s"
-                if total == 1:
-                    ui.notify(
-                        f"Converted to {completed[0].artifact.filename}.",
-                        type="positive",
-                    )
-                else:
-                    ui.notify(f"Converted {total} files.", type="positive")
             if evicted_results:
-                ui.notify(
+                notify(
                     f"Removed {evicted_results} oldest generated "
                     f"{'file' if evicted_results == 1 else 'files'} to keep the local "
                     "workspace responsive.",
@@ -2913,7 +2992,7 @@ def render(_navigate: Callable[[str], None]) -> None:
         except (KeyError, OSError, RuntimeError, TypeError, ValueError) as exc:
             conversion_progress.visible = False
             conversion_status.text = "Conversion could not be completed"
-            ui.notify(str(exc), type="negative")
+            notify(str(exc), type="negative")
         finally:
             conversion_running = False
             active_cancel = None

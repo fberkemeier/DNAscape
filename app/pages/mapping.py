@@ -14,6 +14,8 @@ from typing import Any, cast
 import numpy as np
 from nicegui import run, ui
 
+from app.notifications import notify
+
 from dnascape.workflows.plotting import (
     _closed_periodic_profile as _closed_periodic_profile,
     _periodic_mapping as _periodic_mapping,
@@ -2889,11 +2891,11 @@ def render(_navigate: Callable[[str], None]) -> None:
                     calculation_state = _calculation_routes(selected_family, selected_forms)
                     synchronizing_calculation = False
 
+                    ui.label("Target").classes("dn-setting-group-title").mark(
+                        "mapping-heading-target"
+                    )
                     with ui.element("div").classes("dn-mapping-request-grid"):
                         with ui.column().classes("dn-setting-group dn-mapping-request-group"):
-                            ui.label("Target").classes("dn-setting-group-title").mark(
-                                "mapping-heading-target"
-                            )
                             target_control = (
                                 ui.select(
                                     {target.key: target.label for target in targets},
@@ -2906,9 +2908,6 @@ def render(_navigate: Callable[[str], None]) -> None:
                             )
 
                         with ui.column().classes("dn-setting-group dn-mapping-request-group"):
-                            ui.label("Dependence").classes("dn-setting-group-title").mark(
-                                "mapping-heading-dependence"
-                            )
                             dependence_control = (
                                 ui.select(
                                     _select_options(
@@ -2916,7 +2915,7 @@ def render(_navigate: Callable[[str], None]) -> None:
                                         _DEPENDENCE_LABELS,
                                     ),
                                     value=selected_dependence,
-                                    label="Output form",
+                                    label="Dependence",
                                 )
                                 .props("dense options-dense")
                                 .classes("dn-field")
@@ -4023,7 +4022,7 @@ def render(_navigate: Callable[[str], None]) -> None:
 
                     nonlocal active_dataset_key, latest_result
                     if running:
-                        ui.notify(
+                        notify(
                             "Stop the current mapping run before removing results.",
                             type="warning",
                         )
@@ -4074,7 +4073,7 @@ def render(_navigate: Callable[[str], None]) -> None:
                     """Remove every completed Mapping result from the live preview."""
 
                     if running:
-                        ui.notify(
+                        notify(
                             "Stop the current mapping run before removing results.",
                             type="warning",
                         )
@@ -4084,7 +4083,7 @@ def render(_navigate: Callable[[str], None]) -> None:
                 def report_mapping_input_error(message: str) -> None:
                     """Report upload failures through the shared transient message surface."""
 
-                    ui.notify(message, type="negative")
+                    notify(message, type="negative")
                     status.text = "Check the uploaded data"
 
                 def invalidate_mapping_result() -> None:
@@ -4428,7 +4427,7 @@ def render(_navigate: Callable[[str], None]) -> None:
 
                 async def download_plot(file_format: str) -> None:
                     if latest_result is None or result_chart is None:
-                        ui.notify("Run Mapping before downloading a plot.", type="warning")
+                        notify("Run Mapping before downloading a plot.", type="warning")
                         return
                     try:
                         normalized_dpi = int(get_export_settings().plot_dpi)
@@ -4478,7 +4477,7 @@ def render(_navigate: Callable[[str], None]) -> None:
                         if artifact is None or not artifact.data:
                             raise RuntimeError("Plot export stopped before returning data.")
                     except (RuntimeError, TimeoutError, TypeError, ValueError) as exc:
-                        ui.notify(str(exc), type="negative")
+                        notify(str(exc), type="negative")
                         return
                     cache_artifact(
                         artifact,
@@ -4574,7 +4573,7 @@ def render(_navigate: Callable[[str], None]) -> None:
                             selection,
                         )
                     except (RuntimeError, TypeError, ValueError) as exc:
-                        ui.notify(str(exc), type="negative")
+                        notify(str(exc), type="negative")
                         return
                     cache_artifact(
                         artifact,
@@ -4590,7 +4589,7 @@ def render(_navigate: Callable[[str], None]) -> None:
 
                 async def download_all_raw() -> None:
                     if not latest_results:
-                        ui.notify("Run Mapping before downloading data.", type="warning")
+                        notify("Run Mapping before downloading data.", type="warning")
                         return
                     try:
                         named_results = tuple(latest_results)
@@ -4640,7 +4639,7 @@ def render(_navigate: Callable[[str], None]) -> None:
                             max_source_bytes=DEFAULT_BATCH_ARCHIVE_SOURCE_BYTES,
                         )
                     except (OSError, RuntimeError, TypeError, ValueError) as exc:
-                        ui.notify(str(exc), type="negative")
+                        notify(str(exc), type="negative")
                         return
                     for named, (artifact, output_key) in zip(
                         named_results,
@@ -4661,7 +4660,7 @@ def render(_navigate: Callable[[str], None]) -> None:
 
                 async def download_raw(controls: RawOutputControls) -> None:
                     if latest_result is None:
-                        ui.notify("Run Mapping before downloading data.", type="warning")
+                        notify("Run Mapping before downloading data.", type="warning")
                         return
                     named = next(
                         (item for item in latest_results if item.result is latest_result),
@@ -4729,7 +4728,7 @@ def render(_navigate: Callable[[str], None]) -> None:
                 async def download_mapping_code(*, bundle: bool) -> None:
                     """Export current controls without starting or changing Mapping."""
                     if running:
-                        ui.notify("Wait for Mapping to finish before exporting code.", type="warning")
+                        notify("Wait for Mapping to finish before exporting code.", type="warning")
                         return
                     try:
                         output_key = str(preview_output.value or initial_output_key)
@@ -4799,7 +4798,7 @@ def render(_navigate: Callable[[str], None]) -> None:
                             raise RuntimeError("Code export stopped before returning a file.")
                         ui.download(artifact.data, artifact.filename, artifact.media_type)
                     except (OSError, RuntimeError, TypeError, ValueError) as exc:
-                        ui.notify(str(exc), type="negative")
+                        notify(str(exc), type="negative")
 
                 def render_latest_result() -> None:
                     nonlocal result_chart
@@ -4846,7 +4845,7 @@ def render(_navigate: Callable[[str], None]) -> None:
                                 )
                             result_chart.attach_settings(plot_settings)
                         except (RuntimeError, TypeError, ValueError) as exc:
-                            ui.notify(str(exc), type="negative")
+                            notify(str(exc), type="negative")
                             preview_plot("Output unavailable", kind="mapping")
 
                 async def map_data() -> None:
@@ -5176,7 +5175,7 @@ def render(_navigate: Callable[[str], None]) -> None:
                             status.text += (
                                 f" · showing the first {retained:,}{count_text} distances"
                             )
-                            ui.notify(
+                            notify(
                                 "The inter-origin-distance distribution exceeded the "
                                 f"local retained-data limit; showing the first {retained:,} "
                                 "values. Narrow the region or reduce the ensemble for a "
@@ -5224,7 +5223,7 @@ def render(_navigate: Callable[[str], None]) -> None:
                         eta.finish("unavailable")
                         progress.visible = False
                         status.text = "Mapping could not be completed"
-                        ui.notify(str(exc) or type(exc).__name__, type="negative")
+                        notify(str(exc) or type(exc).__name__, type="negative")
                         if latest_results:
                             stats_container.visible = True
                             render_latest_result()

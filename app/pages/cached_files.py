@@ -12,6 +12,7 @@ from nicegui import run, ui
 from app.export_settings import get_export_settings
 from app.mapping_exports import build_mapping_raw_export
 from app.mapping_service import MappingResult
+from app.notifications import notify
 from app.pages.common import page_intro, panel, panel_title, stat_strip
 from app.result_naming import (
     RMAP_FILE_PREFIX,
@@ -287,16 +288,16 @@ def render(navigate: Callable[[str], None]) -> None:
         async def download_entry(entry_id: str) -> None:
             entry = cache.get(entry_id)
             if entry is None:
-                ui.notify("This cached file is no longer available.", type="warning")
+                notify("This cached file is no longer available.", type="warning")
                 refresh_all()
                 return
             try:
                 artifact = await run.io_bound(_download_artifact, entry)
             except (OSError, RuntimeError, TypeError, ValueError) as exc:
-                ui.notify(str(exc), type="negative")
+                notify(str(exc), type="negative")
                 return
             if artifact is None:
-                ui.notify("The cached download could not be prepared.", type="negative")
+                notify("The cached download could not be prepared.", type="negative")
                 return
             ui.download(artifact.data, artifact.filename, artifact.media_type)
 
@@ -304,7 +305,7 @@ def render(navigate: Callable[[str], None]) -> None:
             try:
                 entry = cache.activate(entry_id)
             except ValueError as exc:
-                ui.notify(str(exc), type="warning")
+                notify(str(exc), type="warning")
                 refresh_all()
                 return
             assert entry.navigate_to is not None
@@ -315,14 +316,14 @@ def render(navigate: Callable[[str], None]) -> None:
             if entry is None:
                 return
             cache.remove(entry_id)
-            ui.notify(f"Removed {entry.name}.", type="positive")
+            notify(f"Removed {entry.name}.", type="positive")
             refresh_all()
 
         def keep_entry(entry_id: str, value: bool) -> None:
             try:
                 cache.set_keep(entry_id, value)
             except ValueError as exc:
-                ui.notify(str(exc), type="warning")
+                notify(str(exc), type="warning")
             refresh_all()
 
         def set_page(category: CacheView, value: Any, maximum: int) -> None:
@@ -510,7 +511,7 @@ def render(navigate: Callable[[str], None]) -> None:
                     removed = cache.clear_all()
                     cache.clear_page_outputs()
                     clear_dialog.close()
-                    ui.notify(f"Cleared {removed:,} cached items.", type="positive")
+                    notify(f"Cleared {removed:,} cached items.", type="positive")
                     refresh_all()
 
                 (

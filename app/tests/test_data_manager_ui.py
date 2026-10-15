@@ -275,13 +275,13 @@ def test_sns_firing_preset_and_switch_back_to_repliseq_bigwig(
             await user.should_see("K562_RFD.bw is ready.", retries=80)
             assert control("data-manager-feature").value == "fork_directionality"
             assert control("data-manager-aggregation").value == "mean"
-            assert control("data-manager-track-missing").value == "nan"
+            assert control("data-manager-track-missing").value == "zero"
             user.find(marker="action-convert").click()
             await _wait_for(lambda: len(requests) == 3)
             assert requests[2].inspection.source_format == "bigwig"
             assert requests[2].biological_role == "fork_directionality"
             assert requests[2].aggregation == "mean"
-            assert requests[2].track_missing == "nan"
+            assert requests[2].track_missing == "zero"
             assert requests[2].threshold_min == -1.0
             assert requests[2].threshold_max == 1.0
 
@@ -461,6 +461,10 @@ def test_empty_bin_fills_have_their_requested_order_in_data_manager(
             missing = cast(Select, control("data-manager-track-missing"))
             assert missing.options["min"] == "Fill with minimum"
             assert missing.options["max"] == "Fill with maximum"
+            assert list(missing.options.values()) == [
+                "Keep empty values", "Fill with zero", "Fill with a value",
+                "Fill with minimum", "Fill with maximum", "Stop if detected",
+            ]
             assert missing.value == "zero"
             control("data-manager-bin-size").set_value(10)
             control("data-manager-value-scaling").set_value("interval")

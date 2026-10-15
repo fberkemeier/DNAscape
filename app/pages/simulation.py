@@ -26,6 +26,7 @@ from app.batch_workflows import (
     unique_dataset_names,
 )
 from app.export_settings import get_export_settings
+from app.notifications import notify
 from app.mapping_uploads import (
     UploadInspection,
     inspect_upload_event,
@@ -693,7 +694,7 @@ def _render_simulation_source(
                         "profile": "Profile",
                     },
                     value="scalar",
-                    label="Input type",
+                    label="Dependence",
                 )
                 .props("dense options-dense")
                 .classes("dn-field dn-source-mode")
@@ -906,11 +907,11 @@ def _render_simulation_source(
                         expected_form="auto",
                     )
                 except (OSError, TypeError, ValueError) as exc:
-                    ui.notify(str(exc), type="negative")
+                    notify(str(exc), type="negative")
                     return False
                 detected_form = str(inspection.inferred_form)
                 if detected_form not in _SOURCE_DEPENDENCE:
-                    ui.notify(
+                    notify(
                         f"{label} must be a space, time, or space-time profile.",
                         type="negative",
                     )
@@ -2498,7 +2499,7 @@ def render(_navigate: Callable[[str], None]) -> None:
 
                 async def download_plot(file_format: str) -> None:
                     if latest_result is None or result_chart is None:
-                        ui.notify("Run a simulation before downloading a plot.", type="warning")
+                        notify("Run a simulation before downloading a plot.", type="warning")
                         return
                     try:
                         selected_label = str(output.value or "Replication timing")
@@ -2533,7 +2534,7 @@ def render(_navigate: Callable[[str], None]) -> None:
                         if artifact is None or not artifact.data:
                             raise RuntimeError("Plot export stopped before returning data.")
                     except (RuntimeError, TimeoutError, TypeError, ValueError) as exc:
-                        ui.notify(str(exc), type="negative")
+                        notify(str(exc), type="negative")
                         return
                     cache_artifact(
                         artifact,
@@ -2546,7 +2547,7 @@ def render(_navigate: Callable[[str], None]) -> None:
 
                 async def download_raw(controls: RawOutputControls) -> None:
                     if latest_result is None:
-                        ui.notify("Run a simulation before downloading raw data.", type="warning")
+                        notify("Run a simulation before downloading raw data.", type="warning")
                         return
                     try:
                         selected_label = str(output.value or "Replication timing")
@@ -2571,7 +2572,7 @@ def render(_navigate: Callable[[str], None]) -> None:
                         if artifact is None or not artifact.data:
                             raise RuntimeError("Raw export stopped before returning data.")
                     except Exception as exc:
-                        ui.notify(str(exc), type="negative")
+                        notify(str(exc), type="negative")
                         return
                     cache_artifact(
                         artifact,
@@ -2622,7 +2623,7 @@ def render(_navigate: Callable[[str], None]) -> None:
                     controls: RawOutputControls,
                 ) -> None:
                     if not any(item is current for current in latest_items):
-                        ui.notify("Run a simulation before downloading raw data.", type="warning")
+                        notify("Run a simulation before downloading raw data.", type="warning")
                         return
                     # Snapshot mutable UI values before yielding to a worker;
                     # later output or dataset changes cannot alter this export.
@@ -2649,7 +2650,7 @@ def render(_navigate: Callable[[str], None]) -> None:
                             compression=compression,
                         )
                     except Exception as exc:
-                        ui.notify(str(exc), type="negative")
+                        notify(str(exc), type="negative")
                         return
                     cache_artifact(
                         artifact,
@@ -2713,7 +2714,7 @@ def render(_navigate: Callable[[str], None]) -> None:
 
                         archive = await run.io_bound(prepare_archive)
                     except Exception as exc:
-                        ui.notify(str(exc), type="negative")
+                        notify(str(exc), type="negative")
                         return
                     cache_artifact(
                         archive,
@@ -2849,7 +2850,7 @@ def render(_navigate: Callable[[str], None]) -> None:
                             result_chart.attach_settings(plot_settings)
                         except (RuntimeError, TypeError, ValueError) as exc:
                             result_chart = None
-                            ui.notify(str(exc), type="negative")
+                            notify(str(exc), type="negative")
                             preview_plot(
                                 (
                                     "No inter-origin distances were recorded; at least two "
@@ -3149,7 +3150,7 @@ def render(_navigate: Callable[[str], None]) -> None:
                         cleanup_simulation()
                         return
                     except Exception as exc:
-                        ui.notify(str(exc), type="negative")
+                        notify(str(exc), type="negative")
                         status.text = "Check the settings"
                         progress.visible = False
                         cleanup_simulation()
@@ -3276,7 +3277,7 @@ def render(_navigate: Callable[[str], None]) -> None:
                             if item.result.inter_origin_distances_truncated
                         ]
                         if truncated:
-                            ui.notify(
+                            notify(
                                 "Inter-origin distance retention was truncated for "
                                 + ", ".join(
                                     _simulation_display_name(item)
@@ -3335,7 +3336,7 @@ def render(_navigate: Callable[[str], None]) -> None:
                         progress.visible = False
                         status.text = "Simulation could not be completed"
                         stats_container.visible = bool(latest_items)
-                        ui.notify(str(exc) or type(exc).__name__, type="negative")
+                        notify(str(exc) or type(exc).__name__, type="negative")
                         if not latest_items:
                             result_slot.clear()
                             with result_slot:
@@ -3923,7 +3924,7 @@ def render(_navigate: Callable[[str], None]) -> None:
 
                     nonlocal active_dataset_index, latest_items, latest_result
                     if running:
-                        ui.notify(
+                        notify(
                             "Stop the current simulation before removing results.",
                             type="warning",
                         )

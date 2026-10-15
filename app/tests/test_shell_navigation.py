@@ -81,6 +81,7 @@ def test_export_preferences_live_in_the_application_settings_menu() -> None:
         settings.show_examples,
         settings.show_help,
         settings.conversion_memory_limit_mb,
+        settings.control_font_size_px,
     )
 
     async def scenario() -> None:
@@ -191,6 +192,7 @@ def test_export_preferences_live_in_the_application_settings_menu() -> None:
             settings.show_examples,
             settings.show_help,
             settings.conversion_memory_limit_mb,
+            settings.control_font_size_px,
         ) = previous
 
 
@@ -274,6 +276,7 @@ def test_reset_menu_restores_defaults_and_clears_the_client_workspace() -> None:
         settings.show_examples,
         settings.show_help,
         settings.conversion_memory_limit_mb,
+        settings.control_font_size_px,
     )
     settings.plot_dpi = 288
     settings.raw_compression = "zip"
@@ -284,6 +287,7 @@ def test_reset_menu_restores_defaults_and_clears_the_client_workspace() -> None:
     settings.show_examples = False
     settings.show_help = True
     settings.conversion_memory_limit_mb = 1024
+    settings.control_font_size_px = 16
 
     async def scenario() -> None:
         async with user_simulation(index) as user:
@@ -309,6 +313,7 @@ def test_reset_menu_restores_defaults_and_clears_the_client_workspace() -> None:
             assert settings.show_examples is True
             assert settings.show_help is False
             assert settings.conversion_memory_limit_mb == 64
+            assert settings.control_font_size_px == 14
             name_style = cast(
                 Select,
                 next(iter(user.find(marker="settings-result-name-style").elements)),
@@ -329,6 +334,8 @@ def test_reset_menu_restores_defaults_and_clears_the_client_workspace() -> None:
             assert show_examples.value is True
             assert show_help.value is False
             assert memory_limit.value == 64
+            font_size = next(iter(user.find(marker="settings-control-font-size").elements))
+            assert font_size.value == 14
             with user.client:
                 assert current_session_cache().count() == 0
 
@@ -345,6 +352,7 @@ def test_reset_menu_restores_defaults_and_clears_the_client_workspace() -> None:
             settings.show_examples,
             settings.show_help,
             settings.conversion_memory_limit_mb,
+            settings.control_font_size_px,
             ) = previous
 
 

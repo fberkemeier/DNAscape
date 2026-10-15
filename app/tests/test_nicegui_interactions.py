@@ -64,7 +64,7 @@ def test_navigation_reaches_every_page_and_prototype_actions_remain_responsive()
                 # Scientific actions are live async workflows and have dedicated tests below.
                 ("mapping", "Map replication kinetic landscapes", None),
                 ("simulation", "Simulate DNA replication", None),
-                ("plotting", "Visualize DNAscape outputs", None),
+                ("plotting", "Explore DNAscape data", None),
                 ("cached-files", "Session files and results", "clear-generated-cache"),
                 ("resources", "Project links and citation guidance", "copy-citation"),
                 ("overview", "Build quantitative models of DNA replication", None),
@@ -348,7 +348,7 @@ def test_scientific_data_sections_share_the_outline_data_symbol() -> None:
             for slug, heading, expected_icons in (
                 ("mapping", "Map replication kinetic landscapes", 2),
                 ("simulation", "Simulate DNA replication", 2),
-                ("plotting", "Visualize DNAscape outputs", 1),
+                ("plotting", "Explore DNAscape data", 1),
             ):
                 user.find(marker=f"nav-{slug}").click()
                 await user.should_see(heading)
@@ -465,12 +465,12 @@ def test_scientific_pages_share_expansion_and_action_dock_hooks() -> None:
                     await user.should_see(marker=action_marker)
 
             user.find(marker="nav-plotting").click()
-            await user.should_see("Visualize DNAscape outputs")
+            await user.should_see("Explore DNAscape data")
             expansions = user.find(kind=Expansion).elements
             expansion_by_label = {
                 expansion._props.get("label"): expansion for expansion in expansions
             }
-            assert set(expansion_by_label) == {"Data", "Plotting settings"}
+            assert set(expansion_by_label) == {"Data", "Analysis", "Plotting settings"}
             plotting_settings = expansion_by_label["Plotting settings"]
             assert "dn-preview-settings-section" in plotting_settings._classes
             assert "dn-expansion" in plotting_settings._classes
@@ -491,7 +491,7 @@ def test_plotting_uses_the_axis_and_line_symbol_in_navigation() -> None:
                 assert "dn-plot-icon-line" in navigation_icon.content
 
             user.find(marker="nav-plotting").click()
-            await user.should_see("Visualize DNAscape outputs")
+            await user.should_see("Explore DNAscape data")
             await user.should_see(marker="action-plot")
             await user.should_see(marker="plotting-data-upload")
 
@@ -517,7 +517,7 @@ def test_upload_fields_share_clear_copy_and_route_aware_mapping_defaults() -> No
             await user.should_not_see(marker="mapping-input-replication-timing-shape-guidance")
 
             user.find(marker="nav-plotting").click()
-            await user.should_see("Visualize DNAscape outputs")
+            await user.should_see("Explore DNAscape data")
             await user.should_see(marker="plotting-data-upload")
             await user.should_not_see("Accepted: CSV, TSV, TXT, NPY, NPV, NPZ, GZ")
 
@@ -641,7 +641,7 @@ def test_plotting_commits_data_once_then_updates_plot_settings_live() -> None:
         async with user_simulation(index) as user:
             await user.open("/")
             user.find(marker="nav-plotting").click()
-            await user.should_see("Visualize DNAscape outputs")
+            await user.should_see("Explore DNAscape data")
             uploader = cast(
                 Upload,
                 next(iter(user.find(marker="plotting-data-upload").elements)),
@@ -1591,7 +1591,10 @@ def test_simulation_preview_header_and_output_summary_have_stable_structure() ->
                 Select,
                 next(iter(user.find(marker="simulation-output").elements)),
             )
-            controls_title = next(iter(user.find("Controls").elements))
+            controls_title = next(
+                element for element in user.find("Controls").elements
+                if "dn-panel-title" in element._classes
+            )
 
             assert "dn-preview-heading-row" in preview_header._classes
             assert preview_header.parent_slot is not None
@@ -1701,6 +1704,8 @@ def test_scientific_controls_use_compact_mode_selects_and_keep_primary_actions_d
                 "profile": "Profile",
             }
             assert simulation_mode.value == "scalar"
+            assert simulation_mode._props["label"] == "Dependence"
+            assert _select_by_marker(user, "source-fork-speed-mode")._props["label"] == "Dependence"
             assert simulation_form.options == {
                 "x": "Space",
                 "t": "Time",
@@ -1826,7 +1831,7 @@ def test_plot_controls_only_show_options_relevant_to_the_selected_view() -> None
         async with user_simulation(index) as user:
             await user.open("/")
             user.find(marker="nav-plotting").click()
-            await user.should_see("Visualize DNAscape outputs")
+            await user.should_see("Explore DNAscape data")
             user.find("Plotting settings").click()
             await user.should_see(marker="plotting-line-width")
             for marker in (

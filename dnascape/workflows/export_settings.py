@@ -27,6 +27,9 @@ CACHE_FILE_FORMAT_OPTIONS = dict(DATA_FILE_FORMAT_OPTIONS)
 
 DEFAULT_CONVERSION_MEMORY_LIMIT_MB = 64
 MAX_CONVERSION_MEMORY_LIMIT_MB = 4096
+DEFAULT_CONTROL_FONT_SIZE_PX = 14
+MIN_CONTROL_FONT_SIZE_PX = 12
+MAX_CONTROL_FONT_SIZE_PX = 18
 
 
 @dataclass(slots=True)
@@ -43,6 +46,7 @@ class ExportSettings:
     show_help: bool = False
     dev_mode: bool = False
     conversion_memory_limit_mb: int = DEFAULT_CONVERSION_MEMORY_LIMIT_MB
+    control_font_size_px: int = DEFAULT_CONTROL_FONT_SIZE_PX
 
 
 _EXPORT_SETTINGS = ExportSettings()
@@ -68,6 +72,7 @@ def reset_export_settings() -> ExportSettings:
     _EXPORT_SETTINGS.show_help = defaults.show_help
     _EXPORT_SETTINGS.dev_mode = defaults.dev_mode
     _EXPORT_SETTINGS.conversion_memory_limit_mb = defaults.conversion_memory_limit_mb
+    _EXPORT_SETTINGS.control_font_size_px = defaults.control_font_size_px
     return _EXPORT_SETTINGS
 
 
@@ -100,7 +105,10 @@ __all__ = [
     "COMPRESSION_OPTIONS",
     "DATA_FILE_FORMAT_OPTIONS",
     "DEFAULT_CONVERSION_MEMORY_LIMIT_MB",
+    "DEFAULT_CONTROL_FONT_SIZE_PX",
     "MAX_CONVERSION_MEMORY_LIMIT_MB",
+    "MAX_CONTROL_FONT_SIZE_PX",
+    "MIN_CONTROL_FONT_SIZE_PX",
     "ExportSettings",
     "get_export_settings",
     "normalize_compression",

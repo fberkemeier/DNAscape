@@ -286,13 +286,15 @@ def test_mapping_target_dependence_route_and_form_selectors_follow_the_catalog()
 
             for marker, title in (
                 ("mapping-heading-target", "Target"),
-                ("mapping-heading-dependence", "Dependence"),
                 ("mapping-heading-route", "Route"),
                 ("mapping-heading-inputs", "Inputs"),
             ):
                 heading = cast(Label, next(iter(user.find(marker=marker).elements)))
                 assert heading.text == title
                 assert "dn-setting-group-title" in heading._classes
+
+            await user.should_not_see(marker="mapping-heading-dependence")
+            assert _select(user, "mapping-target-form")._props["label"] == "Dependence"
 
             variable_dependences = ("constant", "space", "time", "spacetime")
             for target_key in ("firing_rate", "fork_speed"):

@@ -895,13 +895,21 @@ def test_histogram_mode_and_distribution_outputs_use_histogram_controls(
     from matplotlib.axes import Axes
 
     calls: list[tuple[int, bool]] = []
+    curves: list[tuple[np.ndarray, np.ndarray]] = []
     original_hist = Axes.hist
+    original_plot = Axes.plot
 
     def recording_hist(self, values, *args, **kwargs):
         calls.append((kwargs["bins"], kwargs["density"]))
         return original_hist(self, values, *args, **kwargs)
 
     monkeypatch.setattr(Axes, "hist", recording_hist)
+
+    def recording_plot(self, x, y, *args, **kwargs):
+        curves.append((np.asarray(x), np.asarray(y)))
+        return original_plot(self, x, y, *args, **kwargs)
+
+    monkeypatch.setattr(Axes, "plot", recording_plot)
     build_plot_export(
         _result(),
         "replication_timing",
@@ -912,7 +920,9 @@ def test_histogram_mode_and_distribution_outputs_use_histogram_controls(
         figure_size=(4.0, 3.0),
         dpi=100,
     )
-    assert calls == [(7, True)]
+    assert calls == []
+    assert len(curves) == 1 and curves[0][0].size == 256
+    assert np.isfinite(curves[0][1]).all()
 
     calls.clear()
     build_plot_export(

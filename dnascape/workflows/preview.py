@@ -639,7 +639,7 @@ def build_legend_options(
         "orient": "vertical",
         # ECharts offsets refer to the chart container. Include the axis
         # gutter so bottom legends stay above the X axis and its labels.
-        vertical_edge: int(grid["bottom"]) + 8 if vertical_edge == "bottom" else 24,
+        vertical_edge: int(grid["bottom"] if vertical_edge == "bottom" else grid["top"]) + 8,
         horizontal_edge: (
             max(84, int(grid["left"]) + 8)
             if horizontal_edge == "left"
@@ -902,6 +902,42 @@ def _heatmap_data_uri(
     return f"data:image/png;base64,{payload}"
 
 
+def _kde_data(
+    values: Any, *, log_x: bool = False, x_limits: tuple[float, float] | None = None,
+) -> tuple[np.ndarray, np.ndarray]:
+    """Bounded Gaussian KDE with Scott bandwidth and a constant-data fallback."""
+
+    from scipy.stats import gaussian_kde
+
+    samples = finite_values(values)
+    if log_x:
+        samples = samples[samples > 0]
+    if not samples.size:
+        raise ValueError("KDE requires finite values, including positive values for Log X.")
+    if samples.size > 20_000:
+        samples = samples[np.linspace(0, samples.size - 1, 20_000, dtype=int)]
+    spread = float(np.std(samples, ddof=1)) if samples.size > 1 else 0.0
+    constant = samples.size < 2 or spread == 0.0
+    bandwidth = (
+        max(abs(float(samples[0])) * 0.05, (x_limits[1] - x_limits[0]) * 0.05 if x_limits else 0.05)
+        if constant else spread * samples.size ** (-0.2)
+    )
+    lower = float(np.min(samples)) - 3 * bandwidth
+    upper = float(np.max(samples)) + 3 * bandwidth
+    if log_x:
+        lower = max(lower, float(np.min(samples)) * 0.5)
+    if x_limits is not None:
+        lower, upper = _plot_axis_limits(x_limits, None, label="X", log_axis=log_x)
+    grid = np.geomspace(lower, upper, 256) if log_x else np.linspace(lower, upper, 256)
+    if constant:
+        curve = np.exp(-0.5 * ((grid - samples[0]) / bandwidth) ** 2) / (
+            bandwidth * np.sqrt(2 * np.pi)
+        )
+    else:
+        curve = gaussian_kde(samples, bw_method="scott")(grid)
+    return grid, curve
+
+
 def automatic_y_limits(
     values: Sequence[Any],
     *,
@@ -928,16 +964,18 @@ def automatic_y_limits(
         finite_parts = [part for part in finite_parts if part.size]
         finite = np.concatenate(finite_parts) if finite_parts else np.asarray([], dtype=float)
         if plot_type == "Histogram" and finite.size:
-            _, counts, _ = _histogram_data(
-                finite,
-                bins=histogram_bins,
-                bin_size=histogram_bin_size,
-                density=bool(density),
-                log_x=log_x,
-                x_limits=histogram_x_limits,
-                boundary=histogram_boundary,
-            )
-            finite = finite_values(counts)
+            heights = []
+            for part in finite_parts:
+                if density:
+                    _, counts = _kde_data(part, log_x=log_x, x_limits=histogram_x_limits)
+                else:
+                    _, counts, _ = _histogram_data(
+                        part, bins=histogram_bins, bin_size=histogram_bin_size,
+                        density=False, log_x=log_x, x_limits=histogram_x_limits,
+                        boundary=histogram_boundary,
+                    )
+                heights.append(counts)
+            finite = finite_values(np.concatenate(heights))
     if log_y and plot_type != "Heatmap":
         finite = finite[finite > 0]
     if finite.size == 0:
@@ -1219,6 +1257,136 @@ def _plot_axis_limits(
     return lower, upper
 
 
+def _combined_preview_options(
+    lines: Sequence[PreviewLine], arguments: dict[str, Any],
+) -> dict[str, Any]:
+    """Compose separately prepared curves or distributions on shared or independent axes."""
+
+    dual = arguments["secondary_y_label"] is not None
+    independent_x = dual and arguments["secondary_x_label"] is not None
+    if not lines or (dual and len(lines) != 2):
+        raise ValueError("Two Y axes require exactly two datasets.")
+    plot_type = arguments["plot_type"]
+    if plot_type not in {"Line", "Histogram", "Boxplot"}:
+        raise ValueError("Separate axes require curves, histograms, or boxplots.")
+    shared_range = arguments["histogram_x_limits"]
+    if plot_type == "Histogram" and not independent_x and shared_range is None:
+        domain = histogram_domain(
+            np.concatenate([finite_values(line.y) for line in lines]),
+            log_x=arguments["log_x"],
+        )
+        shared_range = domain[1] if domain is not None else None
+    parts = []
+    for index, line in enumerate(lines):
+        settings = {key: value for key, value in arguments.items() if not key.startswith("secondary_")}
+        settings.update(
+            values=line.y, x_axis=line.x, color=line.color, series_label=line.name,
+            show_legend=False, line_width=line.width or arguments["line_width"],
+            line_type=line.line_type or arguments["line_type"],
+        )
+        if plot_type == "Line":
+            settings["lines"] = (line,)
+        if plot_type == "Histogram":
+            settings["histogram_x_limits"] = shared_range
+        if index == 1 and dual:
+            settings["y_label"] = arguments["secondary_y_label"]
+            settings["y_limits"] = arguments["secondary_y_limits"]
+            for flag in ("log_y", "invert_y", "log_x", "invert_x"):
+                value = arguments[f"secondary_{flag}"]
+                if value is not None:
+                    settings[flag] = value
+            if independent_x:
+                settings["x_label"] = arguments["secondary_x_label"]
+                settings["x_limits"] = arguments["secondary_x_limits"]
+                if plot_type == "Histogram":
+                    settings["histogram_x_limits"] = arguments["secondary_x_limits"]
+                    # Separate X scales use the same bin count, with widths
+                    # derived from each dataset's own range.
+                    settings["histogram_bin_size"] = None
+        part = build_preview_plot_options(**settings)
+        if plot_type == "Boxplot":
+            axis = part["xAxis"]
+            axis.pop("data", None)
+            axis.update(
+                type="log" if settings["log_x"] else "value",
+                min=0.5, max=len(lines) + 0.5,
+                position="bottom", inverse=bool(settings["invert_x"]),
+            )
+            if settings["x_limits"] is not None:
+                axis["min"], axis["max"] = _plot_axis_limits(
+                    settings["x_limits"], None, label="X", log_axis=settings["log_x"],
+                )
+            axis["axisLabel"]["customValues"] = list(range(1, len(lines) + 1))
+            axis["axisTick"]["customValues"] = list(range(1, len(lines) + 1))
+            axis["splitLine"]["customValues"] = list(range(1, len(lines) + 1))
+            series = part["series"][0]
+            series["data"] = [[index + 1, *series["data"][0]]]
+            series["dimensions"] = ["position", "min", "Q1", "median", "Q3", "max"]
+            series["encode"] = {"x": 0, "y": [1, 2, 3, 4, 5], "tooltip": [1, 2, 3, 4, 5]}
+        parts.append(part)
+    options = parts[0]
+    options["series"] = [series for part in parts for series in part["series"]]
+    for index, series in enumerate(options["series"]):
+        series["z"] = 100 - index
+        if plot_type == "Histogram" and not arguments["density"]:
+            series["itemStyle"]["opacity"] = 0.6
+        if dual:
+            series["yAxisIndex"] = index
+            if independent_x:
+                series["xAxisIndex"] = index
+    for axis_name, independent in (("yAxis", dual), ("xAxis", independent_x)):
+        axes = [part[axis_name] for part in parts]
+        if independent:
+            for index, axis in enumerate(axes):
+                axis["position"] = ("left" if index == 0 else "right") if axis_name == "yAxis" else (
+                    "bottom" if index == 0 else "top"
+                )
+                axis["axisLine"] = {"onZero": False, "lineStyle": {"color": lines[index].color}}
+                axis["nameTextStyle"] = {**axis["nameTextStyle"], "color": lines[index].color}
+            options[axis_name] = axes
+        else:
+            axis = axes[0]
+            axis["min"] = min(float(item["min"]) for item in axes)
+            axis["max"] = max(float(item["max"]) for item in axes)
+            if axis["type"] == "value":
+                axis["interval"] = _nice_tick_step(axis["max"] - axis["min"])
+            if plot_type != "Boxplot" or axis_name == "yAxis":
+                _use_endpoint_safe_ticks(
+                    axis, data_lower=axis["min"], data_upper=axis["max"],
+                    tick_lower=axis["min"], tick_upper=axis["max"], log_axis=axis["type"] == "log",
+                )
+    if dual:
+        options["grid"]["right"] = parts[1]["grid"]["left"]
+    if independent_x:
+        options["grid"]["top"] = max(options["grid"]["top"], options["grid"]["bottom"])
+    options["legend"] = build_legend_options(
+        [line.name for line in lines], grid=options["grid"],
+        position=arguments["legend_position"], show=arguments["show_legend"],
+        interactive=arguments["interactive"],
+    )
+    plotted = [np.asarray(series["data"], dtype=float) for series in options["series"]]
+    if plot_type == "Boxplot":
+        hover_x = [row[:, 0] for row in plotted]
+        hover_y = [row[:, 1:].reshape(-1) for row in plotted]
+    elif plot_type == "Histogram" and not arguments["density"]:
+        hover_x = [row[:, :2].reshape(-1) for row in plotted]
+        hover_y = [row[:, 2] for row in plotted]
+    else:
+        hover_x = [row[:, 0] for row in plotted]
+        hover_y = [row[:, 1] for row in plotted]
+    options["tooltip"] = _tooltip_options(
+        interactive=arguments["interactive"], trigger="item" if plot_type == "Boxplot" else "axis",
+        x_values=np.concatenate(hover_x), values=np.concatenate(hover_y),
+    )
+    if plot_type == "Histogram" and arguments["show_histogram_statistics"]:
+        options["graphic"] = _histogram_statistics_graphic(
+            np.concatenate([finite_values(line.y) for line in lines]),
+            position=arguments["histogram_statistics_position"],
+        )
+    limit_curve_hover(options)
+    return options
+
+
 def build_preview_plot_options(
     *,
     plot_type: str,
@@ -1261,9 +1429,24 @@ def build_preview_plot_options(
     line_type: str = "solid",
     secondary_y_label: str | None = None,
     secondary_y_limits: tuple[float, float] | None = None,
+    secondary_x_label: str | None = None,
+    secondary_x_limits: tuple[float, float] | None = None,
+    secondary_log_x: bool | None = None,
+    secondary_invert_x: bool | None = None,
+    secondary_log_y: bool | None = None,
+    secondary_invert_y: bool | None = None,
 ) -> dict[str, Any]:
     """Build bounded ECharts options for a line, histogram, boxplot, or heatmap."""
 
+    if secondary_y_label is not None or (
+        plot_type in {"Histogram", "Boxplot"} and len(lines) > 1
+    ):
+        arguments = dict(locals())
+        arguments.pop("lines")
+        arguments.pop("bands")
+        if bands:
+            raise ValueError("Separate axes and distribution plots do not support filled bands.")
+        return _combined_preview_options(lines, arguments)
     title_options = {"show": False, "text": title}
     if aspect_ratio is not None:
         aspect_ratio = _positive_finite(aspect_ratio)
@@ -1560,6 +1743,30 @@ def build_preview_plot_options(
             raise ValueError("The selected output contains no finite values.")
         if log_x:
             _validate_log_axis(finite, "Log X")
+        if density:
+            kde_x, kde_y = _kde_data(finite, log_x=log_x, x_limits=histogram_x_limits)
+            options = build_preview_plot_options(
+                plot_type="Line", title=title, x_label=x_label, y_label=y_label,
+                color=color, palette=palette, histogram_bins=histogram_bins, density=False,
+                show_legend=show_legend, show_colorbar=False, log_y=log_y,
+                invert_y=invert_y, y_limits=y_limits, series_label=series_label,
+                lines=(PreviewLine(series_label, kde_x, kde_y, color, width=line_width, line_type=line_type),),
+                line_width=line_width, line_type=line_type, x_limits=histogram_x_limits,
+                log_x=log_x, invert_x=invert_x, show_grid=show_grid,
+                interactive=interactive, aspect_ratio=aspect_ratio, legend_position=legend_position,
+            )
+            options["graphic"] = (
+                _histogram_statistics_graphic(finite[finite > 0] if log_x else finite,
+                                              position=histogram_statistics_position)
+                if show_histogram_statistics else []
+            )
+            if show_histogram_statistics and histogram_statistics_position.lower().startswith("bottom"):
+                options["grid"]["bottom"] = max(options["grid"]["bottom"], 100)
+                options["legend"] = build_legend_options(
+                    [series_label], grid=options["grid"], position=legend_position,
+                    show=show_legend, interactive=interactive,
+                )
+            return options
         finite, counts, edges = _histogram_data(
             finite,
             bins=histogram_bins,
@@ -1887,9 +2094,6 @@ def build_preview_plot_options(
 
     if plot_type != "Line":
         raise ValueError(f"Unknown preview plot type {plot_type!r}.")
-    dual_y_axes = secondary_y_label is not None
-    if dual_y_axes and (len(lines) != 2 or bands):
-        raise ValueError("Two Y axes require exactly two curves without filled bands.")
     if not lines:
         if values is None or x_axis is None:
             raise ValueError("Line preview requires values and a matching axis.")
@@ -1937,8 +2141,7 @@ def build_preview_plot_options(
         line_x = np.asarray(line.x, dtype=float).reshape(-1)
         scalar = flattened.size == 1
         all_x_values.append(finite_values(line_x))
-        if not dual_y_axes or index == 0:
-            all_y_values.append(finite_values(flattened))
+        all_y_values.append(finite_values(flattened))
         line_options.append(
             {
                 "type": "scatter" if scalar else "line",
@@ -1958,7 +2161,6 @@ def build_preview_plot_options(
                     "opacity": line.opacity,
                     "type": curve_dash_pattern(line.line_type or line_type),
                 },
-                **({"yAxisIndex": index} if dual_y_axes else {}),
                 "itemStyle": {"color": line.color, "opacity": line.opacity},
                 "emphasis": {"disabled": not interactive},
                 "data": _line_points(line.x, flattened),
@@ -2076,25 +2278,6 @@ def build_preview_plot_options(
         if item not in legend_names:
             legend_names.append(item)
     grid = _cartesian_grid(y_name_gap=y_name_gap, y_name=y_label)
-    rendered_y_axes: dict[str, Any] | list[dict[str, Any]] = y_axis_options
-    if dual_y_axes:
-        second = build_preview_plot_options(
-            plot_type="Line", title=title, x_label=x_label, y_label=secondary_y_label,
-            color=lines[1].color, palette=palette, histogram_bins=histogram_bins,
-            density=False, show_legend=False, show_colorbar=False, log_y=log_y,
-            invert_y=invert_y, y_limits=secondary_y_limits, lines=(lines[1],),
-            series_label=lines[1].name,
-            line_width=line_width, line_type=line_type, show_grid=False,
-            interactive=interactive, log_x=log_x,
-        )
-        right_axis = second["yAxis"]
-        right_axis["position"] = "right"
-        y_axis_options["position"] = "left"
-        for axis, line in zip((y_axis_options, right_axis), lines, strict=True):
-            axis["axisLine"] = {"onZero": False, "lineStyle": {"color": line.color}}
-            axis["nameTextStyle"] = {**axis["nameTextStyle"], "color": line.color}
-        grid["right"] = second["grid"]["left"]
-        rendered_y_axes = [y_axis_options, right_axis]
     legend_options = build_legend_options(
         legend_names,
         grid=grid,
@@ -2141,12 +2324,12 @@ def build_preview_plot_options(
                 interactive=interactive,
                 trigger=("item" if all(np.asarray(line.y).size == 1 for line in lines) else "axis"),
                 x_values=finite_x,
-                values=np.concatenate([finite_values(line.y) for line in lines]) if dual_y_axes else finite_y,
+                values=finite_y,
             ),
         },
         "legend": legend_options,
         "grid": grid,
         "xAxis": x_axis_options,
-        "yAxis": rendered_y_axes,
+        "yAxis": y_axis_options,
         "series": line_options,
     })

@@ -13,9 +13,12 @@ from app.export_settings import (
     COMPRESSION_OPTIONS,
     DEFAULT_CONVERSION_MEMORY_LIMIT_MB,
     MAX_CONVERSION_MEMORY_LIMIT_MB,
+    MAX_CONTROL_FONT_SIZE_PX,
+    MIN_CONTROL_FONT_SIZE_PX,
     ExportSettings,
     get_export_settings,
 )
+from app.notifications import notify
 from app.result_naming import NAME_STYLE_OPTIONS
 
 
@@ -94,10 +97,27 @@ def settings_dialog(*, on_apply: Callable[[], None]) -> SettingsDialog:
             ).mark("settings-close")
         with ui.column().classes("dn-settings-section"):
             ui.label("Interface").classes("dn-setting-group-title")
-            switch("preserve_page_state", "Keep page controls and outputs", "settings-preserve-page-state")
-            switch("show_examples", "Show example links", "settings-show-examples")
-            switch("show_help", "Show field help", "settings-show-help")
-            switch("dev_mode", "Developed mode", "settings-dev-mode")
+            switch("preserve_page_state", "Page controls and outputs", "settings-preserve-page-state")
+            switch("show_examples", "Example links", "settings-show-examples")
+            switch("show_help", "Field help", "settings-show-help")
+            switch("dev_mode", "Developer mode", "settings-dev-mode")
+            controls["control_font_size_px"] = (
+                ui.number(
+                    label="Controls font size (px)",
+                    value=settings.control_font_size_px,
+                    min=MIN_CONTROL_FONT_SIZE_PX,
+                    max=MAX_CONTROL_FONT_SIZE_PX,
+                    step=1,
+                    validation={
+                        f"Enter a whole number from {MIN_CONTROL_FONT_SIZE_PX} "
+                        f"to {MAX_CONTROL_FONT_SIZE_PX}.": lambda value: (
+                            value is not None
+                            and MIN_CONTROL_FONT_SIZE_PX <= value <= MAX_CONTROL_FONT_SIZE_PX
+                            and float(value).is_integer()
+                        ),
+                    },
+                ).props("dense").classes("dn-field").mark("settings-control-font-size")
+            )
         with ui.column().classes("dn-settings-section"):
             ui.label("Files and exports").classes("dn-setting-group-title")
             with ui.element("div").classes("dn-settings-grid"):
@@ -109,30 +129,27 @@ def settings_dialog(*, on_apply: Callable[[], None]) -> SettingsDialog:
                 select("cached_file_format", "Cached file type", CACHE_FILE_FORMAT_OPTIONS, "settings-cached-file-format")
                 select("cached_compression", "Cached compression", COMPRESSION_OPTIONS, "settings-cached-compression")
                 select("result_name_style", "Result and file names", NAME_STYLE_OPTIONS, "settings-result-name-style")
-                controls["result_name_style"].classes("dn-settings-wide-control")
-        with ui.column().classes("dn-settings-section"):
-            ui.label("Processing").classes("dn-setting-group-title")
-            controls["conversion_memory_limit_mb"] = (
-                ui.number(
-                    label="Conversion memory limit (MB)",
-                    value=settings.conversion_memory_limit_mb,
-                    min=DEFAULT_CONVERSION_MEMORY_LIMIT_MB,
-                    max=MAX_CONVERSION_MEMORY_LIMIT_MB,
-                    step=64,
-                    validation={
-                        f"Enter a whole number from {DEFAULT_CONVERSION_MEMORY_LIMIT_MB} "
-                        f"to {MAX_CONVERSION_MEMORY_LIMIT_MB:,}.": lambda value: (
-                            value is not None
-                            and DEFAULT_CONVERSION_MEMORY_LIMIT_MB <= value <= MAX_CONVERSION_MEMORY_LIMIT_MB
-                            and float(value).is_integer()
-                        ),
-                    },
-                ).props("dense").classes("dn-field").mark("settings-conversion-memory-limit")
-            )
-            controls["conversion_memory_limit_mb"].tooltip(
-                "Estimated working-memory budget for genomic tracks; does not reserve RAM. "
-                "All K562 chromosomes at 1 kb need 512 MB."
-            )
+                controls["conversion_memory_limit_mb"] = (
+                    ui.number(
+                        label="Conversion memory limit (MB)",
+                        value=settings.conversion_memory_limit_mb,
+                        min=DEFAULT_CONVERSION_MEMORY_LIMIT_MB,
+                        max=MAX_CONVERSION_MEMORY_LIMIT_MB,
+                        step=64,
+                        validation={
+                            f"Enter a whole number from {DEFAULT_CONVERSION_MEMORY_LIMIT_MB} "
+                            f"to {MAX_CONVERSION_MEMORY_LIMIT_MB:,}.": lambda value: (
+                                value is not None
+                                and DEFAULT_CONVERSION_MEMORY_LIMIT_MB <= value <= MAX_CONVERSION_MEMORY_LIMIT_MB
+                                and float(value).is_integer()
+                            ),
+                        },
+                    ).props("dense").classes("dn-field").mark("settings-conversion-memory-limit")
+                )
+                controls["conversion_memory_limit_mb"].tooltip(
+                    "Estimated working-memory budget for genomic tracks; does not reserve RAM. "
+                    "All K562 chromosomes at 1 kb need 512 MB."
+                )
         editor = SettingsDialog(dialog, controls)
 
         def apply() -> None:
@@ -140,16 +157,22 @@ def settings_dialog(*, on_apply: Callable[[], None]) -> SettingsDialog:
                 return
             dpi = controls["plot_dpi"].value
             if dpi is None or not 72 <= float(dpi) <= 384 or not float(dpi).is_integer():
-                ui.notify("Enter a whole DPI value from 72 to 384.", type="negative")
+                notify("Enter a whole DPI value from 72 to 384.", type="negative")
                 return
             if not controls["conversion_memory_limit_mb"].validate():
-                ui.notify("Enter a valid conversion memory limit.", type="negative")
+                notify("Enter a valid conversion memory limit.", type="negative")
+                return
+            if not controls["control_font_size_px"].validate():
+                notify("Enter a valid controls font size.", type="negative")
                 return
             for key, control in controls.items():
-                value = int(control.value) if key in {"plot_dpi", "conversion_memory_limit_mb"} else control.value
+                value = int(control.value) if key in {
+                    "plot_dpi", "conversion_memory_limit_mb", "control_font_size_px",
+                } else control.value
                 setattr(settings, key, value)
             editor.load(settings)
             on_apply()
+            unsaved_dialog.close()
             dialog.close()
 
         with ui.row().classes("dn-dialog-actions dn-settings-actions"):
@@ -174,13 +197,16 @@ def settings_dialog(*, on_apply: Callable[[], None]) -> SettingsDialog:
             unsaved_dialog.close()
             dialog.close()
 
-        with ui.row().classes("dn-dialog-actions"):
+        with ui.row().classes("dn-dialog-actions dn-settings-unsaved-actions"):
             ui.button("Keep editing", on_click=unsaved_dialog.close).props(
                 "flat no-caps"
-            ).mark("settings-keep-editing")
+            ).classes("dn-action-compact").mark("settings-keep-editing")
             ui.button("Discard changes", on_click=discard_changes).props(
+                "flat no-caps"
+            ).classes("dn-action-compact").mark("settings-discard-changes")
+            ui.button("Apply", on_click=apply).props(
                 "no-caps"
-            ).classes("dn-action-primary dn-action-compact").mark("settings-discard-changes")
+            ).classes("dn-action-primary dn-action-compact").mark("settings-unsaved-apply")
 
     # A persistent Quasar dialog emits shake for backdrop clicks and Escape,
     # allowing the draft to be checked before the dialog is dismissed.

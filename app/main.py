@@ -12,10 +12,12 @@ from nicegui.elements.tooltip import Tooltip
 
 from app import __version__
 from app.export_settings import (
+    DEFAULT_CONTROL_FONT_SIZE_PX,
     get_export_settings,
     reset_export_settings,
 )
 from app.icons import OUTLINE_ICON_SVGS, PLOT_ICON_SVG
+from app.notifications import notify
 from app.page_activity import current_page_activity
 from app.pages import PAGE_RENDERERS, preload_workflow_pages
 from app.settings_dialog import settings_dialog as create_settings_dialog
@@ -30,7 +32,7 @@ NAV_ITEMS = (
     ("data-management", "Data Manager", OUTLINE_ICON_SVGS["data"]),
     ("mapping", "Mapping", OUTLINE_ICON_SVGS["mapping"]),
     ("simulation", "Simulation", OUTLINE_ICON_SVGS["simulation"]),
-    ("plotting", "Plotting", None),
+    ("plotting", "Analysis", None),
     ("cached-files", "Cached Files", OUTLINE_ICON_SVGS["cached"]),
     ("resources", "Resources", OUTLINE_ICON_SVGS["resources"]),
 )
@@ -210,6 +212,15 @@ def index() -> None:
     page_activity = current_page_activity()
     page_activity.is_page_active = lambda slug: page_state["active"] == slug
     export_settings = get_export_settings()
+
+    def sync_control_font_size() -> None:
+        size = export_settings.control_font_size_px
+        body.style(
+            f"--dn-control-font-size: {size}px; "
+            f"--dn-control-font-scale: {size / DEFAULT_CONTROL_FONT_SIZE_PX:.6g};"
+        )
+
+    sync_control_font_size()
     if export_settings.show_help:
         body.classes("dn-field-help-enabled")
 
@@ -430,6 +441,7 @@ def index() -> None:
                 ui.label(label)
 
     def apply_application_settings() -> None:
+        sync_control_font_size()
         body.classes(
             add="dn-field-help-enabled" if export_settings.show_help else None,
             remove=None if export_settings.show_help else "dn-field-help-enabled",
@@ -515,6 +527,7 @@ def index() -> None:
             discard_page(slug)
 
         defaults = reset_export_settings()
+        sync_control_font_size()
         settings_dialog.load(defaults)
         body.classes(
             add="dn-field-help-enabled" if defaults.show_help else None,
@@ -528,7 +541,7 @@ def index() -> None:
         render_navigation.refresh()
         show_page("overview")
         reset_dialog.close()
-        ui.notify(
+        notify(
             f"Defaults restored; cleared {removed} cached item"
             f"{'s' if removed != 1 else ''}.",
             type="positive",

@@ -494,8 +494,8 @@ def test_mapping_batch_runs_all_files_tabs_exports_and_preserves_previous_result
                 if (
                     histogram_chart.options.get("yAxis", {}).get("name") == "Density"
                     and all(
-                        "* 0.14" in item.get(":renderItem", "")
-                        and len(item.get("data", ())) == 2
+                        item.get("type") == "line"
+                        and len(item.get("data", ())) == 256
                         for item in histogram_chart.options.get("series", ())
                     )
                 ):
@@ -503,7 +503,7 @@ def test_mapping_batch_runs_all_files_tabs_exports_and_preserves_previous_result
                 await asyncio.sleep(0.01)
             assert histogram_chart.options["yAxis"]["name"] == "Density"
             assert all(
-                "* 0.14" in item[":renderItem"] and len(item["data"]) == 2
+                item["type"] == "line" and len(item["data"]) == 256
                 for item in histogram_chart.options["series"]
             )
             with user.client:
@@ -1107,7 +1107,8 @@ def test_mapping_plot_settings_redraw_the_completed_preview(
             await asyncio.sleep(0)
             histogram = chart()
             assert bins.value == 2
-            assert len(histogram.options["series"][0]["data"]) == 2
+            assert len(histogram.options["series"][0]["data"]) == 256
+            assert histogram.options["series"][0]["type"] == "line"
             assert histogram.options["yAxis"]["name"] == "Density"
 
             x_minimum = cast(
@@ -1127,7 +1128,7 @@ def test_mapping_plot_settings_redraw_the_completed_preview(
             assert bin_size.value == pytest.approx(0.125)
             assert bins.value == 4
             histogram = chart()
-            assert len(histogram.options["series"][0]["data"]) == 4
+            assert len(histogram.options["series"][0]["data"]) == 256
             assert histogram.options["xAxis"]["min"] == pytest.approx(0.3)
             assert histogram.options["xAxis"]["max"] == pytest.approx(0.7)
             assert "Mean       0.5" in histogram.options["graphic"][0]["style"]["text"]

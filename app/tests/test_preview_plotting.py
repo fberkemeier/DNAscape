@@ -562,17 +562,24 @@ def test_histogram_boundary_mode_moves_exact_internal_edges_without_losing_endpo
 
 
 @pytest.mark.parametrize("boundary", ("left", "right"))
-def test_histogram_density_integrates_to_one_for_each_boundary_mode(boundary: str) -> None:
+def test_histogram_kde_uses_scott_bandwidth_instead_of_density_bars(boundary: str) -> None:
+    from scipy.stats import gaussian_kde
+
+    samples = [0.0, 0.5, 1.0, 1.5, 2.0]
     options = _histogram_options(
-        [0.0, 0.5, 1.0, 1.5, 2.0],
+        samples,
         histogram_bins=2,
         histogram_x_limits=(0.0, 2.0),
         histogram_boundary=boundary,
         density=True,
     )
 
-    data = options["series"][0]["data"]
-    assert sum((item[1] - item[0]) * item[2] for item in data) == pytest.approx(1.0)
+    assert len(options["series"]) == 1
+    assert options["series"][0]["type"] == "line"
+    data = np.asarray(options["series"][0]["data"])
+    assert data.shape == (256, 2)
+    assert (data[0, 0], data[-1, 0]) == (0.0, 2.0)
+    np.testing.assert_allclose(data[:, 1], gaussian_kde(samples, bw_method="scott")(data[:, 0]))
 
 
 def test_histogram_custom_rectangles_preserve_exact_edges_and_spacing_choice() -> None:

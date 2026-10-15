@@ -30,7 +30,7 @@ from xml.etree import ElementTree
 import numpy as np
 
 from dnascape.workflows.export_settings import normalize_compression
-from dnascape.workflows.preview import has_finite_values
+from dnascape.workflows.preview import _kde_data, has_finite_values
 from dnascape.workflows.result_naming import RSIM_FILE_PREFIX, output_file_token
 from dnascape.workflows.simulation import ConstantSimulationResult
 
@@ -497,15 +497,20 @@ def build_plot_export(
         default_x_label = selected.y_label
         default_y_label = "Density" if density else "Count"
         finite_values = selected.values[np.isfinite(selected.values)]
-        axes.hist(
-            finite_values,
-            bins=normalized_bins,
-            density=bool(density),
-            color=color,
-            alpha=0.86,
-            edgecolor="none",
-            label=str(series_label).strip() if series_label is not None else selected.label,
-        )
+        label = str(series_label).strip() if series_label is not None else selected.label
+        if density:
+            kde_x, kde_y = _kde_data(finite_values)
+            axes.plot(kde_x, kde_y, color=color, label=label)
+        else:
+            axes.hist(
+                finite_values,
+                bins=normalized_bins,
+                density=False,
+                color=color,
+                alpha=0.86,
+                edgecolor="none",
+                label=label,
+            )
     else:
         default_x_label = selected.x_label
         default_y_label = selected.y_label

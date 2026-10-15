@@ -153,6 +153,19 @@ class PreviewSettingsControls:
     secondary_y_minimum: Any = None
     secondary_y_maximum: Any = None
     reset_secondary_y_limits: Any = None
+    x_axis_caption: Any = None
+    y_axis_caption: Any = None
+    secondary_x_axis_label: Any = None
+    secondary_x_limit_editor: Any = None
+    secondary_x_minimum: Any = None
+    secondary_x_maximum: Any = None
+    reset_secondary_x_limits: Any = None
+    secondary_x_axis_options: Any = None
+    secondary_y_axis_options: Any = None
+    secondary_log_x: Any = None
+    secondary_invert_x: Any = None
+    secondary_log_y: Any = None
+    secondary_invert_y: Any = None
     _resetting_limits: bool = field(default=False, init=False, repr=False)
     _automatic_axes: set[str] = field(default_factory=lambda: {"x", "z"}, init=False, repr=False)
 
@@ -321,9 +334,12 @@ def sync_preview_axis_limits(controls: PreviewSettingsControls, options: Mapping
     object.__setattr__(controls, "_resetting_limits", True)
     try:
         for axis in controls._automatic_axes:
-            specification = options.get("xAxis" if axis == "x" else "visualMap", {})
+            specification = options.get("xAxis" if axis in {"x", "secondary_x"} else "visualMap", {})
             if isinstance(specification, list):
-                specification = next(iter(specification), {})
+                index = 1 if axis == "secondary_x" else 0
+                specification = specification[index] if len(specification) > index else {}
+            elif axis == "secondary_x":
+                continue
             if not specification or (axis == "x" and specification.get("type") == "category"):
                 continue
             bounds = [_finite_number(specification.get(endpoint)) for endpoint in ("min", "max")]
@@ -348,7 +364,7 @@ def _reset_preview_axis(
     # control collection owns this internal state; its UI fields stay mutable.
     object.__setattr__(controls, "_resetting_limits", True)
     try:
-        if axis in {"x", "z"}:
+        if axis in {"x", "z", "secondary_x"}:
             controls._automatic_axes.add(axis)
         for suffix in ("minimum", "maximum"):
             control = getattr(controls, f"{axis}_{suffix}")
@@ -411,13 +427,14 @@ def plotting_settings_ready(
         return False
     dual_y_axes = getattr(controls, "dual_y_axes", None)
     if dual_y_axes is not None and dual_y_axes.visible and dual_y_axes.value:
-        lower, upper = controls.secondary_y_minimum.value, controls.secondary_y_maximum.value
-        if (lower is None) != (upper is None):
-            return False
-        if lower is not None and (
-            _finite_number(lower) is None or _finite_number(upper) is None or float(upper) <= float(lower)
-        ):
-            return False
+        for axis in ("secondary_y", "secondary_x"):
+            lower, upper = getattr(controls, f"{axis}_minimum").value, getattr(controls, f"{axis}_maximum").value
+            if (lower is None) != (upper is None):
+                return False
+            if lower is not None and (
+                _finite_number(lower) is None or _finite_number(upper) is None or float(upper) <= float(lower)
+            ):
+                return False
     return True
 
 
@@ -570,7 +587,7 @@ def _mark(control: Any, markers: Mapping[str, str], key: str) -> Any:
 def _axis_limit_editor(axis: str, markers: Mapping[str, str]) -> tuple[Any, Any, Any, Any]:
     """Create a matching pair of limits and an always-available reset button."""
 
-    axis_label = "Y2" if axis == "secondary_y" else axis.upper()
+    axis_label = {"secondary_y": "Y2", "secondary_x": "X2"}.get(axis, axis.upper())
     with _mark(
         ui.element("div").classes("dn-y-limit-editor"), markers, f"{axis}_limit_editor",
     ) as editor:
@@ -611,11 +628,24 @@ _PREVIEW_SETTING_MARKER_SUFFIXES: dict[str, str] = {
     "invert_z": "invert-z",
     "x_axis_options": "x-axis-options",
     "y_axis_options": "y-axis-options",
+    "x_axis_caption": "x-axis-caption",
+    "y_axis_caption": "y-axis-caption",
+    "secondary_x_axis_options": "x2-axis-options",
+    "secondary_y_axis_options": "y2-axis-options",
     "z_axis_options": "z-axis-options",
     "line_width": "line-width",
     "line_type": "curve-type",
     "dual_y_axes": "dual-y-axes",
     "secondary_y_axis_label": "y2-axis-label",
+    "secondary_x_axis_label": "x2-axis-label",
+    "secondary_x_limit_editor": "x2-limit-editor",
+    "secondary_x_minimum": "x2-minimum",
+    "secondary_x_maximum": "x2-maximum",
+    "reset_secondary_x_limits": "reset-x2-limits",
+    "secondary_log_x": "log-x2",
+    "secondary_invert_x": "invert-x2",
+    "secondary_log_y": "log-y2",
+    "secondary_invert_y": "invert-y2",
     "secondary_y_limit_editor": "y2-limit-editor",
     "secondary_y_minimum": "y2-minimum",
     "secondary_y_maximum": "y2-maximum",
@@ -893,7 +923,7 @@ def preview_settings_controls(
                     reset_aspect_ratio.tooltip("Reset to the default aspect ratio")
                 with ui.element("div").classes("dn-inline-actions"):
                     density = _mark(
-                        ui.checkbox("Density", value=False),
+                        ui.checkbox("KDE", value=False).tooltip("Gaussian kernel density with Scott's automatic bandwidth"),
                         markers,
                         "density",
                     )
@@ -920,23 +950,23 @@ def preview_settings_controls(
                     "y_axis_label",
                 )
                 with ui.element("div").classes("dn-axis-option-grid"):
-                    with ui.element("div").classes("dn-axis-option-row") as x_axis_options:
-                        ui.label("X").classes("dn-axis-option-label")
+                    with _mark(ui.element("div"), markers, "x_axis_options").classes("dn-axis-option-row") as x_axis_options:
+                        x_axis_caption = _mark(ui.label("X"), markers, "x_axis_caption").classes("dn-axis-option-label")
                         log_x = _mark(ui.checkbox("Log", value=False), markers, "log_x")
                         invert_x = _mark(
                             ui.checkbox("Invert", value=False),
                             markers,
                             "invert_x",
                         )
-                    with ui.element("div").classes("dn-axis-option-row") as y_axis_options:
-                        ui.label("Y").classes("dn-axis-option-label")
+                    with _mark(ui.element("div"), markers, "y_axis_options").classes("dn-axis-option-row") as y_axis_options:
+                        y_axis_caption = _mark(ui.label("Y"), markers, "y_axis_caption").classes("dn-axis-option-label")
                         log_y = _mark(ui.checkbox("Log", value=False), markers, "log_y")
                         invert_y = _mark(
                             ui.checkbox("Invert", value=False),
                             markers,
                             "invert_y",
                         )
-                    with ui.element("div").classes("dn-axis-option-row") as z_axis_options:
+                    with _mark(ui.element("div"), markers, "z_axis_options").classes("dn-axis-option-row") as z_axis_options:
                         ui.label("Z").classes("dn-axis-option-label")
                         log_z = _mark(ui.checkbox("Log", value=False), markers, "log_z")
                         invert_z = _mark(
@@ -972,9 +1002,13 @@ def preview_settings_controls(
                 z_limit_editor, z_minimum, z_maximum, reset_z_limits = _axis_limit_editor("z", markers)
                 dual_y_axes = secondary_y_axis_label = secondary_y_limit_editor = None
                 secondary_y_minimum = secondary_y_maximum = reset_secondary_y_limits = None
+                secondary_x_axis_label = secondary_x_limit_editor = None
+                secondary_x_minimum = secondary_x_maximum = reset_secondary_x_limits = None
+                secondary_x_axis_options = secondary_y_axis_options = None
+                secondary_log_x = secondary_invert_x = secondary_log_y = secondary_invert_y = None
                 if allow_dual_y_axes:
                     dual_y_axes = _mark(ui.switch("Two Y axes", value=False), markers, "dual_y_axes")
-                    dual_y_axes.tooltip("One Y axis for each of the two curves in a combined plot.")
+                    dual_y_axes.tooltip("Independent X and Y axes for each of the two datasets.")
                     dual_y_axes.visible = False
                     secondary_y_axis_label = _mark(
                         ui.input(label="Y2 label", value="Value").props("dense").classes("dn-field"),
@@ -982,6 +1016,21 @@ def preview_settings_controls(
                     )
                     secondary_y_limit_editor, secondary_y_minimum, secondary_y_maximum, reset_secondary_y_limits = _axis_limit_editor("secondary_y", markers)
                     secondary_y_axis_label.visible = secondary_y_limit_editor.visible = False
+                    secondary_x_axis_label = _mark(
+                        ui.input(label="X2 label", value=initial_x_label).props("dense").classes("dn-field"),
+                        markers, "secondary_x_axis_label",
+                    )
+                    secondary_x_limit_editor, secondary_x_minimum, secondary_x_maximum, reset_secondary_x_limits = _axis_limit_editor("secondary_x", markers)
+                    secondary_x_axis_label.visible = secondary_x_limit_editor.visible = False
+                    with _mark(ui.element("div"), markers, "secondary_x_axis_options").classes("dn-axis-option-row") as secondary_x_axis_options:
+                        ui.label("X2").classes("dn-axis-option-label")
+                        secondary_log_x = _mark(ui.checkbox("Log", value=False), markers, "secondary_log_x")
+                        secondary_invert_x = _mark(ui.checkbox("Invert", value=False), markers, "secondary_invert_x")
+                    with _mark(ui.element("div"), markers, "secondary_y_axis_options").classes("dn-axis-option-row") as secondary_y_axis_options:
+                        ui.label("Y2").classes("dn-axis-option-label")
+                        secondary_log_y = _mark(ui.checkbox("Log", value=False), markers, "secondary_log_y")
+                        secondary_invert_y = _mark(ui.checkbox("Invert", value=False), markers, "secondary_invert_y")
+                    secondary_x_axis_options.visible = secondary_y_axis_options.visible = False
 
             with ui.column().classes("dn-preview-setting-group"):
                 ui.label("Guides").classes("dn-setting-group-title")
@@ -1091,9 +1140,23 @@ def preview_settings_controls(
         secondary_y_minimum=secondary_y_minimum,
         secondary_y_maximum=secondary_y_maximum,
         reset_secondary_y_limits=reset_secondary_y_limits,
+        x_axis_caption=x_axis_caption,
+        y_axis_caption=y_axis_caption,
+        secondary_x_axis_label=secondary_x_axis_label,
+        secondary_x_limit_editor=secondary_x_limit_editor,
+        secondary_x_minimum=secondary_x_minimum,
+        secondary_x_maximum=secondary_x_maximum,
+        reset_secondary_x_limits=reset_secondary_x_limits,
+        secondary_x_axis_options=secondary_x_axis_options,
+        secondary_y_axis_options=secondary_y_axis_options,
+        secondary_log_x=secondary_log_x,
+        secondary_invert_x=secondary_invert_x,
+        secondary_log_y=secondary_log_y,
+        secondary_invert_y=secondary_invert_y,
     )
     reset_y_limits.on_click(lambda: _reset_preview_axis(controls, "y", on_reset_y_limits))
     if reset_secondary_y_limits is not None:
+        controls._automatic_axes.add("secondary_x")
         reset_secondary_y_limits.on_click(lambda: _reset_preview_axis(
             controls, "secondary_y", on_reset_secondary_y_limits or (lambda: None),
         ))
@@ -1154,7 +1217,7 @@ def bind_preview_settings_updates(
     controls.density.on_value_change(on_density_change)
     controls.log_x.on_value_change(on_log_x_change)
     controls.log_y.on_value_change(on_histogram_range_change)
-    for axis in ("x", "z"):
+    for axis in ("x", "z", *(("secondary_x",) if controls.secondary_x_minimum is not None else ())):
         def limits_changed(_event: Any, selected: str = axis) -> None:
             if controls._resetting_limits:
                 return
@@ -1206,10 +1269,11 @@ def sync_preview_settings_visibility(
     controls.x_axis_options.visible = not boxplot
     controls.y_axis_options.visible = True
     controls.colorbar.visible = heatmap
-    controls.histogram_bins.visible = histogram
-    controls.histogram_bin_size.visible = histogram
-    controls.histogram_touching.visible = histogram
-    controls.histogram_boundary.visible = histogram
+    kde = histogram and bool(controls.density.value)
+    controls.histogram_bins.visible = histogram and not kde
+    controls.histogram_bin_size.visible = histogram and not kde
+    controls.histogram_touching.visible = histogram and not kde
+    controls.histogram_boundary.visible = histogram and not kde
     controls.histogram_x_limit_editor.visible = histogram
     controls.x_limit_editor.visible = not histogram
     controls.z_limit_editor.visible = heatmap
@@ -1229,9 +1293,9 @@ def sync_preview_settings_visibility(
     )
     controls.primary_color_surface.visible = not heatmap
     controls.secondary_color_surface.visible = line and multiple_curves
-    controls.line_width.visible = line
-    controls.line_type.visible = line
-    legend_available = line or (histogram and multiple_curves)
+    controls.line_width.visible = line or kde
+    controls.line_type.visible = line or kde
+    legend_available = line or ((histogram or boxplot) and multiple_curves)
     controls.show_legend.visible = legend_available
     controls.legend_position.visible = legend_available and bool(controls.show_legend.value)
 

@@ -30,8 +30,9 @@ from dnascape.workflows.uploads import (
     materialize_upload,
 )
 from dnascape.workflows.result_naming import RDATA_FILE_PREFIX
+from dnascape.workflows.repliseq import replication_timing_from_fractions
 from dnascape.workflows.exports import ExportArtifact, safe_export_filename
-from dnascape.io import inspect_genomic_track, rdata, rsave, rtrack
+from dnascape.io import inspect_genomic_track, rdata, rload, rsave, rtrack
 
 # Public UI order: interoperable text first, NumPy-specific formats last.
 DATA_EXPORT_FORMATS: tuple[tuple[str, str], ...] = tuple(
@@ -58,14 +59,14 @@ _MEDIA_TYPES = {
     "csv": "text/csv; charset=utf-8",
 }
 _AGGREGATIONS = frozenset({"mean", "sum", "min", "max", "coverage", "std"})
-_TRACK_MISSING = frozenset({"nan", "zero", "fill", "min", "max"})
+_TRACK_MISSING = frozenset({"nan", "zero", "fill", "min", "max", "error"})
 _INTERPOLATIONS = frozenset({"none", "linear", "ffill", "bfill"})
 _LEGACY_NORMALIZATIONS = frozenset(
     {"none", "minmax", "zscore", "center", "maxabs", "rescale"}
 )
 _SCALING_MODES = frozenset({"none", "multiplier", "interval", "center", "zscore", "maxabs"})
 _SIGNAL_TRANSFORMS = frozenset({"keep", "invert"})
-_PLAIN_MISSING = frozenset({"error", "zero", "interpolate", "ignore"})
+_PLAIN_MISSING = frozenset({"error", "zero", "fill", "min", "max", "interpolate", "ignore"})
 _CHROMOSOME_SCOPES = frozenset({"single", "all"})
 _ALL_CHROMOSOME_FORMATS = frozenset({"tsv", "csv", "npz"})
 _MAX_CONVERTED_BYTES = 128 * 1024 * 1024
@@ -157,7 +158,7 @@ class DataConversionRequest:
     gzip_output: bool = False
     value_column: str | None = None
     array_key: str | None = None
-    missing_policy: str = "ignore"
+    missing_policy: str = "zero"
     decimal_places: int | None = None
     value_name: str = "value"
     chromosome: str | None = None
@@ -190,6 +191,8 @@ class DataConversionRequest:
     biological_role: str | None = None
     semantic_note: str | None = None
     memory_limit_mb: int = DEFAULT_CONVERSION_MEMORY_LIMIT_MB
+    repliseq_timing_method: str | None = None
+    s_phase_duration_min: float = 600.0
 
 
 def _track_limits(request: DataConversionRequest) -> _TrackLimits:
@@ -355,6 +358,8 @@ def _source_payload(
     cancel: _CancelChecker | None = None,
 ) -> bytes:
     _check_cancelled(cancel)
+    if inspection._normalized_payload is not None:
+        return inspection._normalized_payload
     if not inspection.compressed:
         if len(inspection.content) > MAX_DECOMPRESSED_BYTES:
             raise ValueError("The uploaded source exceeds the local conversion limit.")
@@ -485,6 +490,14 @@ def _polishing_active(
 
 
 def _normalized_request(request: DataConversionRequest) -> DataConversionRequest:
+    if request.repliseq_timing_method is not None:
+        if request.inspection.source_layout != "geo_repliseq" or request.input_form != "x":
+            raise ValueError("Repli-seq timing extraction requires a GEO S1–S16 matrix and a space profile.")
+        if request.repliseq_timing_method not in {"sigmoid", "mean"}:
+            raise ValueError("Choose sigmoid or mean replication timing.")
+        duration = float(request.s_phase_duration_min)
+        if not np.isfinite(duration) or duration <= 0:
+            raise ValueError("S-phase duration must be a positive finite number of minutes.")
     memory_limit_mb = _integer(
         request.memory_limit_mb,
         "Conversion memory limit (MB)",
@@ -808,6 +821,9 @@ def _preview(
             candidate = coordinates.get(name)
             if candidate is not None and np.asarray(candidate).size == series.size:
                 x_values = np.asarray(candidate, dtype=float).reshape(-1)
+                if name == "position_kb" and x_values.size:
+                    # Preview converted profiles from their first bin start.
+                    x_values = x_values - x_values[0]
                 x_label = name.replace("_", " ").title()
                 break
     if x_values is None:
@@ -858,6 +874,7 @@ def extract_values(
     value_column: str | None = None,
     array_key: str | None = None,
     missing_policy: str = "ignore",
+    fill_value: float = 0.0,
     cancel: _CancelChecker | None = None,
 ) -> np.ndarray:
     """Materialize one bounded numeric selection as a read-only array."""
@@ -869,12 +886,23 @@ def extract_values(
     if form != "auto" and form not in _INPUT_FORMS - {"track", "table"}:
         raise ValueError(f"Unsupported data dependence {data_form!r}.")
     policy = _choice(missing_policy, "missing-value policy", _PLAIN_MISSING)
+    if policy == "fill" and not np.isfinite(float(fill_value)):
+        raise ValueError("Fill value must be finite.")
     values = materialize_upload(
         replace(inspection, expected_form=form),
         column=value_column,
         array_key=array_key,
-        missing_policy=policy,
+        missing_policy="ignore" if policy in {"fill", "min", "max"} else policy,
     )
+    if policy in {"fill", "min", "max"}:
+        array = np.array(values, dtype=float, copy=True)
+        columns = array.reshape(-1, 1) if array.ndim < 2 or array.shape[0] == 1 else array
+        for column in range(columns.shape[1]):
+            _check_cancelled(cancel)
+            columns[:, column] = _fill_missing(
+                pd.Series(columns[:, column]), policy, float(fill_value),
+            ).to_numpy(dtype=float)
+        values = array
     _check_cancelled(cancel)
     return _readonly(values)
 
@@ -951,6 +979,85 @@ def inspect_track(
     )
 
 
+def _repliseq_table(inspection: UploadInspection, *, coordinates_only: bool = False) -> pd.DataFrame:
+    if inspection.source_layout != "geo_repliseq":
+        raise ValueError("Choose a GEO Repli-seq matrix containing S1–S16.")
+    columns = ["chrom", "start", "end"]
+    if not coordinates_only:
+        columns += [f"S{i}" for i in range(1, 17)]
+    return pd.read_csv(io.BytesIO(_source_payload(inspection)), sep="\t", usecols=columns)
+
+
+def inspect_repliseq(inspection: UploadInspection) -> TrackInspection:
+    """Expose chromosomes and native resolution without calculating timing."""
+
+    table = _repliseq_table(inspection, coordinates_only=True)
+    widths = table["end"] - table["start"]
+    bin_size = int(widths.mode().iloc[0])
+    regions = tuple(
+        TrackRegion(str(chrom), 0, int(group["end"].max()), len(group))
+        for chrom, group in table.groupby("chrom", sort=False)
+    )
+    return TrackInspection(
+        source_format=inspection.source_format, regions=regions,
+        value_columns=("replication_timing",), size_bytes=len(inspection.content),
+        backend="repliseq", metadata=(("native_bin_size_bp", str(bin_size)),),
+    )
+
+
+def _prepare_repliseq_timing(
+    request: DataConversionRequest,
+    *,
+    progress: Callable[[float], None] | None = None,
+    cancel: _CancelChecker | None = None,
+) -> PreparedData:
+    _check_cancelled(cancel)
+    table = _repliseq_table(request.inspection)
+    chromosome = str(request.chromosome or table["chrom"].iloc[0])
+    selected = table.loc[table["chrom"] == chromosome].sort_values("start")
+    if selected.empty:
+        raise ValueError(f"The Repli-seq matrix does not contain chromosome {chromosome}.")
+    bin_size = int((table["end"] - table["start"]).mode().iloc[0])
+    starts = selected["start"].to_numpy(dtype=np.int64)
+    ends = selected["end"].to_numpy(dtype=np.int64)
+    if np.any(starts % bin_size) or np.any(ends > starts + bin_size) or len(np.unique(starts)) != len(starts):
+        raise ValueError("The selected chromosome must contain non-overlapping bins on a regular genomic grid.")
+    end = int(ends.max())
+    length = math.ceil(end / bin_size)
+    limits = _track_limits(request)
+    if length > limits.max_chromosome_bins or length * 16 > limits.max_values:
+        raise ValueError("The selected Repli-seq chromosome exceeds the conversion memory limit.")
+    signals = selected[[f"S{i}" for i in range(1, 17)]].to_numpy(dtype=float)
+    timings = replication_timing_from_fractions(
+        signals, method=request.repliseq_timing_method or "sigmoid",
+        s_phase_duration_min=request.s_phase_duration_min, progress=progress, cancel=cancel,
+    )
+    if not np.isfinite(timings).any():
+        raise ValueError("The selected chromosome contains no usable complete, non-zero S1–S16 bins for timing extraction.")
+    values = np.full(length, np.nan)
+    values[starts // bin_size] = timings
+    invalid_bins = int(np.isnan(values).sum())
+    values = _postprocess_profile_values(values, request, cancel)
+    coordinates = np.arange(length, dtype=float) * (bin_size / 1000)
+    metadata = dict(_profile_metadata(request))
+    metadata.update(
+        source_layout="geo_repliseq", chromosome=chromosome,
+        bin_size_bp=str(bin_size), start_bp="0", end_bp=str(end),
+        units="min", biological_role="replication_timing",
+        timing_method=request.repliseq_timing_method or "sigmoid",
+        timing_statistic="T50" if request.repliseq_timing_method == "sigmoid" else "mean",
+        s_phase_duration_min=str(float(request.s_phase_duration_min)),
+        fraction_count="16", fraction_spacing="equal", invalid_timing_bins=str(invalid_bins),
+    )
+    _check_cancelled(cancel)
+    return PreparedData(
+        values=_readonly(values, limits=limits), source_format=request.inspection.source_format,
+        data_form="space", labels=(chromosome,),
+        coordinates=_readonly_coordinates({"position_kb": coordinates}),
+        metadata=tuple(metadata.items()),
+    )
+
+
 def inspect_data_source(inspection: UploadInspection) -> DataSourceInspection:
     """Return a single auto-detected view of a supported local upload."""
 
@@ -994,6 +1101,8 @@ def inspect_data_source(inspection: UploadInspection) -> DataSourceInspection:
     ]
     if inspection.semantic_form:
         metadata.append(("semantic_form", inspection.semantic_form))
+    if inspection.source_layout:
+        metadata.append(("source_layout", inspection.source_layout))
     if inspection.region_names:
         metadata.append(("regions", str(len(inspection.region_names))))
     if track is not None:
@@ -1006,7 +1115,8 @@ def inspect_data_source(inspection: UploadInspection) -> DataSourceInspection:
         shape=tuple(inspection.shape or ()),
         values=tuple(selections),
         columns=tuple(inspection.columns),
-        chromosomes=track.regions if track is not None else (),
+        chromosomes=(track.regions if track is not None else
+                     inspect_repliseq(inspection).regions if inspection.source_layout == "geo_repliseq" else ()),
         missing_count=int(inspection.missing_count),
         warnings=tuple(inspection.warnings),
         metadata=tuple(metadata),
@@ -1119,6 +1229,32 @@ def _transform_signal(series: pd.Series, request: DataConversionRequest) -> pd.S
     return series
 
 
+def _fill_missing(series: pd.Series, policy: str, fill_value: float = 0.0) -> pd.Series:
+    """Apply a row-preserving policy to one numeric signal, never coordinates."""
+
+    if not series.isna().any():
+        return series
+    if policy == "error":
+        raise ValueError(
+            "The selected data contain missing values. Choose another missing-value "
+            "option or correct the source file."
+        )
+    if policy in {"min", "max"}:
+        finite_values = series[np.isfinite(series)]
+        if finite_values.empty:
+            name = "minimum" if policy == "min" else "maximum"
+            raise ValueError(
+                f"Cannot fill empty values with the {name}: no finite values remain "
+                "after thresholding and smoothing."
+            )
+        fill_value = float(finite_values.min() if policy == "min" else finite_values.max())
+    elif policy == "zero":
+        fill_value = 0.0
+    elif policy != "fill":
+        return series
+    return series.fillna(fill_value)
+
+
 def _polish_series(series: pd.Series, request: DataConversionRequest) -> pd.Series:
     """Threshold, smooth and scale one ordered profile without dropping samples."""
 
@@ -1130,6 +1266,10 @@ def _polish_series(series: pd.Series, request: DataConversionRequest) -> pd.Seri
         if request.threshold_max is not None:
             outside |= series > request.threshold_max
         series = series.mask(outside)
+
+    policy = request.track_missing if request.input_form == "track" else request.missing_policy
+    if policy == "error":
+        _fill_missing(series, policy)
 
     # Rolling means ignore missing neighbours, but an explicitly missing sample
     # must remain missing unless the caller selected interpolation/filling. This
@@ -1144,29 +1284,12 @@ def _polish_series(series: pd.Series, request: DataConversionRequest) -> pd.Seri
         series = pd.Series(smoothed, index=series.index, dtype=float)
         series = series.mask(missing)
 
-    if (
-        request.input_form == "track"
-        and request.track_missing in {"min", "max"}
-        and series.isna().any()
-    ):
-        finite_values = series[np.isfinite(series)]
-        if finite_values.empty:
-            name = "minimum" if request.track_missing == "min" else "maximum"
-            raise ValueError(
-                f"Cannot fill empty bins with the {name}: no finite values remain "
-                "after thresholding and smoothing."
-            )
-        fill = finite_values.min() if request.track_missing == "min" else finite_values.max()
-        series = series.fillna(float(fill))
+    if policy in {"min", "max"}:
+        series = _fill_missing(series, policy)
 
     series = _scale_series(series, request)
-    if request.input_form == "track":
-        if request.track_missing == "zero":
-            series = series.fillna(0.0)
-        elif request.track_missing == "fill":
-            series = series.fillna(request.fill_value)
-    elif request.missing_policy == "zero":
-        series = series.fillna(0.0)
+    if policy in {"zero", "fill"}:
+        series = _fill_missing(series, policy, request.fill_value)
     return series
 
 
@@ -1210,7 +1333,7 @@ def _postprocess_profile_values(
     """Polish an x/t/xt DNAscape profile while preserving its exact shape."""
 
     _check_cancelled(cancel)
-    if request.missing_policy != "zero" and not _polishing_active(
+    if request.missing_policy in {"ignore", "interpolate"} and not _polishing_active(
         smooth_window=request.smooth_window,
         scaling_mode=str(request.scaling_mode),
         threshold_enabled=request.threshold_enabled,
@@ -1222,12 +1345,7 @@ def _postprocess_profile_values(
         return _readonly(values)
     array = np.array(values, dtype=float, copy=True)
     _check_cancelled(cancel)
-    if request.input_form == "x":
-        series = pd.Series(array.reshape(-1), dtype=float)
-        result = _polish_series(_transform_signal(series, request), request).to_numpy(dtype=float)
-        _check_cancelled(cancel)
-        return _readonly(result.reshape(array.shape))
-    if request.input_form == "t":
+    if request.input_form in {"scalar", "x", "t", "table"}:
         series = pd.Series(array.reshape(-1), dtype=float)
         result = _polish_series(_transform_signal(series, request), request).to_numpy(dtype=float)
         _check_cancelled(cancel)
@@ -1264,6 +1382,8 @@ def _postprocess_track_table(
         dtype=float,
     )
     series = _transform_signal(series, request)
+    if request.track_missing == "error":
+        _fill_missing(series, "error")
     if request.interpolation == "linear":
         series = series.interpolate(method="linear", limit_direction="both")
     elif request.interpolation == "ffill":
@@ -1566,6 +1686,8 @@ def prepare_data(request: DataConversionRequest) -> PreparedData:
     """Prepare values for preview/mapping without writing a download file."""
 
     request = _normalized_request(request)
+    if request.repliseq_timing_method is not None:
+        return _prepare_repliseq_timing(request)
     if request.input_form == "track":
         request, _summary, slices = _resolved_track_request(request)
         return _prepare_track(request, slices)
@@ -1577,14 +1699,9 @@ def prepare_data(request: DataConversionRequest) -> PreparedData:
         data_form="x" if request.input_form == "table" else request.input_form,
         value_column=request.value_column,
         array_key=request.array_key,
-        missing_policy=(
-            "ignore"
-            if request.input_form in {"x", "t", "xt"} and request.missing_policy == "zero"
-            else request.missing_policy
-        ),
+        missing_policy="interpolate" if request.missing_policy == "interpolate" else "ignore",
     )
-    if request.input_form in {"x", "t", "xt"}:
-        values = _postprocess_profile_values(values, request)
+    values = _postprocess_profile_values(values, request)
     labels: tuple[str, ...] = ()
     if request.value_column:
         labels = (request.value_column,)
@@ -1637,13 +1754,35 @@ def _plain_source(
         data_form=request.input_form,
         value_column=request.value_column,
         array_key=request.array_key,
-        missing_policy=("ignore" if request.missing_policy == "zero" else request.missing_policy),
+        missing_policy="interpolate" if request.missing_policy == "interpolate" else "ignore",
         cancel=cancel,
     )
     labels = _source_labels(request, values)
     result = _postprocess_profile_values(values, request, cancel)
     _check_cancelled(cancel)
     return result, labels
+
+
+def _table_source(
+    directory: Path,
+    request: DataConversionRequest,
+    cancel: _CancelChecker | None = None,
+) -> tuple[Any, str]:
+    """Fill signal columns while retaining table labels and genomic coordinates."""
+
+    source = _write_source(directory, request.inspection, cancel)
+    if request.missing_policy == "ignore" or not request.inspection.missing_count:
+        return source, request.inspection.source_format
+    table = rload(source, source_format=request.inspection.source_format, data_form="table", as_table=True)
+    _check_cancelled(cancel)
+    for column in request.inspection.numeric_columns:
+        _check_cancelled(cancel)
+        series = pd.to_numeric(table[column], errors="raise")
+        table[column] = (
+            series.interpolate(limit_direction="both") if request.missing_policy == "interpolate"
+            else _fill_missing(series, request.missing_policy, request.fill_value)
+        )
+    return table, "auto"
 
 
 def _read_output(
@@ -1904,9 +2043,20 @@ def convert_data(
             )
             _check_cancelled(cancel)
         else:
-            if request.input_form == "table":
-                source: Any = _write_source(directory, request.inspection, cancel)
-                source_format = request.inspection.source_format
+            repliseq_prepared = None
+            if request.repliseq_timing_method is not None:
+                callback = _progress_callback(progress)
+                repliseq_prepared = _prepare_repliseq_timing(
+                    request, cancel=cancel,
+                    progress=lambda fraction: _emit_track_progress(callback, request, "timing", "running", 0.8 * fraction),
+                )
+                source = repliseq_prepared.values
+                labels = list(repliseq_prepared.labels)
+                source_format = "auto"
+                if callback is not None:
+                    progress = lambda event: callback({**event, "progress": 0.8 + 0.2 * event["progress"]})
+            elif request.input_form == "table":
+                source, source_format = _table_source(directory, request, cancel)
             else:
                 source, labels = _plain_source(request, cancel)
                 source_format = "auto"
@@ -1939,14 +2089,15 @@ def convert_data(
             result_labels = tuple(str(value) for value in (raw_result.get("labels") or ()))
             source_format = str(raw_result.get("source_format") or request.inspection.source_format)
             result_metadata = (
-                _profile_metadata(request)
+                repliseq_prepared.metadata if repliseq_prepared is not None else _profile_metadata(request)
                 if request.input_form in {"x", "t", "xt"}
                 else _provenance_metadata(request)
             )
             preview = _preview(
                 raw_result["values"],
-                labels=result_labels,
-                table=raw_result.get("table"),
+                labels=(request.value_name,) if repliseq_prepared is not None else result_labels,
+                table=None if repliseq_prepared is not None else raw_result.get("table"),
+                coordinates=repliseq_prepared.coordinates if repliseq_prepared is not None else None,
             )
             _check_cancelled(cancel)
 
@@ -1982,6 +2133,7 @@ __all__ = [
     "extract_values",
     "inspect_data_source",
     "inspect_track",
+    "inspect_repliseq",
     "prepare_data",
     "transcode_conversion_artifact",
 ]

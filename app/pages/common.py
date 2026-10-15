@@ -16,6 +16,7 @@ from nicegui import background_tasks, events, helpers, ui
 from app.export_settings import DATA_FILE_FORMAT_OPTIONS, get_export_settings
 from app.icons import DATA_ICON, DATA_ICON_SVG, OUTLINE_ICON_SVGS, PLOT_ICON_SVG
 from app.mapping_uploads import MAX_DECOMPRESSED_BYTES, MAX_UPLOAD_BYTES
+from app.notifications import notify
 
 # Keep every data-export selector in the same user-facing order.
 RAW_DATA_FORMATS = tuple(DATA_FILE_FORMAT_OPTIONS.values())
@@ -343,7 +344,7 @@ def data_upload(
         return result
 
     async def handle_rejected(event: events.UiEventArguments) -> None:
-        ui.notify(
+        notify(
             "This file type or size is not accepted here.",
             type="warning",
         )

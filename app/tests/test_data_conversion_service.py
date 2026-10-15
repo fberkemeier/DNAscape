@@ -157,6 +157,7 @@ def test_threshold_filter_masks_samples_and_smoothing_does_not_restore_them() ->
         input_form="x",
         target_format="npy",
         value_column="signal",
+        missing_policy="ignore",
         threshold_enabled=True,
         threshold_max=10,
         smooth_window=3,
@@ -323,6 +324,7 @@ def test_fully_thresholded_profile_is_safe_to_preview_and_rescale() -> None:
         input_form="x",
         target_format="npy",
         value_column="signal",
+        missing_policy="ignore",
         threshold_enabled=True,
         threshold_min=10,
         scaling_mode="interval",
@@ -375,6 +377,7 @@ def test_profile_conversion_can_preserve_missing_values() -> None:
             target_format="npy",
             gzip_output=False,
             value_column="signal",
+            missing_policy="ignore",
         )
     )
 
@@ -621,7 +624,7 @@ def test_bedgraph_header_is_detected_and_track_pipeline_preserves_plot_coordinat
     assert rows == ["chr1", "0.0", "0.5", "1.0"]
     assert result.preview is not None
     assert result.preview.x_label == "Position Kb"
-    np.testing.assert_allclose(result.preview.x, np.array([0.005, 0.015, 0.025]))
+    np.testing.assert_allclose(result.preview.x, np.array([0.0, 0.01, 0.02]))
 
 
 def test_ucsc_bedgraph_directives_survive_the_full_track_pipeline() -> None:
@@ -680,7 +683,21 @@ def test_sns_enrichment_maximum_keeps_peak_heights_and_zero_background(
         prepare_data(replace(request, value_column="thick_start"))
 
 
-def test_sns_preview_keeps_isolated_peaks_at_their_original_coordinates() -> None:
+def test_track_preview_uses_zero_based_bin_starts_without_changing_export_coordinates() -> None:
+    inspection = inspect_upload("track.bedGraph", b"chr1\t5000\t8000\t2\n")
+    request = DataConversionRequest(
+        inspection=inspection, input_form="track", target_format="npy",
+        chromosome="chr1", start=5000, end=8000, bin_size=1000,
+    )
+    prepared = prepare_data(request)
+    result = convert_data(request)
+    np.testing.assert_array_equal(prepared.coordinates["position_kb"], [5.5, 6.5, 7.5])
+    assert result.preview is not None
+    np.testing.assert_array_equal(result.preview.x, [0, 1, 2])
+    np.testing.assert_array_equal(np.load(io.BytesIO(result.artifact.data)), prepared.values)
+
+
+def test_sns_preview_keeps_isolated_peaks_at_their_zero_based_bin_positions() -> None:
     inspection = inspect_upload(
         "sns_peaks.bed",
         b"chr1\t137000\t137100\t20\nchr1\t1999000\t2000000\t1\n",
@@ -696,12 +713,12 @@ def test_sns_preview_keeps_isolated_peaks_at_their_original_coordinates() -> Non
     assert preview.values.size <= 500
     assert preview.maximum == 20
     assert np.max(preview.values) == 20
-    assert preview.x[np.argmax(preview.values)] == 137.5
+    assert preview.x[np.argmax(preview.values)] == 137.0
     values = np.load(io.BytesIO(result.artifact.data), allow_pickle=False)
     assert values.shape == (2000,)
     assert values[137] == 20
     assert np.count_nonzero(values) == 2
-    indices = (preview.x - 0.5).astype(int)
+    indices = preview.x.astype(int)
     np.testing.assert_array_equal(preview.values, values[indices])
     assert np.all(np.diff(indices) > 0)
     # The continuous-track preview remains unchanged for Repli-seq BigWig.
@@ -1211,7 +1228,7 @@ def test_extreme_fills_report_an_error_when_no_finite_values_remain(
         track_missing=missing, threshold_enabled=threshold_all, threshold_min=100,
         scaling_mode="interval", rescale_min=2, rescale_max=4,
     )
-    with pytest.raises(ValueError, match="Cannot fill empty bins.*no finite values remain"):
+    with pytest.raises(ValueError, match="Cannot fill empty values.*no finite values remain"):
         convert_data(request)
 
 

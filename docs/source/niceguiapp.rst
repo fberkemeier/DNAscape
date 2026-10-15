@@ -23,7 +23,7 @@ Pages
 -----
 
 Overview
-   Navigate between Data Manager, Mapping, Simulation, Plotting, Cached Files,
+   Navigate between Data Manager, Mapping, Simulation, Analysis, Cached Files,
    and Resources.
 
 Data Manager
@@ -37,9 +37,35 @@ Data Manager
    Z-score, or maximum absolute. A target interval is defined explicitly by its
    target minimum and target maximum. Thresholds are evaluated before smoothing
    and value scaling.
-   Empty bins default to Fill with zero, including for the ENCODE example.
+   GEO Repli-seq text matrices from GSE137764 (``.mat`` or ``.mat.gz``) are
+   transposed automatically into genomic-bin rows and S1-S16 columns. The
+   default **Full table** selection retains chromosome, start, and end in TSV
+   or CSV exports. Choose **All** or an individual S-phase column for numeric
+   profiles. These raw exports retain the supplied fraction signals.
+   **Replication timing (S1–S16)** instead extracts a chromosome-specific
+   profile at the source's native resolution. **Sigmoid fit (T50)** fits the
+   cumulative normalized fraction signal and returns the 50% replication time,
+   following `Zhao, Sasaki and Gilbert (2020)
+   <https://doi.org/10.1186/s13059-020-01983-8>`_. The sixteen intervals are equally
+   spaced over an editable S-phase duration, defaulting to the paper's assumed
+   600 minutes. **Signal-weighted mean** is also available, using the fraction
+   interval midpoints. Incomplete, zero-signal, and failed-fit bins, and genomic
+   gaps, retain their original positions. The chosen missing-value policy applies
+   to these timings after extraction, defaulting to Fill with zero. Exports use minutes,
+   chromosome-labelled headers, and chromosome-specific filenames. Mapping
+   resolution should match the recorded source bin width (50 kb for H1).
+   The **GEO 16-fraction Repli-seq (MAT) - H1** example fills the public GEO link
+   and selects timing extraction after inspection.
+   Binary MATLAB files are not included in this format support.
+
+   All input types, including MAT timing profiles and full tables, offer the same
+   missing-value options: Keep empty values, Fill with zero (the default), Fill
+   with a value, Fill with minimum, Fill with maximum, and Stop if detected.
+   Full tables apply these policies to numeric signal columns, preserving labels
+   and genomic coordinates. Stop if detected rejects missing samples, including
+   empty track bins before interpolation and values removed by thresholding.
    Thresholded samples remain on the original coordinate grid. Zero and custom
-   fills are applied after smoothing and value scaling; Keep empty bins preserves
+   fills are applied after smoothing and value scaling; Keep empty values preserves
    missing values. Fill with minimum and Fill with maximum instead use each
    chromosome's finite values after thresholding and smoothing, fill empty bins
    before scaling, and participate in the scaling calculation. They report an
@@ -162,10 +188,28 @@ Simulation
    the mean, median, and population standard deviation by default in a compact
    summary box positioned in any plot corner.
 
-Plotting
+Analysis
    Upload one or more profiles and create profile, heatmap, histogram, or
    box-plot previews with the same plotting controls used by Mapping and
    Simulation.
+
+   **Enable analysis** is off by default. Turning it on changes **Plot** to
+   **Analyse** and enables Spearman, Pearson, and Kendall tau checkboxes.
+   The **Analysis report** below the plotting settings contains one full
+   dataset-by-dataset coefficient matrix per selected correlation. Downloads
+   default to CSV, with TSV also available. A single download at the bottom
+   includes every selected correlation matrix and all paired sample counts.
+   The report is hidden immediately when analysis is switched off.
+
+   Each selected dataset has independent Off, Moving average, or Gaussian
+   smoothing controls. Smoothing applies to both plots and correlations on
+   the next action, preserving the source values, sample positions, and missing
+   samples. Time profiles are smoothed over time; space-time fields are smoothed
+   over position at each time. Correlations pair matching indices over the shared
+   span and exclude non-finite pairs. Space-time overlap is calculated along both
+   axes before flattening. Constant profiles, fewer than two paired samples, and
+   mismatched dependences have undefined coefficients, shown as a dash and
+   exported as empty cells. Hovering a coefficient shows its paired sample count.
 
    X and Y limits remain editable in every view, with Z (colour) limits for
    heatmaps. Reset restores the automatic range, including after an incomplete

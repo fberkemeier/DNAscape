@@ -1,18 +1,22 @@
-"""Interactive single- and multi-profile plotting workspace."""
+"""Interactive profile plotting, smoothing, and correlation analysis."""
 
 from __future__ import annotations
 
 from collections import Counter
 from collections.abc import Callable, Mapping, Sequence
+from concurrent.futures import CancelledError
 from dataclasses import dataclass, field, replace
 from pathlib import PurePath
+from threading import Event
 from typing import Any
 
 import numpy as np
 from nicegui import run, ui
 
 from app.export_settings import get_export_settings
+from app.icons import PLOT_ICON_SVG
 from app.mapping_uploads import UploadInspection, inspect_upload_event, materialize_upload
+from app.notifications import notify
 from app.page_activity import current_page_activity
 from app.pages.common import (
     DATA_ICON,
@@ -47,7 +51,11 @@ from app.result_naming import (
     unique_compact_export_stems,
 )
 from app.session_cache import cache_artifact, cache_upload, current_session_cache
-from app.simulation_exports import build_chart_capture_export
+from app.simulation_exports import ExportArtifact, build_chart_capture_export
+from dnascape.workflows.analysis import (
+    CORRELATION_METHODS, AnalysisDataset, AnalysisReport, SmoothingSettings,
+    analyse_profiles, export_correlation_report, smooth_profile,
+)
 
 _PROFILE_ACCEPT = ".csv,.tsv,.txt,.npy,.npv,.npz,.gz"
 _DEPENDENCE_LABELS = {
@@ -312,7 +320,7 @@ def _set_default_selection(state: _ProfileSourceState) -> None:
         form = str(inspection.inferred_form)
         if form not in _DEPENDENCE_LABELS:
             raise ValueError(
-                "Plotting requires a space, time, or space-time profile; "
+                "Analysis requires a space, time, or space-time profile; "
                 f"the selected data are {form}."
             )
         state.selection = (_NATURAL_SELECTION,)
@@ -410,8 +418,10 @@ def _unique_series_names(series: Sequence[_PlotSeries]) -> tuple[_PlotSeries, ..
     return tuple(normalized)
 
 
-def _collect_plot_series(sources: Sequence[_ProfileSourceState]) -> tuple[_PlotSeries, ...]:
-    collected = [item for source in sources for item in _materialize_source(source)]
+def _collect_plot_series(
+    sources: Sequence[_ProfileSourceState], *, missing_policy: str = "error",
+) -> tuple[_PlotSeries, ...]:
+    collected = [item for source in sources for item in _materialize_source(source, missing_policy=missing_policy)]
     if not collected:
         raise ValueError("Upload and select at least one profile.")
     normalized = _unique_series_names(collected)
@@ -419,6 +429,29 @@ def _collect_plot_series(sources: Sequence[_ProfileSourceState]) -> tuple[_PlotS
     if incompatibility is not None:
         raise ValueError(incompatibility)
     return normalized
+
+
+def _prepare_analysis_profiles(
+    sources: Sequence[_ProfileSourceState],
+    smoothing: Mapping[tuple[int, str], SmoothingSettings],
+    methods: Sequence[str] | None,
+    cancel: Callable[[], None],
+) -> tuple[tuple[_PlotSeries, ...], AnalysisReport | None]:
+    cancel()
+    selected = _collect_plot_series(sources, missing_policy="ignore") if methods is not None else _collect_plot_series(sources)
+    processed = []
+    for item in selected:
+        cancel()
+        values = smooth_profile(item.values, smoothing.get(item.series_id, SmoothingSettings()), dependence=item.form)
+        processed.append(replace(item, values=values))
+    report = None
+    if methods is not None:
+        report = analyse_profiles(
+            [AnalysisDataset(item.name, item.values, item.form) for item in processed],
+            methods=methods, cancel=cancel,
+        )
+    cancel()
+    return tuple(processed), report
 
 
 def _series_compatibility_error(series: Sequence[_PlotSeries]) -> str | None:
@@ -509,11 +542,17 @@ def render(_navigate: Callable[[str], None]) -> None:
     separate_plot_settings: dict[tuple[int, str], _SeparatePlotSettingsSnapshot] = {}
     y_limits_automatic = True
     updating_y_limits = False
+    running = False
+    active_cancel: Event | None = None
+    latest_analysis: AnalysisReport | None = None
+    smoothing_settings: dict[tuple[int, str], SmoothingSettings] = {}
+    smoothing_controls: list[Any] = []
+    report_file_format = {"value": "csv"}
 
     page_intro(
-        "Plotting",
-        "Visualize DNAscape outputs",
-        "Upload profiles and compare them together or in separate panels.",
+        "Analysis",
+        "Explore DNAscape data",
+        "Plot profiles, smooth individual datasets, and compare their correlations.",
     )
     with ui.element("div").classes("dn-workspace"):
         with ui.column().classes("dn-control-stack"):
@@ -575,9 +614,9 @@ def render(_navigate: Callable[[str], None]) -> None:
                             # Validate every selected profile before changing the
                             # retained collection. A bad same-name replacement
                             # therefore leaves the previous file fully usable.
-                            _materialize_source(candidate)
+                            _materialize_source(candidate, missing_policy="ignore")
                         except (OSError, RuntimeError, TypeError, ValueError) as exc:
-                            ui.notify(str(exc), type="negative")
+                            notify(str(exc), type="negative")
                             return False
 
                         if replaced_index is None:
@@ -587,7 +626,7 @@ def render(_navigate: Callable[[str], None]) -> None:
                             sources[replaced_index] = candidate
                         cache_upload(
                             inspection,
-                            source="Plotting",
+                            source="Analysis",
                             navigate_to="plotting",
                         )
                         staged_sources_changed()
@@ -736,8 +775,79 @@ def render(_navigate: Callable[[str], None]) -> None:
                     )
                     compatibility_note.visible = False
 
+                with expansion("Analysis", icon="analytics", expanded=True):
+                    analysis_enabled = ui.switch("Enable analysis", value=False).mark("analysis-enabled")
+                    ui.label("Correlations").classes("dn-setting-group-title")
+                    with ui.row().classes("dn-inline-actions dn-analysis-methods"):
+                        correlation_controls = {
+                            method: ui.checkbox(label, value=True).mark(f"analysis-{method}")
+                            for method, label in CORRELATION_METHODS.items()
+                        }
+                    for control in correlation_controls.values():
+                        control.disable()
+                    ui.label("Smoothing").classes("dn-setting-group-title")
+                    ui.label("Apply to each dataset when you click Plot or Analyse.").classes("dn-settings-help")
+
+                    @ui.refreshable
+                    def render_smoothing_controls() -> None:
+                        smoothing_controls.clear()
+                        profiles = _unique_series_names([
+                            item for source in sources
+                            for item in _materialize_source(source, missing_policy="ignore")
+                        ])
+                        if not profiles:
+                            ui.label("Upload data to choose smoothing for each dataset.").classes("dn-settings-help")
+                            return
+                        with ui.column().classes("dn-analysis-smoothing-list w-full"):
+                            for index, item in enumerate(profiles, start=1):
+                                settings = smoothing_settings.setdefault(item.series_id, SmoothingSettings())
+                                with ui.column().classes("dn-analysis-smoothing-row w-full"):
+                                    ui.label(curve_names.get(item.series_id, item.name)).classes("dn-analysis-dataset-name").tooltip(item.full_identity)
+                                    with ui.element("div").classes("dn-analysis-smoothing-fields"):
+                                        method = (
+                                            ui.select({"none": "Off", "moving_average": "Moving average", "gaussian": "Gaussian"},
+                                                      value=settings.method, label="Smoothing")
+                                            .props("dense options-dense").classes("dn-field")
+                                            .mark(f"analysis-smoothing-method-{index}")
+                                        )
+                                        window = (
+                                            ui.number("Window (points)", value=settings.window, min=1, max=100001, step=2)
+                                            .props("dense").classes("dn-field")
+                                            .mark(f"analysis-smoothing-window-{index}")
+                                        )
+                                        sigma = (
+                                            ui.number("Sigma (points)", value=settings.sigma, min=0.01, max=10000, step=0.1)
+                                            .props("dense").classes("dn-field")
+                                            .mark(f"analysis-smoothing-sigma-{index}")
+                                        )
+                                    window.visible = settings.method == "moving_average"
+                                    sigma.visible = settings.method == "gaussian"
+                                    for control in (method, window, sigma):
+                                        control.set_enabled(not running)
+                                        smoothing_controls.append(control)
+
+                                    def smoothing_changed(
+                                        _event: Any = None, *, series_id=item.series_id,
+                                        method_control=method, window_control=window, sigma_control=sigma,
+                                    ) -> None:
+                                        smoothing_settings[series_id] = SmoothingSettings(
+                                            str(method_control.value), window_control.value, sigma_control.value,
+                                        )
+                                        window_control.set_visibility(method_control.value == "moving_average")
+                                        sigma_control.set_visibility(method_control.value == "gaussian")
+                                        invalidate_analysis_report()
+
+                                    for control in (method, window, sigma):
+                                        control.on_value_change(smoothing_changed)
+
+                    render_smoothing_controls()
+
                 with action_dock():
                     plot_button = plot_action_button()
+                    plot_button.mark("action-plot", "action-analyse")
+                    action_label = next(child for child in plot_button.default_slot.children if "dn-action-label" in child._classes)
+                    action_symbol = next(child for child in plot_button.default_slot.children if "dn-action-plot-icon" in child._classes)
+                    action_label.mark("analysis-action-label")
 
         with ui.column().classes("dn-preview-stack"):
             with panel(extra_classes="dn-preview-card"):
@@ -818,6 +928,8 @@ def render(_navigate: Callable[[str], None]) -> None:
                                         else:
                                             curve_names.pop(series_id, None)
                                         update_combined_plot()
+                                        render_smoothing_controls.refresh()
+                                        render_analysis_report.refresh()
 
                                     name.on_value_change(name_changed)
                                     color_surface, color = compact_color_input(
@@ -877,6 +989,106 @@ def render(_navigate: Callable[[str], None]) -> None:
                 with shared_settings_surface:
                     render_curve_settings()
 
+                @ui.refreshable
+                def render_analysis_report() -> None:
+                    if not analysis_enabled.value:
+                        return
+                    with expansion("Analysis report", icon="table_chart", expanded=True,
+                                   extra_classes="dn-preview-settings-section dn-analysis-report"):
+                        if latest_analysis is None:
+                            ui.label("Click Analyse to generate the report.").classes("dn-settings-help")
+                            return
+                        report = current_analysis_report()
+                        assert report is not None
+                        if not report.matrices:
+                            ui.label("Select a correlation in Analysis, then click Analyse.").classes("dn-settings-help")
+                            return
+                        ui.label(
+                            "Matched indices over the shared span; finite pairs only. "
+                            "— indicates constant data, fewer than two pairs, or different dependences. "
+                            "Hover a value for its paired sample count."
+                        ).classes("dn-settings-help")
+                        for matrix in report.matrices:
+                            with ui.column().classes("dn-analysis-matrix-block w-full"):
+                                with ui.row().classes("dn-analysis-matrix-heading w-full"):
+                                    ui.label(CORRELATION_METHODS[matrix.method]).classes("dn-setting-group-title")
+                                columns = [{"name": "dataset", "label": "Dataset", "field": "dataset", "align": "left"}]
+                                columns.extend({"name": f"d{index}", "label": name, "field": f"d{index}", "align": "right"}
+                                               for index, name in enumerate(report.names))
+                                rows = []
+                                for index, name in enumerate(report.names):
+                                    row = {"key": index, "dataset": name, "counts": {f"d{j}": int(n) for j, n in enumerate(matrix.sample_counts[index])}}
+                                    row.update({f"d{j}": f"{value:.3f}" if np.isfinite(value) else "—"
+                                                for j, value in enumerate(matrix.coefficients[index])})
+                                    rows.append(row)
+                                table = ui.table(columns=columns, rows=rows, row_key="key", pagination={"rowsPerPage": 0}).props(
+                                    "dense flat hide-bottom wrap-cells"
+                                ).classes("dn-analysis-matrix w-full").mark(f"analysis-table-{matrix.method}")
+                                table.add_slot("body-cell", '''
+                                    <q-td :props="props">
+                                        {{ props.value }}
+                                        <q-tooltip v-if="props.col.name !== 'dataset'">
+                                            Paired values: {{ props.row.counts[props.col.name] }}
+                                        </q-tooltip>
+                                    </q-td>
+                                ''')
+                        with ui.row().classes("dn-analysis-report-toolbar w-full"):
+                            file_format = (
+                                ui.select({"csv": "CSV", "tsv": "TSV"}, value=report_file_format["value"], label="File type")
+                                .props("dense options-dense").classes("dn-field dn-analysis-report-format")
+                                .mark("analysis-report-format")
+                            )
+                            file_format.on_value_change(lambda: report_file_format.update(value=str(file_format.value)))
+                            ui.button("Download report", icon="download", on_click=download_analysis_report).props(
+                                "flat dense no-caps"
+                            ).classes("dn-action-secondary dn-action-compact").mark("analysis-download-report")
+
+                render_analysis_report()
+
+    def current_analysis_report() -> AnalysisReport | None:
+        if latest_analysis is None:
+            return None
+        return replace(latest_analysis, names=tuple(curve_names.get(item.series_id, item.name) for item in latest_series))
+
+    def download_analysis_report() -> None:
+        report = current_analysis_report()
+        if report is None:
+            return
+        file_format = report_file_format["value"]
+        data = export_correlation_report(report, file_format=file_format)
+        filename = f"analysis-report.{file_format}"
+        artifact = ExportArtifact(data, filename, "text/csv; charset=utf-8" if file_format == "csv" else "text/tab-separated-values; charset=utf-8")
+        cache_artifact(artifact, source="Analysis", kind="raw", detail="Correlation report", navigate_to="plotting")
+        ui.download(data, filename, artifact.media_type)
+
+    def invalidate_analysis_report() -> None:
+        nonlocal latest_analysis
+        latest_analysis = None
+        render_analysis_report.refresh()
+
+    def analysis_enabled_changed() -> None:
+        for control in correlation_controls.values():
+            control.set_enabled(bool(analysis_enabled.value) and not running)
+        sync_presentation_options()
+        render_analysis_report.refresh()
+
+    def sync_analysis_action() -> None:
+        stopping = running and active_cancel is not None and active_cancel.is_set()
+        label = "Stopping…" if stopping else "Stop" if running else "Analyse" if analysis_enabled.value else "Plot"
+        action_label.set_text(label)
+        plot_button.props(f'aria-label="{label}"')
+        action_symbol.set_content(
+            '<svg class="dn-plot-icon" viewBox="0 0 24 24" aria-hidden="true"><path fill="currentColor" d="M6 6h12v12H6z"/></svg>'
+            if running else PLOT_ICON_SVG
+        )
+        if running:
+            plot_button.set_enabled(not stopping)
+        analysis_enabled.set_enabled(not running)
+        for control in correlation_controls.values():
+            control.set_enabled(bool(analysis_enabled.value) and not running)
+        for control in smoothing_controls:
+            control.set_enabled(not running)
+
     def staged_forms() -> tuple[str, ...]:
         return tuple(
             _selection_form(source, token)
@@ -895,8 +1107,6 @@ def render(_navigate: Callable[[str], None]) -> None:
     def requested_plot_type(*, form: str, multiple: bool, controls: Any = None) -> str:
         if form == "xt":
             return "Heatmap"
-        if multiple:
-            return "Line"
         active_controls = plot_settings if controls is None else controls
         view = str(active_controls.view.value or "Default")
         if view == "Histogram":
@@ -938,6 +1148,7 @@ def render(_navigate: Callable[[str], None]) -> None:
                 plot_button.enable()
             else:
                 plot_button.disable()
+            sync_analysis_action()
 
     def latest_groups() -> tuple[tuple[_PlotSeries, ...], ...]:
         return _plot_groups(
@@ -974,16 +1185,30 @@ def render(_navigate: Callable[[str], None]) -> None:
         sync_preview_settings_visibility(
             plot_settings,
             plot_type=plot_type,
-            multiple_curves=False,
-            allow_histogram=not multiple and form != "xt",
-            allow_boxplot=not multiple and form != "xt",
+            multiple_curves=multiple and not separate,
+            allow_histogram=form != "xt",
+            allow_boxplot=form != "xt",
         )
         dual_available = len(forms) == 2 and not separate and len(unique_forms) == 1 and form in {"x", "t"}
         plot_settings.dual_y_axes.visible = dual_available
         dual_active = dual_available and bool(plot_settings.dual_y_axes.value)
         plot_settings.secondary_y_limit_editor.visible = dual_active
         plot_settings.secondary_y_axis_label.visible = dual_active
+        for control in (
+            plot_settings.secondary_x_axis_label, plot_settings.secondary_x_limit_editor,
+            plot_settings.secondary_x_axis_options, plot_settings.secondary_y_axis_options,
+        ):
+            control.visible = dual_active
+        plot_settings.x_axis_caption.set_text("X1" if dual_active else "X")
+        plot_settings.y_axis_caption.set_text("Y1" if dual_active else "Y")
+        if plot_type == "Boxplot" and multiple and not separate:
+            plot_settings.x_axis_options.visible = True
         for control, label in (
+            (plot_settings.x_minimum, "X1 min" if dual_active else "X min"),
+            (plot_settings.x_maximum, "X1 max" if dual_active else "X max"),
+            (plot_settings.histogram_x_minimum, "X1 min" if dual_active else "X min"),
+            (plot_settings.histogram_x_maximum, "X1 max" if dual_active else "X max"),
+            (plot_settings.x_axis_label, "X1 label" if dual_active else "X-axis label"),
             (plot_settings.y_minimum, "Y1 min" if dual_active else "Y min"),
             (plot_settings.y_maximum, "Y1 max" if dual_active else "Y max"),
             (plot_settings.y_axis_label, "Y1 label" if dual_active else "Y label"),
@@ -991,7 +1216,7 @@ def render(_navigate: Callable[[str], None]) -> None:
             control.props(f'label="{label}"')
         # Multiple curves have individual styles in Curves; a single profile
         # uses the shared Style controls, as it does in Mapping.
-        if plot_type == "Line" and len(latest_series) > 1:
+        if plot_type != "Heatmap" and len(latest_series) > 1:
             plot_settings.primary_color_surface.visible = False
             plot_settings.secondary_color_surface.visible = False
             plot_settings.line_width.visible = False
@@ -1005,6 +1230,7 @@ def render(_navigate: Callable[[str], None]) -> None:
                     bool(plot_settings.density.value),
                 )
             plot_settings.x_axis_label.value = x_label
+            plot_settings.secondary_x_axis_label.set_value(x_label)
             plot_settings.y_axis_label.value = y_label
             plot_settings.x_axis_label.update()
             plot_settings.y_axis_label.update()
@@ -1028,6 +1254,7 @@ def render(_navigate: Callable[[str], None]) -> None:
         clear_automatic_y_limits()
         sync_presentation_options()
         sync_staged_controls(reset_axes=True)
+        render_smoothing_controls.refresh()
 
     def dual_y_axes_active(group: Sequence[_PlotSeries], controls: Any = None) -> bool:
         active_controls = plot_settings if controls is None else controls
@@ -1052,8 +1279,14 @@ def render(_navigate: Callable[[str], None]) -> None:
         if not dual_y_axes_active(latest_series):
             return
         limits = automatic_y_limits(
-            [latest_series[1].values], plot_type="Line", histogram_bins=60,
-            density=False, log_y=bool(plot_settings.log_y.value),
+            [latest_series[1].values], plot_type=group_plot_type(latest_series),
+            histogram_bins=_integer_value(plot_settings.histogram_bins, "Histogram bins"),
+            density=bool(plot_settings.density.value),
+            log_y=bool(plot_settings.secondary_log_y.value),
+            log_x=bool(plot_settings.secondary_log_x.value),
+            histogram_bin_size=None,
+            histogram_x_limits=axis_limits_from_controls(plot_settings, "secondary_x"),
+            histogram_boundary=str(plot_settings.histogram_boundary.value or "left"),
         )
         updating_y_limits = True
         try:
@@ -1069,7 +1302,7 @@ def render(_navigate: Callable[[str], None]) -> None:
             populate_secondary_y_limits()
             update_combined_plot()
         except ValueError as exc:
-            ui.notify(str(exc), type="negative")
+            notify(str(exc), type="negative")
 
     def current_y_limits(controls: Any = None) -> tuple[float, float] | None:
         active_controls = plot_settings if controls is None else controls
@@ -1153,7 +1386,7 @@ def render(_navigate: Callable[[str], None]) -> None:
             populate_automatic_y_limits()
             update_combined_plot()
         except ValueError as exc:
-            ui.notify(str(exc), type="negative")
+            notify(str(exc), type="negative")
 
     def plot_options(
         group: Sequence[_PlotSeries],
@@ -1175,7 +1408,7 @@ def render(_navigate: Callable[[str], None]) -> None:
             values = profile.T
             x_axis = np.arange(profile.shape[0], dtype=float)
             y_axis = np.arange(profile.shape[1], dtype=float)
-        elif plot_type == "Line":
+        elif plot_type in {"Line", "Histogram", "Boxplot"}:
             individual_styles = use_curve_styles and len(group) > 1
             lines = tuple(
                 PreviewLine(
@@ -1260,6 +1493,12 @@ def render(_navigate: Callable[[str], None]) -> None:
                 if dual_y_axes_active(group, active_controls) else None
             ),
             secondary_y_limits=(current_secondary_y_limits() if dual_y_axes_active(group, active_controls) else None),
+            secondary_x_label=(str(plot_settings.secondary_x_axis_label.value or "") if dual_y_axes_active(group, active_controls) else None),
+            secondary_x_limits=(axis_limits_from_controls(plot_settings, "secondary_x") if dual_y_axes_active(group, active_controls) else None),
+            secondary_log_x=(bool(plot_settings.secondary_log_x.value) if dual_y_axes_active(group, active_controls) else None),
+            secondary_invert_x=(bool(plot_settings.secondary_invert_x.value) if dual_y_axes_active(group, active_controls) else None),
+            secondary_log_y=(bool(plot_settings.secondary_log_y.value) if dual_y_axes_active(group, active_controls) else None),
+            secondary_invert_y=(bool(plot_settings.secondary_invert_y.value) if dual_y_axes_active(group, active_controls) else None),
             show_markers=False,
             legend_position=str(active_controls.legend_position.value or "Top right"),
             show_grid=bool(active_controls.show_grid.value),
@@ -1372,14 +1611,14 @@ def render(_navigate: Callable[[str], None]) -> None:
             context.chart.options.update(options)
             context.chart.update()
         except (RuntimeError, TypeError, ValueError) as exc:
-            ui.notify(str(exc), type="negative")
+            notify(str(exc), type="negative")
 
     def reset_separate_y_limits(context: _SeparatePlotContext) -> None:
         try:
             populate_separate_y_limits(context)
             update_separate_chart(context)
         except (RuntimeError, TypeError, ValueError) as exc:
-            ui.notify(str(exc), type="negative")
+            notify(str(exc), type="negative")
 
     def remember_separate_plot_settings(context: _SeparatePlotContext) -> None:
         """Snapshot one plot before its transient controls are rebuilt."""
@@ -1527,7 +1766,7 @@ def render(_navigate: Callable[[str], None]) -> None:
         detail: str,
     ) -> None:
         if not latest_series or chart is None:
-            ui.notify("Plot profiles before downloading the figure.", type="warning")
+            notify("Plot profiles before downloading the figure.", type="warning")
             return
         try:
             dpi = int(get_export_settings().plot_dpi)
@@ -1550,11 +1789,11 @@ def render(_navigate: Callable[[str], None]) -> None:
             if artifact is None or not artifact.data:
                 raise RuntimeError("Plot export stopped before returning data.")
         except (RuntimeError, TimeoutError, TypeError, ValueError) as exc:
-            ui.notify(str(exc), type="negative")
+            notify(str(exc), type="negative")
             return
         cache_artifact(
             artifact,
-            source="Plotting",
+            source="Analysis",
             kind="plot",
             detail=detail,
             navigate_to="plotting",
@@ -1567,7 +1806,7 @@ def render(_navigate: Callable[[str], None]) -> None:
         try:
             groups = latest_groups()
         except ValueError as exc:
-            ui.notify(str(exc), type="negative")
+            notify(str(exc), type="negative")
             return
         separate = str(presentation.value or "Combined") == "Separate"
         shared_settings_surface.visible = not separate
@@ -1585,7 +1824,7 @@ def render(_navigate: Callable[[str], None]) -> None:
             try:
                 prepared = tuple((group, plot_options(group)) for group in groups)
             except (RuntimeError, TypeError, ValueError) as exc:
-                ui.notify(str(exc), type="negative")
+                notify(str(exc), type="negative")
                 return
         else:
             # Each separate plot receives a fresh natural representation and
@@ -1652,7 +1891,7 @@ def render(_navigate: Callable[[str], None]) -> None:
             except (RuntimeError, TypeError, ValueError) as exc:
                 result_charts.clear()
                 separate_plot_contexts.clear()
-                ui.notify(str(exc), type="negative")
+                notify(str(exc), type="negative")
                 preview_plot("Plot unavailable", kind="plotting")
 
     def update_combined_plot() -> None:
@@ -1687,21 +1926,44 @@ def render(_navigate: Callable[[str], None]) -> None:
             # leave the last valid chart in place until the edit is complete.
             return
         except (RuntimeError, TypeError) as exc:
-            ui.notify(str(exc), type="negative")
+            notify(str(exc), type="negative")
 
     async def plot_profiles() -> None:
-        nonlocal latest_series
-        plot_button.disable()
-        page_run = page_activity.begin("plotting")
+        nonlocal latest_series, latest_analysis, running, active_cancel
+        if running:
+            if active_cancel is not None:
+                active_cancel.set()
+                page_activity.stop("plotting")
+                sync_analysis_action()
+            return
+        running = True
+        active_cancel = Event()
+        cancel_event = active_cancel
+        sync_analysis_action()
+        page_run = page_activity.begin("plotting", cancel=cancel_event.set)
         completed_successfully = False
+
+        def check_cancelled() -> None:
+            if cancel_event.is_set():
+                raise CancelledError
+
         try:
-            selected = await run.io_bound(_collect_plot_series, tuple(sources))
-            if selected is None:
-                raise RuntimeError("Plot preparation stopped before returning data.")
+            result = await run.io_bound(
+                _prepare_analysis_profiles,
+                tuple(replace(source, selection=tuple(source.selection), array_cache=dict(source.array_cache)) for source in sources),
+                dict(smoothing_settings),
+                tuple(method for method, control in correlation_controls.items() if control.value) if analysis_enabled.value else None,
+                check_cancelled,
+            )
+            check_cancelled()
+            if result is None:
+                raise RuntimeError("Profile preparation stopped before returning data.")
+            selected, report = result
             first = next(iter(selected), None)
             if first is None:
                 raise RuntimeError("Plot preparation returned no profiles.")
             latest_series = selected
+            latest_analysis = report
             multiple = len(selected) > 1
             previous_styles = dict(curve_styles)
             if not multiple and first.form in {"x", "t"}:
@@ -1737,10 +1999,15 @@ def render(_navigate: Callable[[str], None]) -> None:
             if y_limits_automatic:
                 populate_automatic_y_limits()
             render_latest_plot()
+            render_analysis_report.refresh()
             completed_successfully = True
+        except CancelledError:
+            pass
         except (OSError, RuntimeError, TypeError, ValueError) as exc:
-            ui.notify(str(exc), type="negative")
+            notify(str(exc), type="negative")
         finally:
+            running = False
+            active_cancel = None
             sync_presentation_options()
             page_activity.finish("plotting", page_run, success=completed_successfully)
 
@@ -1783,6 +2050,7 @@ def render(_navigate: Callable[[str], None]) -> None:
     def dual_y_axes_changed() -> None:
         clear_automatic_y_limits()
         sync_staged_controls()
+        histogram_bin_sync.sync_to_data(redraw=False)
         if dual_y_axes_active(latest_series) and plot_settings.secondary_y_axis_label.value == "Value":
             plot_settings.secondary_y_axis_label.set_value(latest_series[1].name)
         try:
@@ -1792,12 +2060,17 @@ def render(_navigate: Callable[[str], None]) -> None:
             # previous right axis survives turning this option off.
             render_latest_plot()
         except ValueError as exc:
-            ui.notify(str(exc), type="negative")
+            notify(str(exc), type="negative")
 
     def sync_guide_visibility() -> None:
         sync_staged_controls(reset_axes=False)
 
     def live_setting_changed() -> None:
+        if secondary_y_limits_automatic and not updating_y_limits:
+            try:
+                populate_secondary_y_limits()
+            except ValueError:
+                return
         update_combined_plot()
 
     def line_type_changed() -> None:
@@ -1815,7 +2088,11 @@ def render(_navigate: Callable[[str], None]) -> None:
         render_latest_plot()
 
     def histogram_values() -> Any | None:
-        return latest_series[0].values if latest_series else None
+        if not latest_series:
+            return None
+        if dual_y_axes_active(latest_series):
+            return latest_series[0].values
+        return np.concatenate([item.values.reshape(-1) for item in latest_series])
 
     histogram_bin_sync = HistogramBinSynchronizer(
         plot_settings,
@@ -1839,14 +2116,33 @@ def render(_navigate: Callable[[str], None]) -> None:
     plot_settings.secondary_y_minimum.on_value_change(custom_secondary_y_limits_changed)
     plot_settings.secondary_y_maximum.on_value_change(custom_secondary_y_limits_changed)
     plot_settings.secondary_y_axis_label.on_value_change(live_setting_changed)
+    plot_settings.secondary_x_axis_label.on_value_change(live_setting_changed)
+    plot_settings.secondary_invert_x.on_value_change(live_setting_changed)
+    plot_settings.secondary_invert_y.on_value_change(live_setting_changed)
+
+    def secondary_scale_changed(*, reset_x: bool = False) -> None:
+        if reset_x:
+            plot_settings._automatic_axes.add("secondary_x")
+        try:
+            populate_secondary_y_limits()
+            update_combined_plot()
+        except ValueError as exc:
+            notify(str(exc), type="negative")
+
+    plot_settings.secondary_log_x.on_value_change(lambda: secondary_scale_changed(reset_x=True))
+    plot_settings.secondary_log_y.on_value_change(secondary_scale_changed)
+    analysis_enabled.on_value_change(analysis_enabled_changed)
+    for control in correlation_controls.values():
+        control.on_value_change(invalidate_analysis_report)
     presentation.on_value_change(presentation_changed)
     plot_button.on_click(plot_profiles)
     sync_presentation_options()
     sync_staged_controls()
 
     def clear_plot_output() -> None:
-        nonlocal latest_series
+        nonlocal latest_series, latest_analysis
         latest_series = ()
+        latest_analysis = None
         result_charts.clear()
         separate_plot_contexts.clear()
         curve_styles.clear()
@@ -1855,6 +2151,7 @@ def render(_navigate: Callable[[str], None]) -> None:
         shared_settings_surface.visible = True
         shared_settings_surface.update()
         render_curve_settings.refresh()
+        render_analysis_report.refresh()
         result_slot.clear()
         with result_slot:
             preview_plot("No plot yet", kind="plotting")

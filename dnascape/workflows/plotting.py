@@ -723,7 +723,7 @@ def combined_mapping_plot_options(
         ]
         options = build_options(named.result, **kwargs)
         series = list(options.get("series", ()))
-        accepted_series = {"custom"} if histogram else {"line", "scatter"}
+        accepted_series = {"custom"} if histogram and not bool(plot_kwargs.get("density")) else {"line", "scatter"}
         if not series or any(item.get("type") not in accepted_series for item in series):
             raise ValueError(
                 "This output cannot be combined. Choose Individual to view each dataset."
@@ -743,14 +743,14 @@ def combined_mapping_plot_options(
             )
             line_style = dict(item.get("lineStyle", {}))
             line_style["color"] = curve_color
-            if not histogram:
+            if not histogram or bool(plot_kwargs.get("density")):
                 line_style["type"] = curve_dash_pattern((line_types or {}).get(
                     (named.key, output_key, series_index), str(plot_kwargs.get("line_type") or "solid"),
                 ))
             item["lineStyle"] = line_style
             item_style = dict(item.get("itemStyle", {}))
             item_style["color"] = curve_color
-            if histogram:
+            if histogram and not bool(plot_kwargs.get("density")):
                 # Semi-transparent bars preserve every distribution when
                 # their shared bins occupy the same coordinates.
                 item_style["opacity"] = 0.48

@@ -171,6 +171,8 @@ def test_two_dataset_plot_has_optional_independent_y_axes_and_curve_patterns() -
             assert axes[0]["max"] < 10
             assert axes[1]["max"] > 3000
             assert control("y-minimum")._props["label"] == "Y1 min"
+            assert control("x-minimum")._props["label"] == "X1 min"
+            assert [axis["position"] for axis in options()["xAxis"]] == ["bottom", "top"]
             assert control("y-maximum")._props["label"] == "Y1 max"
             await user.should_see(marker="plotting-y2-minimum")
             assert control("y2-maximum").value == pytest.approx(axes[1]["max"])
@@ -184,7 +186,8 @@ def test_two_dataset_plot_has_optional_independent_y_axes_and_curve_patterns() -
                 control("curve-type").set_value("dashed")
             await asyncio.sleep(0)
             assert [(axis["min"], axis["max"]) for axis in options()["yAxis"]] == [(0, 8), (500, 4000)]
-            assert options()["xAxis"]["inverse"] is True
+            assert options()["xAxis"][0]["inverse"] is True
+            assert options()["xAxis"][1]["inverse"] is False
             assert all(axis["axisLine"]["onZero"] is False for axis in options()["yAxis"])
             assert all(series["lineStyle"]["type"] == "dashed" for series in options()["series"])
             user.find("Curves").click()
@@ -201,9 +204,26 @@ def test_two_dataset_plot_has_optional_independent_y_axes_and_curve_patterns() -
             user.find(marker="plotting-reset-y-limits").click()
             await asyncio.sleep(0)
             assert options()["yAxis"][0]["max"] < 8
+            with user.client:
+                control("log-x2").set_value(True)
+                control("log-y2").set_value(True)
+                control("invert-y2").set_value(True)
+                control("invert-x2").set_value(True)
+                control("x2-minimum").set_value(0.5)
+                control("x2-maximum").set_value(10)
+            await asyncio.sleep(0)
+            assert [axis["type"] for axis in options()["xAxis"]] == ["value", "log"]
+            assert [axis["type"] for axis in options()["yAxis"]] == ["value", "log"]
+            assert [axis["inverse"] for axis in options()["yAxis"]] == [False, True]
+            assert [axis["inverse"] for axis in options()["xAxis"]] == [True, True]
+            assert options()["xAxis"][1]["max"] == 10
+            user.find(marker="plotting-reset-x2-limits").click()
+            await asyncio.sleep(0)
+            assert options()["xAxis"][1]["max"] < 10
             user.find(marker="plotting-dual-y-axes").click()
             await asyncio.sleep(0)
             assert isinstance(options()["yAxis"], dict)
+            assert isinstance(options()["xAxis"], dict)
             assert "yAxisIndex" not in options()["series"][1]
             assert options()["yAxis"]["max"] > 3000
             assert control("y-minimum")._props["label"] == "Y min"

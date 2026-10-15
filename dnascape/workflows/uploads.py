@@ -128,6 +128,8 @@ class UploadInspection:
     semantic_form: str | None = None
     region_names: tuple[str, ...] = ()
     track_kind: str | None = None
+    source_layout: str | None = None
+    _normalized_payload: bytes | None = field(default=None, repr=False, compare=False)
     _table_data: Mapping[str, np.ndarray] = field(
         default_factory=lambda: MappingProxyType({}),
         repr=False,
@@ -239,6 +241,93 @@ def _decode_text(payload: bytes) -> str:
         return payload.decode("utf-8-sig")
     except UnicodeDecodeError as exc:
         raise UploadInspectionError("Text uploads must use UTF-8 encoding.") from exc
+
+
+def _geo_repliseq_payload(name: str, payload: bytes) -> bytes | None:
+    """Transpose GEO's text MAT layout, retaining all genomic coordinates.
+
+    GSE137764 stores chromosome/start/end and S1-S16 down the rows,
+    with genomic bins across the columns. Ordinary table limits still apply
+    to the resulting position-by-fraction table.
+    """
+
+    base_name = name.casefold().removesuffix(".gz")
+    if PurePath(base_name).suffix not in {".mat", ".map"}:
+        return None
+    stream = io.BytesIO(payload)
+    first = stream.readline().rstrip(b"\r\n").removeprefix(b"\xef\xbb\xbf")
+    data_start = stream.tell()
+    chromosomes = first.split(b"\t")
+    if not chromosomes or not all(
+        re.fullmatch(rb"chr[0-9A-Za-z_.-]+", value) for value in chromosomes
+    ):
+        return None
+    bins = len(chromosomes)
+    row_count = 1 + sum(1 for _line in stream)
+    if row_count != 19:
+        raise UploadInspectionError(
+            "GEO Repli-seq matrices require chromosome, start, end, and 16 S-phase rows."
+        )
+    if row_count > MAX_TABLE_COLUMNS:
+        raise UploadTooLargeError(
+            "The table contains too many columns to inspect safely in this local session."
+        )
+    if bins * row_count > min(MAX_TABLE_CELLS, MAX_ARRAY_ELEMENTS, MAX_DECOMPRESSED_BYTES // 8):
+        raise UploadTooLargeError(
+            "The GEO Repli-seq matrix exceeds the local inspection limit. "
+            "Split it into smaller genomic regions."
+        )
+
+    numeric = np.empty((18, bins), dtype=float)
+    stream.seek(data_start)
+    for index, raw_line in enumerate(stream):
+        line = raw_line.rstrip(b"\r\n")
+        if line.count(b"\t") + 1 != bins:
+            raise UploadInspectionError(
+                "GEO Repli-seq rows must contain the same number of genomic bins."
+            )
+        try:
+            values = np.fromiter(
+                (
+                    np.nan if cell.strip().casefold() in _MISSING_VALUES else float(cell)
+                    for cell in line.decode("ascii").split("\t")
+                ),
+                dtype=float,
+                count=bins,
+            )
+        except (ValueError, UnicodeDecodeError) as exc:
+            raise UploadInspectionError(
+                "GEO Repli-seq coordinate and fraction rows must be numeric."
+            ) from exc
+        if values.size != bins or np.any(np.isinf(values)):
+            raise UploadInspectionError(
+                "GEO Repli-seq coordinate and fraction rows must be numeric and finite or missing."
+            )
+        numeric[index] = values
+    coordinates = numeric[:2]
+    if (
+        not np.isfinite(coordinates).all()
+        or np.any(coordinates < 0)
+        or np.any(coordinates != np.floor(coordinates))
+        or np.any(coordinates[1] <= coordinates[0])
+    ):
+        raise UploadInspectionError(
+            "GEO Repli-seq bins require non-negative integer starts and larger ends."
+        )
+
+    output = io.StringIO()
+    writer = csv.writer(output, delimiter="\t", lineterminator="\n")
+    writer.writerow(("chrom", "start", "end", *(f"S{i}" for i in range(1, 17))))
+    for index, chromosome in enumerate(chromosomes):
+        writer.writerow((
+            chromosome.decode("ascii"), int(numeric[0, index]), int(numeric[1, index]),
+            *numeric[2:, index],
+        ))
+        if output.tell() > MAX_DECOMPRESSED_BYTES:
+            raise UploadTooLargeError(
+                "The transposed GEO Repli-seq table exceeds the 64 MB inspection limit."
+            )
+    return output.getvalue().encode("utf-8")
 
 
 def _sniff_delimiter(text: str, source_format: str) -> str | None:
@@ -1164,6 +1253,16 @@ def inspect_upload(
         "expected_form": expected_form,
     }
     if source_format in {"csv", "tsv", "txt", "bedgraph"}:
+        normalized = _geo_repliseq_payload(safe_name, payload) if source_format == "txt" else None
+        if normalized is not None:
+            return replace(
+                _inspect_table(source_format="tsv", **{**common, "payload": normalized}),
+                source_layout="geo_repliseq",
+                _normalized_payload=normalized,
+                warnings=(
+                    "GEO Repli-seq matrix transposed; coordinates and S1-S16 signals are preserved.",
+                ),
+            )
         return _inspect_table(source_format=source_format, **common)
     if source_format in {"npy", "npv"}:
         return _inspect_npy(source_format=source_format, **common)
@@ -1184,6 +1283,8 @@ def inspect_upload(
 
 
 def _payload_for_inspection(inspection: UploadInspection) -> bytes:
+    if inspection._normalized_payload is not None:
+        return inspection._normalized_payload
     _, payload, _ = _source_payload(inspection.name, inspection.content)
     return payload
 
