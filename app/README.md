@@ -37,17 +37,35 @@ restores the data-derived range. Plot titles are generated from the result.
 Time and space-time firing-rate fits use Weibull without a shape selector.
 Curve type supports Solid, Dashed, Dotted, and Dash-dot in Style and individual
 Curves controls. Individual curves can inherit the shared setting or override it.
-With exactly two combined curves, Plotting also offers **Two Y axes**, off by
+With exactly two combined curves, Analysis also offers **Two Y axes**, off by
 default. Y1 is on the left and Y2 on the right, each with independent limits and
 reset buttons; switching it off restores the shared Y scale.
 
-Data Manager fills empty genomic bins with zero by default, including for the
-ENCODE example. Zero and custom-value fills are applied after thresholding,
-smoothing, and value scaling, so the requested fill is unchanged in the output.
-Fill with minimum and Fill with maximum use each chromosome's finite values
+The Analysis page combines plotting with independent moving-average or Gaussian
+smoothing for each selected dataset. **Enable analysis** is off by default;
+switching it on changes **Plot** to **Analyse** and enables Pearson, Spearman,
+and Kendall tau correlations. The **Analysis report** below the plotting settings
+shows a full dataset-by-dataset matrix for each selected method. One download at
+the bottom includes every matrix and its paired sample counts, with CSV as the
+default and TSV available. Pairs use matching array indices over the shared span
+and exclude nonfinite values; inputs should have matching regions and resolutions.
+
+Data Manager offers the same missing-value options for every input type:
+Keep empty values, Fill with zero (default), Fill with a value, Fill with minimum,
+Fill with maximum, and Stop if detected. Full tables apply the policy to numeric
+signal columns while preserving labels and coordinates. Zero and custom-value
+fills are applied after thresholding, smoothing, and value scaling, so the
+requested fill is unchanged in the output.
+Fill with minimum and Fill with maximum use each profile or chromosome's finite values
 after thresholding and smoothing and fill empty bins before value scaling.
 These fills participate in the scaling calculation. If no finite values remain,
 the conversion reports an error because the requested minimum/maximum is undefined.
+Stop if detected rejects missing samples, including empty bins before interpolation
+and thresholded samples. GEO 16-fraction Repli-seq text matrices (`.mat`/`.mat.gz`)
+can be exported as tables or converted into chromosome-specific timing profiles
+using a cumulative sigmoid T50 fit or signal-weighted mean. Missing-value handling
+applies after timing extraction. See [Managing data](../README.md#managing-data)
+for a K562 BigWig conversion walkthrough.
 Mapping preserves blank rows and leading bins and reports remaining missing
 values by default. Interpolation and explicit fills retain bin positions;
 dropping missing bins is unsupported in the interface and `rtrack`. Only trailing
@@ -65,8 +83,8 @@ chosen calibration to express a firing rate. Repli-seq BigWig retains mean
 aggregation and its existing continuous-signal operations and preview.
 The OKseqHMM K562 OK-seq example links to the authors' hg19 fork-directionality
 BigWig at 1 kb resolution, with read-count cutoff 10 and no 15 kb smoothing.
-It selects Fork directionality, mean aggregation and Keep empty bins, preserving
-uncovered bins as missing rather than treating them as balanced forks. The
+It selects Fork directionality, mean aggregation and Fill with zero. Choose
+Keep empty values to retain uncovered bins as missing. The
 source is available in the [OKseqHMM published K562 results](https://github.com/CL-CHEN-Lab/OK-Seq/tree/master/published_results/K562).
 Mapping raw downloads start with TSV (the first format option) and compression
 disabled, for both individual and batch outputs.
@@ -145,8 +163,8 @@ same-quantity, same-form routes are excluded from the Mapping catalogue.
 
 ## Mapping code downloads
 
-Enable **Dev Mode** in Settings to show the **Code** button beside the workflow
-action. Mapping's menu exports the current controls as a Python script or a
+Enable **Developer mode** under Interface in Settings to show the **Code** button
+beside the workflow action. Mapping's menu exports the current controls as a Python script or a
 runnable ZIP. The other Code buttons remain placeholders.
 
 The ZIP contains `mapping.py`, the original input files (or an NPZ prepared
@@ -239,7 +257,7 @@ or duplicated in this folder.
   scientific calculation. Oldest entries are removed automatically above 30
   items per category, 80 total items, or 256 MB retained memory.
 - `app/preview_plotting.py` powers the shared result previews and standalone
-  Plotting workflow, including exact-width and edge-aware histogram bins,
+  Analysis workflow, including exact-width and edge-aware histogram bins,
   editable X ranges, filled uncertainty bands, and a default positionable
   mean/median/standard-deviation summary.
 - `app/static/styles.css` implements the DNAscape visual language and includes

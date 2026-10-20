@@ -4,17 +4,17 @@
 
 # DNAscape
 
-DNAscape is a local browser app for preparing, mapping, simulating, and plotting DNA replication data. It brings the main DNAscape workflows into one interface while keeping the computation on your computer.
+DNAscape is a local browser app for preparing, mapping, simulating, visualising, and analysing DNA replication data. It brings the main DNAscape workflows into one interface while keeping the computation on your computer.
 
 ## What you can do
 
 - **Prepare data:** import tables, NumPy profiles, bedGraph, or BigWig tracks; select genomic regions; bin, smooth, rescale, invert, or filter values; and export DNAscape-ready profiles.
 - **Map replication features:** infer supported kinetic targets from one or more compatible input profiles or constant values.
 - **Run simulations:** simulate replication from firing-rate and fork-speed profiles or constants, compare datasets, and inspect standard or detailed outputs.
-- **Plot results:** load multiple profiles, view them together or separately, adjust their presentation, and export publication-ready plots.
+- **Plot and analyse data:** compare multiple profiles, smooth each dataset independently, export plots, and calculate Pearson, Spearman, and Kendall tau correlations. Download all selected correlation matrices and paired sample counts in one CSV or TSV report.
 - **Reuse recent work:** reopen or download files and completed workflows retained in the current browser session.
 
-The app accepts common profile formats including CSV, TSV, TXT, NPY, NPZ, bedGraph, and BigWig. The Data Manager can also import public BigWig or bedGraph links.
+The app accepts common profile formats including CSV, TSV, TXT, NPY, NPZ, bedGraph, and BigWig. The Data Manager can load supported files from public links and import GEO 16-fraction Repli-seq text matrices (`.mat` or `.mat.gz`), including chromosome-specific replication timing extraction.
 
 ## Run locally
 
@@ -33,8 +33,8 @@ Python 3.13 (`winget install -e --id Python.Python.3.13`) and select it when cre
 ### 1. Download the repository
 
 ```bash
-git clone https://github.com/fberkemeier/DNAscape-dev.git
-cd DNAscape-dev
+git clone https://github.com/fberkemeier/DNAscape-devmode.git
+cd DNAscape-devmode
 ```
 
 ### 2. Create and activate a virtual environment
@@ -77,6 +77,24 @@ Open [http://127.0.0.1:8080](http://127.0.0.1:8080) in your browser. Keep the te
 3. Explore the generated outputs and plotting settings in the Preview panel.
 
 To try a file-based workflow, open **Data Manager** and use the bundled example at `examples/data/example/replication_timing_hESC.csv`.
+
+## Managing data
+
+Use **Data Manager** to turn a Repli-seq BigWig track into a replication-timing profile. This example prepares 1 kb bins with timings from **30 to 500 minutes**, spanning approximately eight hours.
+
+1. In **Data**, upload or drag in a BigWig file. Alternatively, open **Link**, select **Example: ENCODE Repli-seq (bigWig) - K562**, then click **Inspect**. You can also paste your own public BigWig URL and inspect it.
+2. In **Configure**, set **Prepare as** to **Replication timing**. Under **Region & binning**, choose **One chromosome**, select the chromosome and Start/End coordinates, set **Bin size (bp)** to **1000**, and keep **Aggregation** at **Mean**.
+3. Under **Values**, set **Value scaling** to **Target interval**, **Target minimum** to **30**, and **Target maximum** to **500**. Check **Invert** so higher Repli-seq scores become earlier replication times.
+4. Set **Missing values** to **Fill with a value**, and **Fill value** to **30**. Custom fills are applied after scaling, so missing bins become exactly 30 minutes.
+5. Under **Output**, optionally enable **Show plot preview after conversion**, then click **Convert**. Download the result from **Generated files**; TSV is the default format. When using the profile in Mapping or Simulation, set the spatial resolution to **1 kb** to match the 1000 bp bins.
+
+The K562 example contains relative timing scores; rescaling them to 30–500 minutes assigns an assumed absolute time range. Filling missing bins with 30 assigns them the earliest time in this example. Other missing-value choices are **Keep empty values**, **Fill with zero** (the default), **Fill with minimum**, **Fill with maximum**, and **Stop if detected**.
+
+## Comparing and analysing data
+
+Open **Analysis** and upload the profiles you want to compare. Use matching genomic regions and resolutions: correlations pair samples by array index over their shared span. Each dataset can be smoothed independently with a moving average or Gaussian filter before plotting and analysis.
+
+Switch on **Enable analysis**, choose Pearson, Spearman, and/or Kendall tau, then click **Analyse**. The **Analysis report** below the plotting settings shows a matrix for each selected correlation. Its single download at the bottom includes every matrix and the paired sample counts, as CSV by default or TSV. With analysis switched off, the action remains **Plot** and the report is hidden.
 
 ## Local data and sessions
 
