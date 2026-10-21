@@ -82,9 +82,11 @@ def test_zero_or_one_iteration_still_returns_a_self_consistent_result(maxiter):
         assert info["fit_history"][-1] == info["fit_mse"]
 
 
-def test_periodic_model_keeps_its_existing_solver():
+def test_periodic_model_regularizes_rates_and_retains_the_legacy_opt_out():
     options = dict(resolution=10., maxiter=3, perQ=True, verbose=False)
     old = map_timing_firing(_sharp_timing(), stabilize=False, **options)
     current = map_timing_firing(_sharp_timing(), **options)
-    np.testing.assert_array_equal(current, old)
+    assert not np.array_equal(current, old)
+    assert current._rmap_info["fit_periodic_smoothing_kb"] > 0
+    assert old._rmap_info["fit_periodic_smoothing_kb"] == 0
     assert not current._rmap_info["fit_used_descent"]

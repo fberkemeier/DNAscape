@@ -61,7 +61,7 @@ def save_mapping_outputs(
             )
         path = folder / artifact.filename
         if path in paths:
-            raise ValueError(f"Several Mapping outputs use the filename {artifact.filename!r}.")
+            raise ValueError("Several Mapping outputs use the same filename.")
         path.write_bytes(artifact.data)
         paths.append(path)
     return tuple(paths)

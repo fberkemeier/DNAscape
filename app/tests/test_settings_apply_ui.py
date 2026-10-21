@@ -9,6 +9,7 @@ from nicegui.testing import user_simulation
 
 from app.export_settings import ExportSettings, get_export_settings
 from app.main import index
+from app.theme import DEFAULT_THEME_COLOR, theme_css
 
 
 def test_settings_drafts_apply_cancel_and_restore_defaults() -> None:
@@ -147,6 +148,79 @@ def test_invalid_control_font_sizes_cannot_partially_apply_settings(size) -> Non
             user.find(marker="settings-apply").click()
             assert settings.control_font_size_px == 18
             assert control("dialog").value is False
+
+    try:
+        asyncio.run(scenario())
+    finally:
+        for key, value in asdict(previous).items():
+            setattr(settings, key, value)
+
+
+def test_theme_applies_atomically_to_existing_logos_and_restores_defaults() -> None:
+    settings = get_export_settings()
+    previous = replace(settings)
+
+    async def scenario() -> None:
+        async with user_simulation(index) as user:
+            await user.open("/")
+            assert user.client is not None
+            body = next(element for element in user.client.elements.values() if element._props.get("selector") == "body")
+            logos = [element for element in user.client.elements.values() if element._props.get("data-dn-logo")]
+            assert len(logos) == 3
+            before = [logo._props["data-dn-logo-light"] for logo in logos]
+
+            def open_settings():
+                user.find(marker="app-menu-toggle").click()
+                user.find(marker="menu-settings").click()
+                return next(iter(user.find(marker="settings-theme-color").elements))
+
+            color = open_settings()
+            assert color.value == previous.theme_color
+            color.set_value("#2563eb")
+            assert settings == previous
+            assert [logo._props["data-dn-logo-light"] for logo in logos] == before
+            user.find(marker="settings-close").click()
+            await user.should_see("Changes have been made but not applied.")
+            user.find(marker="settings-discard-changes").click()
+            assert settings == previous
+            color = open_settings()
+            color.set_value("#2563eb")
+            user.find(marker="settings-apply").click()
+            assert settings.theme_color == "#2563eb"
+            assert body._props["style"]["--dn-theme-base"] == "#2563eb"
+            assert body._props["style"]["--dn-theme-dark"] == theme_css("#2563eb")["--dn-theme-dark"]
+            assert all(logo._props["data-dn-logo-light"] != value for logo, value in zip(logos, before))
+            assert body._props["props"]["data-dn-favicon-light"].startswith("data:image/svg+xml;base64,")
+            color = open_settings()
+            user.find(marker="settings-restore-defaults").click()
+            assert color.value == DEFAULT_THEME_COLOR
+            assert settings.theme_color == "#2563eb"
+            user.find(marker="settings-apply").click()
+            assert settings.theme_color == DEFAULT_THEME_COLOR
+            assert body._props["style"]["--dn-theme-base"] == DEFAULT_THEME_COLOR
+
+    try:
+        asyncio.run(scenario())
+    finally:
+        for key, value in asdict(previous).items():
+            setattr(settings, key, value)
+
+
+@pytest.mark.parametrize("invalid", (None, "", "not a colour", "#12345678"))
+def test_invalid_theme_cannot_partially_apply_other_settings(invalid) -> None:
+    settings = get_export_settings()
+    previous = replace(settings)
+
+    async def scenario() -> None:
+        async with user_simulation(index) as user:
+            await user.open("/")
+            user.find(marker="app-menu-toggle").click()
+            user.find(marker="menu-settings").click()
+            next(iter(user.find(marker="settings-theme-color").elements)).set_value(invalid)
+            next(iter(user.find(marker="settings-plot-dpi").elements)).set_value(240)
+            user.find(marker="settings-apply").click()
+            await user.should_see("Choose a valid theme colour")
+            assert settings == previous
 
     try:
         asyncio.run(scenario())

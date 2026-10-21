@@ -120,9 +120,12 @@ def snapshot_mapping_code(
         input_recipes[key] = item
 
     overrides = {
-        key: {"enabled": bool(_value(live.override)), "value": _value(live.control)}
+        key: {
+            "enabled": bool(_value(live.override)) if live.override is not None else key in settings,
+            "value": _value(live.control),
+        }
         for key, live in setting_controls.items()
-        if live.active and live.override is not None
+        if live.active and (live.override is not None or getattr(live, "automatic", False))
     }
     recipe = _literal({
         "method": method,
@@ -202,7 +205,7 @@ MAPPING = {format_value(snapshot.recipe)}
 
 # Raw data controls: output, filename, format, compression and batch overrides.
 # Use output="primary" to select the route's primary output. Formats:
-# TSV, TXT, CSV, NPY, NPV, NPZ. Compression: none, gzip, zip, 7z, xz.
+# TSV, TXT, CSV, NPZ. Compression: none, gzip, zip, 7z, xz.
 EXPORT_RAW = True
 RAW_EXPORT = {format_value(snapshot.raw_export)}
 

@@ -116,15 +116,17 @@ def test_mapping_catalog_exposes_only_the_physical_stall_rate_control() -> None:
         assert "stall_rate" not in route_setting_keys, route.method
 
 
-def test_simulation_ui_shows_resolution_aware_stall_probability() -> None:
+def test_simulation_ui_hides_stalling_until_enabled_and_resets_when_disabled() -> None:
     async def scenario() -> None:
         async with user_simulation(index) as user:
             await user.open("/")
             user.find(marker="nav-simulation").click()
             await user.should_see("Simulate DNA replication")
             user.find("Simulation settings").click()
+            await user.should_not_see(marker="simulation-stall-rate-per-kb")
+            await user.should_not_see(marker="simulation-stall-probability")
+            user.find(marker="simulation-fork-stalling").click()
             await user.should_see(marker="simulation-stall-rate-per-kb")
-            await user.should_see(marker="simulation-stall-probability")
 
             resolution = cast(
                 Number,
@@ -142,9 +144,9 @@ def test_simulation_ui_shows_resolution_aware_stall_probability() -> None:
                 resolution.set_value(5.0)
                 rate.set_value(0.17)
 
-            await user.should_see(
-                "At 5 kb/bin: 57.3% probability per directed bin.",
-                retries=20,
-            )
+            await user.should_not_see(marker="simulation-stall-probability")
+            user.find(marker="simulation-fork-stalling").click()
+            await user.should_not_see(marker="simulation-stall-rate-per-kb")
+            assert rate.value == 0
 
     asyncio.run(scenario())

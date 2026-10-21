@@ -9,6 +9,14 @@ from .simulation import rsim
 from .utils import check_cancelled, etaferr
 
 
+def _spatial_log_roughness(log_alpha, *, periodic):
+    """Mean neighbour penalty with equal weights over a line or full ring."""
+    if log_alpha.size <= 1:
+        return 0.0
+    differences = np.roll(log_alpha, -1) - log_alpha if periodic else np.diff(log_alpha)
+    return float(np.mean(differences**2))
+
+
 def fit_stochastic_weibull(
     observed_timing, fork_speed, *, resolution, resolution_time, time_grid,
     T0, target_form, weibull_shape, weibull_delay, fit_weibull_shape,
@@ -86,9 +94,7 @@ def fit_stochastic_weibull(
             raise ValueError("The supplied stalling model did not yield finite replication times.")
         residual = prediction[mask] - relative[mask]
         mse = float(np.mean(residual**2))
-        regularisation = alpha_smooth * float(np.mean(np.diff(log_alpha)**2)) if not temporal and log_alpha.size > 1 else 0.0
-        if perQ and not temporal:
-            regularisation += alpha_smooth * (log_alpha[0] - log_alpha[-1])**2 / log_alpha.size
+        regularisation = alpha_smooth * _spatial_log_roughness(log_alpha, periodic=perQ) if not temporal else 0.0
         regularisation += alpha_prior * float(np.mean((log_alpha - z_initial)**2))
         return mse + regularisation, mse, prediction, simulation
 

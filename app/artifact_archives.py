@@ -17,12 +17,14 @@ def build_artifact_archive(
     *,
     filename: str = "results.zip",
     max_source_bytes: int | None = None,
+    compress_all: bool = False,
 ) -> ExportArtifact:
     """Bundle generated artifacts into one safe, deterministic ZIP download.
 
     Only basenames are retained, duplicates receive stable numeric suffixes,
     and archive timestamps are fixed so the same inputs produce the same ZIP.
-    Already-compressed payloads are stored directly to avoid wasting CPU.
+    Already-compressed payloads are stored directly unless ``compress_all``
+    is requested (for example, for uncompressed NPZ members).
     """
 
     used_names: set[str] = set()
@@ -55,7 +57,7 @@ def build_artifact_archive(
 
             compression = (
                 zipfile.ZIP_STORED
-                if candidate.casefold().endswith((".gz", ".npz", ".zip"))
+                if not compress_all and candidate.casefold().endswith((".gz", ".npz", ".zip"))
                 else zipfile.ZIP_DEFLATED
             )
             info = zipfile.ZipInfo(candidate, date_time=(1980, 1, 1, 0, 0, 0))

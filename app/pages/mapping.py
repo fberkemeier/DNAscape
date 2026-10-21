@@ -15,10 +15,9 @@ import numpy as np
 from nicegui import run, ui
 
 from app.notifications import notify
+from app.raw_data_transfer import RawInputTarget, open_raw_artifact
 
 from dnascape.workflows.plotting import (
-    _closed_periodic_profile as _closed_periodic_profile,
-    _periodic_mapping as _periodic_mapping,
     _result_axis as _result_axis,
     combined_mapping_plot_options,
     mapping_automatic_y_limits as _mapping_automatic_y_limits,
@@ -87,6 +86,7 @@ from app.pages.common import (
     workflow_action_button,
     workflow_action_icon,
     data_upload,
+    append_raw_uploads,
     expansion,
     is_data_upload,
     page_intro,
@@ -254,6 +254,8 @@ class _SettingControl:
     override: Any | None = None
     holder: Any | None = None
     active: bool = True
+    automatic: bool = False
+    automatic_value: Any = None
 
 
 @dataclass
@@ -671,6 +673,8 @@ def _render_mapping_result(
     histogram_bin_size: float | None = None,
     histogram_x_limits: tuple[float, float] | None = None,
     histogram_touching: bool = True,
+    kde_bandwidth: float = 1.0,
+    histogram_grouped: bool = False,
     histogram_boundary: str = "left",
     x_limits: tuple[float, float] | None = None,
     z_limits: tuple[float, float] | None = None,
@@ -713,6 +717,8 @@ def _render_mapping_result(
         histogram_bin_size=histogram_bin_size,
         histogram_x_limits=histogram_x_limits,
         histogram_touching=histogram_touching,
+        kde_bandwidth=kde_bandwidth,
+        histogram_grouped=histogram_grouped,
         histogram_boundary=histogram_boundary,
     )
     return render_preview_chart(
@@ -772,16 +778,18 @@ def _setting_value(setting: Any) -> Any:
 def _setting_label(setting: Any) -> str:
     if setting.key == "tau":
         label = "Stall lifetime"
+    elif setting.key in {"space_maxiter", "temporal_maxiter"}:
+        label = "Space fit iterations" if setting.key == "space_maxiter" else "Time fit iterations"
     else:
         label = setting.label
     return f"{label} ({setting.unit})" if setting.unit else label
 
 
-def _render_setting_field(setting: Any) -> Any:
+def _render_setting_field(setting: Any, *, automatic: bool = False, initial: Any = None) -> Any:
     """Render one typed, route-valid setting and return its NiceGUI control."""
 
     marker = f"mapping-setting-{_slug(setting.key)}"
-    value = _setting_value(setting)
+    value = initial if automatic else _setting_value(setting)
     label = _setting_label(setting)
     if setting.kind == "boolean":
         return (
@@ -812,8 +820,15 @@ def _render_setting_field(setting: Any) -> Any:
             kwargs["max"] = setting.max_value
         if setting.step is not None:
             kwargs["step"] = setting.step
-        return ui.number(**kwargs).props("dense").classes("dn-field").mark(marker)
-    placeholder = "e.g. 0.5, 2.0" if setting.kind == "number_pair" else None
+        return (
+            ui.number(**kwargs)
+            .props('dense placeholder="Automatic"' if automatic else "dense")
+            .classes("dn-field")
+            .mark(marker)
+        )
+    placeholder = "Automatic" if automatic else (
+        "e.g. 0.5, 2.0" if setting.kind == "number_pair" else None
+    )
     control = ui.input(label=label, value=value, placeholder=placeholder)
     return control.props("dense").classes("dn-field").mark(marker)
 
@@ -821,6 +836,9 @@ def _render_setting_field(setting: Any) -> Any:
 def _render_setting(
     setting: Any,
     on_change: Callable[[], Any] | None = None,
+    *,
+    direct: bool = False,
+    inherited: Any = None,
 ) -> _SettingControl:
     """Render a setting, progressively disclosing nullable opt-in values."""
 
@@ -828,9 +846,15 @@ def _render_setting(
         needs_override = (not setting.required) and (
             not setting.has_default or (setting.nullable and setting.default is None)
         )
-        if needs_override:
+        automatic = direct and needs_override
+        automatic_value = inherited
+        if automatic and setting.key in {"error", "deviation_threshold"}:
+            automatic_value = 0.0
+        elif automatic and setting.kind == "boolean":
+            automatic_value = False
+        if needs_override and not direct:
             override_label = (
-                "Allow stall recovery" if setting.key == "tau" else f"Set {_setting_label(setting)}"
+                "Stall recovery" if setting.key == "tau" else f"Set {_setting_label(setting)}"
             )
             override = (
                 ui.checkbox(override_label, value=False)
@@ -842,13 +866,74 @@ def _render_setting(
             field_holder.bind_visibility_from(override, "value")
         else:
             override = None
-            control = _render_setting_field(setting)
-        control.tooltip(setting.description)
+            control = _render_setting_field(
+                setting, automatic=automatic, initial=automatic_value,
+            )
+        description = setting.description
+        if automatic:
+            description += " Leave blank to use the automatic value."
+            if setting.key in {"error", "deviation_threshold"}:
+                description += " Zero disables this threshold."
+        control.tooltip(description)
         if on_change is not None:
             control.on_value_change(on_change)
             if override is not None:
                 override.on_value_change(on_change)
-    return _SettingControl(setting=setting, control=control, override=override, holder=holder)
+    return _SettingControl(
+        setting=setting, control=control, override=override, holder=holder,
+        automatic=automatic, automatic_value=automatic_value,
+    )
+
+
+def _mapping_setting_group(setting: Any, keys: set[str]) -> str:
+    """Keep fitting stages prominent and secondary route controls together."""
+
+    if setting.category == "simulation":
+        return "simulation"
+    if setting.key in {"maxiter", "fit_step", "temporal_maxiter", "temporal_fit_step"}:
+        return "fitting"
+    if setting.key in {"space_maxiter", "space_fit_step"} and "maxiter" not in keys:
+        return "fitting"
+    return "advanced"
+
+
+def _sync_contextual_mapping_settings(
+    route: MappingRoute, controls: Mapping[str, _SettingControl], input_forms: Mapping[str, DataForm],
+) -> None:
+    """Hide secondary controls which the selected scientific branch ignores."""
+
+    periodic = controls.get("perQ")
+    is_periodic = periodic is not None and bool(periodic.control.value)
+    variable_speed = input_forms.get("fork_speed") in {"x", "t", "xt"}
+    stall = controls.get("stall_rate_per_kb") or controls.get("stall_rate")
+    stalled = False
+    if stall is not None and (stall.override is None or stall.override.value):
+        try:
+            stalled = float(stall.control.value or 0.) > 0
+        except (TypeError, ValueError):
+            pass  # Allow incomplete field edits.
+    active = {"refine_edge_kb": not is_periodic}
+    if route.target == "firing_rate" and route.output_dependence == "space":
+        active["deviation_threshold"] = not (variable_speed or stalled)
+    if route.target == "firing_rate" and route.output_dependence == "constant":
+        active["neighbourhood_range"] = not variable_speed
+    for key, enabled in active.items():
+        live = controls.get(key)
+        if live is not None:
+            live.active = enabled
+            if live.holder is not None:
+                live.holder.set_visibility(enabled)
+
+
+_MAPPING_SETTING_ORDER = (
+    "maxiter", "fit_step", "space_maxiter", "space_fit_step",
+    "temporal_maxiter", "temporal_fit_step",
+)
+
+_MAPPING_ADVANCED_ORDER = (
+    "err_threshold", "deviation_threshold", "space_maxiter", "space_fit_step",
+    "refine_edge_kb", "neighbourhood_range", "error",
+)
 
 
 def _render_route_setting_groups(
@@ -858,6 +943,7 @@ def _render_route_setting_groups(
     target_shape: str | None = None,
     input_forms: Mapping[str, DataForm] | None = None,
     on_change: Callable[[], Any] | None = None,
+    advanced_container: Any | None = None,
 ) -> dict[str, _SettingControl]:
     """Render categorized controls for one route and one UI location."""
 
@@ -866,41 +952,74 @@ def _render_route_setting_groups(
         for setting in route.active_settings(target_shape, input_forms)
         if setting.location == location
     )
-    if not settings:
+    if not settings and advanced_container is None:
         ui.label("No additional controls are needed for this route.").classes(
             "dn-mapping-input-hint"
         )
         return {}
     controls: dict[str, _SettingControl] = {}
-    present_categories = set(setting.category for setting in settings)
+    keys = {setting.key for setting in settings}
+    groups = {
+        setting.key: (
+            _mapping_setting_group(setting, keys) if location == "settings" else setting.category
+        ) for setting in settings
+    }
+    present_categories = set(groups.values())
     categories = tuple(
         category for category in _SETTING_CATEGORY_LABELS if category in present_categories
     ) + tuple(
         dict.fromkeys(
-            setting.category
+            groups[setting.key]
             for setting in settings
-            if setting.category not in _SETTING_CATEGORY_LABELS
+            if groups[setting.key] not in _SETTING_CATEGORY_LABELS
         )
     )
     with ui.element("div").classes("dn-mapping-settings-themes"):
         for category in categories:
-            category_settings = tuple(
-                setting for setting in settings if setting.category == category
-            )
-            with (
-                ui.column()
-                .classes(
-                    "dn-setting-group dn-mapping-settings-theme"
-                    + (" dn-mapping-settings-theme-untitled" if category == "domain" else "")
-                )
-                .mark(f"mapping-settings-{category}")
-            ):
-                if category != "domain":
-                    ui.label(_SETTING_CATEGORY_LABELS.get(category, category.title())).classes(
-                        "dn-setting-group-title"
+            category_settings = [setting for setting in settings if groups[setting.key] == category]
+            if location == "settings":
+                ordered_keys = _MAPPING_ADVANCED_ORDER if category == "advanced" else _MAPPING_SETTING_ORDER
+                order = {key: index for index, key in enumerate(ordered_keys)}
+                category_settings.sort(key=lambda item: order.get(item.key, len(order)))
+            if category == "advanced" and advanced_container is not None:
+                container = advanced_container
+            else:
+                container = (
+                    ui.column()
+                    .classes(
+                        "dn-setting-group dn-mapping-settings-theme"
+                        + (" dn-mapping-settings-theme-untitled" if category == "domain" else "")
+                        + (" dn-mapping-settings-advanced" if category == "advanced" else "")
                     )
+                    .mark(f"mapping-settings-{category}")
+                )
+                with container:
+                    if category != "domain":
+                        ui.label(_SETTING_CATEGORY_LABELS.get(category, category.title())).classes(
+                            "dn-setting-group-title"
+                        )
+                    if category == "advanced":
+                        container = ui.element("div").classes("dn-mapping-settings-grid")
+            with container:
                 for setting in category_settings:
-                    controls[setting.key] = _render_setting(setting, on_change)
+                    parent_key = {"space_fit_step": "fit_step", "space_maxiter": "maxiter"}.get(setting.key)
+                    inherited = controls[parent_key].control.value if parent_key in controls else None
+                    controls[setting.key] = _render_setting(
+                        setting, on_change, direct=category == "advanced", inherited=inherited,
+                    )
+    def bind_inherited(child: _SettingControl, parent: _SettingControl) -> None:
+        def follow_parent() -> None:
+            untouched = child.control.value in (None, "", child.automatic_value)
+            child.automatic_value = parent.control.value
+            if untouched:
+                child.control.set_value(child.automatic_value)
+
+        parent.control.on_value_change(follow_parent)
+
+    for child_key, parent_key in (("space_fit_step", "fit_step"), ("space_maxiter", "maxiter")):
+        child, parent = controls.get(child_key), controls.get(parent_key)
+        if child is not None and parent is not None and child.automatic:
+            bind_inherited(child, parent)
     if route.method in {
         "timing_and_speed_to_firing_rate", "timing_to_firing_constant_fork_speed",
     } and "fit_step" in controls:
@@ -1119,6 +1238,10 @@ def _read_setting(live: _SettingControl) -> Any:
     if live.override is not None and not bool(live.override.value):
         raise KeyError(setting.key)
     value = live.control.value
+    if live.automatic and (value in (None, "") or value == live.automatic_value):
+        # Preserve None's backend semantics (automatic bounds, inherited steps,
+        # disabled tolerances) without an extra opt-in checkbox.
+        raise KeyError(setting.key)
     if setting.kind == "boolean":
         return bool(value)
     if setting.kind == "integer":
@@ -1982,7 +2105,7 @@ def _render_mapping_input(
                         )
                     elif mode == "scalar":
                         units = _SCALAR_UNITS.get(input_spec.key, "")
-                        label = f"Constant value{f' ({units})' if units else ''}"
+                        label = f"Value{f' ({units})' if units else ''}"
                         scalar = (
                             ui.number(
                                 label=label,
@@ -3359,8 +3482,8 @@ def render(_navigate: Callable[[str], None]) -> None:
                         )
                         region_end = (
                             ui.number(
-                                label="End boundary (kb, exclusive)",
-                                value=1000.0,
+                                label="End (kb)",
+                                value=10_000.0,
                                 min=0.000001,
                                 step=1.0,
                             )
@@ -3412,7 +3535,7 @@ def render(_navigate: Callable[[str], None]) -> None:
                                     location="region",
                                     target_shape=str(target_shape_control.value or ""),
                                     input_forms=selected_forms,
-                                    on_change=lambda: invalidate_mapping_result(),
+                                    on_change=scientific_setting_changed,
                                 )
                             )
                         periodic = region_setting_controls.get("perQ")
@@ -3429,13 +3552,52 @@ def render(_navigate: Callable[[str], None]) -> None:
                             )
                         sync_whole_region_bounds()
 
+                    def scientific_setting_changed() -> None:
+                        _sync_contextual_mapping_settings(
+                            selected_route_state["route"],
+                            {**region_setting_controls, **mapping_setting_controls},
+                            selected_forms,
+                        )
+                        invalidate_mapping_result()
+
                     render_region_settings()
 
                 with expansion("Mapping settings", icon="tune"):
+                    primary_settings = ui.element("div").classes("dn-mapping-settings")
+                    with (
+                        ui.column()
+                        .classes("dn-mapping-settings dn-mapping-settings-advanced")
+                        .mark("mapping-settings-advanced")
+                    ):
+                        ui.label("Advanced").classes("dn-setting-group-title")
+                        advanced_fields = ui.element("div").classes("dn-mapping-settings-grid")
+                        with ui.element("div").classes("dn-mapping-settings-grid"):
+                            _region_missing = (
+                                ui.select(
+                                    {
+                                        "error": "Report error",
+                                        "interpolate": "Interpolate",
+                                        "zero": "Replace with zero",
+                                    },
+                                    value="error",
+                                    label="Missing values",
+                                )
+                                .props("dense options-dense")
+                                .classes("dn-field")
+                                .mark("mapping-region-missing")
+                            )
+                            show_plot = (
+                                ui.checkbox("Show Plot", value=True)
+                                .classes("dn-mapping-setting-checkbox")
+                                .mark("mapping-show-plot")
+                            )
+                            show_plot.on_value_change(lambda: render_latest_result())
+
                     @ui.refreshable
                     def render_mapping_settings() -> None:
                         route = selected_route_state["route"]
                         mapping_setting_controls.clear()
+                        advanced_fields.clear()
                         with (
                             ui.element("div")
                             .classes("dn-mapping-settings")
@@ -3451,28 +3613,16 @@ def render(_navigate: Callable[[str], None]) -> None:
                                         if target_shape_control.value is not None
                                         else None
                                     ),
-                                    on_change=lambda: invalidate_mapping_result(),
+                                    on_change=scientific_setting_changed,
+                                    advanced_container=advanced_fields,
                                 )
                             )
-
-                    render_mapping_settings()
-                    show_plot = ui.checkbox("Show Plot", value=True).mark("mapping-show-plot")
-                    show_plot.on_value_change(lambda: render_latest_result())
-                    with ui.element("div").classes("dn-mapping-settings-grid"):
-                        _region_missing = (
-                            ui.select(
-                                {
-                                    "error": "Report error",
-                                    "interpolate": "Interpolate",
-                                    "zero": "Replace with zero",
-                                },
-                                value="error",
-                                label="Missing values",
-                            )
-                            .props("dense options-dense")
-                            .classes("dn-field")
-                            .mark("mapping-region-missing")
+                        _sync_contextual_mapping_settings(
+                            route, {**region_setting_controls, **mapping_setting_controls}, selected_forms,
                         )
+
+                    with primary_settings:
+                        render_mapping_settings()
 
                 def render_mapping_code_menu() -> None:
                     ui.menu_item(
@@ -3803,7 +3953,7 @@ def render(_navigate: Callable[[str], None]) -> None:
                                             value=mapping_batch_line_types.get(
                                                 color_key, str(plot_settings.line_type.value or "solid")
                                             ),
-                                            label="Curve type",
+                                            label="Type",
                                         ).props("dense options-dense").classes("dn-field").mark(
                                             f"mapping-dataset-curve-type-{curve_index + 1}"
                                         )
@@ -3842,6 +3992,7 @@ def render(_navigate: Callable[[str], None]) -> None:
                     file_name=f"{RMAP_FILE_PREFIX}_{output_file_token(initial_output_key)}",
                     default_type="TSV",
                     default_compress=False,
+                    on_open=lambda controls, destination: download_raw(controls, open_in=destination),
                     on_remove=lambda _controls: remove_mapping_result(
                         active_dataset_key
                     ),
@@ -3944,6 +4095,7 @@ def render(_navigate: Callable[[str], None]) -> None:
                                         file_name=preference.file_name,
                                         default_type=preference.file_type,
                                         default_compress=preference.compress,
+                                        on_open=lambda controls, destination, named=item: download_named_raw(named, controls, open_in=destination),
                                         on_download=(
                                             lambda controls, named=item: download_named_raw(
                                                 named,
@@ -4303,6 +4455,7 @@ def render(_navigate: Callable[[str], None]) -> None:
                                 plot_type=resolved_plot_type(),
                                 histogram_bins=int(_read_number(histogram_bins, "Histogram bins")),
                                 density=bool(density.value),
+                                kde_bandwidth=float(plot_settings.kde_bandwidth.value or 1.0),
                                 log_y=bool(log_y.value),
                                 log_x=bool(log_x.value),
                                 histogram_bin_size=(
@@ -4562,6 +4715,7 @@ def render(_navigate: Callable[[str], None]) -> None:
                 async def download_named_raw(
                     named: _NamedMappingResult,
                     controls: RawOutputControls,
+                    *, open_in: str | None = None,
                 ) -> None:
                     try:
                         selection = snapshot_named_raw_export(
@@ -4574,6 +4728,9 @@ def render(_navigate: Callable[[str], None]) -> None:
                         )
                     except (RuntimeError, TypeError, ValueError) as exc:
                         notify(str(exc), type="negative")
+                        return
+                    if open_in is not None:
+                        await open_raw_artifact(artifact, open_in, _navigate, preferred_input=output_key)
                         return
                     cache_artifact(
                         artifact,
@@ -4658,7 +4815,7 @@ def render(_navigate: Callable[[str], None]) -> None:
                         )
                     ui.download(archive.data, archive.filename, archive.media_type)
 
-                async def download_raw(controls: RawOutputControls) -> None:
+                async def download_raw(controls: RawOutputControls, *, open_in: str | None = None) -> None:
                     if latest_result is None:
                         notify("Run Mapping before downloading data.", type="warning")
                         return
@@ -4671,7 +4828,7 @@ def render(_navigate: Callable[[str], None]) -> None:
                             latest_result,
                         ),
                     )
-                    await download_named_raw(named, controls)
+                    await download_named_raw(named, controls, open_in=open_in)
 
                 def current_mapping_plot_settings() -> dict[str, Any]:
                     """Read the same preview settings for the UI and exported code."""
@@ -4693,7 +4850,7 @@ def render(_navigate: Callable[[str], None]) -> None:
                         secondary_color=str(second_curve_color.value or "#2596be"),
                         palette=str(heatmap_palette.value or "viridis"),
                         histogram_bins=int(_read_number(histogram_bins, "Histogram bins")),
-                        line_width=float(_read_number(line_width, "Curve thickness")),
+                        line_width=float(_read_number(line_width, "Thickness")),
                         line_type=str(plot_settings.line_type.value or "solid"),
                         show_markers=False,
                         show_colorbar=bool(colorbar.value),
@@ -4707,13 +4864,15 @@ def render(_navigate: Callable[[str], None]) -> None:
                         show_legend=bool(show_legend.value),
                         legend_position=str(legend_position.value or "Top right"),
                         show_histogram_statistics=bool(show_histogram_statistics.value),
-                        histogram_statistics_position=str(histogram_statistics_position.value or "Top right"),
+                        histogram_statistics_position=str(histogram_statistics_position.value or "Bottom right"),
                         histogram_bin_size=(
                             float(plot_settings.histogram_bin_size.value)
                             if plot_settings.histogram_bin_size.value is not None else None
                         ),
                         histogram_x_limits=histogram_x_limits_from_controls(plot_settings, log_x=bool(log_x.value)),
                         histogram_touching=bool(histogram_touching.value),
+                        kde_bandwidth=float(plot_settings.kde_bandwidth.value or 1.0),
+                        histogram_grouped=bool(plot_settings.histogram_grouped.value),
                         histogram_boundary=str(histogram_boundary.value or "left"),
                         show_grid=bool(show_grid.value),
                         y_limits=current_y_limits(),
@@ -5589,3 +5748,24 @@ def render(_navigate: Callable[[str], None]) -> None:
                     "mapping",
                     refresh_mapping_page,
                 )
+
+                def raw_input_targets():
+                    async def receive(key, files):
+                        if running:
+                            raise ValueError("Stop Mapping before adding input data.")
+                        live = mapping_input_controls[key]
+                        if live.override is not None:
+                            live.override.set_value(True)
+                        mode = live.surface.get("mode")
+                        if mode is not None:
+                            mode.set_value("profile")
+                        for _ in range(4):
+                            await asyncio.sleep(0)
+                        await append_raw_uploads(lambda: mapping_input_controls[key].surface.get("uploader"), files)
+                    return tuple(
+                        RawInputTarget(key, live.spec.label, lambda files, key=key: receive(key, files))
+                        for key, live in mapping_input_controls.items()
+                        if live.spec.allows_upload and any(form in {"x", "t", "xt"} for form in live.spec.forms)
+                    )
+
+                current_session_cache().register_input_targets("mapping", raw_input_targets)

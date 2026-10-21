@@ -75,10 +75,11 @@ def test_combined_kde_contains_only_two_smooth_curves() -> None:
     assert chart["series"][0]["z"] > chart["series"][1]["z"]
 
 
-def test_kde_bottom_statistics_leave_room_for_the_x_axis_label() -> None:
+def test_kde_statistics_share_the_legend_panel_inside_the_plot() -> None:
     chart = options("Histogram", density=True, show_histogram_statistics=True,
-                    histogram_statistics_position="Bottom right")
-    assert chart["grid"]["bottom"] >= 100
+                    legend_position="Bottom right")
+    assert chart["graphic"][0]["bottom"] == chart["grid"]["bottom"] + 8
+    assert chart["legend"]["show"] is False
     assert "Mean" in chart["graphic"][0]["style"]["text"]
 
 

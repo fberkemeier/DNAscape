@@ -9,6 +9,8 @@ import uuid
 from collections import OrderedDict
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, field, replace
+from contextlib import contextmanager
+from contextvars import ContextVar
 from pathlib import PurePath
 from typing import Any, Literal
 
@@ -37,6 +39,17 @@ MAX_ITEMS = 200
 MAX_TOTAL_ITEMS = 500
 MAX_TOTAL_BYTES = 2 * 1024 * 1024 * 1024
 MAX_SESSION_CACHES = 32
+_INTERNAL_UPLOAD = ContextVar("dnascape_internal_upload", default=False)
+
+
+@contextmanager
+def internal_upload():
+    """Do not duplicate transferred data or individual simulations in cache."""
+    token = _INTERNAL_UPLOAD.set(True)
+    try:
+        yield
+    finally:
+        _INTERNAL_UPLOAD.reset(token)
 
 
 def _safe_filename(value: str) -> str:
@@ -129,6 +142,7 @@ class SessionCache:
     _active_entries: dict[str, str] = field(default_factory=dict)
     _output_clearers: dict[str, Callable[[], None]] = field(default_factory=dict)
     _page_refreshers: dict[str, Callable[[], None]] = field(default_factory=dict)
+    _input_target_providers: dict[str, Callable[[], Sequence[Any]]] = field(default_factory=dict)
     _tracked_categories: set[CacheCategory] = field(
         default_factory=lambda: set(DEFAULT_TRACKED_CATEGORIES)
     )
@@ -358,6 +372,16 @@ class SessionCache:
     def unregister_page_refresher(self, slug: str) -> None:
         self._page_refreshers.pop(str(slug), None)
 
+    def register_input_targets(self, slug: str, provider: Callable[[], Sequence[Any]]) -> None:
+        self._input_target_providers[str(slug)] = provider
+
+    def unregister_input_targets(self, slug: str) -> None:
+        self._input_target_providers.pop(str(slug), None)
+
+    def input_targets(self, slug: str) -> Sequence[Any]:
+        provider = self._input_target_providers.get(str(slug))
+        return provider() if provider is not None else ()
+
     def refresh_page(self, slug: str) -> None:
         callback = self._page_refreshers.get(str(slug))
         if callback is not None:
@@ -525,6 +549,8 @@ def cache_upload(
     source: str,
     navigate_to: str,
 ) -> CacheEntry | None:
+    if _INTERNAL_UPLOAD.get():
+        return None
     cache = current_session_cache()
     if not cache.is_tracking("uploads"):
         return None

@@ -24,9 +24,14 @@ def test_full_symmetric_matrices_match_scipy_including_rank_ties() -> None:
         np.testing.assert_array_equal(matrix.sample_counts, np.full((3, 3), 5))
         np.testing.assert_allclose(matrix.coefficients, matrix.coefficients.T)
         np.testing.assert_allclose(np.diag(matrix.coefficients), 1)
+        assert matrix.p_values is not None and not matrix.p_values.flags.writeable
+        np.testing.assert_allclose(matrix.p_values, matrix.p_values.T, equal_nan=True)
+        assert np.isnan(np.diag(matrix.p_values)).all()
         for i in range(3):
             for j in range(i + 1, 3):
-                assert matrix.coefficients[i, j] == pytest.approx(functions[matrix.method](values[i], values[j]).statistic)
+                expected = functions[matrix.method](values[i], values[j])
+                assert matrix.coefficients[i, j] == pytest.approx(expected.statistic)
+                assert matrix.p_values[i, j] == pytest.approx(expected.pvalue)
 
 
 def test_missing_pairs_and_unequal_lengths_are_filtered_without_shifting_indices() -> None:
@@ -46,6 +51,8 @@ def test_constant_and_insufficient_pairs_are_undefined_and_dependences_are_not_m
     for matrix in report.matrices:
         assert np.isnan(matrix.coefficients[:2]).all()
         assert np.isnan(matrix.coefficients[2, 3])
+        assert np.isnan(matrix.p_values[:2]).all()
+        assert np.isnan(matrix.p_values[2, 3])
         assert matrix.sample_counts[2, 3] == 0
 
 
@@ -96,3 +103,29 @@ def test_correlation_calculation_can_be_cancelled() -> None:
 
     with pytest.raises(CancelledError):
         analyse_profiles([AnalysisDataset("A", np.arange(5))], cancel=cancel)
+
+
+@pytest.mark.parametrize("file_format,delimiter", [("csv", ","), ("tsv", "\t")])
+@pytest.mark.parametrize("include_p_values", [False, True])
+def test_combined_report_keeps_all_correlations_and_counts_in_dataset_rows(file_format, delimiter, include_p_values):
+    values = [np.array([1., 3, 2, 7, np.nan, 5]), np.array([4., 3, 2, 1, 99, 5])]
+    report = analyse_profiles([AnalysisDataset(name, data) for name, data in zip(["A, first", "B"], values)])
+    rows = list(csv.reader(io.StringIO(export_correlation_report(
+        report, file_format=file_format, combined=True, include_p_values=include_p_values,
+    ).decode()), delimiter=delimiter))
+    assert len(rows) == 3 and [row[0] for row in rows] == ["Dataset", "A, first", "B"]
+    assert len(rows[0]) == 1 + 3 * 2 * (3 if include_p_values else 2)
+    for matrix in report.matrices:
+        method = {"spearman": "Spearman", "pearson": "Pearson", "kendall": "Kendall tau"}[matrix.method]
+        for index, name in enumerate(report.names):
+            prefix = f"{method}: {name}"
+            assert float(rows[1][rows[0].index(f"{prefix} (coefficient)")]) == pytest.approx(matrix.coefficients[0, index])
+            assert int(rows[1][rows[0].index(f"{prefix} (paired samples)")]) == matrix.sample_counts[0, index]
+            if include_p_values:
+                value = rows[1][rows[0].index(f"{prefix} (p-value)")]
+                if index == 0:
+                    assert value == ""
+                else:
+                    assert float(value) == pytest.approx(matrix.p_values[0, index])
+    if not include_p_values:
+        assert all("(p-value)" not in name for name in rows[0])

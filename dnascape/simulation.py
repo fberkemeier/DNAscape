@@ -210,6 +210,29 @@ def _as_inverse_speed_field(field, name, n_bins):
     return kind, 1.0 / values, time_points
 
 
+def _validated_fork_speed_std(value):
+    try:
+        value = float(value)
+    except (TypeError, ValueError) as exc:
+        raise ValueError("fork_speed_std must be finite and non-negative (kb/min).") from exc
+    if not np.isfinite(value) or value < 0:
+        raise ValueError("fork_speed_std must be finite and non-negative (kb/min).")
+    return value
+
+
+def _positive_normal_speeds(rng, mean, standard_deviation, *, size):
+    """Draw local fork speeds, resampling the unphysical non-positive tail."""
+
+    with np.errstate(over="ignore", invalid="ignore"):
+        speeds = np.asarray(rng.normal(mean, standard_deviation, size=size), dtype=float)
+        means = np.broadcast_to(mean, speeds.shape)
+        invalid = (~np.isfinite(speeds)) | (speeds <= 0)
+        while np.any(invalid):
+            speeds[invalid] = rng.normal(means[invalid], standard_deviation)
+            invalid = (~np.isfinite(speeds)) | (speeds <= 0)
+    return speeds
+
+
 def _normalise_firing_rate(firing_rate=None, ori_rate=None, initiation_rate=None):
     supplied = [
         name
@@ -387,6 +410,7 @@ def simulate_replication(
     _prepared_inverse_speed_field=None,
     stall_rate_per_kb=None,
     _compute_inter_origin_distances=True,
+    fork_speed_std=0.0,
 ):
     """Run one stochastic replication simulation.
 
@@ -396,8 +420,12 @@ def simulate_replication(
     ``interval_kb``. ``stall_rate_per_kb`` is a physical stall density and is
     converted to a per-bin probability after resolving the spatial resolution.
     ``stall_rate`` remains the legacy probability-per-bin input.
+    ``fork_speed_std`` enables normally distributed speeds in kb/min around the
+    local input speed, independently by bin, direction, and replicate (also by
+    time slice for temporal fields). Non-positive draws are resampled.
     """
     rng = np.random.default_rng() if rng is None else rng
+    fork_speed_std = _validated_fork_speed_std(fork_speed_std)
     if resolution_x is not None:
         resolution_space = resolution_x
     if resolution_t is not None:
@@ -531,6 +559,39 @@ def simulate_replication(
         if inv_v_scalar is None:
             raise RuntimeError("The prepared fork-speed field has an invalid kind.")
         return resolution_space * inv_v_scalar + stall_delay_right[k_to]
+
+    if fork_speed_std > 0:
+        if v_kind in {"scalar", "x"}:
+            means = 1.0 / inv_v_values
+            inverse_forward = 1.0 / _positive_normal_speeds(rng, means, fork_speed_std, size=n)
+            inverse_backward = 1.0 / _positive_normal_speeds(rng, means, fork_speed_std, size=n)
+
+            def _edge_forward(t_here, k_to):
+                return resolution_space * inverse_forward[k_to] + stall_delay_left[k_to]
+
+            def _edge_backward(t_here, k_to):
+                return resolution_space * inverse_backward[k_to] + stall_delay_right[k_to]
+        else:
+            # Sample only encountered space-time cells. Reuse each draw when
+            # propagation is revisited (for example with fork-coupled factors),
+            # without allocating two additional full space-time matrices.
+            forward_samples = {}
+            backward_samples = {}
+
+            def stochastic_inverse(t_here, k_to, samples):
+                row = _row_for_time(t_here)
+                key = row * n + k_to
+                if key not in samples:
+                    inverse = inv_v_t[row] if inv_v_t is not None else inv_v_xt[row, k_to]
+                    speed = _positive_normal_speeds(rng, 1.0 / inverse, fork_speed_std, size=1)[0]
+                    samples[key] = 1.0 / speed
+                return samples[key]
+
+            def _edge_forward(t_here, k_to):
+                return resolution_space * stochastic_inverse(t_here, k_to, forward_samples) + stall_delay_left[k_to]
+
+            def _edge_backward(t_here, k_to):
+                return resolution_space * stochastic_inverse(t_here, k_to, backward_samples) + stall_delay_right[k_to]
 
     # firing proposals t0
     t0 = np.full(n, np.inf, float)
@@ -1007,6 +1068,7 @@ def rsim(
     retain_rep_times_limit=None,
     stall_rate_per_kb=None,
     retain_inter_origin_distances_limit=None,
+    fork_speed_std=0.0,
 ):
     """Run replicate stochastic simulations and return averaged features.
 
@@ -1024,10 +1086,13 @@ def rsim(
     Per-simulation profiles, pooled inter-origin distances, one-dimensional
     time courses, and space-time fields have independent retention/statistics
     controls; inter-origin distances do not require either time-statistics flag.
+    ``fork_speed_std`` enables independent, positive normal speed draws around
+    the local input speed in kb/min for every supported speed dependence.
     """
     params = {
         "firing_rate": firing_rate,
         "fork_speed": fork_speed,
+        "fork_speed_std": fork_speed_std,
         "sim_number": sim_number,
         "resolution_space": resolution_space,
         "resolution_time": resolution_time,
@@ -1103,6 +1168,7 @@ def rsim(
 
     firing_rate = params["firing_rate"]
     fork_speed = params["fork_speed"]
+    fork_speed_std = _validated_fork_speed_std(params["fork_speed_std"])
     sim_number = params["sim_number"]
     resolution_space = params["resolution_space"]
     resolution_time = params["resolution_time"]
@@ -1398,6 +1464,7 @@ def rsim(
             _prepared_firing_field=prepared_firing_field,
             _prepared_inverse_speed_field=prepared_inverse_speed_field,
             _compute_inter_origin_distances=retain_this_iod,
+            fork_speed_std=fork_speed_std,
         )
 
         if rep_times_per_sim is not None and i <= retained_rep_times:
@@ -1684,6 +1751,10 @@ _RSIM_INPUT_DESCRIPTIONS = {
     "fork_speed": (
         "Replication fork speed in kb/min. Accepts scalar, spatial, "
         "time-only, or space-time forms."
+    ),
+    "fork_speed_std": (
+        "Standard deviation in kb/min of independent normal speeds around the local "
+        "input speed. Zero disables speed variation. Non-positive draws are resampled."
     ),
     "sim_number": "Number of independent stochastic S phases to simulate and summarize.",
     "resolution_space": "Spatial bin size in kb.",

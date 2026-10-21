@@ -135,11 +135,51 @@ def test_all_mapping_targets_families_forms_and_shapes_render_exact_controls(
             actual_controls.update(controls)
 
         expected_markers = {f"mapping-setting-{_slug(key)}" for key in expected_settings}
+        assert not route.single_phase_fit_aliases.keys() & actual_controls.keys()
+        if route.target == "firing_rate" and route.output_dependence in {"constant", "space"}:
+            key = "deviation_threshold" if route.output_dependence == "space" else "neighbourhood_range"
+            if key in actual_controls:
+                expected_active = forms.get("fork_speed") not in {"x", "t", "xt"}
+                assert actual_controls[key].active is expected_active, (route.method, forms, key)
+                assert actual_controls[key].holder.visible is expected_active, (route.method, forms, key)
+        if "refine_edge_kb" in actual_controls and "perQ" in actual_controls:
+            await _set(user, "mapping-setting-perq", True)
+            edge = actual_controls["refine_edge_kb"]
+            assert edge.active is False, (route.method, forms, shape)
+            assert edge.holder.visible is False, (route.method, forms, shape)
+            with pytest.raises(KeyError):
+                mapping_page._read_setting(edge)
+            await _set(user, "mapping-setting-perq", False)
+            assert edge.active is True
+            assert edge.holder.visible is True
         for key, live in actual_controls.items():
             assert live.setting == expected_settings[key]
             assert not live.control.is_deleted
             if live.override is not None:
                 expected_markers.add(f"mapping-setting-{_slug(key)}-override")
+            if live.setting.location == "settings":
+                # Every dynamic route shares the same three-section layout;
+                # numerical options must never return as a separate section.
+                ancestor = live.holder
+                section_markers: set[str] = set()
+                while ancestor is not None:
+                    section_markers.update(ancestor._markers)
+                    ancestor = ancestor.parent_slot.parent if ancestor.parent_slot else None
+                assert section_markers & {
+                    "mapping-settings-fitting", "mapping-settings-simulation", "mapping-settings-advanced",
+                }, (route.method, key)
+                if "mapping-settings-advanced" in section_markers:
+                    assert live.override is None, (route.method, key)
+                if key.endswith("sim_number"):
+                    assert live.control.value == 100, (route.method, key)
+            if live.automatic:
+                with pytest.raises(KeyError):
+                    mapping_page._read_setting(live)
+        assert not any(
+            marker in {"mapping-settings-numerics", "mapping-settings-integration"}
+            for element in user.client.elements.values() if not element.is_deleted
+            for marker in element._markers
+        )
         live_markers = [
             marker for element in user.client.elements.values() if not element.is_deleted
             for marker in element._markers if marker.startswith("mapping-setting-")

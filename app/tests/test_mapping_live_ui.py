@@ -469,7 +469,9 @@ def test_mapping_batch_runs_all_files_tabs_exports_and_preserves_previous_result
             assert all(
                 item["type"] == "custom" for item in histogram_chart.options["series"]
             ), (view.value, histogram_chart.options["series"])
-            assert histogram_chart.options["legend"]["show"] is True
+            assert histogram_chart.options["legend"]["show"] is False
+            assert len(histogram_chart.options["graphic"]) == 1
+            assert len(histogram_chart.options["dnascapeHistogramGuides"]["choices"]) == 2
             density = cast(
                 Checkbox,
                 next(iter(user.find(marker="mapping-density").elements)),
@@ -959,7 +961,7 @@ def test_mapping_plot_settings_redraw_the_completed_preview(
             )
             user.find(marker="action-map").click()
             await user.should_see(marker="mapping-result-plot", retries=30)
-            user.find("Plotting settings").click()
+            user.find("Plot settings").click()
 
             def chart() -> EChart:
                 return cast(
@@ -1151,16 +1153,15 @@ def test_mapping_plot_settings_redraw_the_completed_preview(
             await asyncio.sleep(0)
             statistics_position = cast(
                 Select,
-                next(iter(user.find(marker="mapping-histogram-statistics-position").elements)),
+                next(iter(user.find(marker="mapping-legend-position").elements)),
             )
             with user.client:
                 statistics_position.set_value("Bottom right")
             await asyncio.sleep(0)
             await asyncio.sleep(0)
             summary = chart().options["graphic"][0]
-            assert summary["right"] == 28
-            assert summary["bottom"] == 8
-            assert chart().options["grid"]["bottom"] >= 100
+            assert summary["right"] == chart().options["grid"]["right"] + 8
+            assert summary["bottom"] == chart().options["grid"]["bottom"] + 8
             assert "Mean" in summary["style"]["text"]
             assert "Median" in summary["style"]["text"]
             assert "Std dev" in summary["style"]["text"]
@@ -1262,7 +1263,7 @@ def test_mapping_axis_limits_remain_editable_and_resettable(
                 await user.should_see(marker="mapping-result-plot", retries=30)
             except AssertionError:
                 raise AssertionError(user.notify.messages) from None
-            user.find("Plotting settings").click()
+            user.find("Plot settings").click()
 
             def chart() -> EChart:
                 return cast(EChart, next(iter(user.find(marker="mapping-result-plot").elements)))
@@ -1541,6 +1542,7 @@ def test_whole_region_toggle_disables_region_and_progress_has_no_value_label() -
             )
 
             assert whole_region.value is False
+            assert end.value == 10_000.0
             assert start.enabled and end.enabled
             assert progress._props["size"] == "4px"
             assert not progress.default_slot.children
@@ -1603,7 +1605,7 @@ def test_scalar_mapping_preview_uses_a_visible_point() -> None:
     assert series["data"] == [[0.0, 12.5]]
 
 
-def test_periodic_spatial_preview_closes_the_ring_at_the_next_bin() -> None:
+def test_periodic_spatial_preview_ends_at_the_last_returned_bin() -> None:
     from app.pages.mapping import _mapping_plot_options
 
     result = MappingResult(
@@ -1644,7 +1646,6 @@ def test_periodic_spatial_preview_closes_the_ring_at_the_next_bin() -> None:
         [10.0, 0.1],
         [11.0, 0.3],
         [12.0, 0.2],
-        [13.0, 0.1],
     ]
 
 

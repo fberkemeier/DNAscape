@@ -452,7 +452,7 @@ def test_scientific_pages_share_expansion_and_action_dock_hooks() -> None:
                 expansion_by_label = {
                     expansion._props.get("label"): expansion for expansion in expansions
                 }
-                plotting_settings = expansion_by_label["Plotting settings"]
+                plotting_settings = expansion_by_label["Plot settings"]
                 raw_data = expansion_by_label["Raw data"]
                 assert "dn-preview-settings-section" in plotting_settings._classes
                 assert "dn-output-section" in raw_data._classes
@@ -470,8 +470,8 @@ def test_scientific_pages_share_expansion_and_action_dock_hooks() -> None:
             expansion_by_label = {
                 expansion._props.get("label"): expansion for expansion in expansions
             }
-            assert set(expansion_by_label) == {"Data", "Analysis", "Plotting settings"}
-            plotting_settings = expansion_by_label["Plotting settings"]
+            assert set(expansion_by_label) == {"Data", "Analysis", "Plot settings"}
+            plotting_settings = expansion_by_label["Plot settings"]
             assert "dn-preview-settings-section" in plotting_settings._classes
             assert "dn-expansion" in plotting_settings._classes
             await user.should_see(marker="scientific-action-dock")
@@ -557,7 +557,7 @@ def test_data_manager_preserves_data_and_queues_page_local_converted_files() -> 
             await user.should_see(marker="data-manager-empty-result")
             user.find(marker="action-convert").click()
             await user.should_see(marker="data-manager-result-1", retries=60)
-            await user.should_not_see(marker="data-manager-result-preview")
+            await user.should_see(marker="data-manager-result-preview", retries=60)
             await user.should_see("Complete in", retries=60)
             await user.should_not_see(marker="data-manager-result-plot")
             await user.should_not_see(marker="data-manager-empty-result")
@@ -685,7 +685,7 @@ def test_plotting_commits_data_once_then_updates_plot_settings_live() -> None:
             assert chart().options["series"][0]["name"] == "signal"
             assert chart().options["xAxis"]["name"] == "Position (kb)"
 
-            user.find("Plotting settings").click()
+            user.find("Plot settings").click()
             await user.should_not_see("Curves")
             await user.should_see(marker="plotting-primary-color")
             await user.should_see(marker="plotting-line-width")
@@ -723,7 +723,7 @@ def test_plotting_commits_data_once_then_updates_plot_settings_live() -> None:
             color_grid = color_surface.parent_slot.parent
             assert color_grid.parent_slot is not None
             style_group = color_grid.parent_slot.parent
-            assert thickness.parent_slot.parent is style_group
+            assert thickness.parent_slot.parent is color_grid
             assert any(
                 isinstance(child, Label) and child.text == "Style"
                 for child in style_group.default_slot.children
@@ -785,7 +785,7 @@ def test_plotting_commits_data_once_then_updates_plot_settings_live() -> None:
                 Select,
                 next(
                     iter(
-                        user.find(marker="plotting-histogram-statistics-position").elements
+                        user.find(marker="plotting-legend-position").elements
                     )
                 ),
             )
@@ -794,12 +794,12 @@ def test_plotting_commits_data_once_then_updates_plot_settings_live() -> None:
             await asyncio.sleep(0)
             await wait_for_chart(
                 lambda options: bool(options["graphic"])
-                and options["graphic"][0].get("left") == 84
-                and options["graphic"][0].get("bottom") == 8
+                and options["graphic"][0].get("left") == options["grid"]["left"] + 8
+                and options["graphic"][0].get("bottom") == options["grid"]["bottom"] + 8
             )
             summary = chart().options["graphic"][0]
-            assert summary["left"] == 84
-            assert summary["bottom"] == 8
+            assert summary["left"] == chart().options["grid"]["left"] + 8
+            assert summary["bottom"] == chart().options["grid"]["bottom"] + 8
             assert "Mean" in summary["style"]["text"]
             assert "Median" in summary["style"]["text"]
             assert "Std dev" in summary["style"]["text"]
@@ -1041,7 +1041,7 @@ def test_plotting_preserves_styles_when_switching_between_one_and_multiple_profi
                 ]
             )
             await user.should_see("Dependence: Space", retries=30)
-            user.find("Plotting settings").click()
+            user.find("Plot settings").click()
             color = cast(
                 Input,
                 next(iter(user.find(marker="plotting-primary-color").elements)),
@@ -1562,7 +1562,7 @@ def test_raw_output_fields_and_download_share_one_ordered_row() -> None:
                         if "dn-raw-output-type" in child._classes
                     ),
                 )
-                assert file_type.options == ["TSV", "TXT", "CSV", "NPY", "NPV", "NPZ"]
+                assert file_type.options == ["TSV", "TXT", "CSV", "NPZ"]
                 assert file_type.value == "TSV"
                 compression = cast(
                     Checkbox,
@@ -1626,7 +1626,7 @@ def test_simulation_preview_header_and_output_summary_have_stable_structure() ->
                 cast(Label, stat.default_slot.children[0]).text
                 for stat in run_stat_grid.default_slot.children
             ]
-            assert stat_labels == ["Replicates", "Resolution", "Region", "Geometry"]
+            assert stat_labels == ["Simulations (replicates)", "Resolution", "Region", "Geometry"]
             await user.should_see(marker="simulation-output")
             await user.should_not_see(marker="simulation-stats")
 
@@ -1762,7 +1762,7 @@ def test_plot_controls_only_show_options_relevant_to_the_selected_view() -> None
             await user.open("/")
             user.find(marker="nav-mapping").click()
             await user.should_see("Map replication kinetic landscapes")
-            user.find("Plotting settings").click()
+            user.find("Plot settings").click()
             for marker in (
                 "mapping-heatmap-palette",
                 "mapping-colorbar",
@@ -1794,7 +1794,8 @@ def test_plot_controls_only_show_options_relevant_to_the_selected_view() -> None
             await user.should_see(marker="mapping-histogram-x-maximum")
             await user.should_see(marker="mapping-reset-histogram-x-limits")
             await user.should_see(marker="mapping-show-histogram-statistics")
-            await user.should_see(marker="mapping-histogram-statistics-position")
+            await user.should_not_see(marker="mapping-histogram-statistics-position")
+            await user.should_see(marker="mapping-legend-position")
             mapping_statistics = cast(
                 Checkbox,
                 next(iter(user.find(marker="mapping-show-histogram-statistics").elements)),
@@ -1832,7 +1833,7 @@ def test_plot_controls_only_show_options_relevant_to_the_selected_view() -> None
             await user.open("/")
             user.find(marker="nav-plotting").click()
             await user.should_see("Explore DNAscape data")
-            user.find("Plotting settings").click()
+            user.find("Plot settings").click()
             await user.should_see(marker="plotting-line-width")
             for marker in (
                 "plotting-heatmap-palette",
@@ -1863,7 +1864,8 @@ def test_plot_controls_only_show_options_relevant_to_the_selected_view() -> None
             await user.should_see(marker="plotting-histogram-x-maximum")
             await user.should_see(marker="plotting-reset-histogram-x-limits")
             await user.should_see(marker="plotting-show-histogram-statistics")
-            await user.should_see(marker="plotting-histogram-statistics-position")
+            await user.should_not_see(marker="plotting-histogram-statistics-position")
+            await user.should_see(marker="plotting-legend-position")
             plotting_statistics = cast(
                 Checkbox,
                 next(iter(user.find(marker="plotting-show-histogram-statistics").elements)),
@@ -1881,7 +1883,7 @@ def test_plot_controls_only_show_options_relevant_to_the_selected_view() -> None
             await user.open("/")
             user.find(marker="nav-simulation").click()
             await user.should_see("Simulate DNA replication")
-            user.find("Plotting settings").click()
+            user.find("Plot settings").click()
             for marker in (
                 "simulation-y-minimum",
                 "simulation-y-maximum",
@@ -1905,7 +1907,7 @@ def test_plot_controls_only_show_options_relevant_to_the_selected_view() -> None
             ):
                 await user.should_not_see(marker=marker)
             await user.should_see(marker="simulation-line-or-bar-color")
-            await user.should_not_see(marker="simulation-ensemble-profile-options")
+            await user.should_see(marker="simulation-ensemble-profile-options")
             for marker in (
                 "simulation-line-width",
                 "simulation-show-grid",
@@ -1927,7 +1929,8 @@ def test_plot_controls_only_show_options_relevant_to_the_selected_view() -> None
                 "simulation-show-histogram-statistics",
             ):
                 await user.should_see(marker=marker)
-            await user.should_see(marker="simulation-histogram-statistics-position")
+            await user.should_not_see(marker="simulation-histogram-statistics-position")
+            await user.should_see(marker="simulation-legend-position")
             simulation_statistics = cast(
                 Checkbox,
                 next(iter(user.find(marker="simulation-show-histogram-statistics").elements)),
@@ -1970,11 +1973,12 @@ def test_dependent_simulation_controls_follow_optional_toggles() -> None:
             await user.should_see("Simulate DNA replication")
             user.find("Simulation settings").click()
             await user.should_not_see(marker="simulation-seed")
-            user.find("Fixed seed").click()
+            user.find("Fix seed").click()
             await user.should_see(marker="simulation-seed")
 
             await user.should_not_see(marker="simulation-stall-duration")
-            user.find("Non-recovering").click()
+            user.find(marker="simulation-fork-stalling").click()
+            user.find("Stall recovery").click()
             await user.should_see(marker="simulation-stall-duration")
 
             await user.should_not_see(marker="simulation-pool-fields")
@@ -2047,12 +2051,14 @@ def test_constant_simulation_reports_progress_and_renders_worker_result(
             await user.should_see(marker="simulation-progress", retries=20)
             assert await asyncio.to_thread(started.wait, 2)
             await user.should_see("Running test ensemble...", retries=20)
+            status = next(iter(user.find(marker="simulation-status").elements))
+            assert status.text == "Running test ensemble..."
             assert requests
             request = requests[0]
             assert request.firing_rate == pytest.approx(0.01)
             assert request.fork_speed == pytest.approx(1.4)
             assert request.region_start_kb == pytest.approx(0.0)
-            assert request.region_end_kb == pytest.approx(1000.0)
+            assert request.region_end_kb == pytest.approx(1_000.0)
             assert request.replicates == 20
             assert request.geometry == "linear"
             assert request.track_detailed_outputs is False
@@ -2260,8 +2266,8 @@ def test_detailed_simulation_switch_exposes_xt_plot_and_live_downloads(
             assert "Replicated fraction" in available_outputs
             assert "Replicated fraction (space-time)" in available_outputs
 
-            user.find("Plotting settings").click()
-            with user.scope("Plotting settings"):
+            user.find("Plot settings").click()
+            with user.scope("Plot settings"):
                 await user.should_not_see(marker="simulation-output")
 
             y_minimum = cast(
@@ -2296,7 +2302,8 @@ def test_detailed_simulation_switch_exposes_xt_plot_and_live_downloads(
             assert line_chart.options["yAxis"]["max"] == pytest.approx(automatic_limits[1])
             assert line_chart.options["xAxis"]["position"] == "bottom"
             assert line_chart.options["series"][0]["lineStyle"]["width"] == pytest.approx(1.8)
-            assert line_chart.options["series"][0]["symbol"] == "line"
+            assert line_chart.options["series"][0]["symbol"] == "circle"
+            assert line_chart.options["series"][0]["showSymbol"] is False
             assert line_chart.options["series"][0]["showSymbol"] is False
             assert line_chart.options["xAxis"]["splitLine"]["show"] is True
             assert line_chart.options["legend"]["right"] == 28
@@ -2350,7 +2357,8 @@ def test_detailed_simulation_switch_exposes_xt_plot_and_live_downloads(
                 next(iter(user.find(marker="simulation-result-plot").elements)),
             )
             assert styled_chart.options["series"][0]["lineStyle"]["width"] == pytest.approx(3.2)
-            assert styled_chart.options["series"][0]["symbol"] == "line"
+            assert styled_chart.options["series"][0]["symbol"] == "circle"
+            assert styled_chart.options["series"][0]["showSymbol"] is False
             assert styled_chart.options["series"][0]["showSymbol"] is False
             assert styled_chart.options["xAxis"]["splitLine"]["show"] is False
             assert styled_chart.options["yAxis"]["splitLine"]["show"] is False
@@ -2477,7 +2485,7 @@ def test_detailed_simulation_switch_exposes_xt_plot_and_live_downloads(
                 Select,
                 next(
                     iter(
-                        user.find(marker="simulation-histogram-statistics-position").elements
+                        user.find(marker="simulation-legend-position").elements
                     )
                 ),
             )
@@ -2485,12 +2493,13 @@ def test_detailed_simulation_switch_exposes_xt_plot_and_live_downloads(
                 statistics_position.set_value("Top left")
             await asyncio.sleep(0)
             await asyncio.sleep(0)
-            summary = cast(
+            statistics_chart = cast(
                 EChart,
                 next(iter(user.find(marker="simulation-result-plot").elements)),
-            ).options["graphic"][0]
-            assert summary["left"] == 84
-            assert summary["top"] == 24
+            )
+            summary = statistics_chart.options["graphic"][0]
+            assert summary["left"] == statistics_chart.options["grid"]["left"] + 8
+            assert summary["top"] == statistics_chart.options["grid"]["top"] + 8
             assert "Mean" in summary["style"]["text"]
             assert "Median" in summary["style"]["text"]
             assert "Std dev" in summary["style"]["text"]

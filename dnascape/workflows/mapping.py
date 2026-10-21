@@ -65,7 +65,7 @@ _DIAGNOSTIC_KEYS = {
     "convergence_message", "optimizer_evaluations", "unreplicated_at_end",
     "identifiability", "forward_model", "firing_form", "speed_form",
     "regularization", "speed_anchor", "fit_objective", "fit_mse", "fit_used_descent",
-    "fit_edge_bins", "fit_taper_bins",
+    "fit_edge_bins", "fit_taper_bins", "fit_periodic_smoothing_kb",
     "terminal_survival", "extrapolated_tail", "tail_policy", "initial_policy",
     "timing_is_restricted_mean", "clipped_derivative_count", "derivative_method",
     "monotonic_policy", "temporal_smoothw", "density_floor", "unreplicated_floor",
@@ -1126,18 +1126,26 @@ def validate_mapping_request(
     if not route.supports_periodic(shape) and request.settings.get("perQ"):
         raise ValueError("The selected target and route support linear geometry only.")
     active_settings = {item.key: item for item in route.active_settings(shape, raw_forms)}
+    supplied_settings = dict(request.settings)
+    for alias, canonical in route.single_phase_fit_aliases.items():
+        if alias in supplied_settings:
+            value = supplied_settings.pop(alias)
+            if value is not None:
+                # Match the legacy fitter's explicit alias precedence while
+                # exposing only one control and one saved effective setting.
+                supplied_settings[canonical] = value
     setting_keys = set(active_settings)
     # Accept an explicit linear boundary from older callers, while exposing
     # no editable periodic control for a branch which cannot execute it.
     if request.settings.get("perQ") is False and any(item.key == "perQ" for item in route.settings):
         setting_keys.add("perQ")
-    unknown_settings = tuple(str(key) for key in request.settings if key not in setting_keys)
+    unknown_settings = tuple(str(key) for key in supplied_settings if key not in setting_keys)
     if unknown_settings:
         raise ValueError(
             f"The selected route does not accept setting(s): {', '.join(unknown_settings)}."
         )
     assumptions: dict[str, Any] = {}
-    for key, value in request.settings.items():
+    for key, value in supplied_settings.items():
         check_cancelled()
         if value is not None:
             assumptions[str(key)] = _normalise_setting(

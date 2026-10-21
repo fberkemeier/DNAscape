@@ -26,7 +26,7 @@ def test_profile_choices_preserve_shape_and_match_converted_values(form, policy)
     np.save(buffer, values)
     inspection = inspect_upload("signal.npy", buffer.getvalue())
     request = DataConversionRequest(
-        inspection=inspection, input_form=form, target_format="npy", missing_policy=policy, fill_value=7,
+        inspection=inspection, input_form=form, target_format="npz", missing_policy=policy, fill_value=7,
     )
     if policy == "error":
         with pytest.raises(ValueError, match="contain missing values"):
@@ -41,7 +41,8 @@ def test_profile_choices_preserve_shape_and_match_converted_values(form, policy)
         if form == "xt" and policy in {"min", "max"}:
             expected[1, 1] = fill * 10
     np.testing.assert_allclose(prepare_data(request).values, expected, equal_nan=True)
-    np.testing.assert_allclose(np.load(io.BytesIO(convert_data(request).artifact.data)), expected, equal_nan=True)
+    with np.load(io.BytesIO(convert_data(request).artifact.data), allow_pickle=False) as archive:
+        np.testing.assert_allclose(archive["values"], expected, equal_nan=True)
     if policy in {"min", "max", "fill"}:
         np.testing.assert_allclose(
             extract_values(inspection, data_form=form, missing_policy=policy, fill_value=7), expected,

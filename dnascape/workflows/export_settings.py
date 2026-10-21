@@ -16,8 +16,6 @@ DATA_FILE_FORMAT_OPTIONS = {
     "tsv": "TSV",
     "txt": "TXT",
     "csv": "CSV",
-    "npy": "NPY",
-    "npv": "NPV",
     "npz": "NPZ",
 }
 
@@ -47,6 +45,7 @@ class ExportSettings:
     dev_mode: bool = False
     conversion_memory_limit_mb: int = DEFAULT_CONVERSION_MEMORY_LIMIT_MB
     control_font_size_px: int = DEFAULT_CONTROL_FONT_SIZE_PX
+    theme_color: str = "#b03412"
 
 
 _EXPORT_SETTINGS = ExportSettings()
@@ -73,6 +72,7 @@ def reset_export_settings() -> ExportSettings:
     _EXPORT_SETTINGS.dev_mode = defaults.dev_mode
     _EXPORT_SETTINGS.conversion_memory_limit_mb = defaults.conversion_memory_limit_mb
     _EXPORT_SETTINGS.control_font_size_px = defaults.control_font_size_px
+    _EXPORT_SETTINGS.theme_color = defaults.theme_color
     return _EXPORT_SETTINGS
 
 

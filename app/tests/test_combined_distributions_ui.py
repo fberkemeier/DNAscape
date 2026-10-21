@@ -24,7 +24,7 @@ def test_combined_distributions_kde_and_independent_axes(view: str) -> None:
             await user.should_see("second.csv", retries=60)
             user.find(marker="action-plot").click()
             await user.should_see(marker="plotting-result-plot", retries=60)
-            user.find("Plotting settings").click()
+            user.find("Plot settings").click()
 
             def control(marker: str) -> Any:
                 return next(iter(user.find(marker=f"plotting-{marker}").elements))
@@ -75,7 +75,7 @@ def test_combined_distributions_kde_and_independent_axes(view: str) -> None:
                 assert kde_x.max() > 4000
                 assert control("x2-maximum").value == pytest.approx(chart()["xAxis"][1]["max"])
                 await user.should_not_see(marker="plotting-histogram-bins")
-                await user.should_see(marker="plotting-curve-type")
+                await user.should_not_see(marker="plotting-curve-type")
             user.find(marker="plotting-dual-y-axes").click()
             await asyncio.sleep(0)
             assert isinstance(chart()["xAxis"], dict) and isinstance(chart()["yAxis"], dict)

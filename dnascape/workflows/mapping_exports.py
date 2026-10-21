@@ -114,7 +114,7 @@ def build_mapping_raw_export(
     compression: str = "none",
     gzip_output: bool | None = None,
 ) -> ExportArtifact:
-    """Serialize one mapped member as CSV/TSV/TXT/NPY/NPV/NPZ.
+    """Serialize one mapped member as CSV/TSV/TXT/NPZ.
 
     Shapes follow :func:`dnascape.rdata`: spatial data are ``(X,)``, temporal
     data are ``(1, T)``, and space-time data are ``(X, T)``.  Bundle targets
@@ -127,7 +127,7 @@ def build_mapping_raw_export(
         if selected.values.size > MAX_TEXT_EXPORT_VALUES:
             raise ValueError(
                 f"Text export contains {selected.values.size:,} values; the interactive "
-                f"limit is {MAX_TEXT_EXPORT_VALUES:,}. Use NPY or NPZ instead."
+                f"limit is {MAX_TEXT_EXPORT_VALUES:,}. Use NPZ instead."
             )
         data = _text_bytes(selected, normalized_format)
     else:
@@ -137,7 +137,7 @@ def build_mapping_raw_export(
                 f"Binary export would contain at least {estimated / 1024**2:.1f} MiB; "
                 f"the local limit is {MAX_BINARY_EXPORT_BYTES / 1024**2:.0f} MiB."
             )
-        data = _binary_bytes(selected, normalized_format)
+        data = _binary_bytes(selected)
 
     default_name = f"{RMAP_FILE_PREFIX}_{output_file_token(selected.key)}"
     base_name = filename or default_name
@@ -160,8 +160,6 @@ def build_mapping_raw_export(
             "csv": "text/csv; charset=utf-8",
             "tsv": "text/tab-separated-values; charset=utf-8",
             "txt": "text/plain; charset=utf-8",
-            "npy": "application/octet-stream",
-            "npv": "application/octet-stream",
             "npz": "application/octet-stream",
         }[normalized_format],
         compression=selected_compression,
@@ -202,7 +200,7 @@ def build_mapping_comparison_raw_export(
         if matrix.size > MAX_TEXT_EXPORT_VALUES:
             raise ValueError(
                 f"Comparison export contains {matrix.size:,} values; the interactive limit "
-                f"is {MAX_TEXT_EXPORT_VALUES:,}. Use NPY or NPZ instead."
+                f"is {MAX_TEXT_EXPORT_VALUES:,}. Use NPZ instead."
             )
         stream: io.StringIO | io.BytesIO = io.StringIO(newline="")
         if normalized_format == "txt":
@@ -231,18 +229,15 @@ def build_mapping_comparison_raw_export(
                 f"the local limit is {MAX_BINARY_EXPORT_BYTES / 1024**2:.0f} MiB."
             )
         binary = io.BytesIO()
-        if normalized_format in {"npy", "npv"}:
-            np.save(binary, matrix, allow_pickle=False)
-        else:
-            np.savez(
-                binary,
-                axis=axis,
-                axis_name=np.asarray(axis_name),
-                observed=observed,
-                fitted=fitted,
-                source_key=np.asarray(comparison.source_key),
-                fitted_key=np.asarray(comparison.fitted_key),
-            )
+        np.savez(
+            binary,
+            axis=axis,
+            axis_name=np.asarray(axis_name),
+            observed=observed,
+            fitted=fitted,
+            source_key=np.asarray(comparison.source_key),
+            fitted_key=np.asarray(comparison.fitted_key),
+        )
         data = binary.getvalue()
 
     default_name = f"{RMAP_FILE_PREFIX}_{output_file_token(comparison.source_key)}-cmp"
@@ -266,8 +261,6 @@ def build_mapping_comparison_raw_export(
             "csv": "text/csv; charset=utf-8",
             "tsv": "text/tab-separated-values; charset=utf-8",
             "txt": "text/plain; charset=utf-8",
-            "npy": "application/octet-stream",
-            "npv": "application/octet-stream",
             "npz": "application/octet-stream",
         }[normalized_format],
         compression=selected_compression,
@@ -310,13 +303,9 @@ def _text_bytes(selected: SelectedMappingOutput, file_format: str) -> bytes:
     return stream.getvalue().encode("utf-8")
 
 
-def _binary_bytes(selected: SelectedMappingOutput, file_format: str) -> bytes:
+def _binary_bytes(selected: SelectedMappingOutput) -> bytes:
     values = _rdata_values(selected)
     stream = io.BytesIO()
-    if file_format in {"npy", "npv"}:
-        np.save(stream, values, allow_pickle=False)
-        return stream.getvalue()
-
     payload: dict[str, np.ndarray] = {
         "values": values,
         "data_form": np.asarray(selected.data_form),

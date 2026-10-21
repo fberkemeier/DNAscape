@@ -12,9 +12,8 @@ DEFAULT_MAPPING_MAX_TIME = 1200.0
 
 def mapping_defaults(route, settings, shape=None):
     overrides: dict[str, float | int] = {
-        item.key: 128 for item in settings
+        item.key: 100 for item in settings
         if item.key.endswith("sim_number") and item.has_default
-        and (item.default is not None or item.key != "sim_number")
     }
     if {"time_grid", "max_time"} <= {item.key for item in settings}:
         # Forward fields need a finite clock even when every input is static.

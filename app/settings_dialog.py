@@ -18,8 +18,10 @@ from app.export_settings import (
     ExportSettings,
     get_export_settings,
 )
+from app.icons import RESET_ICON
 from app.notifications import notify
 from app.result_naming import NAME_STYLE_OPTIONS
+from app.theme import THEME_SWATCHES, normalize_theme_color
 
 
 @dataclass
@@ -101,23 +103,33 @@ def settings_dialog(*, on_apply: Callable[[], None]) -> SettingsDialog:
             switch("show_examples", "Example links", "settings-show-examples")
             switch("show_help", "Field help", "settings-show-help")
             switch("dev_mode", "Developer mode", "settings-dev-mode")
-            controls["control_font_size_px"] = (
-                ui.number(
-                    label="Controls font size (px)",
-                    value=settings.control_font_size_px,
-                    min=MIN_CONTROL_FONT_SIZE_PX,
-                    max=MAX_CONTROL_FONT_SIZE_PX,
-                    step=1,
-                    validation={
-                        f"Enter a whole number from {MIN_CONTROL_FONT_SIZE_PX} "
-                        f"to {MAX_CONTROL_FONT_SIZE_PX}.": lambda value: (
-                            value is not None
-                            and MIN_CONTROL_FONT_SIZE_PX <= value <= MAX_CONTROL_FONT_SIZE_PX
-                            and float(value).is_integer()
-                        ),
-                    },
-                ).props("dense").classes("dn-field").mark("settings-control-font-size")
-            )
+            with ui.element("div").classes("dn-settings-grid"):
+                controls["theme_color"] = (
+                    ui.color_input(label="DNAscape theme", value=settings.theme_color, preview=True)
+                    .props("dense stack-label")
+                    .classes("dn-field dn-settings-theme-color")
+                    .mark("settings-theme-color")
+                )
+                controls["theme_color"].picker.q_color.props("format-model=hex")
+                controls["theme_color"].picker.q_color._props["palette"] = list(THEME_SWATCHES)
+                controls["theme_color"].button.props('dense aria-label="Choose theme colour"')
+                controls["control_font_size_px"] = (
+                    ui.number(
+                        label="Controls font size (px)",
+                        value=settings.control_font_size_px,
+                        min=MIN_CONTROL_FONT_SIZE_PX,
+                        max=MAX_CONTROL_FONT_SIZE_PX,
+                        step=1,
+                        validation={
+                            f"Enter a whole number from {MIN_CONTROL_FONT_SIZE_PX} "
+                            f"to {MAX_CONTROL_FONT_SIZE_PX}.": lambda value: (
+                                value is not None
+                                and MIN_CONTROL_FONT_SIZE_PX <= value <= MAX_CONTROL_FONT_SIZE_PX
+                                and float(value).is_integer()
+                            ),
+                        },
+                    ).props("dense").classes("dn-field").mark("settings-control-font-size")
+                )
         with ui.column().classes("dn-settings-section"):
             ui.label("Files and exports").classes("dn-setting-group-title")
             with ui.element("div").classes("dn-settings-grid"):
@@ -165,10 +177,15 @@ def settings_dialog(*, on_apply: Callable[[], None]) -> SettingsDialog:
             if not controls["control_font_size_px"].validate():
                 notify("Enter a valid controls font size.", type="negative")
                 return
+            try:
+                theme_color = normalize_theme_color(controls["theme_color"].value)
+            except ValueError as exc:
+                notify(str(exc), type="negative")
+                return
             for key, control in controls.items():
                 value = int(control.value) if key in {
                     "plot_dpi", "conversion_memory_limit_mb", "control_font_size_px",
-                } else control.value
+                } else theme_color if key == "theme_color" else control.value
                 setattr(settings, key, value)
             editor.load(settings)
             on_apply()
@@ -176,7 +193,7 @@ def settings_dialog(*, on_apply: Callable[[], None]) -> SettingsDialog:
             dialog.close()
 
         with ui.row().classes("dn-dialog-actions dn-settings-actions"):
-            ui.button("Restore defaults", icon="restart_alt", on_click=editor.restore_defaults).props(
+            ui.button("Restore defaults", icon=RESET_ICON, on_click=editor.restore_defaults).props(
                 "flat no-caps"
             ).classes("dn-action-compact").mark("settings-restore-defaults")
             editor.apply_button = (

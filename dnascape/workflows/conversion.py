@@ -31,6 +31,9 @@ from dnascape.workflows.uploads import (
 )
 from dnascape.workflows.result_naming import RDATA_FILE_PREFIX
 from dnascape.workflows.repliseq import replication_timing_from_fractions
+from dnascape.workflows.filtering import (
+    DataFilterSettings, apply_data_filter, filter_metadata, profile_chromosome, profile_coordinates, resolve_filter,
+)
 from dnascape.workflows.exports import ExportArtifact, safe_export_filename
 from dnascape.io import inspect_genomic_track, rdata, rload, rsave, rtrack
 
@@ -51,8 +54,6 @@ _FORM_TO_RDATA = {
     "track": "space",
 }
 _MEDIA_TYPES = {
-    "npy": "application/octet-stream",
-    "npv": "application/octet-stream",
     "npz": "application/zip",
     "txt": "text/plain; charset=utf-8",
     "tsv": "text/tab-separated-values; charset=utf-8",
@@ -193,6 +194,7 @@ class DataConversionRequest:
     memory_limit_mb: int = DEFAULT_CONVERSION_MEMORY_LIMIT_MB
     repliseq_timing_method: str | None = None
     s_phase_duration_min: float = 600.0
+    data_filter: DataFilterSettings = field(default_factory=DataFilterSettings)
 
 
 def _track_limits(request: DataConversionRequest) -> _TrackLimits:
@@ -508,6 +510,9 @@ def _normalized_request(request: DataConversionRequest) -> DataConversionRequest
             f"Conversion memory limit (MB) cannot exceed {MAX_CONVERSION_MEMORY_LIMIT_MB:,}."
         )
     input_form = _choice(request.input_form, "input dependence", _INPUT_FORMS)
+    data_filter = resolve_filter(request.data_filter)
+    if data_filter.enabled and input_form in {"scalar", "table"}:
+        raise ValueError("Filtering requires a profile. Choose a numeric profile rather than a constant or full table.")
     chromosome_scope = _choice(
         request.chromosome_scope,
         "chromosome scope",
@@ -686,6 +691,7 @@ def _normalized_request(request: DataConversionRequest) -> DataConversionRequest
         biological_role=biological_role,
         semantic_note=semantic_note,
         memory_limit_mb=memory_limit_mb,
+        data_filter=data_filter,
     )
 
 
@@ -1039,6 +1045,12 @@ def _prepare_repliseq_timing(
     invalid_bins = int(np.isnan(values).sum())
     values = _postprocess_profile_values(values, request, cancel)
     coordinates = np.arange(length, dtype=float) * (bin_size / 1000)
+    values = apply_data_filter(
+        values, request.data_filter, positions=coordinates,
+        intervals=(np.column_stack((coordinates, np.minimum(coordinates + bin_size / 1000, end / 1000)))
+                   if request.data_filter.enabled and request.data_filter.selection == "profile" else None),
+        chromosome=chromosome, cancel=cancel,
+    )
     metadata = dict(_profile_metadata(request))
     metadata.update(
         source_layout="geo_repliseq", chromosome=chromosome,
@@ -1194,7 +1206,7 @@ def _resolved_track_request(
                 f"The track contains {len(slices):,} sequences; labelled NPZ export supports "
                 f"at most {max_profiles:,}. Export TSV/CSV or reduce the sequence set."
             )
-    estimated_bytes = total_bins * _TRACK_ESTIMATED_BYTES_PER_BIN
+    estimated_bytes = total_bins * (_TRACK_ESTIMATED_BYTES_PER_BIN + (64 if request.data_filter.enabled else 0))
     if request.chromosome_scope == "all":
         estimated_bytes += padded_cells * np.dtype(float).itemsize
     if estimated_bytes > limits.max_bytes:
@@ -1449,6 +1461,7 @@ def _profile_metadata(request: DataConversionRequest) -> tuple[tuple[str, str], 
         )
         + _polishing_metadata(request)
         + _provenance_metadata(request)
+        + filter_metadata(request.data_filter)
     )
 
 
@@ -1483,6 +1496,7 @@ def _track_metadata(
         + _polishing_metadata(request)
         + scope_metadata
         + _provenance_metadata(request)
+        + filter_metadata(request.data_filter)
     )
 
 
@@ -1518,9 +1532,19 @@ def _processed_profile(
         cancel,
     )
     _check_cancelled(cancel)
+    coordinates = _slice_coordinates(item, request.bin_size)
+    intervals = None
+    if request.data_filter.enabled and request.data_filter.selection == "profile":
+        starts = np.arange(item.start, item.end, request.bin_size, dtype=np.int64)
+        intervals = np.column_stack((starts, np.minimum(starts + request.bin_size, item.end))) / 1000.
+    filtered = apply_data_filter(
+        np.asarray(table[request.value_name], dtype=float), request.data_filter,
+        positions=coordinates, intervals=intervals,
+        chromosome=item.chromosome, cancel=cancel,
+    )
     return (
-        np.asarray(table[request.value_name], dtype=float),
-        _slice_coordinates(item, request.bin_size),
+        filtered,
+        coordinates,
     )
 
 
@@ -1702,6 +1726,7 @@ def prepare_data(request: DataConversionRequest) -> PreparedData:
         missing_policy="interpolate" if request.missing_policy == "interpolate" else "ignore",
     )
     values = _postprocess_profile_values(values, request)
+    values = _filter_plain_values(values, request)
     labels: tuple[str, ...] = ()
     if request.value_column:
         labels = (request.value_column,)
@@ -1759,8 +1784,27 @@ def _plain_source(
     )
     labels = _source_labels(request, values)
     result = _postprocess_profile_values(values, request, cancel)
+    result = _filter_plain_values(result, request, cancel)
     _check_cancelled(cancel)
     return result, labels
+
+
+def _filter_plain_values(
+    values: np.ndarray, request: DataConversionRequest, cancel: _CancelChecker | None = None,
+) -> np.ndarray:
+    if not request.data_filter.enabled:
+        return values
+    length = values.size if values.ndim < 2 or values.shape[0] == 1 else values.shape[0]
+    positions, intervals = (profile_coordinates(request.inspection, length)
+                            if request.data_filter.selection == "profile" or request.data_filter.action == "interpolate"
+                            else (None, None))
+    chromosome = request.chromosome
+    if chromosome is None and request.data_filter.profile is not None and request.data_filter.profile.chromosomes is not None:
+        chromosome = profile_chromosome(request.inspection)
+    return _readonly(apply_data_filter(
+        values, request.data_filter, positions=positions, intervals=intervals,
+        chromosome=chromosome, cancel=cancel,
+    ))
 
 
 def _table_source(
@@ -2123,6 +2167,7 @@ __all__ = [
     "DEFAULT_TARGET_FORMAT",
     "DataConversionRequest",
     "DataConversionResult",
+    "DataFilterSettings",
     "DataPreview",
     "DataSourceInspection",
     "DataValueArray",

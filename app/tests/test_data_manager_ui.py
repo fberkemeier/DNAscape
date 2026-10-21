@@ -17,6 +17,7 @@ import pytest
 from nicegui.elements.button import Button
 from nicegui.elements.checkbox import Checkbox
 from nicegui.elements.input import Input
+from nicegui.elements.label import Label
 from nicegui.elements.number import Number
 from nicegui.elements.progress import LinearProgress
 from nicegui.elements.select import Select
@@ -35,6 +36,7 @@ from app.pages.data_management import (
     _apply_feature_defaults,
     _automatic_output_name,
     _build_generated_files_archive,
+    _feature_settings_compatible,
     _generated_download_artifact,
     _resolved_feature_bounds,
     _selected_data,
@@ -72,6 +74,182 @@ def _converted_result(request: DataConversionRequest) -> DataConversionResult:
         shape=request.inspection.shape,
         labels=("value",),
     )
+
+
+def test_generated_file_selector_switches_preview_and_export_and_preserves_preferences(monkeypatch) -> None:
+    from app.pages import data_management as page
+    from app.preview_plotting import PreviewChartHandle
+    exports = []
+
+    async def capture_chart(*_args, **_kwargs):
+        return "data:image/png;base64,cG5n"
+
+    def build_plot(_data_uri, _file_format, *, filename, dpi):
+        exports.append(filename)
+        return ExportArtifact(b"png", f"{filename}.png", "image/png")
+
+    monkeypatch.setattr(PreviewChartHandle, "run_chart_method", capture_chart)
+    monkeypatch.setattr(page, "build_chart_capture_export", build_plot)
+
+    async def scenario():
+        async with user_simulation(index) as user:
+            await user.open("/")
+            user.find(marker="nav-data-management").click()
+
+            def control(marker):
+                return next(item for item in user.client.elements.values() if marker in item._markers and not item.is_deleted)
+
+            def plotted_values():
+                return np.asarray(control("data-manager-preview-chart").options["series"][0]["data"])[:, 1]
+
+            await control("data-manager-upload").handle_uploads([
+                Upload.SmallFileUpload("first.csv", "text/csv", b"position,signal\n0,1\n1,3\n2,2\n"),
+                Upload.SmallFileUpload("second.csv", "text/csv", b"position,signal\n0,5\n1,7\n2,6\n"),
+            ])
+            await user.should_see("Datasets: 2", retries=60)
+            user.find(marker="action-convert").click()
+            await user.should_see(marker="data-manager-select-result-2", retries=80)
+            assert control("data-manager-select-result-2")._props["aria-pressed"] == "true"
+            assert control("data-manager-select-result-1")._props["aria-pressed"] == "false"
+            np.testing.assert_array_equal(plotted_values(), [5, 7, 6])
+            with user.client:
+                control("data-manager-result-name-1").set_value("custom-first")
+                control("data-manager-result-type-1").set_value("CSV")
+            user.find(marker="data-manager-select-result-1").click()
+            await _wait_for(lambda: control("data-manager-select-result-1")._props["aria-pressed"] == "true")
+            np.testing.assert_array_equal(plotted_values(), [1, 3, 2])
+            assert control("data-manager-result-name-1").value == "custom-first"
+            assert control("data-manager-result-type-1").value == "CSV"
+
+            user.find(marker="data-manager-preview-toggle").click()
+            await user.should_not_see(marker="data-manager-preview-chart")
+            user.find(marker="data-manager-preview-toggle").click()
+            await user.should_see(marker="data-manager-preview-chart")
+            np.testing.assert_array_equal(plotted_values(), [1, 3, 2])
+            user.find(marker="action-download-plot").click()
+            user.find(marker="download-plot-png").click()
+            await _wait_for(lambda: bool(exports))
+            assert "first" in exports[0] and "second" not in exports[0]
+
+            await control("data-manager-upload").handle_uploads([
+                Upload.SmallFileUpload("third.csv", "text/csv", b"position,signal\n0,9\n1,11\n2,10\n"),
+            ])
+            await user.should_see("Datasets: 3", retries=60)
+            user.find(marker="action-convert").click()
+            await user.should_see(marker="data-manager-select-result-3", retries=80)
+            assert control("data-manager-select-result-3")._props["aria-pressed"] == "true"
+            np.testing.assert_array_equal(plotted_values(), [9, 11, 10])
+            assert control("data-manager-result-name-1").value == "custom-first"
+            assert control("data-manager-result-type-1").value == "CSV"
+            user.find(marker="remove-converted-data-3").click()
+            await user.should_not_see(marker="data-manager-select-result-3")
+            assert control("data-manager-select-result-2")._props["aria-pressed"] == "true"
+            np.testing.assert_array_equal(plotted_values(), [5, 7, 6])
+            user.find(marker="remove-converted-data-1").click()
+            assert control("data-manager-select-result-2")._props["aria-pressed"] == "true"
+            user.find(marker="delete-all-converted-data").click()
+            await user.should_see(marker="data-manager-empty-result")
+            await user.should_not_see(marker="data-manager-preview-chart")
+    asyncio.run(scenario())
+
+
+def test_generated_plot_settings_update_preview_and_export_without_changing_data(monkeypatch) -> None:
+    import copy
+    from app.pages import data_management as page
+    from app.preview_plotting import PreviewChartHandle
+
+    captures = []
+
+    async def capture_chart(chart, *_args, **_kwargs):
+        captures.append(copy.deepcopy(chart.options))
+        return "data:image/png;base64,cG5n"
+
+    monkeypatch.setattr(PreviewChartHandle, "run_chart_method", capture_chart)
+    monkeypatch.setattr(page, "build_chart_capture_export", lambda *args, **kwargs: ExportArtifact(b"png", "plot.png", "image/png"))
+
+    async def scenario():
+        async with user_simulation(index) as user:
+            await user.open("/")
+            user.find(marker="nav-data-management").click()
+
+            def control(marker):
+                return next(item for item in user.client.elements.values() if marker in item._markers and not item.is_deleted)
+
+            def options():
+                return control("data-manager-preview-chart").options
+
+            await user.should_not_see("Plot settings")
+            await control("data-manager-upload").handle_uploads([
+                Upload.SmallFileUpload("first.csv", "text/csv", b"position,signal\n0,1\n1,3\n2,2\n"),
+                Upload.SmallFileUpload("second.csv", "text/csv", b"position,signal\n0,5\n1,7\n2,6\n"),
+            ])
+            await user.should_see("Datasets: 2", retries=60)
+            user.find(marker="action-convert").click()
+            await user.should_see(marker="data-manager-preview-chart", retries=80)
+            await user.should_see("Plot settings")
+            await user.should_see("Raw data")
+            assert control("data-manager-plot-aspect-ratio").value == 5.0
+            assert options()["dnascapeAspectRatio"] == 5.0
+            with user.client:
+                control("data-manager-plot-aspect-ratio").set_value(2.0)
+            assert options()["dnascapeAspectRatio"] == 2.0
+            user.find(marker="data-manager-plot-reset-aspect-ratio").click()
+            assert options()["dnascapeAspectRatio"] == 5.0
+            settings = control("data-manager-plot-preview-settings")
+            # Shared settings follow the plot and precede every generated row.
+            container = control("data-manager-result-container")
+            ancestors = []
+            ancestor = settings
+            while ancestor.parent_slot is not None:
+                ancestor = ancestor.parent_slot.parent
+                ancestors.append(ancestor)
+            assert control("data-manager-result-preview") in ancestors
+            assert container.default_slot.children.index(control("data-manager-result-preview")) == 0
+            assert options()["yAxis"]["min"] == control("data-manager-plot-y-minimum").value
+            with user.client:
+                control("data-manager-plot-primary-color").set_value("#8b6f37")
+                control("data-manager-plot-line-width").set_value(3.2)
+                control("data-manager-plot-curve-type").set_value("dashed")
+                control("data-manager-plot-x-axis-label").set_value("Genomic position")
+                control("data-manager-plot-y-minimum").set_value(4)
+                control("data-manager-plot-y-maximum").set_value(8)
+            user.find(marker="data-manager-plot-invert-y").click()
+            assert options()["series"][0]["lineStyle"]["color"] == "#8b6f37"
+            assert options()["series"][0]["lineStyle"]["width"] == pytest.approx(3.2)
+            assert options()["series"][0]["lineStyle"]["type"] == "dashed"
+            assert options()["xAxis"]["name"] == "Genomic position"
+            assert options()["yAxis"]["inverse"] is True
+            assert (options()["yAxis"]["min"], options()["yAxis"]["max"]) == (4, 8)
+            user.find(marker="data-manager-plot-reset-y-limits").click()
+            assert options()["yAxis"]["min"] < 5 < 7 < options()["yAxis"]["max"]
+            user.find(marker="data-manager-select-result-1").click()
+            await _wait_for(lambda: np.asarray(options()["series"][0]["data"])[0, 1] == 1)
+            np.testing.assert_array_equal(np.asarray(options()["series"][0]["data"])[:, 1], [1, 3, 2])
+            assert options()["series"][0]["lineStyle"]["color"] == "#8b6f37"
+            assert options()["yAxis"]["min"] < 1 < 3 < options()["yAxis"]["max"]
+            with user.client:
+                control("data-manager-plot-view").set_value("Histogram")
+                control("data-manager-plot-histogram-bins").set_value(3)
+            assert options()["series"][0]["type"] == "custom"
+            assert len(options()["series"][0]["data"]) == 3
+            user.find(marker="data-manager-plot-density").click()
+            assert options()["series"][0]["type"] == "line"
+            assert options()["yAxis"]["name"] == "Density"
+            assert not control("data-manager-plot-histogram-bins").visible
+            user.find(marker="data-manager-preview-toggle").click()
+            await user.should_not_see("Plot settings")
+            user.find(marker="data-manager-preview-toggle").click()
+            await user.should_see("Plot settings")
+            assert control("data-manager-plot-density").value is True
+            expected = copy.deepcopy(options())
+            user.find(marker="action-download-plot").click()
+            user.find(marker="download-plot-png").click()
+            await _wait_for(lambda: bool(captures))
+            assert captures[0] == expected
+            user.find(marker="delete-all-converted-data").click()
+            await user.should_not_see("Plot settings")
+            await user.should_not_see(marker="data-manager-preview-chart")
+    asyncio.run(scenario())
 
 
 def test_download_all_archive_preserves_every_file_with_safe_unique_names() -> None:
@@ -118,16 +296,14 @@ def test_generated_file_type_transcodes_retained_tsv_bytes() -> None:
     artifact = _generated_download_artifact(
         result,
         file_name="profile",
-        file_type="NPY",
+        file_type="NPZ",
         compress=False,
     )
 
-    assert artifact.filename == "profile.npy"
-    assert artifact.media_type == "application/octet-stream"
-    np.testing.assert_allclose(
-        np.load(io.BytesIO(artifact.data), allow_pickle=False),
-        [1.25, 2.5],
-    )
+    assert artifact.filename == "profile.npz"
+    assert artifact.media_type == "application/zip"
+    with np.load(io.BytesIO(artifact.data), allow_pickle=False) as archive:
+        np.testing.assert_allclose(archive["values"], [1.25, 2.5])
 
 
 def test_automatic_data_manager_names_use_output_then_concise_source() -> None:
@@ -212,7 +388,9 @@ def test_sns_firing_preset_and_switch_back_to_repliseq_bigwig(
             user.find(marker="use-bedgraph-data-example").click()
             await asyncio.sleep(0.1)
             user.find(marker="action-inspect-data-link-1").click()
-            await user.should_see("K562_Peaks_FDR15.bed.gz is ready.", retries=80)
+            await asyncio.sleep(0)
+            await _wait_for(lambda: control("action-inspect-data-link-1").enabled)
+            await user.should_see("The source is ready.", retries=80)
             assert control("data-manager-feature").value == "firing_rate"
             assert control("data-manager-aggregation").value == "max"
             assert control("data-manager-bin-size").value == 1000
@@ -249,7 +427,9 @@ def test_sns_firing_preset_and_switch_back_to_repliseq_bigwig(
             user.find(marker="use-encode-data-example").click()
             await asyncio.sleep(0.1)
             user.find(marker="action-inspect-data-link-1").click()
-            await user.should_see("RepliSeq.bigWig is ready.", retries=80)
+            await asyncio.sleep(0)
+            await _wait_for(lambda: control("action-inspect-data-link-1").enabled)
+            await user.should_see("The source is ready.", retries=80)
             assert control("data-manager-feature").value == "replication_timing"
             aggregation = control("data-manager-aggregation")
             assert aggregation.value == "mean"
@@ -272,7 +452,9 @@ def test_sns_firing_preset_and_switch_back_to_repliseq_bigwig(
                 "published_results/K562/K562_merged_hmm_RFD_cutoff10_bs1kb_sorted.bw"
             )
             user.find(marker="action-inspect-data-link-1").click()
-            await user.should_see("K562_RFD.bw is ready.", retries=80)
+            await asyncio.sleep(0)
+            await _wait_for(lambda: control("action-inspect-data-link-1").enabled)
+            await user.should_see("The source is ready.", retries=80)
             assert control("data-manager-feature").value == "fork_directionality"
             assert control("data-manager-aggregation").value == "mean"
             assert control("data-manager-track-missing").value == "zero"
@@ -347,6 +529,36 @@ def test_blank_value_bounds_fall_back_to_prepare_as_defaults(
     expected: tuple[bool, float | None, float | None],
 ) -> None:
     assert _resolved_feature_bounds(feature, minimum, maximum) == expected
+
+
+@pytest.mark.parametrize(
+    ("feature", "edits", "expected"),
+    (
+        ("replication_timing", {"threshold_min": -1}, False),
+        ("replication_timing", {"value_scaling": "interval", "rescale_min": 30, "rescale_max": 500}, True),
+        ("firing_rate", {"value_scaling": "multiplier", "scale": 2}, True),
+        ("firing_rate", {"value_scaling": "multiplier", "scale": -1}, False),
+        ("fork_speed", {"threshold_min": .5, "threshold_max": 5}, True),
+        ("fork_speed", {"value_scaling": "center"}, False),
+        ("fork_directionality", {"threshold_min": -.5, "threshold_max": .5}, True),
+        ("fork_directionality", {"threshold_max": 2}, False),
+        ("fork_directionality", {"value_scaling": "multiplier", "scale": -1}, True),
+        ("fork_directionality", {"value_scaling": "multiplier", "scale": 2}, False),
+        ("replicated_fraction", {"value_scaling": "interval", "rescale_min": 0, "rescale_max": 2}, False),
+        ("replicated_fraction", {"missing_policy": "fill", "fill_value": 2}, False),
+        ("replicated_fraction", {"track_missing": "fill", "fill_value": 2}, True),
+        ("replicated_fraction", {"threshold_min": None, "threshold_max": None}, True),
+        ("fork_speed", {"decimal_places": 2, "smoothing_mode": "moving_average", "bin_size": 500}, True),
+        ("generic", {"threshold_min": -10, "threshold_max": 10}, True),
+    ),
+)
+def test_biological_profile_names_follow_the_configured_value_domain(
+    feature: str, edits: dict[str, Any], expected: bool,
+) -> None:
+    settings: dict[str, Any] = {"value_scaling": "none", "missing_policy": "zero"}
+    _apply_feature_defaults(settings, feature)
+    settings.update(edits)
+    assert _feature_settings_compatible(feature, settings) is expected
 
 
 def test_data_manager_starts_with_auto_detection_and_an_explicit_url_source() -> None:
@@ -463,7 +675,7 @@ def test_empty_bin_fills_have_their_requested_order_in_data_manager(
             assert missing.options["max"] == "Fill with maximum"
             assert list(missing.options.values()) == [
                 "Keep empty values", "Fill with zero", "Fill with a value",
-                "Fill with minimum", "Fill with maximum", "Stop if detected",
+                "Fill with minimum", "Fill with maximum", "Report error",
             ]
             assert missing.value == "zero"
             control("data-manager-bin-size").set_value(10)
@@ -487,6 +699,12 @@ def test_empty_bin_fills_have_their_requested_order_in_data_manager(
                 payload = results[-1].artifact.data.decode("utf-8").splitlines()
                 assert payload[0] == "chr1"
                 np.testing.assert_allclose([float(value) for value in payload[1:]], expected)
+            missing.set_value("error")
+            user.find(marker="action-convert").click()
+            await user.should_see("contain missing values", retries=60)
+            await _wait_for(lambda: control("action-convert").text == "Convert")
+            assert len(results) == 4
+            await user.should_not_see(marker="data-manager-result-5")
 
     asyncio.run(scenario())
 
@@ -620,14 +838,14 @@ def test_bedgraph_reveals_track_polishing_controls_and_defaults_to_plain_tsv() -
                 iter(user.find(marker="data-manager-threshold-fields").elements)
             )
             assert threshold_fields.parent_slot is not None
-            assert threshold_fields.parent_slot.parent is scaling_column
+            assert threshold_fields.parent_slot.parent is missing_column
             threshold_max.set_value(10)
 
             bin_size = cast(
                 Number,
                 next(iter(user.find(marker="data-manager-bin-size").elements)),
             )
-            assert bin_size.value == 10_000
+            assert bin_size.value == 1_000
 
             scope = cast(
                 Select,
@@ -643,19 +861,40 @@ def test_bedgraph_reveals_track_polishing_controls_and_defaults_to_plain_tsv() -
                 next(iter(user.find(marker="data-manager-decimal-places").elements)),
             )
             assert decimal_places.value == 6
+            assert decimal_places.parent_slot.parent is missing_column
+            assert missing_column.default_slot.children[0] is decimal_places
+            assert missing_column.default_slot.children[1] is missing
+            assert missing.parent_slot.children.index(missing) < missing.parent_slot.children.index(threshold_fields)
             await user.should_not_see(marker="data-manager-gzip")
 
             preview_toggle = cast(
                 Checkbox,
                 next(iter(user.find(marker="data-manager-preview-toggle").elements)),
             )
-            assert preview_toggle.value is False
+            assert preview_toggle.value is True
+
+            chromosome = next(iter(user.find(marker="data-manager-chromosome").elements))
+            start = next(iter(user.find(marker="data-manager-start").elements))
+            end = next(iter(user.find(marker="data-manager-end").elements))
+            chromosome.set_value("chr1")
+            start.set_value(5)
+            end.set_value(20)
+            user.find(marker="data-manager-reset-region").click()
+            assert (start.value, end.value) == (0, 30)
+            chromosome.set_value("chr2")
+            start.set_value(1)
+            end.set_value(4)
+            user.find(marker="data-manager-reset-region").click()
+            assert (start.value, end.value) == (0, 5)
+            assert end._props["max"] == "5"
 
             user.find(marker="action-convert").click()
             await user.should_see(marker="data-manager-result-1", retries=60)
             await user.should_see(marker="download-all-converted-data")
-            await user.should_not_see(marker="data-manager-result-preview")
+            await user.should_see(marker="data-manager-result-preview", retries=60)
 
+            preview_toggle.set_value(False)
+            await user.should_not_see(marker="data-manager-result-preview")
             preview_toggle.set_value(True)
             await user.should_see(marker="data-manager-result-preview", retries=60)
             await user.should_see(marker="data-manager-preview-chart", retries=60)
@@ -676,7 +915,7 @@ def test_track_conversion_can_be_retried_after_increasing_settings_memory_limit(
 ) -> None:
     from app import data_conversion_service
 
-    monkeypatch.setattr(data_conversion_service, "_TRACK_ESTIMATED_BYTES_PER_BIN", 40 * 1024**2)
+    monkeypatch.setattr(data_conversion_service, "_TRACK_ESTIMATED_BYTES_PER_BIN", 4 * 1024**2)
     settings = get_export_settings()
     previous_limit = settings.conversion_memory_limit_mb
     settings.conversion_memory_limit_mb = 64
@@ -826,6 +1065,10 @@ def test_configure_starts_with_prepare_as_and_preserves_uploaded_filename_toolti
             assert feature.parent_slot is not None
             assert feature.parent_slot.parent is config_grid
             assert config_grid.default_slot.children[0] is feature
+            preview = next(iter(user.find(marker="data-manager-preview-toggle").elements))
+            assert config_grid.default_slot.children[1] is preview
+            assert preview.text == "Show plot"
+            await user.should_not_see("Output", kind=Label)
             await user.should_not_see(marker="data-manager-genome-build")
             await user.should_not_see(marker="data-manager-units")
             await user.should_not_see(marker="data-manager-value-name")
@@ -852,6 +1095,60 @@ def test_configure_starts_with_prepare_as_and_preserves_uploaded_filename_toolti
             assert upper.value == 1.0
 
     asyncio.run(scenario())
+
+
+def test_out_of_domain_edits_switch_to_generic_without_resetting_the_conversion(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    requests: list[DataConversionRequest] = []
+
+    def capture(request: DataConversionRequest, *_args: Any) -> DataConversionResult:
+        requests.append(request)
+        return _converted_result(request)
+
+    monkeypatch.setattr("app.pages.data_management.convert_data", capture)
+
+    async def scenario() -> None:
+        async with user_simulation(index) as user:
+            def control(suffix: str) -> Any:
+                return next(iter(user.find(marker=f"data-manager-{suffix}").elements))
+
+            await user.open("/")
+            user.find(marker="nav-data-management").click()
+            await control("upload").handle_uploads([Upload.SmallFileUpload(
+                "signal.csv", "text/csv", b"value\n-0.2\n0.4\n0.1\n",
+            )])
+            await user.should_see(marker="data-manager-threshold-min", retries=60)
+            control("feature").set_value("fork_directionality")
+            for _ in range(4):
+                await asyncio.sleep(0)
+            control("decimal-places").set_value(2)
+            control("smoothing").set_value("moving_average")
+            control("threshold-min").set_value(-.5)
+            control("threshold-max").set_value(.5)
+            assert control("feature").value == "fork_directionality"
+            control("value-scaling").set_value("interval")
+            control("target-minimum").set_value(-.2)
+            control("target-maximum").set_value(.8)
+            assert control("feature").value == "fork_directionality"
+            control("target-maximum").set_value(2)
+            assert control("feature").value == "generic"
+            assert control("value-scaling").value == "interval"
+            assert control("threshold-min").value == -.5
+            assert control("threshold-max").value == .5
+            assert control("decimal-places").value == 2
+            assert control("smoothing").value == "moving_average"
+            assert "zscore" in control("value-scaling").options
+            user.find(marker="action-convert").click()
+            await _wait_for(lambda: bool(requests))
+
+    asyncio.run(scenario())
+    assert requests[0].scaling_mode == "interval"
+    assert (requests[0].rescale_min, requests[0].rescale_max) == (-.2, 2)
+    assert (requests[0].threshold_min, requests[0].threshold_max) == (-.5, .5)
+    assert requests[0].decimal_places == 2
+    assert requests[0].smooth_window == 3
+    assert requests[0].output_name == "rdata_signal"
 
 
 def test_blank_bounds_are_resolved_in_the_conversion_request(
@@ -1088,11 +1385,11 @@ def test_data_manager_adds_and_inspects_multiple_public_link_rows(
             second_url.set_value("https://example.org/second.csv")
 
             user.find(marker="action-inspect-data-link-1").click()
-            await user.should_see("first.csv is ready.", retries=80)
+            await user.should_see("The source is ready.", retries=80)
             convert = next(iter(user.find(marker="action-convert").elements))
             assert convert.enabled is False
             user.find(marker="action-inspect-data-link-2").click()
-            await user.should_see("second.csv is ready.", retries=80)
+            await user.should_see("The source is ready.", retries=80)
             await user.should_see("Datasets: 2", retries=80)
             await user.should_see(marker="data-manager-source-dataset")
             assert len(user.find(marker="data-manager-source-url").elements) == 2
@@ -1312,8 +1609,6 @@ def test_generated_files_use_raw_output_rows_and_keep_export_preferences(
                 "TSV",
                 "TXT",
                 "CSV",
-                "NPY",
-                "NPV",
                 "NPZ",
             )
             await user.should_see(marker="remove-converted-data-1")

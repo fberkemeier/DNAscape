@@ -35,6 +35,7 @@ class CorrelationMatrix:
     method: str
     coefficients: np.ndarray
     sample_counts: np.ndarray
+    p_values: np.ndarray | None = None
 
 
 @dataclass(frozen=True)
@@ -127,6 +128,7 @@ def analyse_profiles(
         raise ValueError("Correlations require space, time, or space-time datasets.")
     size = len(datasets)
     coefficients = {method: np.full((size, size), np.nan) for method in selected}
+    p_values = {method: np.full((size, size), np.nan) for method in selected}
     counts = np.zeros((size, size), dtype=np.int64)
     functions = {"spearman": stats.spearmanr, "pearson": stats.pearsonr, "kendall": stats.kendalltau}
     for i, first in enumerate(datasets):
@@ -140,18 +142,25 @@ def analyse_profiles(
             for method in selected:
                 if cancel is not None:
                     cancel()
-                value = 1.0 if i == j else float(functions[method](x, y).statistic)
+                if i == j:
+                    value = 1.0
+                else:
+                    result = functions[method](x, y)
+                    value = float(result.statistic)
+                    p_values[method][i, j] = p_values[method][j, i] = float(result.pvalue)
                 coefficients[method][i, j] = coefficients[method][j, i] = value
     counts.setflags(write=False)
     matrices = []
     for method, values in coefficients.items():
         values.setflags(write=False)
-        matrices.append(CorrelationMatrix(method, values, counts))
+        p_values[method].setflags(write=False)
+        matrices.append(CorrelationMatrix(method, values, counts, p_values[method]))
     return AnalysisReport(tuple(item.name for item in datasets), tuple(matrices))
 
 
 def export_correlation_report(
     report: AnalysisReport, *, file_format: str = "csv", method: str | None = None,
+    include_p_values: bool = False, combined: bool = False,
 ) -> bytes:
     """Write all labelled coefficients and paired sample counts into one file."""
 
@@ -162,6 +171,20 @@ def export_correlation_report(
         raise ValueError("Select at least one correlation to download a report.")
     output = io.StringIO(newline="")
     writer = csv.writer(output, delimiter="," if file_format == "csv" else "\t", lineterminator="\n")
+    if combined:
+        columns = []
+        for matrix in matrices:
+            for index, name in enumerate(report.names):
+                prefix = f"{CORRELATION_METHODS[matrix.method]}: {name}"
+                columns.append((f"{prefix} (coefficient)", matrix.coefficients[:, index]))
+                if include_p_values and matrix.p_values is not None:
+                    columns.append((f"{prefix} (p-value)", matrix.p_values[:, index]))
+                columns.append((f"{prefix} (paired samples)", matrix.sample_counts[:, index]))
+        writer.writerow(("Dataset", *(label for label, _ in columns)))
+        for index, name in enumerate(report.names):
+            writer.writerow((name, *(format(float(values[index]), ".12g") if np.isfinite(values[index]) else ""
+                                    for _, values in columns)))
+        return output.getvalue().encode("utf-8")
     writer.writerow((*([] if method else ["Correlation"]), "Statistic", "Dataset", *report.names))
     for matrix in matrices:
         prefix = [] if method else [CORRELATION_METHODS[matrix.method]]
@@ -170,4 +193,8 @@ def export_correlation_report(
                              *(format(float(value), ".12g") if np.isfinite(value) else "" for value in row)))
         for name, row in zip(report.names, matrix.sample_counts, strict=True):
             writer.writerow((*prefix, "Paired samples", name, *(int(value) for value in row)))
+        if include_p_values and matrix.p_values is not None:
+            for name, row in zip(report.names, matrix.p_values, strict=True):
+                writer.writerow((*prefix, "p-value", name,
+                                 *(format(float(value), ".12g") if np.isfinite(value) else "" for value in row)))
     return output.getvalue().encode("utf-8")

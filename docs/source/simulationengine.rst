@@ -37,6 +37,22 @@ Inputs
 If both inputs lack a spatial axis, pass ``n_bins``, ``genome_length``, or
 ``interval_kb``.
 
+Fork movement
+-------------
+
+Fork speeds follow the supplied field by default. Set ``fork_speed_std`` to a
+non-negative standard deviation in kb/min to draw normally distributed speeds
+around the local input value, independently for each spatial bin, direction,
+and replicate. Time-dependent fields also use independent draws for each
+encountered time slice. Draws are reused when a propagation step is revisited;
+non-positive speeds are resampled. With zero deviation the original simulation
+and seeded results are unchanged. The input speed is the centre of the normal
+distribution before its non-positive tail is excluded.
+
+For example, ``assumptions={"fork_speed_std": 0.2, "seed": 42}`` adds speed
+variation to any supported fork-speed dependence. Stalling and finite
+firing-factor pools can be enabled independently.
+
 Outputs
 -------
 

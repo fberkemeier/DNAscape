@@ -1,0 +1,425 @@
+"""Region selection and edits on converted profiles, without changing their grid."""
+
+from __future__ import annotations
+
+import gzip
+import io
+import zlib
+from collections.abc import Callable
+from dataclasses import dataclass, field, replace
+
+import numpy as np
+import pandas as pd
+
+from dnascape.workflows.uploads import UploadInspection, materialize_upload
+
+
+FILTER_SELECTIONS = {
+    "threshold": "Signal threshold",
+    "between": "Between thresholds",
+    "minimum": "Threshold from minimum",
+    "maximum": "Threshold from maximum",
+    "nan": "Missing values (NaN)",
+    "profile": "Filter profile or positions",
+    "all": "Whole region",
+}
+FILTER_ACTIONS = {
+    "replace": "Replace with value",
+    "mean": "Mean of each region",
+    "interpolate": "Interpolate across regions",
+    "noise": "Add Gaussian noise",
+    "minimum": "Match minimum",
+    "maximum": "Match maximum",
+    "multiply": "Multiply by value",
+    "add": "Add value",
+    "nan": "Replace with NaN",
+}
+FILTER_INTERPOLATIONS = {
+    "linear": "Linear", "pchip": "Smooth (PCHIP)", "nearest": "Nearest value",
+    "previous": "Previous value", "next": "Next value",
+}
+FILTER_PROFILE_LAYOUTS = {
+    "mask": "Mask profile", "positions": "Position list", "intervals": "Genomic intervals",
+}
+
+
+@dataclass(frozen=True, slots=True)
+class FilterProfile:
+    """A bin-aligned mask, a position list, or half-open intervals."""
+
+    values: np.ndarray = field(repr=False, compare=False)
+    layout: str = "mask"
+    units: str = "bp"
+    chromosomes: np.ndarray | None = field(default=None, repr=False, compare=False)
+
+
+@dataclass(frozen=True, slots=True)
+class DataFilterSettings:
+    enabled: bool = False
+    selection: str = "threshold"
+    comparison: str = "below"
+    threshold: float = 0.0
+    lower: float = 0.0
+    upper: float = 1.0
+    action: str = "replace"
+    value: float = 0.0
+    standard_deviation: float = 1.0
+    seed: int | None = None
+    interpolation: str = "linear"
+    reference: str = "outside"
+    profile: FilterProfile | None = field(default=None, repr=False, compare=False)
+    upload: UploadInspection | None = field(default=None, repr=False, compare=False)
+    profile_layout: str = "mask"
+    profile_units: str = "bp"
+    profile_column: str | None = None
+    profile_array_key: str | None = None
+
+
+def _choice(value: str, choices, label: str) -> str:
+    if value not in choices:
+        raise ValueError(f"Choose a valid {label}.")
+    return value
+
+
+def _finite(value: float, label: str) -> float:
+    try:
+        result = float(value)
+    except (TypeError, ValueError):
+        raise ValueError(f"{label} must be a finite number.") from None
+    if not np.isfinite(result):
+        raise ValueError(f"{label} must be a finite number.")
+    return result
+
+
+def resolve_filter(settings: DataFilterSettings) -> DataFilterSettings:
+    """Validate active fields only and materialize an optional uploaded mask once."""
+    if not settings.enabled:
+        return DataFilterSettings()
+    _choice(settings.selection, FILTER_SELECTIONS, "filter selection")
+    if settings.selection == "profile" and settings.profile is None and settings.upload is None:
+        return DataFilterSettings()
+    _choice(settings.action, FILTER_ACTIONS, "filter operation")
+    changes = {}
+    if settings.selection in {"threshold", "minimum", "maximum"}:
+        _choice(settings.comparison, {"below", "above"}, "threshold comparison")
+        changes["threshold"] = _finite(settings.threshold, "Filter threshold")
+        if settings.selection != "threshold" and changes["threshold"] < 0:
+            raise ValueError("Distance from the minimum or maximum must be non-negative.")
+    if settings.selection == "between":
+        changes.update(lower=_finite(settings.lower, "Lower filter threshold"),
+                       upper=_finite(settings.upper, "Upper filter threshold"))
+        if changes["lower"] > changes["upper"]:
+            raise ValueError("Lower filter threshold cannot exceed the upper threshold.")
+    if settings.action in {"replace", "multiply", "add"}:
+        changes["value"] = _finite(settings.value, "Filter value")
+    if settings.action == "noise":
+        changes["standard_deviation"] = _finite(settings.standard_deviation, "Noise standard deviation")
+        if changes["standard_deviation"] < 0:
+            raise ValueError("Noise standard deviation must be non-negative.")
+        if settings.seed is not None:
+            try:
+                seed = int(settings.seed)
+            except (ValueError, TypeError, OverflowError):
+                raise ValueError("Random seed must be a non-negative integer.") from None
+            if seed < 0 or seed != settings.seed:
+                raise ValueError("Random seed must be a non-negative integer.")
+            changes["seed"] = seed
+    if settings.action == "interpolate":
+        _choice(settings.interpolation, FILTER_INTERPOLATIONS, "filter interpolation")
+    if settings.action in {"minimum", "maximum"}:
+        _choice(settings.reference, {"outside", "all"}, "reference region")
+    if settings.selection == "profile":
+        _choice(settings.profile_layout, FILTER_PROFILE_LAYOUTS, "filter profile format")
+        _choice(settings.profile_units, {"bp", "kb", "index"}, "filter coordinates")
+        if settings.upload is not None:
+            changes.update(profile=read_filter_profile(
+                settings.upload, layout=settings.profile_layout, units=settings.profile_units,
+                column=settings.profile_column, array_key=settings.profile_array_key,
+            ), upload=None)
+        profile = changes.get("profile", settings.profile)
+        if profile is not None:
+            _validate_profile(profile)
+    return replace(settings, **changes)
+
+
+def _validate_profile(profile: FilterProfile) -> None:
+    _choice(profile.layout, FILTER_PROFILE_LAYOUTS, "filter profile format")
+    _choice(profile.units, {"bp", "kb", "index"}, "filter coordinates")
+    values = np.asarray(profile.values, dtype=float)
+    if profile.layout == "intervals":
+        if values.ndim != 2 or values.shape[1] != 2:
+            raise ValueError("Filter intervals require start and end columns.")
+        if not np.isfinite(values).all() or np.any(values[:, 0] >= values[:, 1]) or np.any(values < 0):
+            raise ValueError("Filter intervals need finite, non-negative starts and larger ends.")
+    elif values.ndim != 1:
+        raise ValueError("A filter profile or position list must be one-dimensional.")
+    elif np.isinf(values).any() or (profile.layout == "positions" and (np.isnan(values).any() or np.any(values < 0))):
+        raise ValueError("Filter positions must be finite and non-negative; mask values cannot be infinite.")
+    if profile.chromosomes is not None and len(profile.chromosomes) != len(values):
+        raise ValueError("Filter chromosome labels must match the number of positions.")
+
+
+def read_filter_profile(
+    inspection: UploadInspection, *, layout: str = "mask", units: str = "bp",
+    column: str | None = None, array_key: str | None = None,
+) -> FilterProfile:
+    """Reuse upload bounds and numeric validation; never cache the auxiliary file."""
+    chromosomes = None
+    if layout == "mask":
+        values = materialize_upload(replace(inspection, expected_form="x"),
+                                    column=column, array_key=array_key, missing_policy="ignore")
+    elif inspection.source_format in {"npy", "npv", "npz"}:
+        values = materialize_upload(replace(inspection, expected_form="auto"),
+                                    array_key=array_key, missing_policy="ignore")
+        if layout == "positions":
+            values = np.asarray(values).reshape(-1) if np.asarray(values).ndim < 2 or 1 in np.asarray(values).shape else values
+    else:
+        table = _upload_table(inspection)
+        names = {str(name).strip().lower().replace(" ", "_"): name for name in table.columns}
+        chrom = next((names[name] for name in ("chrom", "chromosome", "chr") if name in names), None)
+        if chrom is not None:
+            chromosomes = table[chrom].astype(str).to_numpy()
+        numeric = [name for name in table.columns if name != chrom]
+        if layout == "intervals":
+            start = next((names[name] for name in ("start", "start_bp", "start_kb") if name in names), numeric[0] if numeric else None)
+            end = next((names[name] for name in ("end", "end_bp", "end_kb") if name in names), numeric[1] if len(numeric) > 1 else None)
+            if start is None or end is None:
+                raise ValueError("Filter intervals require start and end columns.")
+            values = table[[start, end]].to_numpy(dtype=float)
+        else:
+            position = next((names[name] for name in ("position_bp", "position_kb", "position", "pos", "start") if name in names), numeric[0] if numeric else None)
+            if position is None:
+                raise ValueError("The filter needs a numeric position column.")
+            values = table[position].to_numpy(dtype=float)
+    profile = FilterProfile(np.asarray(values, dtype=float), layout, units, chromosomes)
+    _validate_profile(profile)
+    return profile
+
+
+def _upload_table(inspection: UploadInspection, columns=None) -> pd.DataFrame:
+    # Inspection already checks compressed/expanded sizes and the table shape.
+    payload = inspection._normalized_payload or inspection.content
+    if inspection.compressed and inspection._normalized_payload is None:
+        payload = gzip.decompress(payload)
+    payload = b"\n".join(line for line in payload.splitlines()
+                          if not line.lstrip().startswith((b"track ", b"browser ")))
+    return pd.read_csv(io.BytesIO(payload), sep=inspection.delimiter or r"\s+",
+                       header=0 if inspection.has_header else None, names=inspection.columns,
+                       usecols=columns, comment="#")
+
+
+def profile_coordinates(inspection: UploadInspection, length: int):
+    """Coordinate metadata retained by the upload inspector, in kilobases."""
+    names = {str(key).lower().replace(" ", "_"): value for key, value in inspection._table_data.items()}
+    if inspection.source_format in {"csv", "tsv", "txt"}:
+        # The inspector intentionally caches signal columns only. Read just the
+        # coordinate columns when a filter needs the original genomic grid.
+        keys = {name: str(name).lower().replace(" ", "_") for name in inspection.columns}
+        columns = [name for name, key in keys.items() if key in {
+            "start", "end", "start_bp", "end_bp", "position_kb", "position_bp",
+            "start_kb", "end_kb", "position", "pos", "x", "time", "time_min",
+        }]
+        if columns:
+            table = _upload_table(inspection, columns)
+            names.update({keys[name]: table[name].to_numpy(dtype=float) for name in columns})
+    starts = next((names[name] for name in ("start", "start_bp") if name in names), None)
+    ends = next((names[name] for name in ("end", "end_bp") if name in names), None)
+    if starts is not None and ends is not None and len(starts) == length:
+        return (starts + ends) / 2000., np.column_stack((starts, ends)) / 1000.
+    if "start_kb" in names and "end_kb" in names and len(names["start_kb"]) == length:
+        return (names["start_kb"] + names["end_kb"]) / 2, np.column_stack((names["start_kb"], names["end_kb"]))
+    for name, divisor in (("position_kb", 1), ("position_bp", 1000), ("position", 1), ("pos", 1), ("x", 1), ("time", 1), ("time_min", 1)):
+        if name in names and len(names[name]) == length:
+            return np.asarray(names[name], dtype=float) / divisor, None
+    if inspection.source_format == "npz":
+        payload = gzip.decompress(inspection.content) if inspection.compressed else inspection.content
+        with np.load(io.BytesIO(payload), allow_pickle=False) as archive:
+            if "position_kb" in archive and archive["position_kb"].shape == (length,):
+                return np.asarray(archive["position_kb"], dtype=float), None
+    return None, None
+
+
+def profile_chromosome(inspection: UploadInspection) -> str | None:
+    columns = [name for name in inspection.columns if str(name).lower() in {"chrom", "chromosome", "chr"}]
+    if not columns or inspection.source_format not in {"csv", "tsv", "txt"}:
+        return None
+    values = _upload_table(inspection, [columns[0]])[columns[0]].astype(str).unique()
+    if len(values) != 1:
+        raise ValueError("Use a genomic track or a chromosome-specific profile for a chromosome-labelled filter.")
+    return str(values[0])
+
+
+def _profile_mask(profile: FilterProfile | None, length: int, positions, intervals, chromosome) -> np.ndarray:
+    mask = np.zeros(length, dtype=bool)
+    if profile is None:
+        return mask
+    values = np.asarray(profile.values, dtype=float)
+    if profile.chromosomes is not None:
+        if chromosome is None:
+            raise ValueError("A chromosome-labelled filter requires a chromosome-specific converted profile.")
+        values = values[np.asarray(profile.chromosomes) == chromosome]
+    if profile.layout == "mask":
+        if values.size != length:
+            raise ValueError("The filter mask must have one value for each converted bin. Use a position list for a different grid.")
+        return np.isfinite(values) & (values != 0)
+    if profile.units == "index":
+        coordinates = np.arange(length, dtype=float)
+        bins = np.column_stack((coordinates, coordinates + 1))
+    else:
+        if positions is None:
+            raise ValueError("This converted profile has no genomic coordinates. Use a bin-aligned mask or Bin index coordinates.")
+        coordinates = np.asarray(positions, dtype=float)
+        bins = intervals
+        values = values / (1000. if profile.units == "bp" else 1.)
+    if coordinates.shape != (length,) or not np.isfinite(coordinates).all() or np.any(np.diff(coordinates) <= 0):
+        raise ValueError("Coordinate filtering requires finite, increasing positions in the converted profile.")
+    if bins is not None:
+        bins = np.asarray(bins, dtype=float)
+        if (bins.shape != (length, 2) or not np.isfinite(bins).all() or np.any(bins[:, 0] >= bins[:, 1])
+                or np.any(bins[1:, 0] < bins[:-1, 1])):
+            raise ValueError("Coordinate filtering requires ordered, non-overlapping converted bins.")
+    if profile.layout == "positions":
+        if bins is not None:
+            indices = np.searchsorted(bins[:, 0], values, side="right") - 1
+            valid = (indices >= 0) & (indices < length)
+            valid &= values < bins[np.clip(indices, 0, length - 1), 1]
+        else:
+            indices = np.searchsorted(coordinates, values)
+            valid = indices < length
+            valid &= np.isclose(coordinates[np.clip(indices, 0, length - 1)], values, rtol=0, atol=1e-9)
+        mask[indices[valid]] = True
+    else:
+        # Merge via a difference array: O((bins + intervals) log bins), never
+        # a potentially chromosome-sized bins-by-intervals matrix.
+        starts = bins[:, 0] if bins is not None else coordinates
+        ends = bins[:, 1] if bins is not None else coordinates
+        left = np.searchsorted(ends, values[:, 0], side="right" if bins is not None else "left")
+        right = np.searchsorted(starts, values[:, 1], side="left")
+        delta = np.zeros(length + 1, dtype=np.int64)
+        np.add.at(delta, left, 1)
+        np.add.at(delta, right, -1)
+        mask = np.cumsum(delta[:-1]) > 0
+    return mask
+
+
+def _selected(values: np.ndarray, settings: DataFilterSettings, positions, intervals, chromosome) -> np.ndarray:
+    if settings.selection == "profile":
+        return _profile_mask(settings.profile, len(values), positions, intervals, chromosome)
+    if settings.selection == "all":
+        return np.ones(values.size, dtype=bool)
+    if settings.selection == "nan":
+        return np.isnan(values)
+    if settings.selection == "between":
+        return (values >= settings.lower) & (values <= settings.upper)
+    threshold = settings.threshold
+    if settings.selection in {"minimum", "maximum"}:
+        finite = values[np.isfinite(values)]
+        if not finite.size:
+            raise ValueError("A threshold from minimum or maximum requires finite converted values.")
+        threshold = float(finite.min() + threshold if settings.selection == "minimum" else finite.max() - threshold)
+    return values < threshold if settings.comparison == "below" else values > threshold
+
+
+def apply_data_filter(
+    values, settings: DataFilterSettings, *, positions=None, intervals=None,
+    chromosome: str | None = None, cancel: Callable[[], None] | None = None,
+) -> np.ndarray:
+    """Edit each ordered profile independently, using a fixed pre-edit selection.
+
+    XT matrices are (space, time). End regions interpolate to the nearest
+    available endpoint; a wholly selected profile has no interpolation anchors.
+    """
+    if not settings.enabled:
+        return np.asarray(values)
+    settings = resolve_filter(settings)
+    if not settings.enabled:
+        return np.asarray(values)
+    source = np.asarray(values, dtype=float)
+    result = source.copy()
+    columns = result.reshape(-1, 1) if result.ndim < 2 or result.shape[0] == 1 else result
+    # Reproducible, distinct noise across chromosome outputs and time slices.
+    seed = settings.seed
+    rng = np.random.default_rng(None if seed is None else np.random.SeedSequence([seed, zlib.crc32((chromosome or "").encode())]))
+    for column in range(columns.shape[1]):
+        if cancel is not None:
+            cancel()
+        original = columns[:, column].copy()
+        selected = _selected(original, settings, positions, intervals, chromosome)
+        if not selected.any():
+            continue
+        output = columns[:, column]
+        action = settings.action
+        if action in {"replace", "nan"}:
+            output[selected] = np.nan if action == "nan" else settings.value
+        elif action == "mean":
+            edges = np.flatnonzero(np.diff(np.r_[False, selected, False]))
+            for first, last in zip(edges[::2], edges[1::2]):
+                if cancel is not None:
+                    cancel()
+                finite = original[first:last][np.isfinite(original[first:last])]
+                if not finite.size:
+                    raise ValueError("A selected region has no finite values to average. Choose interpolation or a replacement value.")
+                output[first:last] = finite.mean()
+        elif action in {"minimum", "maximum"}:
+            reference = original[np.isfinite(original) & (~selected if settings.reference == "outside" else True)]
+            if not reference.size:
+                raise ValueError("No finite reference values remain. Include selected regions or choose a replacement value.")
+            output[selected] = reference.min() if action == "minimum" else reference.max()
+        elif action == "interpolate":
+            known = np.flatnonzero(~selected & np.isfinite(original))
+            if not known.size:
+                raise ValueError("Interpolation needs at least one finite value outside the selected regions.")
+            x = np.arange(original.size, dtype=float) if positions is None else np.asarray(positions, dtype=float)
+            if x.shape != original.shape or not np.isfinite(x).all() or np.any(np.diff(x) <= 0):
+                raise ValueError("Interpolation requires finite, increasing converted positions.")
+            target = x[selected]
+            if settings.interpolation == "linear" or known.size == 1:
+                output[selected] = np.interp(target, x[known], original[known])
+            elif settings.interpolation == "pchip":
+                from scipy.interpolate import PchipInterpolator
+                output[selected] = PchipInterpolator(x[known], original[known])(np.clip(target, x[known[0]], x[known[-1]]))
+            else:
+                right = np.clip(np.searchsorted(x[known], target), 0, len(known) - 1)
+                left = np.maximum(right - 1, 0)
+                if settings.interpolation == "previous":
+                    indices = np.clip(np.searchsorted(x[known], target, side="right") - 1, 0, len(known) - 1)
+                elif settings.interpolation == "next":
+                    indices = right
+                else:
+                    indices = np.where(target - x[known[left]] <= x[known[right]] - target, left, right)
+                output[selected] = original[known[indices]]
+        else:
+            with np.errstate(over="ignore", invalid="ignore"):
+                if action == "noise":
+                    output[selected] += rng.normal(0, settings.standard_deviation, selected.sum())
+                elif action == "multiply":
+                    output[selected] *= settings.value
+                else:
+                    output[selected] += settings.value
+        if np.isinf(output).any():
+            raise ValueError("The filter operation produced infinite values. Reduce its value or noise standard deviation.")
+    if cancel is not None:
+        cancel()
+    return result
+
+
+def filter_metadata(settings: DataFilterSettings) -> tuple[tuple[str, str], ...]:
+    if not settings.enabled:
+        return ()
+    metadata = {"filter_selection": settings.selection, "filter_action": settings.action}
+    if settings.selection in {"threshold", "minimum", "maximum"}:
+        metadata.update(filter_comparison=settings.comparison, filter_threshold=str(settings.threshold))
+    elif settings.selection == "between":
+        metadata.update(filter_lower=str(settings.lower), filter_upper=str(settings.upper))
+    elif settings.selection == "profile":
+        metadata.update(filter_profile_layout=settings.profile_layout, filter_profile_units=settings.profile_units,
+                        filter_profile_present=str(settings.profile is not None or settings.upload is not None).lower())
+    if settings.action in {"replace", "add", "multiply"}:
+        metadata["filter_value"] = str(settings.value)
+    elif settings.action == "noise":
+        metadata.update(filter_noise_stdev=str(settings.standard_deviation), filter_seed=str(settings.seed))
+    elif settings.action == "interpolate":
+        metadata["filter_interpolation"] = settings.interpolation
+    elif settings.action in {"minimum", "maximum"}:
+        metadata["filter_reference"] = settings.reference
+    return tuple(metadata.items())

@@ -112,11 +112,11 @@ def test_csv_profile_has_detectable_header_and_round_trips(tmp_path: Path) -> No
     np.testing.assert_array_equal(loaded, [8.0, 7.0, 9.0])
 
 
-def test_scalar_npy_payload_auto_detects_as_scalar(tmp_path: Path) -> None:
+def test_scalar_npz_payload_auto_detects_as_scalar(tmp_path: Path) -> None:
     artifact = build_mapping_raw_export(
         _result(np.asarray([1.5]), "scalar"),
         "mapped_output",
-        "npy",
+        "npz",
     )
     path = tmp_path / artifact.filename
     path.write_bytes(artifact.data)
@@ -251,9 +251,10 @@ def test_bundle_member_selection_and_dynamic_filename() -> None:
 
     selected = select_mapping_output(result, "left_fork_density_xt")
     np.testing.assert_array_equal(selected.values, left)
-    artifact = build_mapping_raw_export(result, "left_fork_density_xt", "npy")
-    assert artifact.filename == "rmap_lfd-xt.npy"
-    np.testing.assert_array_equal(np.load(io.BytesIO(artifact.data), allow_pickle=False), left)
+    artifact = build_mapping_raw_export(result, "left_fork_density_xt", "npz")
+    assert artifact.filename == "rmap_lfd-xt.npz"
+    with np.load(io.BytesIO(artifact.data), allow_pickle=False) as archive:
+        np.testing.assert_array_equal(archive["values"], left)
 
 
 def test_mse_history_exports_as_an_ordinary_numeric_array() -> None:
@@ -266,11 +267,6 @@ def test_mse_history_exports_as_an_ordinary_numeric_array() -> None:
     text = build_mapping_raw_export(result, "fit_history", "tsv")
     assert text.filename == "rmap_mse.tsv"
     assert text.data.decode().splitlines() == ["mse", "0.4", "0.2", "0.0525"]
-    binary = build_mapping_raw_export(result, "fit_history", "npy")
-    np.testing.assert_array_equal(
-        np.load(io.BytesIO(binary.data), allow_pickle=False),
-        [0.4, 0.2, 0.0525],
-    )
     archive_artifact = build_mapping_raw_export(result, "fit_history", "npz")
     with np.load(io.BytesIO(archive_artifact.data), allow_pickle=False) as archive:
         np.testing.assert_array_equal(archive["values"], [0.4, 0.2, 0.0525])
@@ -297,7 +293,7 @@ def test_gzip_format_and_export_limits(monkeypatch: pytest.MonkeyPatch) -> None:
     assert compressed.media_type == "application/gzip"
 
     monkeypatch.setattr(mapping_exports, "MAX_TEXT_EXPORT_VALUES", 1)
-    with pytest.raises(ValueError, match="Use NPY or NPZ"):
+    with pytest.raises(ValueError, match="Use NPZ"):
         build_mapping_raw_export(result, "mapped_output", "csv")
 
 

@@ -26,12 +26,21 @@ def _form(value):
     return value
 
 
-def _linear_basis(size, knots):
+def _linear_basis(size, knots, *, periodic=False):
     count = min(int(knots), size)
     if count < 1:
         raise ValueError("Basis knot counts must be positive integers.")
     if count == 1:
         return np.ones((size, 1))
+    if periodic:
+        # Equally spaced ring knots all have the same support, including
+        # across the join. The last sample is the neighbour of the first,
+        # rather than a second copy of the first knot.
+        positions = np.linspace(0, size, count, endpoint=False)
+        return np.stack(
+            [np.interp(np.arange(size), positions, row, period=size) for row in np.eye(count)],
+            axis=1,
+        )
     return np.stack(
         [np.interp(np.arange(size), np.linspace(0, size - 1, count), row) for row in np.eye(count)],
         axis=1,
@@ -227,9 +236,10 @@ def _compact_space_time_field(field, n_time, n, t, resolution_time, name, positi
 
 
 def _make_field(
-    form, fixed, initial, bounds, n, t, resolution_time, spatial_knots, temporal_knots, offset, name
+    form, fixed, initial, bounds, n, t, resolution_time, spatial_knots, temporal_knots, offset, name,
+    *, periodic=False,
 ):
-    bx = _linear_basis(n, spatial_knots if form in {"space", "spacetime"} else 1)
+    bx = _linear_basis(n, spatial_knots if form in {"space", "spacetime"} else 1, periodic=periodic)
     bt = _linear_basis(len(t), temporal_knots if form in {"time", "spacetime"} else 1)
     if fixed is not None:
         expanded = _compact_space_time_field(
@@ -288,6 +298,8 @@ def fit_timing_fork_speed(
     ``fit_mse`` always excludes regularization.
     Timing is the mean-field survival integral over the supplied/generated
     time grid; ``unreplicated_at_end`` reports a possibly truncated horizon.
+    Periodic fits use equally spaced circular spatial knots and the same
+    smoothness penalty across every neighbouring knot, including the join.
     """
     if firing_rate is None:
         raise ValueError("Firing rate must be supplied when fitting fork speed.")
@@ -373,6 +385,7 @@ def fit_timing_fork_speed(
                     initial_fork_speed = np.interp(
                         np.arange(observed.size), np.flatnonzero(valid),
                         np.clip(local_speed, *speed_bounds),
+                        period=observed.size if perQ else None,
                     )
     _report_progress(.04, "Preparing kinetic fields...")
     first = _make_field(
@@ -387,6 +400,7 @@ def fit_timing_fork_speed(
         temporal_knots,
         0,
         "firing_rate",
+        periodic=perQ,
     )
     second = _make_field(
         speed_form,
@@ -400,6 +414,7 @@ def fit_timing_fork_speed(
         temporal_knots,
         first.count,
         "fork_speed",
+        periodic=perQ,
     )
     fields = (first, second)
     initial = np.concatenate([field.initial for field in fields])
@@ -423,6 +438,9 @@ def fit_timing_fork_speed(
                         np.take(indices, range(1, indices.shape[axis]), axis=axis).ravel(),
                     )
                 )
+                if perQ and axis == 1:
+                    # Close only the spatial axis; elapsed time is not periodic.
+                    pairs.extend(zip(indices[:, -1], indices[:, 0]))
         for left, right in pairs:
             row = np.zeros(initial.size)
             row[left], row[right] = -1, 1

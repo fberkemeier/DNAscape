@@ -29,7 +29,7 @@ from xml.etree import ElementTree
 
 import numpy as np
 
-from dnascape.workflows.export_settings import normalize_compression
+from dnascape.workflows.export_settings import DATA_FILE_FORMAT_OPTIONS, normalize_compression
 from dnascape.workflows.preview import _kde_data, has_finite_values
 from dnascape.workflows.result_naming import RSIM_FILE_PREFIX, output_file_token
 from dnascape.workflows.simulation import ConstantSimulationResult
@@ -37,7 +37,7 @@ from dnascape.workflows.simulation import ConstantSimulationResult
 AxisKind = Literal["space", "time", "replicate", "sample", "xt"]
 
 PLOT_FORMATS = frozenset({"png", "svg", "pdf"})
-RAW_FORMATS = frozenset({"csv", "tsv", "txt", "npy", "npv", "npz"})
+RAW_FORMATS = frozenset(DATA_FILE_FORMAT_OPTIONS)
 EXPORT_FORMATS = PLOT_FORMATS | RAW_FORMATS
 
 MAX_PLOT_SERIES_POINTS = 20_000
@@ -209,8 +209,10 @@ def safe_export_filename(
     candidate = str(filename or "").strip()
     candidate = re.split(r"[\\/]", candidate)[-1]
     candidate = re.sub(r"(?i)\.(?:gz|zip|7z|xz)$", "", candidate)
+    # Legacy source suffixes still need replacing when exporting to NPZ/text.
+    known_extensions = EXPORT_FORMATS | {"npy", "npv"}
     candidate = re.sub(
-        rf"(?i)\.({'|'.join(sorted(EXPORT_FORMATS))})$",
+        rf"(?i)\.({'|'.join(sorted(known_extensions))})$",
         "",
         candidate,
     )
@@ -567,7 +569,7 @@ def build_raw_export(
     gzip_output: bool | None = None,
     axis_kind: AxisKind | None = None,
 ) -> ExportArtifact:
-    """Serialize one selected output as text, NPY, or self-describing NPZ bytes."""
+    """Serialize one selected output as text or self-describing NPZ bytes."""
 
     normalized_format = normalize_export_format(file_format, allowed=RAW_FORMATS)
     selected = select_result_output(result, output_key, axis_kind=axis_kind)
@@ -575,7 +577,7 @@ def build_raw_export(
         if selected.values.size > MAX_TEXT_EXPORT_VALUES:
             raise ValueError(
                 f"Text export contains {selected.values.size:,} values; the interactive "
-                f"limit is {MAX_TEXT_EXPORT_VALUES:,}. Use NPY or NPZ instead."
+                f"limit is {MAX_TEXT_EXPORT_VALUES:,}. Use NPZ instead."
             )
         data = _text_bytes(selected, normalized_format)
     else:
@@ -586,7 +588,7 @@ def build_raw_export(
                 f"Binary export would contain at least {estimated_bytes / 1024**2:.1f} MiB; "
                 f"the local limit is {MAX_BINARY_EXPORT_BYTES / 1024**2:.0f} MiB."
             )
-        data = _binary_bytes(selected, normalized_format)
+        data = _binary_bytes(selected)
 
     default_name = f"{RSIM_FILE_PREFIX}_{output_file_token(output_key)}"
     inner_filename = safe_export_filename(
@@ -601,8 +603,6 @@ def build_raw_export(
             "csv": "text/csv; charset=utf-8",
             "tsv": "text/tab-separated-values; charset=utf-8",
             "txt": "text/plain; charset=utf-8",
-            "npy": "application/octet-stream",
-            "npv": "application/octet-stream",
             "npz": "application/octet-stream",
         }[normalized_format],
         compression=_raw_compression(compression, gzip_output),
@@ -1022,13 +1022,9 @@ def _text_bytes(selected: SelectedOutput, file_format: str) -> bytes:
     return stream.getvalue().encode("utf-8")
 
 
-def _binary_bytes(selected: SelectedOutput, file_format: str) -> bytes:
+def _binary_bytes(selected: SelectedOutput) -> bytes:
     stream = io.BytesIO()
     values, data_form, columns = _rdata_payload(selected)
-    if file_format in {"npy", "npv"}:
-        np.save(stream, values, allow_pickle=False)
-        return stream.getvalue()
-
     data_form_array = np.asarray(data_form)
     if selected.axis_kind == "xt":
         assert selected.y is not None

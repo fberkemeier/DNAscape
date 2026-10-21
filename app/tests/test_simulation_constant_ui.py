@@ -50,6 +50,90 @@ async def _open_simulation(user: Any) -> None:
     await user.should_see(marker="source-firing-rate-mode", retries=60)
 
 
+def test_movement_and_factor_controls_are_conditional_and_reach_the_worker(monkeypatch) -> None:
+    from app.pages import simulation as page
+
+    requests = []
+
+    def run(request, report, _cancel):
+        requests.append(request)
+        report(0.8, "Running test simulation...")
+        return _result_for(request)
+
+    monkeypatch.setattr(page, "run_constant_simulation", run)
+
+    async def scenario():
+        async with user_simulation(index) as user:
+            await _open_simulation(user)
+            user.find("Simulation settings").click()
+
+            def control(marker):
+                return next(iter(user.find(marker=marker).elements))
+
+            assert user.client is not None
+            with user.client:
+                control("source-firing-rate-mode").set_value("scalar")
+                control("simulation-region-end").set_value(5)
+            await user.should_see("Fork movement")
+            assert control("simulation-fork-stalling").value is False
+            assert control("simulation-stochastic-movement").value is False
+            assert list(control("simulation-geometry").options.values()) == ["Linear", "Periodic"]
+            assert list(control("simulation-missing-values").options.values()) == ["Error", "Interpolate", "Zero"]
+            await user.should_see("Fix seed")
+            for marker in ("simulation-stall-rate-per-kb", "simulation-stall-recovery", "simulation-stall-duration",
+                           "simulation-fork-speed-std", "simulation-fork-coupling", "simulation-pool-fields"):
+                await user.should_not_see(marker=marker)
+            user.find(marker="simulation-finite-pool").click()
+            await user.should_see(marker="simulation-fork-coupling")
+            await user.should_see(marker="simulation-pool-size")
+            await user.should_see(marker="simulation-recycle-rate")
+            assert control("simulation-finite-pool").id < control("simulation-fork-coupling").id < control("simulation-pool-size").id < control("simulation-recycle-rate").id
+            user.find(marker="simulation-fork-stalling").click()
+            await user.should_see(marker="simulation-stall-recovery")
+            assert control("simulation-stall-recovery").value is False
+            await user.should_not_see(marker="simulation-stall-duration")
+            user.find(marker="simulation-stall-recovery").click()
+            await user.should_see(marker="simulation-stall-duration")
+            user.find(marker="simulation-stochastic-movement").click()
+            await user.should_see(marker="simulation-fork-speed-std")
+            with user.client:
+                control("simulation-stall-rate-per-kb").set_value(0.17)
+                control("simulation-stall-duration").set_value(2.5)
+                control("simulation-fork-speed-std").set_value(0.3)
+                control("simulation-pool-size").set_value(80)
+                control("simulation-recycle-rate").set_value(0.04)
+                control("simulation-fork-coupling").set_value(True)
+            user.find(marker="action-simulate").click()
+            await _wait_for(lambda: len(requests) == 1)
+            await _wait_for(lambda: control("simulation-fork-stalling").enabled)
+            request = requests[0]
+            assert request.stall_rate_per_kb == 0.17 and request.stall_duration == 2.5
+            assert request.fork_speed_std == 0.3
+            assert request.firing_factors == 80 and request.firing_factor_recycle == 0.04
+            assert request.firing_factor_fork_coupling is True
+            user.find(marker="simulation-stall-recovery").click()
+            await user.should_not_see(marker="simulation-stall-duration")
+            user.find(marker="action-simulate").click()
+            await _wait_for(lambda: len(requests) == 2)
+            await _wait_for(lambda: control("simulation-fork-stalling").enabled)
+            assert requests[1].stall_rate_per_kb == 0.17
+            assert requests[1].stall_duration == float("inf")
+            rate_control = control("simulation-stall-rate-per-kb")
+            user.find(marker="simulation-fork-stalling").click()
+            user.find(marker="simulation-stochastic-movement").click()
+            user.find(marker="simulation-finite-pool").click()
+            assert rate_control.value == 0
+            user.find(marker="action-simulate").click()
+            await _wait_for(lambda: len(requests) == 3)
+            request = requests[2]
+            assert request.stall_rate_per_kb == request.fork_speed_std == 0
+            assert request.stall_duration == float("inf")
+            assert request.firing_factors is None and request.firing_factor_fork_coupling is False
+            assert request.firing_factor_recycle == 0
+
+    asyncio.run(scenario())
+
+
 def _select(user: Any, marker: str) -> Select:
     return cast(Select, next(iter(user.find(marker=marker).elements)))
 

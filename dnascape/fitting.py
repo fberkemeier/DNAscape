@@ -11,6 +11,7 @@ from scipy.signal import fftconvolve
 from scipy.special import gamma
 
 from ._spatial_firing import timing_mse_gradient
+from ._periodic_firing import PeriodicFiringSmoother
 from .constants import mapt
 from .io import _resolve_data_path, savecsv
 from .mapping import (
@@ -303,6 +304,11 @@ def map_timing_firing(
     original local update. If it raises MSE, the remaining iterations use the
     exact gradient of the same forward model. Pass False to reproduce the
     historical, potentially worsening sequence of ratio updates.
+
+    With periodic geometry, it also regularizes log-rate curvature around
+    the complete ring before every forward prediction, including the seed.
+    Observed timing is never smoothed. ``stabilize=False`` retains the legacy
+    unconstrained periodic ratio updates.
     """
     resolution = _normalise_resolution_x(resolution, resolution_x=resolution_x)
     stall_rate = _resolve_stall_probability(
@@ -346,6 +352,13 @@ def map_timing_firing(
 
     # initial guess for firing rate
     x0 = (math.pi / (4.0 * fork_speed_per_bin)) * np.maximum(T, 1e-80) ** (-2)
+    floor = 10.0 ** (-err_threshold)
+    periodic_smoother = (
+        PeriodicFiringSmoother(T, fork_speed_initial, resolution)
+        if perQ and stabilize else None
+    )
+    if periodic_smoother is not None:
+        x0 = periodic_smoother(x0, floor=floor)
     x = x0
 
     fit_mask, update_weights, edge_bins, taper_bins = _spatial_firing_edge_controls(
@@ -357,7 +370,6 @@ def map_timing_firing(
         perQ=perQ,
         refine_edge_kb=refine_edge_kb,
     )
-    floor = 10.0 ** (-err_threshold)
     historical_linear = not perQ and not variable_fork_speed and stall_rate == 0.0
 
     def update_firing_rate(observed, predicted, current):
@@ -382,7 +394,7 @@ def map_timing_firing(
             close = mse <= deviation_threshold
             updated[close] = current[close]
 
-        return updated
+        return periodic_smoother(updated, floor=floor) if periodic_smoother is not None else updated
 
     # initial prediction
     y = _map_spatial_firing_timing_with_context(
@@ -478,6 +490,8 @@ def map_timing_firing(
         if rate_max is None:
             pos = rates[fit_mask & (rates > 0)]
             rate_max = (10.0 * np.median(pos)) if pos.size else 1.0
+        if periodic_smoother is not None:
+            rates = np.clip(periodic_smoother(rates, floor=rate_min), rate_min, rate_max)
     
         hist_mse = []
         T_pred = None
@@ -537,6 +551,8 @@ def map_timing_firing(
                 alpha * update_weights[valid],
             )
             np.clip(rates, rate_min, rate_max, out=rates)
+            if periodic_smoother is not None:
+                rates = np.clip(periodic_smoother(rates, floor=rate_min), rate_min, rate_max)
     
             done = (k + 1) == iterations or _error_reached(mse, error)
             if _fit_progress_enabled(verbose) and ((k + 1) % print_every == 0 or done):
@@ -566,6 +582,9 @@ def map_timing_firing(
             "fit_taper_bins": taper_bins,
             "fit_history": np.asarray(fit_history, dtype=float),
             "fit_used_descent": used_descent,
+            "fit_periodic_smoothing_kb": (
+                periodic_smoother.length_kb if periodic_smoother is not None else 0.
+            ),
         },
     )
 
@@ -1962,6 +1981,10 @@ def _refine_spacetime_firing(
     if rates.ndim != 2 or rates.shape[1] != n:
         raise ValueError("firing_rate_spacetime must have internal shape (time, positions).")
 
+    periodic_smoother = PeriodicFiringSmoother(T, fork_speed, resolution) if perQ else None
+    if periodic_smoother is not None:
+        rates = periodic_smoother(rates, axis=1, floor=floor)
+
     n_time = rates.shape[0]
     bins = _timing_bin_indices(T, n_time, resolution_time=resolution_time, T0=T0)
     crop = _refinement_crop_mask(n, resolution, perQ=perQ, refine_edge_kb=refine_edge_kb)
@@ -2027,6 +2050,8 @@ def _refine_spacetime_firing(
             time_updates = _mean_ratio_by_bin(ratio, bins, n_time, valid)
             rates *= time_updates[:, None] ** time_step
         np.maximum(rates, floor, out=rates)
+        if periodic_smoother is not None:
+            rates = periodic_smoother(rates, axis=1, floor=floor)
 
         done = it == maxiter or _error_reached(err, error)
         if _fit_progress_enabled(verbose):
@@ -2043,6 +2068,9 @@ def _refine_spacetime_firing(
         "fit_mse": float(np.mean(residual[np.isfinite(residual)]**2)),
         "fit_history": np.asarray(history),
         "fit_objective": float(best_err),
+        "fit_periodic_smoothing_kb": (
+            periodic_smoother.length_kb if periodic_smoother is not None else 0.
+        ),
     })
 
 

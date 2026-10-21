@@ -165,8 +165,8 @@ def test_installed_wheel_runs_mapping_and_raw_exports_without_app(tmp_path: Path
         )
         result = workflows.run_mapping(request)
         assert result.outputs[result.primary_output].size == 4
-        artifact = workflows.build_mapping_raw_export(result, result.primary_output, 'npy')
-        assert artifact.data.startswith(b'\\x93NUMPY')
+        artifact = workflows.build_mapping_raw_export(result, result.primary_output, 'npz')
+        assert artifact.data.startswith(b'PK')
         assert not {'app', 'nicegui'} & sys.modules.keys()
         """,
         cwd=tmp_path,

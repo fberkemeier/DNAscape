@@ -28,6 +28,11 @@ from app.data_conversion_service import (
 from app.mapping_uploads import inspect_upload, materialize_upload
 
 
+def _npz_values(data: bytes) -> np.ndarray:
+    with np.load(io.BytesIO(data), allow_pickle=False) as archive:
+        return archive["values"]
+
+
 def test_profile_conversion_preserves_space_dependence_and_writes_gzipped_npz() -> None:
     inspection = inspect_upload(
         "signal.csv",
@@ -64,7 +69,7 @@ def test_matrix_conversion_preserves_space_time_shape_and_labels() -> None:
         DataConversionRequest(
             inspection=inspection,
             input_form="xt",
-            target_format="npy",
+            target_format="npz",
             gzip_output=False,
         )
     )
@@ -73,7 +78,7 @@ def test_matrix_conversion_preserves_space_time_shape_and_labels() -> None:
     assert result.shape == (2, 2)
     assert result.labels == ("t0", "t1")
     np.testing.assert_allclose(
-        np.load(io.BytesIO(result.artifact.data), allow_pickle=False),
+        _npz_values(result.artifact.data),
         np.array([[0.1, 0.2], [0.3, 0.4]]),
     )
 
@@ -127,7 +132,7 @@ def test_profile_custom_rescale_can_reverse_range_without_reordering_samples() -
     request = DataConversionRequest(
         inspection=inspection,
         input_form="x",
-        target_format="npy",
+        target_format="npz",
         value_column="signal",
         scaling_mode="interval",
         rescale_min=-1,
@@ -140,7 +145,7 @@ def test_profile_custom_rescale_can_reverse_range_without_reordering_samples() -
 
     np.testing.assert_allclose(prepared.values, np.array([1.0, 0.0, -1.0]))
     np.testing.assert_allclose(
-        np.load(io.BytesIO(result.artifact.data), allow_pickle=False),
+        _npz_values(result.artifact.data),
         prepared.values,
     )
     metadata = dict(result.metadata)
@@ -155,7 +160,7 @@ def test_threshold_filter_masks_samples_and_smoothing_does_not_restore_them() ->
     request = DataConversionRequest(
         inspection=inspection,
         input_form="x",
-        target_format="npy",
+        target_format="npz",
         value_column="signal",
         missing_policy="ignore",
         threshold_enabled=True,
@@ -173,7 +178,7 @@ def test_threshold_filter_masks_samples_and_smoothing_does_not_restore_them() ->
         equal_nan=True,
     )
     np.testing.assert_allclose(
-        np.load(io.BytesIO(result.artifact.data), allow_pickle=False),
+        _npz_values(result.artifact.data),
         prepared.values,
         equal_nan=True,
     )
@@ -322,7 +327,7 @@ def test_fully_thresholded_profile_is_safe_to_preview_and_rescale() -> None:
     request = DataConversionRequest(
         inspection=inspection,
         input_form="x",
-        target_format="npy",
+        target_format="npz",
         value_column="signal",
         missing_policy="ignore",
         threshold_enabled=True,
@@ -334,7 +339,7 @@ def test_fully_thresholded_profile_is_safe_to_preview_and_rescale() -> None:
 
     result = convert_data(request)
 
-    values = np.load(io.BytesIO(result.artifact.data), allow_pickle=False)
+    values = _npz_values(result.artifact.data)
     assert values.shape == (2,)
     assert np.isnan(values).all()
     assert result.preview is not None
@@ -374,14 +379,14 @@ def test_profile_conversion_can_preserve_missing_values() -> None:
         DataConversionRequest(
             inspection=inspection,
             input_form="x",
-            target_format="npy",
+            target_format="npz",
             gzip_output=False,
             value_column="signal",
             missing_policy="ignore",
         )
     )
 
-    values = np.load(io.BytesIO(result.artifact.data), allow_pickle=False)
+    values = _npz_values(result.artifact.data)
     np.testing.assert_allclose(values[[0, 2]], np.array([1.0, 3.0]))
     assert np.isnan(values[1])
 
@@ -427,7 +432,7 @@ def test_conversion_reports_rdata_load_prepare_write_and_completion_progress() -
         DataConversionRequest(
             inspection=inspection,
             input_form="x",
-            target_format="npy",
+            target_format="npz",
             gzip_output=False,
             value_column="signal",
         ),
@@ -583,8 +588,6 @@ def test_text_export_is_the_uncompressed_default_and_numpy_formats_are_last() ->
         "tsv",
         "txt",
         "csv",
-        "npy",
-        "npv",
         "npz",
     )
     assert result.artifact.filename == "rdata.tsv"
@@ -686,7 +689,7 @@ def test_sns_enrichment_maximum_keeps_peak_heights_and_zero_background(
 def test_track_preview_uses_zero_based_bin_starts_without_changing_export_coordinates() -> None:
     inspection = inspect_upload("track.bedGraph", b"chr1\t5000\t8000\t2\n")
     request = DataConversionRequest(
-        inspection=inspection, input_form="track", target_format="npy",
+        inspection=inspection, input_form="track", target_format="npz",
         chromosome="chr1", start=5000, end=8000, bin_size=1000,
     )
     prepared = prepare_data(request)
@@ -694,7 +697,7 @@ def test_track_preview_uses_zero_based_bin_starts_without_changing_export_coordi
     np.testing.assert_array_equal(prepared.coordinates["position_kb"], [5.5, 6.5, 7.5])
     assert result.preview is not None
     np.testing.assert_array_equal(result.preview.x, [0, 1, 2])
-    np.testing.assert_array_equal(np.load(io.BytesIO(result.artifact.data)), prepared.values)
+    np.testing.assert_array_equal(_npz_values(result.artifact.data), prepared.values)
 
 
 def test_sns_preview_keeps_isolated_peaks_at_their_zero_based_bin_positions() -> None:
@@ -703,7 +706,7 @@ def test_sns_preview_keeps_isolated_peaks_at_their_zero_based_bin_positions() ->
         b"chr1\t137000\t137100\t20\nchr1\t1999000\t2000000\t1\n",
     )
     result = convert_data(DataConversionRequest(
-        inspection=inspection, input_form="track", target_format="npy",
+        inspection=inspection, input_form="track", target_format="npz",
         chromosome="chr1", start=0, end=2000000, bin_size=1000, aggregation="max",
         biological_role="firing_rate",
     ))
@@ -714,7 +717,7 @@ def test_sns_preview_keeps_isolated_peaks_at_their_zero_based_bin_positions() ->
     assert preview.maximum == 20
     assert np.max(preview.values) == 20
     assert preview.x[np.argmax(preview.values)] == 137.0
-    values = np.load(io.BytesIO(result.artifact.data), allow_pickle=False)
+    values = _npz_values(result.artifact.data)
     assert values.shape == (2000,)
     assert values[137] == 20
     assert np.count_nonzero(values) == 2
@@ -873,7 +876,7 @@ def test_all_chromosome_npz_stores_native_length_named_profiles() -> None:
     )
 
 
-@pytest.mark.parametrize("target_format", ("txt", "npy", "npv"))
+@pytest.mark.parametrize("target_format", ("txt",))
 def test_all_chromosome_scope_rejects_formats_that_lose_chromosome_labels(
     target_format: str,
 ) -> None:
@@ -1598,7 +1601,7 @@ def test_result_preview_is_evenly_bounded_to_five_hundred_points() -> None:
         DataConversionRequest(
             inspection=inspection,
             input_form="x",
-            target_format="npy",
+            target_format="npz",
         )
     )
 

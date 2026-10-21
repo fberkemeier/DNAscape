@@ -29,7 +29,7 @@ def test_displayed_axis_defaults_custom_limits_and_reset(form: str) -> None:
             await user.should_see("Array size: " + " x ".join(map(str, values.shape)), retries=60)
             user.find(marker="action-plot").click()
             await user.should_see(marker="plotting-result-plot", retries=60)
-            user.find("Plotting settings").click()
+            user.find("Plot settings").click()
             await user.should_not_see("Title")
 
             def control(marker: str) -> Any:
@@ -48,6 +48,8 @@ def test_displayed_axis_defaults_custom_limits_and_reset(form: str) -> None:
             assert user.client is not None
             original_x = (control("x-minimum").value, control("x-maximum").value)
             assert control("aspect-ratio").value is None
+            assert control("aspect-ratio")._props["stack-label"] is True
+            assert control("x-axis-label")._props["stack-label"] is True
             with user.client:
                 control("aspect-ratio").set_value(2.0)
             await asyncio.sleep(0)
@@ -59,6 +61,7 @@ def test_displayed_axis_defaults_custom_limits_and_reset(form: str) -> None:
             user.find(marker="plotting-reset-aspect-ratio").click()
             await asyncio.sleep(0)
             assert options()["dnascapeAspectRatio"] is None
+            assert control("aspect-ratio")._props["stack-label"] is True
             assert control("result-plot")._style["height"] == "360px"
             with user.client:
                 control("x-minimum").set_value(0.25)
@@ -129,7 +132,7 @@ def test_mapping_time_profile_uses_position_time_heatmap_defaults(monkeypatch) -
             assert np.asarray(options["series"][1]["data"])[:, 2].min() == pytest.approx(0.01)
             assert np.asarray(options["series"][1]["data"])[:, 0].max() == pytest.approx(2.0)
             assert np.asarray(options["series"][1]["data"])[:, 1].max() == pytest.approx(10.0)
-            user.find("Plotting settings").click()
+            user.find("Plot settings").click()
             await user.should_not_see("Title")
             for endpoint in ("min", "max"):
                 suffix = "minimum" if endpoint == "min" else "maximum"
@@ -144,7 +147,7 @@ def test_two_dataset_plot_has_optional_independent_y_axes_and_curve_patterns() -
         async with user_simulation(index) as user:
             await user.open("/")
             user.find(marker="nav-plotting").click()
-            user.find("Plotting settings").click()
+            user.find("Plot settings").click()
             await user.should_not_see(marker="plotting-dual-y-axes")
             upload = next(iter(user.find(marker="plotting-data-upload").elements))
             await upload.handle_uploads([
@@ -176,6 +179,8 @@ def test_two_dataset_plot_has_optional_independent_y_axes_and_curve_patterns() -
             assert control("y-maximum")._props["label"] == "Y1 max"
             await user.should_see(marker="plotting-y2-minimum")
             assert control("y2-maximum").value == pytest.approx(axes[1]["max"])
+            await user.should_not_see(marker="plotting-curve-type")
+            user.find("Curves").click()
             assert user.client is not None
             with user.client:
                 control("y-minimum").set_value(0)
@@ -183,14 +188,14 @@ def test_two_dataset_plot_has_optional_independent_y_axes_and_curve_patterns() -
                 control("y2-minimum").set_value(500)
                 control("y2-maximum").set_value(4000)
                 control("invert-x").set_value(True)
-                control("curve-type").set_value("dashed")
+                control("curve-type-1").set_value("dashed")
+                control("curve-type-2").set_value("dashed")
             await asyncio.sleep(0)
             assert [(axis["min"], axis["max"]) for axis in options()["yAxis"]] == [(0, 8), (500, 4000)]
             assert options()["xAxis"][0]["inverse"] is True
             assert options()["xAxis"][1]["inverse"] is False
             assert all(axis["axisLine"]["onZero"] is False for axis in options()["yAxis"])
             assert all(series["lineStyle"]["type"] == "dashed" for series in options()["series"])
-            user.find("Curves").click()
             assert "default" not in control("curve-type-2").options
             assert control("curve-type-2").value == "dashed"
             with user.client:

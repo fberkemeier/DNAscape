@@ -231,14 +231,13 @@ def test_histogram_statistics_are_optional_and_positioned_like_a_legend() -> Non
     options = _histogram_options(
         [1.0, 2.0, 3.0, 4.0],
         show_histogram_statistics=True,
-        histogram_statistics_position="Bottom left",
+        legend_position="Bottom left",
     )
     graphic = options["graphic"]
     assert isinstance(graphic, list)
     summary = graphic[0]
-    assert summary["left"] == 84
-    assert summary["bottom"] == 8
-    assert options["grid"]["bottom"] >= 100
+    assert summary["left"] == options["grid"]["left"] + 8
+    assert summary["bottom"] == options["grid"]["bottom"] + 8
     assert "top" not in summary
     assert "right" not in summary
     assert summary["style"]["text"] == "Mean       2.5\nMedian    2.5\nStd dev   1.118"

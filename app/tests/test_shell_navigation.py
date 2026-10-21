@@ -249,10 +249,12 @@ def test_about_menu_identifies_dnascape_and_its_author() -> None:
         async with user_simulation(index) as user:
             await user.open("/")
             user.find(marker="app-menu-toggle").click()
+            about = next(iter(user.find(marker="menu-about").elements))
+            assert about.parent_slot.children[-1] is about
             user.find(marker="menu-about").click()
             await user.should_see(marker="about-dialog")
             await user.should_see(marker="about-logo")
-            await user.should_see("DNAscape builds quantitative models of DNA replication")
+            await user.should_see("DNAscape is open-source software for quantitative modelling of DNA replication")
             await user.should_see("Francisco Berkemeier")
             email = next(iter(user.find(marker="about-email").elements))
             assert email._props["href"] == "mailto:fp409@cam.ac.uk"
@@ -260,6 +262,8 @@ def test_about_menu_identifies_dnascape_and_its_author() -> None:
             assert documentation._props["href"].startswith("https://dnascape.readthedocs.io")
             github = next(iter(user.find(marker="about-github").elements))
             assert github._props["href"] == "https://github.com/fberkemeier/DNAscape"
+            licence = next(iter(user.find(marker="about-licence").elements))
+            assert licence._props["href"] == "https://github.com/fberkemeier/DNAscape/blob/main/LICENSE"
 
     asyncio.run(scenario())
 
@@ -304,6 +308,17 @@ def test_reset_menu_restores_defaults_and_clears_the_client_workspace() -> None:
             user.find(marker="app-menu-toggle").click()
             user.find(marker="menu-reset").click()
             await user.should_see(marker="reset-dialog")
+            dialog = next(iter(user.find(marker="reset-confirmation-dialog").elements))
+            assert not dialog._props.get("persistent")
+            # QDialog emits this update when its backdrop or Escape dismisses it.
+            user.find(marker="reset-confirmation-dialog").trigger("update:modelValue", False)
+            assert dialog.value is False
+            assert settings.plot_dpi == 288
+            with user.client:
+                assert current_session_cache().count() == 1
+            user.find(marker="app-menu-toggle").click()
+            user.find(marker="menu-reset").click()
+            assert dialog.value is True
             user.find(marker="confirm-reset-everything").click()
             await user.should_see("Build quantitative models of DNA replication")
 

@@ -96,6 +96,8 @@ class ConstantSimulationRequest:
     track_time_outputs: bool = False
     track_detailed_outputs: bool = False
     stall_rate_per_kb: float | None = None
+    fork_speed_std: float = 0.0
+    retained_profile_count: int = 10
 
 
 @dataclass(frozen=True)
@@ -250,13 +252,14 @@ def validate_constant_simulation(request: ConstantSimulationRequest) -> _Validat
         fork_speed=fork_speed,
     )
 
-    replicates = _positive_integer(request.replicates, "Replicates")
+    replicates = _positive_integer(request.replicates, "Simulations (replicates)")
     if replicates > MAX_REPLICATES:
         raise ValueError(
-            f"Replicates exceed the local app limit of {MAX_REPLICATES:,}. "
+            f"Simulations (replicates) exceed the local app limit of {MAX_REPLICATES:,}. "
             "Use a smaller interactive ensemble."
         )
     retained_profile_count = min(
+        _positive_integer(request.retained_profile_count, "Profiles shown", allow_zero=True),
         replicates,
         MAX_RETAINED_REPLICATION_PROFILES,
         MAX_RETAINED_REPLICATION_PROFILE_BYTES
@@ -315,6 +318,9 @@ def validate_constant_simulation(request: ConstantSimulationRequest) -> _Validat
         time_grid = np.empty(0, dtype=float)
 
     stall_rate = _finite(request.stall_rate, "Stall rate")
+    speed_std = _finite(request.fork_speed_std, "Fork-speed standard deviation")
+    if speed_std < 0:
+        raise ValueError("Fork-speed standard deviation must be non-negative.")
     if not 0 <= stall_rate <= 1:
         raise ValueError("Legacy stall probability must lie between zero and one.")
     if request.stall_rate_per_kb is not None:
@@ -526,6 +532,7 @@ def run_constant_simulation(
             "ffiring_nr": request.firing_factors,
             "ffiring_recycle": float(request.firing_factor_recycle),
             "ffiring_forkQ": bool(request.firing_factor_fork_coupling),
+            "fork_speed_std": float(request.fork_speed_std),
             "time_statsQ": time_outputs,
             "time_stats_xtQ": detailed,
             "max_rep_time": float(request.max_replication_time),

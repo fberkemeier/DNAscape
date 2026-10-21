@@ -42,6 +42,7 @@ _PUBLIC_BY_MODULE = {
         "inspect_data_source",
         "prepare_data",
     ),
+    "filtering": ("DataFilterSettings", "FilterProfile", "apply_data_filter"),
     "uploads": (
         "UploadInspection",
         "inspect_upload",
@@ -78,6 +79,7 @@ _SUBMODULES = (
     "conversion",
     "exports",
     "export_settings",
+    "filtering",
     "mapping",
     "mapping_catalog",
     "mapping_defaults",

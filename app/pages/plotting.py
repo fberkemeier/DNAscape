@@ -22,12 +22,14 @@ from app.pages.common import (
     DATA_ICON,
     action_dock,
     data_upload,
+    append_raw_uploads,
     expansion,
     page_intro,
     panel,
     panel_title,
     plot_action_button,
     preview_plot,
+    raw_data_open_menu,
 )
 from app.preview_plotting import (
     CURVE_TYPES,
@@ -51,11 +53,13 @@ from app.result_naming import (
     unique_compact_export_stems,
 )
 from app.session_cache import cache_artifact, cache_upload, current_session_cache
+from app.raw_data_transfer import RawInputTarget, open_raw_artifact
 from app.simulation_exports import ExportArtifact, build_chart_capture_export
 from dnascape.workflows.analysis import (
     CORRELATION_METHODS, AnalysisDataset, AnalysisReport, SmoothingSettings,
     analyse_profiles, export_correlation_report, smooth_profile,
 )
+from dnascape.workflows.exports import safe_export_filename
 
 _PROFILE_ACCEPT = ".csv,.tsv,.txt,.npy,.npv,.npz,.gz"
 _DEPENDENCE_LABELS = {
@@ -142,6 +146,7 @@ _SEPARATE_SETTING_VALUE_FIELDS = (
     "histogram_bins",
     "histogram_bin_size",
     "histogram_touching",
+    "kde_bandwidth", "histogram_grouped", "show_hover",
     "histogram_boundary",
     "show_individual_profiles",
     "individual_profile_count",
@@ -367,7 +372,7 @@ def _materialize_source(
     for token in state.selection:
         form = _selection_form(state, token)
         if form not in _DEPENDENCE_LABELS:
-            raise ValueError(f"{inspection.name} does not contain a plottable profile.")
+            raise ValueError("The selected data does not contain a plottable profile.")
         column = None
         array_key = None
         if inspection.array_keys:
@@ -548,6 +553,7 @@ def render(_navigate: Callable[[str], None]) -> None:
     smoothing_settings: dict[tuple[int, str], SmoothingSettings] = {}
     smoothing_controls: list[Any] = []
     report_file_format = {"value": "csv"}
+    report_name = {"value": "analysis-report"}
 
     page_intro(
         "Analysis",
@@ -751,7 +757,7 @@ def render(_navigate: Callable[[str], None]) -> None:
 
                             details_panel()
 
-                    data_upload(
+                    profile_uploader = data_upload(
                         accept=_PROFILE_ACCEPT,
                         accepted_formats="CSV, TSV, TXT, NPY, NPV, NPZ, GZ",
                         marker="plotting-data-upload",
@@ -775,72 +781,73 @@ def render(_navigate: Callable[[str], None]) -> None:
                     )
                     compatibility_note.visible = False
 
-                with expansion("Analysis", icon="analytics", expanded=True):
+                with expansion("Analysis", icon_svg=PLOT_ICON_SVG, expanded=True):
                     analysis_enabled = ui.switch("Enable analysis", value=False).mark("analysis-enabled")
-                    ui.label("Correlations").classes("dn-setting-group-title")
-                    with ui.row().classes("dn-inline-actions dn-analysis-methods"):
-                        correlation_controls = {
-                            method: ui.checkbox(label, value=True).mark(f"analysis-{method}")
-                            for method, label in CORRELATION_METHODS.items()
-                        }
-                    for control in correlation_controls.values():
-                        control.disable()
-                    ui.label("Smoothing").classes("dn-setting-group-title")
-                    ui.label("Apply to each dataset when you click Plot or Analyse.").classes("dn-settings-help")
+                    with ui.column().classes("dn-analysis-options w-full").bind_visibility_from(analysis_enabled, "value"):
+                        ui.label("Correlations").classes("dn-setting-group-title")
+                        with ui.row().classes("dn-inline-actions dn-analysis-methods"):
+                            correlation_controls = {
+                                method: ui.checkbox(label, value=True).mark(f"analysis-{method}")
+                                for method, label in CORRELATION_METHODS.items()
+                            }
+                        for control in correlation_controls.values():
+                            control.disable()
+                        show_p_values = ui.checkbox("Show p-values", value=False).mark("analysis-show-p-values")
+                        show_p_values.tooltip("Two-sided, unadjusted p-values for dataset pairs; self-correlations have no p-value.")
 
-                    @ui.refreshable
-                    def render_smoothing_controls() -> None:
-                        smoothing_controls.clear()
-                        profiles = _unique_series_names([
-                            item for source in sources
-                            for item in _materialize_source(source, missing_policy="ignore")
-                        ])
-                        if not profiles:
-                            ui.label("Upload data to choose smoothing for each dataset.").classes("dn-settings-help")
-                            return
-                        with ui.column().classes("dn-analysis-smoothing-list w-full"):
-                            for index, item in enumerate(profiles, start=1):
-                                settings = smoothing_settings.setdefault(item.series_id, SmoothingSettings())
-                                with ui.column().classes("dn-analysis-smoothing-row w-full"):
-                                    ui.label(curve_names.get(item.series_id, item.name)).classes("dn-analysis-dataset-name").tooltip(item.full_identity)
-                                    with ui.element("div").classes("dn-analysis-smoothing-fields"):
-                                        method = (
-                                            ui.select({"none": "Off", "moving_average": "Moving average", "gaussian": "Gaussian"},
-                                                      value=settings.method, label="Smoothing")
-                                            .props("dense options-dense").classes("dn-field")
-                                            .mark(f"analysis-smoothing-method-{index}")
-                                        )
-                                        window = (
-                                            ui.number("Window (points)", value=settings.window, min=1, max=100001, step=2)
-                                            .props("dense").classes("dn-field")
-                                            .mark(f"analysis-smoothing-window-{index}")
-                                        )
-                                        sigma = (
-                                            ui.number("Sigma (points)", value=settings.sigma, min=0.01, max=10000, step=0.1)
-                                            .props("dense").classes("dn-field")
-                                            .mark(f"analysis-smoothing-sigma-{index}")
-                                        )
-                                    window.visible = settings.method == "moving_average"
-                                    sigma.visible = settings.method == "gaussian"
-                                    for control in (method, window, sigma):
-                                        control.set_enabled(not running)
-                                        smoothing_controls.append(control)
+                        @ui.refreshable
+                        def render_smoothing_controls() -> None:
+                            smoothing_controls.clear()
+                            profiles = _unique_series_names([
+                                item for source in sources
+                                for item in _materialize_source(source, missing_policy="ignore")
+                            ])
+                            if not profiles:
+                                return
+                            ui.label("Smoothing").classes("dn-setting-group-title")
+                            with ui.column().classes("dn-analysis-smoothing-list w-full"):
+                                for index, item in enumerate(profiles, start=1):
+                                    settings = smoothing_settings.setdefault(item.series_id, SmoothingSettings())
+                                    with ui.column().classes("dn-analysis-smoothing-row w-full"):
+                                        ui.label(curve_names.get(item.series_id, item.name)).classes("dn-analysis-dataset-name").tooltip(item.full_identity)
+                                        with ui.element("div").classes("dn-analysis-smoothing-fields"):
+                                            method = (
+                                                ui.select({"none": "Off", "moving_average": "Moving average", "gaussian": "Gaussian"},
+                                                          value=settings.method, label="Smoothing")
+                                                .props("dense options-dense").classes("dn-field")
+                                                .mark(f"analysis-smoothing-method-{index}")
+                                            )
+                                            window = (
+                                                ui.number("Window (points)", value=settings.window, min=1, max=100001, step=2)
+                                                .props("dense").classes("dn-field")
+                                                .mark(f"analysis-smoothing-window-{index}")
+                                            )
+                                            sigma = (
+                                                ui.number("Sigma (points)", value=settings.sigma, min=0.01, max=10000, step=0.1)
+                                                .props("dense").classes("dn-field")
+                                                .mark(f"analysis-smoothing-sigma-{index}")
+                                            )
+                                        window.visible = settings.method == "moving_average"
+                                        sigma.visible = settings.method == "gaussian"
+                                        for control in (method, window, sigma):
+                                            control.set_enabled(not running)
+                                            smoothing_controls.append(control)
 
-                                    def smoothing_changed(
-                                        _event: Any = None, *, series_id=item.series_id,
-                                        method_control=method, window_control=window, sigma_control=sigma,
-                                    ) -> None:
-                                        smoothing_settings[series_id] = SmoothingSettings(
-                                            str(method_control.value), window_control.value, sigma_control.value,
-                                        )
-                                        window_control.set_visibility(method_control.value == "moving_average")
-                                        sigma_control.set_visibility(method_control.value == "gaussian")
-                                        invalidate_analysis_report()
+                                        def smoothing_changed(
+                                            _event: Any = None, *, series_id=item.series_id,
+                                            method_control=method, window_control=window, sigma_control=sigma,
+                                        ) -> None:
+                                            smoothing_settings[series_id] = SmoothingSettings(
+                                                str(method_control.value), window_control.value, sigma_control.value,
+                                            )
+                                            window_control.set_visibility(method_control.value == "moving_average")
+                                            sigma_control.set_visibility(method_control.value == "gaussian")
+                                            invalidate_analysis_report()
 
-                                    for control in (method, window, sigma):
-                                        control.on_value_change(smoothing_changed)
+                                        for control in (method, window, sigma):
+                                            control.on_value_change(smoothing_changed)
 
-                    render_smoothing_controls()
+                        render_smoothing_controls()
 
                 with action_dock():
                     plot_button = plot_action_button()
@@ -953,7 +960,7 @@ def render(_navigate: Callable[[str], None]) -> None:
                                     curve_type = ui.select(
                                         CURVE_TYPES,
                                         value=style.line_type or str(plot_settings.line_type.value or "solid"),
-                                        label="Curve type",
+                                        label="Type",
                                     ).props("dense options-dense").classes("dn-field dn-field-compact").mark(
                                         f"plotting-curve-type-{index + 1}"
                                     )
@@ -1003,45 +1010,76 @@ def render(_navigate: Callable[[str], None]) -> None:
                         if not report.matrices:
                             ui.label("Select a correlation in Analysis, then click Analyse.").classes("dn-settings-help")
                             return
-                        ui.label(
-                            "Matched indices over the shared span; finite pairs only. "
-                            "— indicates constant data, fewer than two pairs, or different dependences. "
-                            "Hover a value for its paired sample count."
-                        ).classes("dn-settings-help")
+                        columns = [{"name": "dataset", "label": "Dataset", "field": "dataset", "align": "left"}]
                         for matrix in report.matrices:
-                            with ui.column().classes("dn-analysis-matrix-block w-full"):
-                                with ui.row().classes("dn-analysis-matrix-heading w-full"):
-                                    ui.label(CORRELATION_METHODS[matrix.method]).classes("dn-setting-group-title")
-                                columns = [{"name": "dataset", "label": "Dataset", "field": "dataset", "align": "left"}]
-                                columns.extend({"name": f"d{index}", "label": name, "field": f"d{index}", "align": "right"}
-                                               for index, name in enumerate(report.names))
-                                rows = []
-                                for index, name in enumerate(report.names):
-                                    row = {"key": index, "dataset": name, "counts": {f"d{j}": int(n) for j, n in enumerate(matrix.sample_counts[index])}}
-                                    row.update({f"d{j}": f"{value:.3f}" if np.isfinite(value) else "—"
-                                                for j, value in enumerate(matrix.coefficients[index])})
-                                    rows.append(row)
-                                table = ui.table(columns=columns, rows=rows, row_key="key", pagination={"rowsPerPage": 0}).props(
-                                    "dense flat hide-bottom wrap-cells"
-                                ).classes("dn-analysis-matrix w-full").mark(f"analysis-table-{matrix.method}")
-                                table.add_slot("body-cell", '''
-                                    <q-td :props="props">
-                                        {{ props.value }}
-                                        <q-tooltip v-if="props.col.name !== 'dataset'">
-                                            Paired values: {{ props.row.counts[props.col.name] }}
-                                        </q-tooltip>
-                                    </q-td>
-                                ''')
-                        with ui.row().classes("dn-analysis-report-toolbar w-full"):
-                            file_format = (
-                                ui.select({"csv": "CSV", "tsv": "TSV"}, value=report_file_format["value"], label="File type")
-                                .props("dense options-dense").classes("dn-field dn-analysis-report-format")
-                                .mark("analysis-report-format")
-                            )
-                            file_format.on_value_change(lambda: report_file_format.update(value=str(file_format.value)))
-                            ui.button("Download report", icon="download", on_click=download_analysis_report).props(
-                                "flat dense no-caps"
-                            ).classes("dn-action-secondary dn-action-compact").mark("analysis-download-report")
+                            columns.extend({
+                                "name": f"{matrix.method}_{index}", "label": name,
+                                "field": f"{matrix.method}_{index}", "align": "right",
+                                "group": CORRELATION_METHODS[matrix.method], "groupStart": index == 0,
+                                "showPValues": bool(show_p_values.value),
+                            } for index, name in enumerate(report.names))
+                        rows = []
+                        for index, name in enumerate(report.names):
+                            row = {"key": index, "dataset": name, "counts": {}, "p_values": {}}
+                            for matrix in report.matrices:
+                                for column, value in enumerate(matrix.coefficients[index]):
+                                    key = f"{matrix.method}_{column}"
+                                    row[key] = f"{value:.3f}" if np.isfinite(value) else "—"
+                                    row["counts"][key] = int(matrix.sample_counts[index, column])
+                                    p = matrix.p_values[index, column] if matrix.p_values is not None else np.nan
+                                    row["p_values"][key] = (
+                                        "—" if not np.isfinite(p) else "0" if p == 0 else f"{p:.2e}" if p < 0.001 else f"{p:.3f}"
+                                    )
+                            rows.append(row)
+                        table = ui.table(columns=columns, rows=rows, row_key="key", pagination={"rowsPerPage": 0}).props(
+                            "dense flat hide-bottom wrap-cells"
+                        ).classes("dn-analysis-matrix w-full").mark("analysis-report-table")
+                        table.add_slot("header", '''
+                            <q-tr :props="props" class="dn-analysis-group-heading">
+                                <q-th rowspan="2" class="dn-analysis-dataset text-left">Dataset</q-th>
+                                <q-th v-for="col in props.cols.filter(c => c.groupStart)" :key="col.group"
+                                      :colspan="props.cols.filter(c => c.group === col.group).length"
+                                      class="dn-analysis-group-start text-center">{{ col.group }}</q-th>
+                            </q-tr>
+                            <q-tr :props="props" class="dn-analysis-column-heading">
+                                <q-th v-for="col in props.cols.filter(c => c.name !== 'dataset')" :key="col.name"
+                                      :class="{'dn-analysis-group-start': col.groupStart}" class="text-right">
+                                    {{ col.label }}
+                                </q-th>
+                            </q-tr>
+                        ''')
+                        table.add_slot("body-cell", '''
+                            <q-td :props="props" :class="{'dn-analysis-dataset': props.col.name === 'dataset',
+                                                         'dn-analysis-group-start': props.col.groupStart}">
+                                <span>{{ props.value }}</span>
+                                <template v-if="props.col.name !== 'dataset'">
+                                    <div v-if="props.col.showPValues" class="dn-analysis-p-value">
+                                        p = {{ props.row.p_values[props.col.name] }}
+                                    </div>
+                                    <q-tooltip>Paired values: {{ props.row.counts[props.col.name] }}</q-tooltip>
+                                </template>
+                            </q-td>
+                        ''')
+                        with ui.element("div").classes("dn-download-file-row dn-analysis-report-download"):
+                            ui.icon("description").classes("dn-download-file-icon")
+                            with ui.element("div").classes("dn-raw-output-fields"):
+                                file_name = (
+                                    ui.input(label="Report name", value=report_name["value"])
+                                    .props("dense").classes("dn-field").mark("analysis-report-name")
+                                )
+                                file_name.on_value_change(lambda: report_name.update(value=str(file_name.value or "")))
+                                file_format = (
+                                    ui.select({"csv": "CSV", "tsv": "TSV"}, value=report_file_format["value"], label="File type")
+                                    .props("dense options-dense").classes("dn-field").mark("analysis-report-format")
+                                )
+                                file_format.on_value_change(lambda: report_file_format.update(value=str(file_format.value)))
+                            ui.button(icon="download", on_click=download_analysis_report).props(
+                                'flat round dense aria-label="Download analysis report"'
+                            ).classes("dn-download-file-action dn-raw-output-download").mark("analysis-download-report").tooltip("Download")
+                            raw_data_open_menu(lambda destination: download_analysis_report(open_in=destination), marker="analysis-open-report")
+                            ui.button(icon="close", on_click=lambda: clear_plot_output()).props(
+                                'flat round dense aria-label="Clear preview"'
+                            ).classes("dn-download-file-action dn-raw-output-remove").mark("analysis-clear-preview").tooltip("Clear preview")
 
                 render_analysis_report()
 
@@ -1050,14 +1088,17 @@ def render(_navigate: Callable[[str], None]) -> None:
             return None
         return replace(latest_analysis, names=tuple(curve_names.get(item.series_id, item.name) for item in latest_series))
 
-    def download_analysis_report() -> None:
+    async def download_analysis_report(*, open_in: str | None = None) -> None:
         report = current_analysis_report()
         if report is None:
             return
         file_format = report_file_format["value"]
-        data = export_correlation_report(report, file_format=file_format)
-        filename = f"analysis-report.{file_format}"
+        data = export_correlation_report(report, file_format=file_format, include_p_values=bool(show_p_values.value), combined=True)
+        filename = safe_export_filename(report_name["value"], file_format, default_stem="analysis-report")
         artifact = ExportArtifact(data, filename, "text/csv; charset=utf-8" if file_format == "csv" else "text/tab-separated-values; charset=utf-8")
+        if open_in is not None:
+            await open_raw_artifact(artifact, open_in, _navigate)
+            return
         cache_artifact(artifact, source="Analysis", kind="raw", detail="Correlation report", navigate_to="plotting")
         ui.download(data, filename, artifact.media_type)
 
@@ -1084,6 +1125,7 @@ def render(_navigate: Callable[[str], None]) -> None:
         if running:
             plot_button.set_enabled(not stopping)
         analysis_enabled.set_enabled(not running)
+        show_p_values.set_enabled(not running)
         for control in correlation_controls.values():
             control.set_enabled(bool(analysis_enabled.value) and not running)
         for control in smoothing_controls:
@@ -1220,6 +1262,7 @@ def render(_navigate: Callable[[str], None]) -> None:
             plot_settings.primary_color_surface.visible = False
             plot_settings.secondary_color_surface.visible = False
             plot_settings.line_width.visible = False
+            plot_settings.line_type.visible = False
         if reset_axes:
             if len(unique_forms) > 1:
                 x_label, y_label = "Index (bin)", "Value"
@@ -1282,6 +1325,7 @@ def render(_navigate: Callable[[str], None]) -> None:
             [latest_series[1].values], plot_type=group_plot_type(latest_series),
             histogram_bins=_integer_value(plot_settings.histogram_bins, "Histogram bins"),
             density=bool(plot_settings.density.value),
+            kde_bandwidth=float(plot_settings.kde_bandwidth.value or 1.0),
             log_y=bool(plot_settings.secondary_log_y.value),
             log_x=bool(plot_settings.secondary_log_x.value),
             histogram_bin_size=None,
@@ -1349,6 +1393,7 @@ def render(_navigate: Callable[[str], None]) -> None:
             plot_type=plot_type,
             histogram_bins=_integer_value(plot_settings.histogram_bins, "Histogram bins"),
             density=bool(plot_settings.density.value),
+            kde_bandwidth=float(plot_settings.kde_bandwidth.value or 1.0),
             log_y=bool(plot_settings.log_y.value),
             log_x=bool(plot_settings.log_x.value),
             histogram_bin_size=(
@@ -1423,7 +1468,7 @@ def render(_navigate: Callable[[str], None]) -> None:
                     width=(
                         curve_styles[item.series_id].width
                         if individual_styles
-                        else _numeric_value(active_controls.line_width, "Curve thickness")
+                        else _numeric_value(active_controls.line_width, "Thickness")
                     ),
                     line_type=curve_styles[item.series_id].line_type if individual_styles else None,
                     z=3 + len(group) - index,
@@ -1461,7 +1506,7 @@ def render(_navigate: Callable[[str], None]) -> None:
                 active_controls.show_histogram_statistics.value
             ),
             histogram_statistics_position=str(
-                active_controls.histogram_statistics_position.value or "Top right"
+                active_controls.histogram_statistics_position.value or "Bottom right"
             ),
             histogram_bin_size=(
                 float(active_controls.histogram_bin_size.value)
@@ -1473,6 +1518,8 @@ def render(_navigate: Callable[[str], None]) -> None:
                 log_x=bool(active_controls.log_x.value),
             ),
             histogram_touching=bool(active_controls.histogram_touching.value),
+            kde_bandwidth=float(active_controls.kde_bandwidth.value or 1.0),
+            histogram_grouped=bool(active_controls.histogram_grouped.value),
             histogram_boundary=str(active_controls.histogram_boundary.value or "left"),
             y_limits=current_y_limits(active_controls),
             x_limits=axis_limits_from_controls(active_controls, "x"),
@@ -1486,7 +1533,7 @@ def render(_navigate: Callable[[str], None]) -> None:
             x_axis=x_axis,
             y_axis=y_axis,
             lines=lines,
-            line_width=_numeric_value(active_controls.line_width, "Curve thickness"),
+            line_width=_numeric_value(active_controls.line_width, "Thickness"),
             line_type=str(active_controls.line_type.value or "solid"),
             secondary_y_label=(
                 str(plot_settings.secondary_y_axis_label.value or "")
@@ -1562,6 +1609,7 @@ def render(_navigate: Callable[[str], None]) -> None:
             plot_type=plot_type,
             histogram_bins=_integer_value(controls.histogram_bins, "Histogram bins"),
             density=bool(controls.density.value),
+            kde_bandwidth=float(controls.kde_bandwidth.value or 1.0),
             log_y=bool(controls.log_y.value),
             log_x=bool(controls.log_x.value),
             histogram_bin_size=(
@@ -1916,7 +1964,7 @@ def render(_navigate: Callable[[str], None]) -> None:
                     # combined plot with per-curve controls.
                     curve_styles[latest_series[0].series_id] = _CurveStyle(
                         str(plot_settings.primary_color.value or _LINE_COLOURS[0]),
-                        _numeric_value(plot_settings.line_width, "Curve thickness"),
+                        _numeric_value(plot_settings.line_width, "Thickness"),
                     )
                 chart.options.clear()
                 chart.options.update(options)
@@ -1951,7 +1999,7 @@ def render(_navigate: Callable[[str], None]) -> None:
             result = await run.io_bound(
                 _prepare_analysis_profiles,
                 tuple(replace(source, selection=tuple(source.selection), array_cache=dict(source.array_cache)) for source in sources),
-                dict(smoothing_settings),
+                dict(smoothing_settings) if analysis_enabled.value else {},
                 tuple(method for method, control in correlation_controls.items() if control.value) if analysis_enabled.value else None,
                 check_cancelled,
             )
@@ -1970,7 +2018,7 @@ def render(_navigate: Callable[[str], None]) -> None:
                 if first.series_id not in previous_styles:
                     previous_styles[first.series_id] = _CurveStyle(
                         str(plot_settings.primary_color.value or _LINE_COLOURS[0]),
-                        _numeric_value(plot_settings.line_width, "Curve thickness"),
+                        _numeric_value(plot_settings.line_width, "Thickness"),
                     )
             curve_styles.clear()
             curve_styles.update(
@@ -2132,6 +2180,7 @@ def render(_navigate: Callable[[str], None]) -> None:
     plot_settings.secondary_log_x.on_value_change(lambda: secondary_scale_changed(reset_x=True))
     plot_settings.secondary_log_y.on_value_change(secondary_scale_changed)
     analysis_enabled.on_value_change(analysis_enabled_changed)
+    show_p_values.on_value_change(lambda: render_analysis_report.refresh())
     for control in correlation_controls.values():
         control.on_value_change(invalidate_analysis_report)
     presentation.on_value_change(presentation_changed)
@@ -2141,6 +2190,10 @@ def render(_navigate: Callable[[str], None]) -> None:
 
     def clear_plot_output() -> None:
         nonlocal latest_series, latest_analysis
+        if active_cancel is not None:
+            active_cancel.set()
+            page_activity.stop("plotting")
+            sync_analysis_action()
         latest_series = ()
         latest_analysis = None
         result_charts.clear()
@@ -2157,3 +2210,12 @@ def render(_navigate: Callable[[str], None]) -> None:
             preview_plot("No plot yet", kind="plotting")
 
     current_session_cache().register_output_clearer("plotting", clear_plot_output)
+
+    async def receive_raw_files(files) -> None:
+        if active_cancel is not None:
+            raise ValueError("Wait for the current analysis to finish before adding data.")
+        await append_raw_uploads(lambda: profile_uploader, files)
+
+    current_session_cache().register_input_targets(
+        "plotting", lambda: (RawInputTarget("profiles", "Data", receive_raw_files),),
+    )

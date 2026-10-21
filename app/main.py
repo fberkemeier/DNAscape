@@ -16,11 +16,12 @@ from app.export_settings import (
     get_export_settings,
     reset_export_settings,
 )
-from app.icons import OUTLINE_ICON_SVGS, PLOT_ICON_SVG
+from app.icons import GITHUB_ICON_SVG, OUTLINE_ICON_SVGS, PLOT_ICON_SVG, RESET_ICON
 from app.notifications import notify
 from app.page_activity import current_page_activity
 from app.pages import PAGE_RENDERERS, preload_workflow_pages
 from app.settings_dialog import settings_dialog as create_settings_dialog
+from app.theme import brand_logo, logo_sources, theme_css, update_logo
 
 APP_DIR = Path(__file__).resolve().parent
 ROOT_DIR = APP_DIR.parent
@@ -40,24 +41,12 @@ NAV_ITEMS = (
 GITHUB_URL = "https://github.com/fberkemeier/DNAscape"
 DOCS_URL = "https://dnascape.readthedocs.io/en/latest/"
 
-GITHUB_ICON_SVG = """
-<svg class="dn-github-icon" viewBox="0 0 16 16" width="18" height="18"
-     aria-hidden="true" focusable="false">
-  <path fill="currentColor"
-        d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38
-           0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13
-           -.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87
-           2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95
-           0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21
-           2.2.82A7.61 7.61 0 0 1 8 3.86c.68 0 1.36.09 2 .27
-           1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15
-           0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48
-           0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.01 8.01 0 0 0 16 8
-           c0-4.42-3.58-8-8-8Z"/>
-</svg>
-"""
-
 nicegui_app.add_static_files("/dnascape-assets", str(ASSET_DIR))
+
+# Reserve the label line even for blank/automatic values, keeping field text
+# and placeholder sizes consistent before focus, during edits and after reset.
+for field_type in (ui.input, ui.number, ui.select, ui.textarea):
+    field_type.default_props("stack-label clear-icon=close")
 
 
 def _handler(callback, *args):
@@ -78,6 +67,9 @@ def index() -> None:
     ui.add_css(STYLE_PATH.read_text(encoding="utf-8"))
     ui.add_body_html(
         "<script>" + (STYLE_PATH.parent / "brand_theme.js").read_text(encoding="utf-8") + "</script>"
+    )
+    ui.add_body_html(
+        "<script>" + (STYLE_PATH.parent / "plot_navigation.js").read_text(encoding="utf-8") + "</script>"
     )
     ui.add_body_html(
         """
@@ -132,7 +124,7 @@ def index() -> None:
             'Decimal places': 'Set the number of decimal places written to text-based outputs.',
             'Resolution (kb/bin)': 'Set the width of each spatial bin in kilobases.',
             'Time step (min/bin)': 'Set the interval between adjacent time samples in minutes.',
-            'Replicates': 'Set the number of independent stochastic simulations.',
+            'Simulations (replicates)': 'Set the number of independent stochastic simulations.',
             'Seed': 'Set the random seed used when fixed-seed mode is enabled.',
             'Target': 'Choose the quantity that Mapping should infer.',
             'Dependence': 'Choose whether the inferred target varies over space, time, or both.',
@@ -200,7 +192,7 @@ def index() -> None:
         </script>
         """
     )
-    ui.colors(primary="#b03412")
+    ui.colors(primary="var(--dn-accent)")
     body = ui.query("body").classes("dn-body")
     # ``None`` is NiceGUI's native automatic mode.  Quasar keeps its media
     # query listener alive, so the interface follows a system-theme change
@@ -220,7 +212,17 @@ def index() -> None:
             f"--dn-control-font-scale: {size / DEFAULT_CONTROL_FONT_SIZE_PX:.6g};"
         )
 
+    def sync_theme() -> None:
+        color = export_settings.theme_color
+        body.style("; ".join(f"{key}: {value}" for key, value in theme_css(color).items()))
+        for element in tuple(ui.context.client.elements.values()):
+            if asset := element._props.get("data-dn-logo"):
+                update_logo(element, asset, color)
+        light, dark = logo_sources("dnascape_logo_tab.svg", color)
+        body.props(f'data-dn-favicon-light="{light}" data-dn-favicon-dark="{dark}"')
+
     sync_control_font_size()
+    sync_theme()
     if export_settings.show_help:
         body.classes("dn-field-help-enabled")
 
@@ -233,6 +235,7 @@ def index() -> None:
         cache = current_session_cache()
         cache.unregister_output_clearer(slug)
         cache.unregister_page_refresher(slug)
+        cache.unregister_input_targets(slug)
         host.clear()  # type: ignore[attr-defined]
         built_pages.discard(slug)
 
@@ -321,11 +324,9 @@ def index() -> None:
                 .on("click", _handler(navigate, "overview"))
                 .mark("nav-logo-overview")
             ):
-                ui.element("img").props(
-                    'src="/dnascape-assets/dnascape_logo_small.svg" '
-                    'alt="DNAscape — return to Overview" draggable=false'
+                brand_logo(
+                    "dnascape_logo_small.svg", alt="DNAscape — return to Overview",
                 ).classes("dn-sidebar-logo")
-                ui.tooltip("Go to Overview")
 
             @ui.refreshable
             def render_navigation() -> None:
@@ -380,11 +381,15 @@ def index() -> None:
                     .classes("dn-icon-link")
                 ):
                     ui.html(GITHUB_ICON_SVG)
-                    ui.tooltip("GitHub")
+                    ui.tooltip("GitHub").props('anchor="top middle" self="bottom middle"')
                 with ui.link(target=DOCS_URL, new_tab=True).classes("dn-icon-link"):
-                    ui.icon("menu_book").tooltip("Documentation")
+                    ui.icon("menu_book")
+                    ui.tooltip("Documentation").props('anchor="top middle" self="bottom middle"')
                 with ui.link(target=f"{GITHUB_URL}/issues", new_tab=True).classes("dn-icon-link"):
-                    ui.icon("lightbulb").tooltip("Report an issue or suggest a feature")
+                    ui.icon("lightbulb")
+                    ui.tooltip("Report an issue or suggest a feature").props(
+                        'anchor="top middle" self="bottom middle"'
+                    )
             ui.label(f"v{__version__.replace('-prototype', '')}").classes("dn-version")
 
     # Once the drawer has fully closed, its own control is no longer reachable.
@@ -442,6 +447,7 @@ def index() -> None:
 
     def apply_application_settings() -> None:
         sync_control_font_size()
+        sync_theme()
         body.classes(
             add="dn-field-help-enabled" if export_settings.show_help else None,
             remove=None if export_settings.show_help else "dn-field-help-enabled",
@@ -464,58 +470,51 @@ def index() -> None:
             ui.button(icon="close", on_click=about_dialog.close).props(
                 'flat round dense aria-label="Close About"'
             )
-        with ui.element("div").classes("dn-about-identity"):
-            (
-                ui.element("img")
-                .props('src="/dnascape-assets/dnascape_logo.svg" alt="DNAscape" draggable=false')
-                .classes("dn-about-logo")
-                .mark("about-logo")
-            )
-            with ui.row().classes("dn-about-meta"):
+        with ui.element("div").classes("dn-about-content"):
+            with ui.element("div").classes("dn-about-identity"):
+                (
+                    brand_logo("dnascape_logo.svg")
+                    .classes("dn-about-logo")
+                    .mark("about-logo")
+                )
                 ui.label(f"Version {__version__.replace('-prototype', '')}").classes(
                     "dn-about-version"
                 )
-                ui.label("Local Python interface").classes("dn-about-local")
-        ui.label(
-            "DNAscape builds quantitative models of DNA replication from genomic data. "
-            "It connects data preparation, kinetic mapping, stochastic simulation, and "
-            "scientific visualization in one local workspace."
-        ).classes("dn-about-copy dn-about-summary")
-        with ui.element("div").classes("dn-about-capabilities"):
-            for icon, label in (
-                ("swap_horiz", "Map measured profiles to replication kinetics"),
-                ("science", "Simulate replication programmes with rsim"),
-                ("query_stats", "Inspect spatial and temporal outputs"),
-            ):
-                with ui.row().classes("dn-about-capability"):
-                    ui.icon(icon)
-                    ui.label(label)
-        ui.separator().classes("dn-about-separator")
-        with ui.element("div").classes("dn-about-author"):
-            ui.label("Created and maintained by Francisco Berkemeier").classes(
-                "dn-about-author-name"
-            )
-            ui.link("fp409@cam.ac.uk", "mailto:fp409@cam.ac.uk").classes("dn-about-email").mark(
-                "about-email"
-            )
-        with ui.row().classes("dn-about-links"):
-            with (
-                ui.link(target=DOCS_URL, new_tab=True)
-                .classes("dn-about-link")
-                .mark("about-documentation")
-            ):
-                ui.icon("menu_book")
-                ui.label("Documentation")
-            with (
-                ui.link(target=GITHUB_URL, new_tab=True)
-                .classes("dn-about-link")
-                .mark("about-github")
-            ):
-                ui.html(GITHUB_ICON_SVG).classes("dn-about-github-icon")
-                ui.label("GitHub")
-        ui.label("Copyright 2026 Francisco Berkemeier. All rights reserved.").classes(
-            "dn-about-copyright"
-        )
+            ui.label(
+                "DNAscape is open-source software for quantitative modelling of DNA replication. "
+                "It brings genomic data preparation, kinetic inference, replication simulations "
+                "and statistical analysis into one workspace, helping you compare models with "
+                "experiments and test mechanistic hypotheses."
+            ).classes("dn-about-copy dn-about-summary")
+            with ui.element("div").classes("dn-about-footer"):
+                with ui.element("div").classes("dn-about-author"):
+                    ui.label("Created and maintained by").classes("dn-about-maintenance")
+                    ui.label("Francisco Berkemeier").classes("dn-about-author-name")
+                    ui.link("fp409@cam.ac.uk", "mailto:fp409@cam.ac.uk").classes("dn-about-email").mark(
+                        "about-email"
+                    )
+                with ui.element("div").classes("dn-about-links"):
+                    with (
+                        ui.link(target=DOCS_URL, new_tab=True)
+                        .classes("dn-about-link")
+                        .mark("about-documentation")
+                    ):
+                        ui.icon("menu_book")
+                        ui.label("Documentation")
+                    with (
+                        ui.link(target=GITHUB_URL, new_tab=True)
+                        .classes("dn-about-link")
+                        .mark("about-github")
+                    ):
+                        ui.html(GITHUB_ICON_SVG).classes("dn-about-github-icon")
+                        ui.label("GitHub")
+            with ui.element("div").classes("dn-about-legal"):
+                ui.label("© 2026 Francisco Berkemeier").classes("dn-about-copyright")
+                (
+                    ui.link("Released under the MIT licence", f"{GITHUB_URL}/blob/main/LICENSE", new_tab=True)
+                    .classes("dn-about-licence")
+                    .mark("about-licence")
+                )
 
     def reset_everything() -> None:
         """Return the client-local workspace and shared preferences to defaults."""
@@ -528,6 +527,7 @@ def index() -> None:
 
         defaults = reset_export_settings()
         sync_control_font_size()
+        sync_theme()
         settings_dialog.load(defaults)
         body.classes(
             add="dn-field-help-enabled" if defaults.show_help else None,
@@ -548,7 +548,7 @@ def index() -> None:
         )
 
     with (
-        ui.dialog().props("persistent") as reset_dialog,
+        ui.dialog().mark("reset-confirmation-dialog") as reset_dialog,
         ui.card().classes("dn-settings-dialog dn-reset-dialog").mark("reset-dialog"),
     ):
         with ui.row().classes("dn-settings-dialog-head"):
@@ -561,7 +561,7 @@ def index() -> None:
             ui.button("Cancel", on_click=reset_dialog.close).props("flat no-caps").mark(
                 "cancel-reset-everything"
             )
-            ui.button("Reset everything", icon="restart_alt", on_click=reset_everything).props(
+            ui.button("Reset everything", icon=RESET_ICON, on_click=reset_everything).props(
                 "no-caps"
             ).classes("dn-action-primary").mark("confirm-reset-everything")
 
@@ -583,23 +583,13 @@ def index() -> None:
             with ui.item_section():
                 ui.label("Settings")
         with (
-            ui.menu_item(on_click=about_dialog.open)
-            .props('aria-label="Open About DNAscape"')
-            .classes("dn-app-menu-item")
-            .mark("menu-about")
-        ):
-            with ui.item_section().props("avatar"):
-                ui.icon("info").classes("dn-app-menu-icon")
-            with ui.item_section():
-                ui.label("About")
-        with (
             ui.menu_item(on_click=reset_dialog.open)
             .props('aria-label="Reset everything to default"')
             .classes("dn-app-menu-item")
             .mark("menu-reset")
         ):
             with ui.item_section().props("avatar"):
-                ui.icon("restart_alt").classes("dn-app-menu-icon")
+                ui.icon(RESET_ICON).classes("dn-app-menu-icon")
             with ui.item_section():
                 ui.label("Reset to defaults")
         with (
@@ -628,6 +618,16 @@ def index() -> None:
             f"{GITHUB_URL}/issues",
             icon="lightbulb",
         )
+        with (
+            ui.menu_item(on_click=about_dialog.open)
+            .props('aria-label="Open About DNAscape"')
+            .classes("dn-app-menu-item")
+            .mark("menu-about")
+        ):
+            with ui.item_section().props("avatar"):
+                ui.icon("info").classes("dn-app-menu-icon")
+            with ui.item_section():
+                ui.label("About")
 
     dark_mode.on_value_change(lambda: render_app_menu_items.refresh())
 
@@ -640,7 +640,6 @@ def index() -> None:
             .classes("dn-app-menu-button")
             .mark("app-menu-toggle")
         ):
-            ui.tooltip("Application menu")
             with (
                 ui.menu()
                 .props('anchor="bottom right" self="top right"')

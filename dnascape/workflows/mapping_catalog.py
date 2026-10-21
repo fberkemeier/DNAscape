@@ -341,7 +341,7 @@ class MappingRoute:
         """
 
         shape = self.default_target_shape if target_shape is None else target_shape
-        settings = self.settings
+        settings = tuple(item for item in self.settings if item.key not in self.single_phase_fit_aliases)
         if self.target == "firing_rate" and self.target_shapes:
             if shape == "weibull":
                 settings = tuple(item for item in settings if item.key in _WEIBULL_FIRING_SETTINGS)
@@ -421,6 +421,19 @@ class MappingRoute:
         from .mapping_defaults import mapping_defaults
 
         return mapping_defaults(self, settings, shape)
+
+    @property
+    def single_phase_fit_aliases(self) -> dict[str, str]:
+        """Compatibility aliases for a route with just one spatial fit phase."""
+
+        if self.output_dependence not in {"constant", "space"}:
+            return {}
+        keys = {item.key for item in self.settings}
+        return {
+            alias: canonical
+            for alias, canonical in (("space_maxiter", "maxiter"), ("space_fit_step", "fit_step"))
+            if {alias, canonical} <= keys
+        }
 
     def supports_periodic(self, target_shape: str | None = None) -> bool:
         """Whether the scientific branch can execute periodic boundaries."""

@@ -27,6 +27,7 @@ from app.batch_workflows import (
 )
 from app.export_settings import get_export_settings
 from app.notifications import notify
+from app.raw_data_transfer import RawInputTarget, open_raw_artifact
 from app.mapping_uploads import (
     UploadInspection,
     inspect_upload_event,
@@ -43,6 +44,7 @@ from app.pages.common import (
     workflow_action_button,
     workflow_action_icon,
     data_upload,
+    append_raw_uploads,
     expansion,
     page_intro,
     panel,
@@ -99,6 +101,13 @@ from app.simulation_service import (
     ConstantSimulationResult,
     run_constant_simulation,
     validate_constant_simulation,
+)
+from app.simulation_profile_exports import (
+    build_individual_profile_archive,
+    build_standard_deviation_export,
+    individual_profile_count as retained_individual_profile_count,
+    limit_replication_profiles,
+    profile_archive_stem,
 )
 
 
@@ -1187,7 +1196,7 @@ def _validate_simulation_batch_selection(
                 and len(inspection.array_keys) > 1
             ):
                 raise ValueError(
-                    f"{label} file {inspection.name!r} does not contain the selected "
+                    f"The {label.lower()} input does not contain the selected "
                     f"array {shared_array!r}; choose files with one consistent signal."
                 )
             continue
@@ -1205,7 +1214,7 @@ def _validate_simulation_batch_selection(
             and len(inspection.numeric_columns) > 1
         ):
             raise ValueError(
-                f"{label} file {inspection.name!r} does not contain the selected "
+                f"The {label.lower()} input does not contain the selected "
                 f"column {shared_column!r}; choose files with one consistent signal."
             )
 
@@ -1462,6 +1471,7 @@ def _automatic_y_limits(
     view_mode: str,
     histogram_bins: int,
     density: bool,
+    kde_bandwidth: float = 1.0,
     log_y: bool,
     log_x: bool = False,
     histogram_bin_size: float | None = None,
@@ -1503,6 +1513,7 @@ def _automatic_y_limits(
         plot_type=plot_type,
         histogram_bins=histogram_bins,
         density=density,
+        kde_bandwidth=kde_bandwidth,
         log_y=log_y,
         log_x=log_x,
         histogram_bin_size=histogram_bin_size,
@@ -1612,6 +1623,8 @@ def _result_plot_options(
     histogram_bin_size: float | None = None,
     histogram_x_limits: tuple[float, float] | None = None,
     histogram_touching: bool = True,
+    kde_bandwidth: float = 1.0,
+    histogram_grouped: bool = False,
     histogram_boundary: str = "left",
     show_individual_profiles: bool = False,
     individual_profile_count: int = 10,
@@ -1702,22 +1715,13 @@ def _result_plot_options(
                 *individual_lines,
                 PreviewLine("Mean", result.position_kb, mean, color, z=4),
             )
-    return build_preview_plot_options(
+    options = build_preview_plot_options(
         plot_type=plot_type,
         x_limits=x_limits,
         z_limits=z_limits,
         title=title.strip() or output_label,
-        x_label=x_axis_label.strip()
-        or (
-            spec.y_label
-            if plot_type == "Histogram"
-            else ""
-            if plot_type == "Boxplot"
-            else spec.x_label
-        ),
-        y_label=y_axis_label.strip() or ("Density" if density else "Count")
-        if plot_type == "Histogram"
-        else y_axis_label.strip() or spec.y_label,
+        x_label=x_axis_label.strip(),
+        y_label=y_axis_label.strip(),
         color=color,
         palette=palette,
         histogram_bins=histogram_bins,
@@ -1752,9 +1756,16 @@ def _result_plot_options(
         histogram_bin_size=histogram_bin_size,
         histogram_x_limits=histogram_x_limits,
         histogram_touching=histogram_touching,
+        kde_bandwidth=kde_bandwidth,
+        histogram_grouped=histogram_grouped,
         histogram_boundary=histogram_boundary,
     )
-
+    if plot_type == "Heatmap":
+        options["dnascapeDefaultAxes"]["y"] = list(_automatic_y_limits(
+            result, output_label=output_label, view_mode=view_mode, histogram_bins=histogram_bins,
+            density=density, log_y=log_y, log_x=log_x, kde_bandwidth=kde_bandwidth,
+        ))
+    return options
 
 def _combined_result_plot_options(
     items: Sequence[_SimulationBatchItem],
@@ -1813,8 +1824,8 @@ def _combined_result_plot_options(
         plot_type="Line",
         x_limits=x_limits,
         title=title.strip() or output_label,
-        x_label=x_axis_label.strip() or spec.x_label,
-        y_label=y_axis_label.strip() or spec.y_label,
+        x_label=x_axis_label.strip(),
+        y_label=y_axis_label.strip(),
         color=lines[0].color,
         palette="viridis",
         histogram_bins=60,
@@ -1872,6 +1883,8 @@ def _render_result_plot(
     histogram_bin_size: float | None = None,
     histogram_x_limits: tuple[float, float] | None = None,
     histogram_touching: bool = True,
+    kde_bandwidth: float = 1.0,
+    histogram_grouped: bool = False,
     histogram_boundary: str = "left",
     show_individual_profiles: bool = False,
     individual_profile_count: int = 10,
@@ -1914,6 +1927,8 @@ def _render_result_plot(
         histogram_bin_size=histogram_bin_size,
         histogram_x_limits=histogram_x_limits,
         histogram_touching=histogram_touching,
+        kde_bandwidth=kde_bandwidth,
+        histogram_grouped=histogram_grouped,
         histogram_boundary=histogram_boundary,
         show_individual_profiles=show_individual_profiles,
         individual_profile_count=individual_profile_count,
@@ -1962,6 +1977,7 @@ def render(_navigate: Callable[[str], None]) -> None:
     batch_names: dict[str, str] = {}
     batch_navigation_page = {"value": 1}
     batch_raw_preferences: dict[tuple[str, str], _SimulationRawPreference] = {}
+    ensemble_raw_preferences: dict[tuple[str, str], _SimulationRawPreference] = {}
     batch_raw_page = {"value": 1}
     rendered_name_style = {"value": _simulation_name_style()}
     source_region_refresh: dict[str, Callable[[], Any]] = {"call": lambda: None}
@@ -2091,7 +2107,7 @@ def render(_navigate: Callable[[str], None]) -> None:
                         )
                         region_end = (
                             ui.number(
-                                label="End (kb, exclusive)", value=1000.0, min=0.000001, step=1.0
+                                label="End (kb, exclusive)", value=1_000.0, min=0.000001, step=1.0
                             )
                             .props("dense")
                             .classes("dn-field")
@@ -2153,36 +2169,38 @@ def render(_navigate: Callable[[str], None]) -> None:
                             ui.label("Ensemble").classes("dn-setting-group-title")
                             replicates = (
                                 ui.number(
-                                    label="Replicates",
+                                    label="Simulations (replicates)",
                                     value=20,
                                     min=1,
                                     max=MAX_REPLICATES,
                                     step=1,
                                 )
                                 .props("dense")
-                                .classes("dn-field dn-field-compact")
+                                .classes("dn-field")
                                 .mark("simulation-replicates")
                             )
                             geometry = (
                                 ui.select(
-                                    ["linear", "periodic"],
+                                    {"linear": "Linear", "periodic": "Periodic"},
                                     value="linear",
                                     label="Geometry",
                                 )
                                 .props("dense options-dense")
                                 .classes("dn-field")
+                                .mark("simulation-geometry")
                             )
                             missing_values = (
                                 ui.select(
-                                    ["error", "interpolate", "zero"],
+                                    {"error": "Error", "interpolate": "Interpolate", "zero": "Zero"},
                                     value="error",
                                     label="Missing values",
                                 )
                                 .props("dense options-dense")
                                 .classes("dn-field")
+                                .mark("simulation-missing-values")
                             )
                             with ui.element("div").classes("dn-setting-inline"):
-                                fixed_seed = ui.checkbox("Fixed seed", value=False)
+                                fixed_seed = ui.checkbox("Fix seed", value=False).mark("simulation-fix-seed")
                                 seed = (
                                     ui.number(label="Seed", value=1, min=0, step=1)
                                     .props("dense")
@@ -2201,7 +2219,7 @@ def render(_navigate: Callable[[str], None]) -> None:
                                     step=10.0,
                                 )
                                 .props("dense")
-                                .classes("dn-field dn-field-compact")
+                                .classes("dn-field")
                             )
                             max_replication_time = (
                                 ui.number(
@@ -2211,7 +2229,7 @@ def render(_navigate: Callable[[str], None]) -> None:
                                     step=50.0,
                                 )
                                 .props("dense")
-                                .classes("dn-field dn-field-compact")
+                                .classes("dn-field")
                             )
                             track_time_outputs = ui.checkbox(
                                 "Track time courses",
@@ -2245,21 +2263,24 @@ def render(_navigate: Callable[[str], None]) -> None:
                                     ui.label("Firing factor").classes(
                                         "dn-setting-subgroup-title"
                                     )
-                                    with ui.element("div").classes("dn-setting-inline"):
+                                    with ui.element("div").classes("dn-firing-factor-grid"):
                                         finite_pool = ui.checkbox("Finite pool", value=False).mark(
                                             "simulation-finite-pool"
                                         )
-                                        pool_size = (
-                                            ui.number(label="Pool size", value=100, min=2, step=1)
-                                            .props("dense")
-                                            .classes("dn-field dn-field-xs")
+                                        factor_coupling = ui.checkbox("Fork coupling", value=False).mark(
+                                            "simulation-fork-coupling"
                                         )
-                                    pool_size.bind_visibility_from(finite_pool, "value")
+                                        factor_coupling.bind_visibility_from(finite_pool, "value")
                                     with (
                                         ui.element("div")
-                                        .classes("dn-setting-inline")
+                                        .classes("dn-firing-factor-grid")
                                         .mark("simulation-pool-fields") as pool_fields
                                     ):
+                                        pool_size = (
+                                            ui.number(label="Pool size", value=100, min=2, step=1)
+                                            .props("dense").classes("dn-field")
+                                            .mark("simulation-pool-size")
+                                        )
                                         recycle_rate = (
                                             ui.number(
                                                 label="Recycle rate",
@@ -2268,9 +2289,9 @@ def render(_navigate: Callable[[str], None]) -> None:
                                                 step=0.001,
                                             )
                                             .props("dense")
-                                            .classes("dn-field dn-field-compact")
+                                            .classes("dn-field")
+                                            .mark("simulation-recycle-rate")
                                         )
-                                        factor_coupling = ui.checkbox("Fork coupling", value=False)
                                     pool_fields.bind_visibility_from(finite_pool, "value")
 
                                 with (
@@ -2278,71 +2299,36 @@ def render(_navigate: Callable[[str], None]) -> None:
                                     .classes("dn-setting-subgroup")
                                     .mark("simulation-stalling-settings")
                                 ):
-                                    ui.label("Stalling").classes("dn-setting-subgroup-title")
-                                    with ui.element("div").classes("dn-setting-inline"):
-                                        stall_rate = (
-                                            ui.number(
-                                                label="Stall rate (stalls/kb)",
-                                                value=0.0,
-                                                min=0.0,
-                                                step=0.001,
+                                    ui.label("Fork movement").classes("dn-setting-subgroup-title")
+                                    with ui.element("div").classes("dn-fork-movement-grid"):
+                                        with ui.column().classes("dn-fork-movement-options"):
+                                            fork_stalling = ui.checkbox("Fork stalling", value=False).mark("simulation-fork-stalling")
+                                            with ui.column().classes("dn-fork-movement-options").bind_visibility_from(fork_stalling, "value"):
+                                                stall_rate = (
+                                                    ui.number(label="Stall rate (stalls/kb)", value=0.0, min=0.0, step=0.001)
+                                                    .props("dense").classes("dn-field")
+                                                    .mark("simulation-stall-rate-per-kb")
+                                                )
+                                                stall_recovery = ui.checkbox("Stall recovery", value=False).mark("simulation-stall-recovery")
+                                                stall_duration = (
+                                                    ui.number(label="Recovery time (min)", value=10.0, min=0.000001, step=1.0)
+                                                    .props("dense").classes("dn-field")
+                                                    .mark("simulation-stall-duration")
+                                                )
+                                                stall_duration.bind_visibility_from(stall_recovery, "value")
+                                            fork_stalling.on_value_change(lambda: stall_rate.set_value(0.0) if not fork_stalling.value else None)
+                                        with ui.column().classes("dn-fork-movement-options"):
+                                            stochastic_movement = ui.checkbox("Stochastic movement", value=False).mark("simulation-stochastic-movement")
+                                            fork_speed_std = (
+                                                ui.number(label="Standard deviation (kb/min)", value=0.1, min=0.0, step=0.1)
+                                                .props("dense").classes("dn-field")
+                                                .mark("simulation-fork-speed-std")
                                             )
-                                            .props("dense")
-                                            .classes("dn-field dn-field-compact")
-                                            .mark("simulation-stall-rate-per-kb")
-                                        )
-                                        non_recovering = ui.checkbox("Non-recovering", value=True)
-                                    stall_duration = (
-                                        ui.number(
-                                            label="Recovery time (min)",
-                                            value=10.0,
-                                            min=0.000001,
-                                            step=1.0,
-                                        )
-                                        .props("dense")
-                                        .classes("dn-field dn-field-compact")
-                                        .mark("simulation-stall-duration")
-                                    )
-                                    stall_duration.bind_visibility_from(
-                                        non_recovering,
-                                        "value",
-                                        backward=lambda value: not value,
-                                    )
-                                    stall_probability = (
-                                        ui.label()
-                                        .classes("dn-settings-help")
-                                        .mark("simulation-stall-probability")
-                                    )
-
-                                    def sync_stall_probability() -> None:
-                                        try:
-                                            rate_value = stall_rate.value
-                                            bin_width_value = resolution_x.value
-                                            if rate_value is None or bin_width_value is None:
-                                                raise ValueError
-                                            rate = float(rate_value)
-                                            bin_width = float(bin_width_value)
-                                            if (
-                                                not math.isfinite(rate)
-                                                or rate < 0.0
-                                                or not math.isfinite(bin_width)
-                                                or bin_width <= 0.0
-                                            ):
-                                                raise ValueError
-                                        except (TypeError, ValueError):
-                                            stall_probability.text = (
-                                                "Converted automatically using the spatial resolution."
+                                            fork_speed_std.bind_visibility_from(stochastic_movement, "value")
+                                            fork_speed_std.tooltip(
+                                                "Normal speed variation around the local input speed. "
+                                                "Non-positive draws are resampled; zero keeps the input speed."
                                             )
-                                            return
-                                        probability = -math.expm1(-(rate * bin_width))
-                                        stall_probability.text = (
-                                            f"At {bin_width:g} kb/bin: {probability:.1%} "
-                                            "probability per directed bin."
-                                        )
-
-                                    stall_rate.on_value_change(sync_stall_probability)
-                                    resolution_x.on_value_change(sync_stall_probability)
-                                    sync_stall_probability()
 
                 def combined_preview_compatible() -> bool:
                     if not 2 <= len(latest_items) <= _MAX_COMBINED_PREVIEW_DATASETS:
@@ -2449,6 +2435,7 @@ def render(_navigate: Callable[[str], None]) -> None:
                                 view_mode=str(view.value or "Default"),
                                 histogram_bins=_integer(histogram_bins, "Histogram bins"),
                                 density=bool(density.value),
+                                kde_bandwidth=float(plot_settings.kde_bandwidth.value or 1.0),
                                 log_y=bool(log_y.value),
                                 log_x=bool(log_x.value),
                                 histogram_bin_size=(
@@ -2545,7 +2532,7 @@ def render(_navigate: Callable[[str], None]) -> None:
                     )
                     ui.download(artifact.data, artifact.filename, artifact.media_type)
 
-                async def download_raw(controls: RawOutputControls) -> None:
+                async def download_raw(controls: RawOutputControls, *, open_in: str | None = None) -> None:
                     if latest_result is None:
                         notify("Run a simulation before downloading raw data.", type="warning")
                         return
@@ -2555,7 +2542,7 @@ def render(_navigate: Callable[[str], None]) -> None:
                             build_raw_export,
                             latest_result,
                             _OUTPUT_SPECS[selected_label].key,
-                            str(controls.file_type.value or "NPY"),
+                            str(controls.file_type.value or "TSV"),
                             filename=str(
                                 controls.file_name.value
                                 or (
@@ -2574,6 +2561,9 @@ def render(_navigate: Callable[[str], None]) -> None:
                     except Exception as exc:
                         notify(str(exc), type="negative")
                         return
+                    if open_in is not None:
+                        await open_raw_artifact(artifact, open_in, _navigate, preferred_input=_OUTPUT_SPECS[selected_label].key)
+                        return
                     cache_artifact(
                         artifact,
                         source="Simulation",
@@ -2582,6 +2572,51 @@ def render(_navigate: Callable[[str], None]) -> None:
                         navigate_to="simulation",
                     )
                     ui.download(artifact.data, artifact.filename, artifact.media_type)
+
+                async def download_ensemble_raw(
+                    item_key: str, kind: str, controls: RawOutputControls,
+                    *, open_in: str | None = None,
+                ) -> None:
+                    item = next((item for item in latest_items if item.key == item_key), None)
+                    if item is None:
+                        notify("Run a simulation before downloading raw data.", type="warning")
+                        return
+                    result_snapshot = item.result
+                    file_type = str(controls.file_type.value or "TSV")
+                    filename = str(controls.file_name.value or "")
+                    count = _bounded_profile_count(individual_profile_count.value, _MAX_PREVIEW_PROFILES)
+                    compression = get_export_settings().raw_compression if controls.compress.value else "none"
+                    controls.download_button.disable()
+                    try:
+                        if kind == "profiles":
+                            if count is None:
+                                raise ValueError("Enter a whole number for Profiles shown.")
+                            artifact = await run.io_bound(
+                                build_individual_profile_archive, result_snapshot, count,
+                                file_type, filename=filename,
+                            )
+                        else:
+                            artifact = await run.io_bound(
+                                build_standard_deviation_export, result_snapshot,
+                                file_type, filename=filename, compression=compression,
+                            )
+                        if artifact is None or not artifact.data:
+                            raise RuntimeError("The export stopped before returning data.")
+                        if open_in is not None:
+                            await open_raw_artifact(artifact, open_in, _navigate)
+                            return
+                        # Individual profiles and their ZIP never enter the cache.
+                        if kind == "standard_deviation":
+                            cache_artifact(
+                                artifact, source="Simulation", kind="raw",
+                                detail="Replication timing standard deviation", navigate_to="simulation",
+                            )
+                        ui.download(artifact.data, artifact.filename, artifact.media_type)
+                    except Exception as exc:
+                        notify(str(exc), type="negative")
+                    finally:
+                        if not controls.download_button.is_deleted:
+                            controls.download_button.enable()
 
                 def batch_raw_artifact(
                     item: _SimulationBatchItem,
@@ -2621,6 +2656,7 @@ def render(_navigate: Callable[[str], None]) -> None:
                 async def download_batch_raw(
                     item: _SimulationBatchItem,
                     controls: RawOutputControls,
+                    *, open_in: str | None = None,
                 ) -> None:
                     if not any(item is current for current in latest_items):
                         notify("Run a simulation before downloading raw data.", type="warning")
@@ -2634,7 +2670,7 @@ def render(_navigate: Callable[[str], None]) -> None:
                         controls.file_name.value
                         or _simulation_raw_default_filename(item_snapshot, output_key)
                     )
-                    file_type = str(controls.file_type.value or "NPY")
+                    file_type = str(controls.file_type.value or "TSV")
                     compression = (
                         get_export_settings().raw_compression
                         if bool(controls.compress.value)
@@ -2651,6 +2687,9 @@ def render(_navigate: Callable[[str], None]) -> None:
                         )
                     except Exception as exc:
                         notify(str(exc), type="negative")
+                        return
+                    if open_in is not None:
+                        await open_raw_artifact(artifact, open_in, _navigate, preferred_input=output_key)
                         return
                     cache_artifact(
                         artifact,
@@ -2682,7 +2721,7 @@ def render(_navigate: Callable[[str], None]) -> None:
                                 preference.file_name
                                 or _simulation_raw_default_filename(item, output_key)
                             ),
-                            preference.file_type or "NPY",
+                            preference.file_type or "TSV",
                             enabled_compression if preference.compress else "none",
                         )
                         for item in items_snapshot
@@ -2767,7 +2806,7 @@ def render(_navigate: Callable[[str], None]) -> None:
                                         legend_position.value or "Top right"
                                     ),
                                     line_width=float(
-                                        _number(line_width, "Curve thickness")
+                                        _number(line_width, "Thickness")
                                     ),
                                     show_grid=bool(show_grid.value),
                                     log_x=bool(log_x.value),
@@ -2804,7 +2843,7 @@ def render(_navigate: Callable[[str], None]) -> None:
                                         show_histogram_statistics.value
                                     ),
                                     histogram_statistics_position=str(
-                                        histogram_statistics_position.value or "Top right"
+                                        histogram_statistics_position.value or "Bottom right"
                                     ),
                                     histogram_bin_size=(
                                         float(plot_settings.histogram_bin_size.value)
@@ -2818,6 +2857,8 @@ def render(_navigate: Callable[[str], None]) -> None:
                                     histogram_touching=bool(
                                         plot_settings.histogram_touching.value
                                     ),
+                                    kde_bandwidth=float(plot_settings.kde_bandwidth.value or 1.0),
+                                    histogram_grouped=bool(plot_settings.histogram_grouped.value),
                                     histogram_boundary=str(
                                         plot_settings.histogram_boundary.value or "left"
                                     ),
@@ -2829,7 +2870,7 @@ def render(_navigate: Callable[[str], None]) -> None:
                                         show_standard_deviation.value
                                     ),
                                     line_width=float(
-                                        _number(line_width, "Curve thickness")
+                                        _number(line_width, "Thickness")
                                     ),
                                     line_type=str(plot_settings.line_type.value or "solid"),
                                     show_markers=False,
@@ -2899,6 +2940,7 @@ def render(_navigate: Callable[[str], None]) -> None:
                             region_start,
                             region_end,
                             replicates,
+                            individual_profile_count,
                             geometry,
                             missing_values,
                             fixed_seed,
@@ -2908,7 +2950,10 @@ def render(_navigate: Callable[[str], None]) -> None:
                             track_time_outputs,
                             track_detailed_outputs,
                             stall_rate,
-                            non_recovering,
+                            fork_stalling,
+                            stochastic_movement,
+                            fork_speed_std,
+                            stall_recovery,
                             stall_duration,
                             finite_pool,
                             pool_size,
@@ -3080,7 +3125,7 @@ def render(_navigate: Callable[[str], None]) -> None:
                             resolution_x=resolution_x_value,
                             resolution_t=_number(resolution_t, "Time step"),
                             region_start_kb=region_start_value,
-                            replicates=_integer(replicates, "Replicates"),
+                            replicates=_integer(replicates, "Simulations (replicates)"),
                             geometry=str(geometry.value),
                             time_window=_number(time_window, "Time window"),
                             max_replication_time=_number(
@@ -3089,13 +3134,11 @@ def render(_navigate: Callable[[str], None]) -> None:
                             ),
                             missing_values=str(missing_values.value),
                             seed=_integer(seed, "Seed") if fixed_seed.value else None,
-                            stall_rate_per_kb=_number(
-                                stall_rate,
-                                "Stall rate (stalls/kb)",
-                            ),
+                            stall_rate_per_kb=_number(stall_rate, "Stall rate (stalls/kb)") if fork_stalling.value else 0.0,
+                            fork_speed_std=_number(fork_speed_std, "Standard deviation") if stochastic_movement.value else 0.0,
                             stall_duration=(
                                 math.inf
-                                if non_recovering.value
+                                if not fork_stalling.value or not stall_recovery.value
                                 else _number(stall_duration, "Stall duration")
                             ),
                             firing_factors=(
@@ -3113,6 +3156,7 @@ def render(_navigate: Callable[[str], None]) -> None:
                             ),
                             track_time_outputs=bool(track_time_outputs.value),
                             track_detailed_outputs=bool(track_detailed_outputs.value),
+                            retained_profile_count=_integer(individual_profile_count, "Profiles shown"),
                         )
                         requests = tuple(
                             ConstantSimulationRequest(
@@ -3164,7 +3208,9 @@ def render(_navigate: Callable[[str], None]) -> None:
                         for index, (case, request) in enumerate(
                             zip(cases, requests, strict=True)
                         ):
-                            dataset_name = case.identity.display(_simulation_name_style())
+                            dataset_suffix = (
+                                f" · Dataset {index + 1}/{batch_size}" if batch_size > 1 else ""
+                            )
                             check_cancelled()
                             progress_state = _ProgressState()
 
@@ -3173,19 +3219,17 @@ def render(_navigate: Callable[[str], None]) -> None:
                                 message: str,
                                 *,
                                 dataset_index: int = index,
-                                name: str = dataset_name,
+                                suffix: str = dataset_suffix,
                                 state: _ProgressState = progress_state,
                             ) -> None:
                                 state.report(
                                     (dataset_index + max(0.0, min(1.0, float(value))))
                                     / batch_size,
-                                    f"Dataset {dataset_index + 1}/{batch_size} · "
-                                    f"{name} · {message}",
+                                    f"{message}{suffix}",
                                 )
 
                             status.text = (
-                                f"Dataset {index + 1}/{batch_size} · "
-                                f"{dataset_name} · Preparing simulation..."
+                                f"Preparing simulation...{dataset_suffix}"
                             )
                             worker = asyncio.create_task(
                                 run.io_bound(
@@ -3210,6 +3254,7 @@ def render(_navigate: Callable[[str], None]) -> None:
                                     "The simulation worker stopped before returning data."
                                 )
                             result = add_simulation_input_previews(result, request)
+                            result = limit_replication_profiles(result, request.retained_profile_count)
                             staged_items.append(
                                 _SimulationBatchItem(
                                     key=case.key,
@@ -3227,6 +3272,9 @@ def render(_navigate: Callable[[str], None]) -> None:
                         for preference_key in tuple(batch_raw_preferences):
                             if preference_key[0] not in retained_keys:
                                 batch_raw_preferences.pop(preference_key, None)
+                        for preference_key in tuple(ensemble_raw_preferences):
+                            if preference_key[0] not in retained_keys:
+                                ensemble_raw_preferences.pop(preference_key, None)
                         for color_key in tuple(batch_colors):
                             if color_key not in retained_keys:
                                 batch_colors.pop(color_key, None)
@@ -3240,6 +3288,13 @@ def render(_navigate: Callable[[str], None]) -> None:
                         batch_navigation_page["value"] = 1
                         active_dataset_index = 0
                         latest_result = latest_items[0].result
+                        retained_count = available_profile_count()
+                        if retained_count:
+                            displayed_count = _bounded_profile_count(
+                                individual_profile_count.value, retained_count,
+                            )
+                            if displayed_count is not None:
+                                individual_profile_count.set_value(displayed_count)
                         result_chart = None
                         for index, item in enumerate(
                             latest_items[:_MAX_COMBINED_PREVIEW_DATASETS]
@@ -3279,11 +3334,7 @@ def render(_navigate: Callable[[str], None]) -> None:
                         if truncated:
                             notify(
                                 "Inter-origin distance retention was truncated for "
-                                + ", ".join(
-                                    _simulation_display_name(item)
-                                    for item in truncated
-                                )
-                                + ".",
+                                "some datasets because it exceeded the local data limit.",
                                 type="warning",
                             )
                         if len(latest_items) > 1:
@@ -3297,10 +3348,16 @@ def render(_navigate: Callable[[str], None]) -> None:
                         populate_automatic_y_limits(redraw=False)
                         stats_container.visible = True
                         render_latest_result()
+                        # Cached results retain aggregate statistics only. The
+                        # displayed individual profiles belong to this page.
+                        cached_items = tuple(
+                            replace(item, result=limit_replication_profiles(item.result, 0))
+                            for item in latest_items
+                        )
                         cached_payload: Any = (
-                            latest_result
-                            if len(latest_items) == 1
-                            else _SimulationBatchPayload(latest_items)
+                            cached_items[0].result
+                            if len(cached_items) == 1
+                            else _SimulationBatchPayload(cached_items)
                         )
                         cache_workflow(
                             cached_payload,
@@ -3412,13 +3469,13 @@ def render(_navigate: Callable[[str], None]) -> None:
                     ):
                         stats = stat_strip(
                             (
-                                ("Replicates", ""),
+                                ("Simulations (replicates)", ""),
                                 ("Resolution", ""),
                                 ("Region", ""),
                                 ("Geometry", ""),
                             )
                         )
-                replicate_stats = stats["Replicates"]
+                replicate_stats = stats["Simulations (replicates)"]
                 resolution_stats = stats["Resolution"]
                 region_stats = stats["Region"]
                 geometry_stats = stats["Geometry"]
@@ -3660,7 +3717,7 @@ def render(_navigate: Callable[[str], None]) -> None:
                                         value=batch_line_types.get(
                                             item.key, str(plot_settings.line_type.value or "solid")
                                         ),
-                                        label="Curve type",
+                                        label="Type",
                                     ).props("dense options-dense").classes("dn-field").mark(
                                         f"simulation-dataset-curve-type-{index + 1}"
                                     )
@@ -3705,9 +3762,11 @@ def render(_navigate: Callable[[str], None]) -> None:
                     default_type="TSV",
                     default_compress=False,
                     on_download=download_raw,
+                    on_open=lambda controls, destination: download_raw(controls, open_in=destination),
                     on_remove=lambda _controls: remove_simulation_result(
                         latest_items[0].key if latest_items else ""
                     ),
+                    extra_classes="dn-simulation-raw-data",
                 )
 
                 def sync_single_raw_filename() -> None:
@@ -3794,6 +3853,7 @@ def render(_navigate: Callable[[str], None]) -> None:
                                         except (TypeError, ValueError):
                                             return
                                         render_batch_raw_files.refresh()
+                                        render_ensemble_raw_files.refresh()
 
                                     page_control.on_value_change(change_page)
 
@@ -3819,6 +3879,7 @@ def render(_navigate: Callable[[str], None]) -> None:
                                             file_name=preference.file_name,
                                             default_type=preference.file_type,
                                             default_compress=preference.compress,
+                                            on_open=lambda controls, destination, batch_item=item: download_batch_raw(batch_item, controls, open_in=destination),
                                             on_download=(
                                                 lambda controls, batch_item=item: (
                                                     download_batch_raw(
@@ -3880,7 +3941,7 @@ def render(_navigate: Callable[[str], None]) -> None:
                                             control: Any = row_controls.file_type,
                                             retained: _SimulationRawPreference = preference,
                                         ) -> None:
-                                            retained.file_type = str(control.value or "NPY")
+                                            retained.file_type = str(control.value or "TSV")
 
                                         def store_compression(
                                             _event: Any = None,
@@ -3912,6 +3973,87 @@ def render(_navigate: Callable[[str], None]) -> None:
                                 )
 
                         render_batch_raw_files()
+                    with (
+                        ui.element("div").classes("dn-download-file-list w-full")
+                        .mark("simulation-ensemble-raw-files") as ensemble_raw_container
+                    ):
+
+                        @ui.refreshable
+                        def render_ensemble_raw_files() -> None:
+                            requested_count = _bounded_profile_count(
+                                individual_profile_count.value, _MAX_PREVIEW_PROFILES,
+                            )
+                            _, _, start, end = _simulation_raw_page_bounds(
+                                len(latest_items), int(batch_raw_page["value"]),
+                            )
+                            shown = False
+                            for index in range(start, end):
+                                item = latest_items[index]
+                                profiles, deviation = _replication_profile_arrays(item.result)
+                                count = 0 if requested_count is None else retained_individual_profile_count(
+                                    item.result, requested_count,
+                                )
+                                stem = _simulation_raw_default_filename(item, "replication_timing")
+                                for kind, label, available, automatic_name in (
+                                    ("standard_deviation", "Replication timing standard deviation",
+                                     bool(show_standard_deviation.value) and deviation is not None,
+                                     f"{stem}_standard_deviation"),
+                                    ("profiles", "Individual replication timing profiles",
+                                     bool(show_individual_profiles.value) and profiles is not None and count > 0,
+                                     profile_archive_stem(f"{stem}_individual_profiles", count)),
+                                ):
+                                    if not available:
+                                        continue
+                                    shown = True
+                                    preference = ensemble_raw_preferences.setdefault(
+                                        (item.key, kind), _SimulationRawPreference(
+                                            file_name=automatic_name, automatic_name=automatic_name,
+                                            compress=kind == "profiles",
+                                        ),
+                                    )
+                                    if not preference.customized:
+                                        preference.file_name = automatic_name
+                                    preference.automatic_name = automatic_name
+                                    prefix = f"simulation-{kind.replace('_', '-')}-{index + 1}"
+                                    ui.label(
+                                        f"{_simulation_display_name(item)} · {label}"
+                                        if len(latest_items) > 1 else label
+                                    ).classes("dn-download-file-name")
+                                    row_controls = raw_output_file_row(
+                                        file_name=preference.file_name,
+                                        default_type=preference.file_type,
+                                        default_compress=preference.compress,
+                                        reserve_remove_space=True,
+                                        on_open=lambda controls, destination, key=item.key, output_kind=kind: download_ensemble_raw(key, output_kind, controls, open_in=destination),
+                                        on_download=lambda controls, key=item.key, output_kind=kind: (
+                                            download_ensemble_raw(key, output_kind, controls)
+                                        ),
+                                        markers={
+                                            key: f"{prefix}-{suffix}" for key, suffix in (
+                                                ("row", "row"), ("file_name", "file-name"),
+                                                ("file_type", "file-type"), ("compression", "compression"),
+                                                ("download", "download"),
+                                            )
+                                        },
+                                    )
+                                    if kind == "profiles":
+                                        row_controls.compress.set_value(True)
+                                        row_controls.compress.disable()
+                                        row_controls.compress.tooltip("Individual profiles download together as a ZIP.")
+
+                                    def remember_export(
+                                        _event: Any = None, *, controls=row_controls, retained=preference,
+                                    ) -> None:
+                                        retained.file_name = str(controls.file_name.value or "")
+                                        retained.customized = retained.file_name != retained.automatic_name
+                                        retained.file_type = str(controls.file_type.value or "TSV")
+                                        retained.compress = bool(controls.compress.value)
+
+                                    for control in (row_controls.file_name, row_controls.file_type, row_controls.compress):
+                                        control.on_value_change(remember_export)
+                            ensemble_raw_container.visible = shown
+
+                        render_ensemble_raw_files()
                 raw_controls.row.set_visibility(len(latest_items) <= 1)
                 if raw_controls.remove_button is not None:
                     raw_controls.remove_button.set_visibility(
@@ -3945,6 +4087,9 @@ def render(_navigate: Callable[[str], None]) -> None:
                     for preference_key in tuple(batch_raw_preferences):
                         if preference_key[0] == item_key:
                             batch_raw_preferences.pop(preference_key, None)
+                    for preference_key in tuple(ensemble_raw_preferences):
+                        if preference_key[0] == item_key:
+                            ensemble_raw_preferences.pop(preference_key, None)
                     batch_colors.pop(item_key, None)
                     batch_line_types.pop(item_key, None)
                     batch_names.pop(item_key, None)
@@ -3970,12 +4115,6 @@ def render(_navigate: Callable[[str], None]) -> None:
                         return 0
                     profiles, _standard_deviation = _replication_profile_arrays(latest_result)
                     return 0 if profiles is None else int(profiles.shape[0])
-
-                def standard_deviation_available() -> bool:
-                    if latest_result is None:
-                        return False
-                    _profiles, standard_deviation = _replication_profile_arrays(latest_result)
-                    return standard_deviation is not None
 
                 def selected_profile_count() -> int | None:
                     return _bounded_profile_count(
@@ -4093,21 +4232,20 @@ def render(_navigate: Callable[[str], None]) -> None:
                     selected = str(output.value or "Replication timing")
                     spec = _output_spec(selected, latest_result)
                     requested_view = str(view.value or "Default")
-                    available_profiles = available_profile_count()
                     allow_individual_profiles = (
                         selected == "Replication timing"
                         and requested_view == "Default"
-                        and available_profiles > 0
                         and not combined_preview_active()
                     )
                     allow_standard_deviation = (
                         selected == "Replication timing"
                         and requested_view == "Default"
-                        and standard_deviation_available()
                         and not combined_preview_active()
                     )
                     if allow_individual_profiles:
-                        maximum = min(_MAX_PREVIEW_PROFILES, available_profiles)
+                        # A larger next run may retain more profiles than the
+                        # current result, so keep the configuration editable.
+                        maximum = _MAX_PREVIEW_PROFILES
                         individual_profile_count._props["max"] = maximum
                         current_count = _bounded_profile_count(
                             individual_profile_count.value,
@@ -4146,6 +4284,7 @@ def render(_navigate: Callable[[str], None]) -> None:
                     # single-series colour field would otherwise be ambiguous.
                     if combined_preview_active():
                         plot_settings.primary_color_surface.visible = False
+                    render_ensemble_raw_files.refresh()
 
                 def sync_output_options() -> None:
                     """Expose only outputs retained by the latest simulation."""
@@ -4278,7 +4417,17 @@ def render(_navigate: Callable[[str], None]) -> None:
                     refresh_axis_range()
 
                 def individual_profile_count_changed() -> None:
-                    if selected_profile_count() is not None:
+                    nonlocal latest_items, latest_result
+                    count = _bounded_profile_count(individual_profile_count.value, _MAX_PREVIEW_PROFILES)
+                    if count is not None:
+                        latest_items = tuple(
+                            replace(item, result=limit_replication_profiles(item.result, count))
+                            for item in latest_items
+                        )
+                        if latest_items:
+                            latest_result = latest_items[active_dataset_index].result
+                        render_batch_raw_files.refresh()
+                        render_ensemble_raw_files.refresh()
                         refresh_axis_range()
 
                 track_time_outputs.on_value_change(sync_output_options)
@@ -4324,6 +4473,7 @@ def render(_navigate: Callable[[str], None]) -> None:
                     batch_line_types.clear()
                     batch_names.clear()
                     batch_raw_preferences.clear()
+                    ensemble_raw_preferences.clear()
                     batch_raw_page["value"] = 1
                     batch_navigation_page["value"] = 1
                     active_dataset_index = 0
@@ -4362,6 +4512,7 @@ def render(_navigate: Callable[[str], None]) -> None:
                     render_dataset_selector.refresh()
                     render_batch_colors.refresh()
                     render_batch_raw_files.refresh()
+                    render_ensemble_raw_files.refresh()
                     if combined_preview_active():
                         render_latest_result()
 
@@ -4369,3 +4520,18 @@ def render(_navigate: Callable[[str], None]) -> None:
                     "simulation",
                     refresh_simulation_names,
                 )
+
+                def raw_input_targets():
+                    async def receive(key, files):
+                        if running:
+                            raise ValueError("Stop the simulation before adding input data.")
+                        simulation_sources[key].mode.set_value("profile")
+                        for _ in range(4):
+                            await asyncio.sleep(0)
+                        await append_raw_uploads(lambda: simulation_sources[key].uploader, files)
+                    return tuple(
+                        RawInputTarget(key, label, lambda files, key=key: receive(key, files))
+                        for key, label in (("firing_rate", "Firing rate"), ("fork_speed", "Fork speed"))
+                    )
+
+                current_session_cache().register_input_targets("simulation", raw_input_targets)

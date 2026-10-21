@@ -29,7 +29,7 @@ Overview
 Data Manager
    Add a local file or a bounded public HTTP(S) link. The app automatically
    detects CSV, TSV, TXT, NPY, NPV, NPZ, bedGraph, and BigWig formats, while the
-   biological role remains an explicit user choice. For genomic tracks, choose
+   biological role is selected with **Prepare as**. For genomic tracks, choose
    one chromosome and an optional half-open interval, or prepare every
    chromosome, then configure binning, aggregation, missing bins, interpolation,
    centred smoothing, threshold masking, and one mutually exclusive value-scaling
@@ -37,6 +37,12 @@ Data Manager
    Z-score, or maximum absolute. A target interval is defined explicitly by its
    target minimum and target maximum. Thresholds are evaluated before smoothing
    and value scaling.
+   **Decimal places** sits above **Missing values**, with optional bounds below it.
+   **Report error** stops conversion and reports missing samples. The reset
+   button in **End** restores Start and End to the selected chromosome's
+   available extent. Changes that allow or produce values outside the selected
+   biological domain switch **Prepare as** to **Generic profile**, preserving
+   the edited settings. Smoothing, binning and display changes retain the type.
    GEO Repli-seq text matrices from GSE137764 (``.mat`` or ``.mat.gz``) are
    transposed automatically into genomic-bin rows and S1-S16 columns. The
    default **Full table** selection retains chromosome, start, and end in TSV
@@ -60,9 +66,9 @@ Data Manager
 
    All input types, including MAT timing profiles and full tables, offer the same
    missing-value options: Keep empty values, Fill with zero (the default), Fill
-   with a value, Fill with minimum, Fill with maximum, and Stop if detected.
+   with a value, Fill with minimum, Fill with maximum, and Report error.
    Full tables apply these policies to numeric signal columns, preserving labels
-   and genomic coordinates. Stop if detected rejects missing samples, including
+   and genomic coordinates. Report error rejects missing samples, including
    empty track bins before interpolation and values removed by thresholding.
    Thresholded samples remain on the original coordinate grid. Zero and custom
    fills are applied after smoothing and value scaling; Keep empty values preserves
@@ -79,9 +85,31 @@ Data Manager
    header; an all-chromosome text export is a wide table with chromosome
    headers, while NPZ keeps one native-length array under each chromosome key.
    Formats that cannot retain chromosome identity are not offered for an
-   all-chromosome export. TSV is the default. A shared-style plot preview can be
-   enabled in Export settings and is off by default and limited to 500 displayed
-   points. Generated files remain available in Cached Files for the browser tab.
+   all-chromosome export. TSV is the default. **Show plot** is enabled by default;
+   zooming reveals more detail in the converted data. Generated files remain
+   available in Cached Files for the browser tab.
+
+   **Filter**, below Configure, starts collapsed with **Apply filter** off.
+   It edits the converted values after Configure. Its default selection is
+   values below zero, replaced with zero. Other selections include values
+   above/below a threshold, an inclusive interval, a threshold at a distance
+   above the converted minimum or below its maximum, NaN regions, an uploaded
+   mask or genomic positions/intervals, and the whole region. An absent filter
+   profile leaves the data unchanged. Masks require one value per converted
+   bin; non-zero finite entries select bins. Position lists and half-open
+   intervals use bp, kb, or zero-based bin indices; intervals select overlapping
+   bins and optional chromosome labels restrict the selection.
+
+   Operations include replacing with a value or NaN, the mean of each contiguous
+   region, interpolation from surrounding endpoints (linear, smooth PCHIP,
+   nearest, previous, or next), Gaussian noise, matching a minimum or maximum,
+   multiplication, and addition. Reference extrema come from the converted
+   profile before filtering, including or excluding selected regions.
+   Gaussian noise accepts a standard deviation and optional random seed.
+   Interpolation at an edge uses the nearest available endpoint and requires
+   at least one unselected finite value. Chromosomes and space-time columns
+   are processed independently, retaining their grid. Previews and every raw
+   export format use the filtered result, including any new NaNs.
 
    A curated UCSC ENCODE DCC K562 Repli-seq BigWig link is available as a test
    source. Its wavelet signal is a relative timing score (larger values are
@@ -111,7 +139,14 @@ Mapping
    Configure ``rmap`` inputs, regions, routes, and preview settings, then run
    the resolved route in a cancellable background worker.
 
-   **Show Plot** in Mapping options is enabled by default. Turn it off to skip
+   Mapping settings put fit iterations before step size and start simulation
+   ensembles at 100 runs. **Advanced** groups thresholds, edge context, numerical
+   controls, missing values and preview visibility in two columns. Optional
+   numerical fields use automatic values when blank; spatial overrides follow
+   the main fit controls until edited. A zero MSE or deviation threshold disables
+   that threshold. **Stall recovery** enables the recovery-time control.
+
+   **Show Plot** under Advanced is enabled by default. Turn it off to skip
    rendering the preview while still computing and retaining all results and
    raw downloads. Turning it back on displays the result without rerunning.
 
@@ -126,6 +161,23 @@ Mapping
    taper to reduce artificial speed spikes. Every bin remains refinable; timing
    MSE scores the core outside that context. Set the value to 0 for true chromosome
    ends. Periodic fits are unaffected, and downloaded code keeps the chosen value.
+
+   Periodic spatial firing-rate fits also regularize log-rate curvature around
+   the ring, including the join. This is applied to the seed and each fitting
+   update before predicting timing; observed timing is unchanged. The smoothing
+   scale is 5% of the typical fork-travel distance, bounded between one bin and
+   1/32 of the region (one bin for very short regions), and is reported as
+   ``fit_periodic_smoothing_kb``. The firing-rate preview closes the smooth model
+   curve at the period end, while downloads retain only the original bins.
+   First and last stored bins are neighbouring positions, not duplicate endpoints.
+   In Python, ``map_timing_firing(..., stabilize=False)`` retains the previous
+   unconstrained periodic updates.
+
+   Periodic mapping scores every valid spatial bin equally, without endpoint
+   cropping, reflected padding or tapered updates. Spatial smoothing and
+   regularization use the same weight at the join as elsewhere on the ring.
+   Constrained fork-speed fits use equally spaced circular spatial knots;
+   their temporal interpolation remains non-periodic.
 
    Profiles of different lengths align automatically. Start/End and plot positions
    refer to the longest profile's chromosome coordinates: at 1 kb/bin,
@@ -149,6 +201,16 @@ Mapping
 
 Simulation
    Run bounded constant or uploaded firing-rate and fork-speed fields through ``rsim``.
+   Under **Origin & fork behaviour**, **Firing factor** places Fork coupling next
+   to Finite pool, with Pool size and Recycle rate below. **Fork movement** offers
+   separate Fork stalling and Stochastic movement switches, both off by default.
+   Fork stalling reveals the physical stall rate and Stall recovery option,
+   which is off by default. Enable Stall recovery to set a recovery time;
+   with recovery off, stalls are permanent. Disabling stalling resets its
+   rate to zero. Stochastic movement reveals Standard deviation (kb/min), applied
+   around the local fork speed for constant, spatial, temporal, and space-time
+   inputs. Non-positive normal speed draws are resampled. **Fix seed** makes the
+   simulation reproducible, including these movement choices.
    Progress appears in Preview while the scientific worker runs. Completion
    times, origins per replicate, and pooled inter-origin distances are standard
    ensemble outputs and do not require temporal tracking. Enable **Track time
@@ -161,14 +223,23 @@ Simulation
 
    Every run calculates the population standard deviation of replication timing
    across the full ensemble. In the default replication-timing line view,
-   **Plotting settings** can show it as a filled mean ± standard-deviation band.
-   A memory-bounded subset of at most 50 replication-timing profiles is retained
-   independently of temporal or space-time tracking, from which the user can
-   overlay individual simulations. Changing either display does not rerun the
-   simulation.
+   **Plot settings** can show it as a filled mean ± standard-deviation band.
+   **Profiles shown** limits how many individual timing profiles are retained
+   (10 by default, at most 50, subject to the memory limit). These controls can
+   be configured before simulating. Reducing the count releases omitted
+   profiles; increasing it requires another run to retain more. The standard
+   deviation always describes the full ensemble.
+
+   Enabling either overlay adds its download below the main raw data. Standard
+   deviation downloads as a separate profile. Individual profiles download as
+   one ZIP, containing a TSV per displayed replicate by default; TXT, CSV and
+   NPZ are also available. Compression is locked on for this archive, and its
+   filename includes the actual replicate count. Individual profiles and their
+   archives never enter Cached Files; saved workflow results retain aggregate
+   statistics only.
 
    Plot previews can be enlarged and exported as PNG, SVG, or PDF. Selected
-   raw arrays can be downloaded as CSV, TSV, TXT, NPY, or NPZ. The application
+   raw arrays can be downloaded as TSV, TXT, CSV, or NPZ. The application
    Settings menu controls plot DPI and raw compression; GZIP is the default.
    Conversion memory limit (MB) sets the estimated working-memory budget for
    BigWig and bedGraph preparation, from 64 MB (default) to 4096 MB. Choosing
@@ -177,6 +248,10 @@ Simulation
    budget. It does not reserve RAM, cap actual process RAM use, or change upload
    limits. Settings uses grouped switches and draft preferences; **Apply** saves
    changes. **Restore defaults** fills the draft without clearing data or results.
+   Under **Interface**, **DNAscape theme** changes the accent colour across the
+   interface, default plot curves, logos, and browser-tab icon. Choose a colour
+   with the picker or enter a hex value; light and dark variants keep labels
+   readable. **Restore defaults** restores the original DNAscape red.
    Application restart and
    Reset everything restore the 64 MB default.
    Histogram views expose synchronized bin-count, exact bin-size, and editable
@@ -186,7 +261,26 @@ Simulation
    whether values exactly on an internal edge are counted in ``[a, b)`` or
    ``(a, b]``; both outer range endpoints remain included. Histograms display
    the mean, median, and population standard deviation by default in a compact
-   summary box positioned in any plot corner.
+   **Statistics** panel combined with the legend. The panel defaults to the
+   top right and can be positioned in any corner. For combined histograms,
+   choose a dataset from the panel dropdown or click its bins. **Side by side**
+   places datasets within each shared bin interval, so bin size still refers
+   to the whole interval. **KDE** replaces bars with Gaussian density curves;
+   **Smoothness** scales Scott's bandwidth, with 1 as the default and larger
+   values producing smoother curves.
+
+   All previews support dragging to pan within the default axis bounds. Hold
+   left Ctrl and scroll to zoom X and Y together, or hold left Ctrl and drag
+   horizontally to select a shaded region and zoom only X. The axis fields
+   and plot downloads reflect the current view. Axis reset arrows restore
+   the default ranges. Legends default to the top right; fit-to-window and
+   download buttons appear at the bottom right above the X axis. Both axis
+   lines remain visible while zoomed in. Zooming refines curves and heatmaps
+   from the underlying data to reveal detail in the visible region. **Hover boxes** in Guides
+   toggles floating value readouts, dashed guides, and coloured tracking points
+   on curves. Floating boxes contain only Y values, or Z for heatmaps; axis
+   readouts use the DNAscape theme colour. Heatmaps show both X and Y guides.
+   Clear an axis-label field to remove its plot title.
 
 Analysis
    Upload one or more profiles and create profile, heatmap, histogram, or
@@ -194,12 +288,16 @@ Analysis
    Simulation.
 
    **Enable analysis** is off by default. Turning it on changes **Plot** to
-   **Analyse** and enables Spearman, Pearson, and Kendall tau checkboxes.
-   The **Analysis report** below the plotting settings contains one full
-   dataset-by-dataset coefficient matrix per selected correlation. Downloads
-   default to CSV, with TSV also available. A single download at the bottom
-   includes every selected correlation matrix and all paired sample counts.
-   The report is hidden immediately when analysis is switched off.
+   **Analyse** and reveals Spearman, Pearson, Kendall tau, and smoothing controls.
+   The **Analysis report** below the plotting settings combines the methods in
+   one table, with a grouped heading for each correlation above its dataset
+   columns. **Show p-values** adds two-sided, unadjusted p-values beneath the
+   coefficients; self-correlations have no p-value. The export row has an
+   editable report name, File type, a download arrow, and a cross to clear the
+   preview while retaining uploaded data. Downloads default to CSV, with TSV
+   also available, and include all coefficients, paired sample counts, and
+   optional p-values. Disabling analysis hides its controls and report and
+   bypasses smoothing when plotting.
 
    Each selected dataset has independent Off, Moving average, or Gaussian
    smoothing controls. Smoothing applies to both plots and correlations on

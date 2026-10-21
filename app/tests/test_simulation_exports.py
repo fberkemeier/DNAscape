@@ -580,9 +580,9 @@ def test_default_view_resolves_by_output_and_inversion_keeps_x_axis_at_bottom(
     assert options["series"][0]["type"] == series_type
     assert options["yAxis"]["inverse"] is True
     assert options["xAxis"]["position"] == "bottom"
+    assert options["xAxis"]["name"] == ""
+    assert options["yAxis"]["name"] == ""
     if output_label == "Replicated fraction (space-time)":
-        assert options["xAxis"]["name"] == "Position (kb)"
-        assert options["yAxis"]["name"] == "Time (min)"
         assert options["series"][0]["silent"] is True
         assert options["tooltip"]["show"] is True
         assert options["series"][1]["silent"] is False
@@ -1020,13 +1020,9 @@ def test_xt_text_export_uses_rdata_space_by_time_layout() -> None:
 
 
 @pytest.mark.parametrize("file_format", ("npy", "npv"))
-def test_numpy_vector_exports_round_trip_without_pickle(file_format: str) -> None:
-    result = _result()
-    npy = build_raw_export(result, "replication_timing", file_format)
-    np.testing.assert_array_equal(
-        np.load(io.BytesIO(npy.data), allow_pickle=False),
-        result.replication_timing,
-    )
+def test_removed_numpy_vector_export_formats_are_rejected(file_format: str) -> None:
+    with pytest.raises(ValueError, match="Unsupported export format"):
+        build_raw_export(_result(), "replication_timing", file_format)
 
 
 def test_npz_export_is_self_describing_and_uses_dnascape_axis_order() -> None:
@@ -1043,7 +1039,7 @@ def test_npz_export_is_self_describing_and_uses_dnascape_axis_order() -> None:
         np.testing.assert_array_equal(archive["time_min"], result.time_grid)
 
 
-@pytest.mark.parametrize("file_format", ("csv", "tsv", "txt", "npy", "npv", "npz"))
+@pytest.mark.parametrize("file_format", ("csv", "tsv", "txt", "npz"))
 def test_raw_exports_round_trip_through_rdata(
     file_format: str,
     tmp_path: Path,
@@ -1178,12 +1174,12 @@ def test_raw_export_limits_recommend_safe_binary_fallbacks(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     monkeypatch.setattr(simulation_exports, "MAX_TEXT_EXPORT_VALUES", 2)
-    with pytest.raises(ValueError, match="Use NPY or NPZ instead"):
+    with pytest.raises(ValueError, match="Use NPZ instead"):
         build_raw_export(_result(), "replication_timing", "csv")
 
     monkeypatch.setattr(simulation_exports, "MAX_BINARY_EXPORT_BYTES", 1)
     with pytest.raises(ValueError, match="Binary export would contain"):
-        build_raw_export(_result(), "replication_timing", "npy")
+        build_raw_export(_result(), "replication_timing", "npz")
 
 
 def test_invalid_formats_plot_bounds_and_missing_outputs_are_clear() -> None:

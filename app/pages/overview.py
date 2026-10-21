@@ -7,6 +7,7 @@ from collections.abc import Callable
 from nicegui import ui
 
 from app.icons import OUTLINE_ICON_SVGS, PLOT_ICON_SVG
+from app.theme import brand_logo
 
 WORKFLOWS = (
     (
@@ -60,14 +61,13 @@ def render(navigate: Callable[[str], None]) -> None:
 
     with ui.column().classes("dn-overview"):
         with ui.element("div").classes("dn-main-logo-frame"):
-            ui.element("img").props(
-                'src="/dnascape-assets/dnascape_logo_small.svg" alt="DNAscape" draggable=false'
-            ).classes("dn-main-logo")
+            brand_logo("dnascape_logo_small.svg").classes("dn-main-logo")
         with ui.column().classes("dn-overview-copy"):
             ui.label("Overview").classes("dn-eyebrow")
             ui.label(
-                "Build quantitative models of DNA replication from genomic sequencing data, "
-                "then move cleanly from prepared inputs to kinetic mapping and stochastic simulation."
+                "Build quantitative models of DNA replication. Map genomic data to replication "
+                "features, simulate whole-genome replication programmes, and test mechanistic "
+                "hypotheses against experimental data."
             ).classes("dn-lead")
 
         with ui.element("div").classes("dn-overview-grid"):

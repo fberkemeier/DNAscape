@@ -138,6 +138,8 @@ _RDATA_SUFFIXES = {
     "npz": ".npz",
 }
 
+_RDATA_TARGET_FORMATS = ("tsv", "txt", "csv", "npz")
+
 _RDATA_TRACK_FORMAT_ALIASES = {
     "bigwig": "bigwig",
     ".bigwig": "bigwig",
@@ -202,6 +204,14 @@ def _normalise_rdata_format(fmt, *, path=None):
     resolved = _RDATA_FORMAT_ALIASES[key]
     if resolved == "auto":
         raise ValueError("Could not infer rdata format. Pass source_format or target explicitly.")
+    return resolved
+
+
+def _normalise_rdata_target_format(fmt, *, path=None):
+    resolved = _normalise_rdata_format(fmt, path=path)
+    if resolved not in _RDATA_TARGET_FORMATS:
+        choices = ", ".join(_RDATA_TARGET_FORMATS)
+        raise ValueError(f"Unsupported output format {fmt!r}; choose {choices}.")
     return resolved
 
 
@@ -1353,9 +1363,6 @@ def _write_rdata_payload(
         )
     elif target_format == "txt":
         np.savetxt(output_path, _rdata_numeric_values(payload), fmt=float_format or "%.18e")
-    elif target_format in {"npy", "npv"}:
-        with output_path.open("wb") as handle:
-            np.save(handle, _rdata_numeric_values(payload), allow_pickle=False)
     elif target_format == "npz":
         values = _rdata_numeric_values(payload)
         archive = {"values": values, "data_form": np.asarray(payload.data_form)}
@@ -1440,15 +1447,15 @@ def rsave(
     """Save DNAscape-ready arrays or tables to any supported plain format.
 
     ``target_format`` is inferred from ``output_path`` by default. Supported
-    targets are ``txt``, ``csv``, ``tsv``, ``npy``, ``npv`` and ``npz``.
+    targets are ``tsv``, ``txt``, ``csv`` and ``npz``.
     ``data_form`` follows DNAscape conventions: ``space`` is ``(n,)``,
     ``time`` is stored as ``(1, T)``, and ``spacetime`` is ``(n, T)``.
     """
     output_path = Path(output_path).expanduser()
     if target_format == "auto":
-        target_format = _normalise_rdata_format("auto", path=output_path)
+        target_format = _normalise_rdata_target_format("auto", path=output_path)
     else:
-        target_format = _normalise_rdata_format(target_format)
+        target_format = _normalise_rdata_target_format(target_format)
 
     payload = _rdata_payload_from_source(
         data,
@@ -1632,8 +1639,8 @@ def rdata(
         ``.npv`` is treated as a NumPy vector/array file using the same binary
         payload as ``.npy``.
     target : str or path-like, default "tsv"
-        Target file format or output path. Supported targets are ``"txt"``,
-        ``"csv"``, ``"tsv"``, ``"npy"``, ``"npv"`` and ``"npz"``.
+        Target file format or output path. Supported targets are ``"tsv"``,
+        ``"txt"``, ``"csv"`` and ``"npz"``.
     output_path : path-like, optional
         Explicit output path. If omitted and ``source`` is a path, the suffix is
         replaced with the target suffix.
@@ -1667,9 +1674,9 @@ def rdata(
     """
     if _looks_like_path_target(target) and output_path is None:
         output_path = Path(target)
-        target_format = _normalise_rdata_format("auto", path=output_path)
+        target_format = _normalise_rdata_target_format("auto", path=output_path)
     else:
-        target_format = _normalise_rdata_format(target)
+        target_format = _normalise_rdata_target_format(target)
 
     source_route_format = _rdata_route_source_format(source, source_format)
     progress_callback = _normalise_rdata_progress(progress)

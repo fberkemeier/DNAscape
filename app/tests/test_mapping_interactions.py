@@ -22,7 +22,9 @@ from app.mapping_catalog import (
     mapping_route_families,
     mapping_targets,
 )
-from app.pages.mapping import _mapping_route_families_for_ui, _preview_outputs, _setting_value
+from app.pages.mapping import (
+    _mapping_route_families_for_ui, _mapping_setting_group, _preview_outputs, _setting_value,
+)
 
 
 def _slug(value: str) -> str:
@@ -124,6 +126,10 @@ async def _assert_setting_present(user: Any, route: MappingRoute, key: str) -> N
     needs_override = (not setting.required) and (
         not setting.has_default or (setting.nullable and setting.default is None)
     )
+    if setting.location == "settings" and _mapping_setting_group(
+        setting, {item.key for item in route.active_settings()},
+    ) == "advanced":
+        needs_override = False
     if needs_override:
         await user.should_see(marker=f"{marker}-override")
         await user.should_not_see(marker=marker)
@@ -139,7 +145,7 @@ def test_expensive_mapping_settings_start_with_interactive_effort() -> None:
 
     single_simulation = mapping_route("firing_and_speed_to_timing_simulation")
     assert next(_setting_value(item) for item in single_simulation.active_settings()
-                if item.key == "sim_number") == 128
+                if item.key == "sim_number") == 100
 
 
 def test_spatial_kinetic_targets_only_show_complete_factor_routes() -> None:
@@ -822,8 +828,16 @@ def test_mapping_settings_refresh_to_only_assumptions_accepted_by_the_route() ->
             settings = next(iter(user.find(marker="mapping-settings").elements))
             settings_container = settings.parent_slot.parent
             show_plot = next(iter(user.find(marker="mapping-show-plot").elements))
-            assert settings_container.parent_slot is show_plot.parent_slot
-            assert show_plot.parent_slot.children.index(settings_container) < show_plot.parent_slot.children.index(show_plot)
+            advanced = next(iter(user.find(marker="mapping-settings-advanced").elements))
+            assert show_plot.parent_slot.parent.parent_slot.parent is advanced
+            primary = settings_container.parent_slot.parent
+            assert primary.parent_slot is advanced.parent_slot
+            assert primary.parent_slot.children.index(primary) < advanced.parent_slot.children.index(advanced)
+            iterations = next(iter(user.find(marker="mapping-setting-maxiter").elements))
+            step = next(iter(user.find(marker="mapping-setting-fit-step").elements))
+            assert iterations.parent_slot.parent.parent_slot.children.index(
+                iterations.parent_slot.parent,
+            ) < step.parent_slot.parent.parent_slot.children.index(step.parent_slot.parent)
 
             # Default route is a fit: expose fit controls, not unrelated PDE/simulation ones.
             route = mapping_route("timing_and_speed_to_firing_rate")
@@ -832,7 +846,7 @@ def test_mapping_settings_refresh_to_only_assumptions_accepted_by_the_route() ->
             for marker in ("seed", "geometry", "cfl", "region-names"):
                 await user.should_not_see(marker=f"mapping-setting-{marker}")
             for category, title in (
-                ("numerics", "Numerics"),
+                ("advanced", "Advanced"),
                 ("fitting", "Fitting"),
                 ("simulation", "Simulation"),
             ):
@@ -853,7 +867,7 @@ def test_mapping_settings_refresh_to_only_assumptions_accepted_by_the_route() ->
             for key in ("sim_number", "stall_rate_per_kb", "seed", "geometry"):
                 await _assert_setting_present(user, route, key)
             await _assert_setting_present(user, route, "tau")
-            await user.should_see("Allow stall recovery")
+            await user.should_see("Stall recovery")
             await user.should_not_see("Infinity")
             for marker in ("fit-step", "maxiter", "cfl", "region-names"):
                 await user.should_not_see(marker=f"mapping-setting-{marker}")

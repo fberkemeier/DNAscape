@@ -30,14 +30,15 @@ def test_timing_conversion_preserves_chromosome_grid_and_export_coordinates() ->
     summary = inspect_repliseq(inspection)
     assert [region.chromosome for region in summary.regions] == ["chr1", "chr2"]
     request = DataConversionRequest(
-        inspection=inspection, input_form="x", chromosome="chr1", target_format="npy",
+        inspection=inspection, input_form="x", chromosome="chr1", target_format="npz",
         repliseq_timing_method="sigmoid", value_name="replication_timing", missing_policy="ignore",
     )
     prepared = prepare_data(request)
     np.testing.assert_allclose(prepared.values, [93.75, np.nan, 543.75], atol=0.01, equal_nan=True)
     np.testing.assert_array_equal(prepared.coordinates["position_kb"], [0, 50, 100])
     result = convert_data(request)
-    np.testing.assert_allclose(np.load(io.BytesIO(result.artifact.data)), prepared.values, equal_nan=True)
+    with np.load(io.BytesIO(result.artifact.data), allow_pickle=False) as archive:
+        np.testing.assert_allclose(archive["values"], prepared.values, equal_nan=True)
     assert dict(result.metadata)["units"] == "min"
     assert dict(result.metadata)["invalid_timing_bins"] == "1"
     assert result.preview is not None and result.preview.value_label == "replication_timing"
@@ -112,7 +113,7 @@ def test_choose_timing_chromosome_method_and_duration_in_data_manager(monkeypatc
             assert control("profile-missing").value == "zero"
             assert list(control("profile-missing").options.values()) == [
                 "Keep empty values", "Fill with zero", "Fill with a value",
-                "Fill with minimum", "Fill with maximum", "Stop if detected",
+                "Fill with minimum", "Fill with maximum", "Report error",
             ]
             with user.client:
                 control("preview-toggle").set_value(True)

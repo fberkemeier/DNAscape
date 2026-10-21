@@ -4,12 +4,16 @@ from __future__ import annotations
 
 import asyncio
 import json
+import math
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass, field
 from typing import Any
 
 import numpy as np
 from nicegui import ui
+
+from app.export_settings import get_export_settings
+from app.icons import RESET_ICON
 
 from dnascape.workflows.preview import (
     CURVE_TYPES,
@@ -69,7 +73,6 @@ from dnascape.workflows.preview import (
     _fixed_scientific_limits as _fixed_scientific_limits,
     _tooltip_options as _tooltip_options,
     limit_curve_hover as limit_curve_hover,
-    _histogram_statistics_graphic as _histogram_statistics_graphic,
     _palette_rgb as _palette_rgb,
     _heatmap_data_uri as _heatmap_data_uri,
     automatic_y_limits as automatic_y_limits,
@@ -116,6 +119,9 @@ class PreviewSettingsControls:
     histogram_bin_size: Any
     histogram_touching: Any
     histogram_boundary: Any
+    kde_bandwidth: Any
+    histogram_grouped: Any
+    show_hover: Any
     ensemble_profile_options: Any
     show_individual_profiles: Any
     individual_profile_count: Any
@@ -168,6 +174,86 @@ class PreviewSettingsControls:
     secondary_invert_y: Any = None
     _resetting_limits: bool = field(default=False, init=False, repr=False)
     _automatic_axes: set[str] = field(default_factory=lambda: {"x", "z"}, init=False, repr=False)
+    _navigation: _PreviewNavigation = field(default_factory=lambda: _PreviewNavigation(), init=False, repr=False)
+    _histogram_dataset: int = field(default=0, init=False, repr=False)
+
+
+@dataclass
+class _PreviewNavigation:
+    """Viewport state survives presentation changes without rebinning data."""
+
+    context: str = ""
+    ranges: dict[str, tuple[float, float]] = field(default_factory=dict)
+    source_limits: dict[str, tuple[float, float] | None] = field(default_factory=dict)
+    axes: dict[str, dict[str, Any]] = field(default_factory=dict)
+
+    def clear(self, axis: str | None = None) -> None:
+        if axis is None:
+            self.ranges.clear()
+            self.source_limits.clear()
+        else:
+            self.ranges.pop(axis, None)
+            self.source_limits.pop(axis, None)
+
+
+def _navigation_axes(options: Mapping[str, Any]) -> dict[str, dict[str, Any]]:
+    defaults = options.get("dnascapeDefaultAxes", {})
+    result = {}
+    for dimension in ("x", "y"):
+        specifications = options.get(f"{dimension}Axis", [])
+        if isinstance(specifications, Mapping):
+            specifications = [specifications]
+        for index, spec in enumerate(specifications[:2]):
+            if spec.get("type") == "category":
+                continue
+            key = dimension if index == 0 else f"secondary_{dimension}"
+            bounds = defaults.get(key, (spec.get("min"), spec.get("max")))
+            if not isinstance(bounds, (list, tuple)) or len(bounds) != 2:
+                continue
+            lower, upper = (_finite_number(value) for value in bounds)
+            logarithmic = spec.get("type") == "log"
+            if lower is None or upper is None or lower >= upper or (logarithmic and lower <= 0):
+                continue
+            result[key] = dict(min=lower, max=upper, log=logarithmic, inverse=bool(spec.get("inverse")), index=index, dimension=dimension)
+    return result
+
+
+def _clamp_navigation_range(
+    values: Any, axis: Mapping[str, Any],
+) -> tuple[float, float] | None:
+    if not isinstance(values, (list, tuple)) or len(values) != 2:
+        return None
+    lower, upper = (_finite_number(value) for value in values)
+    if lower is None or upper is None or lower >= upper or (axis["log"] and lower <= 0):
+        return None
+    transform = math.log if axis["log"] else float
+    inverse = math.exp if axis["log"] else float
+    floor, ceiling = transform(axis["min"]), transform(axis["max"])
+    start, end = transform(lower), transform(upper)
+    span = min(end - start, ceiling - floor)
+    start = max(floor, min(start, ceiling - span))
+    return inverse(start), inverse(start + span)
+
+
+def _set_navigation_axis(options: dict[str, Any], key: str, limits: tuple[float, float]) -> None:
+    dimension = key[-1]
+    specifications = options[f"{dimension}Axis"]
+    multiple = isinstance(specifications, list)
+    index = 1 if key.startswith("secondary_") else 0
+    spec = dict(specifications[index] if multiple else specifications)
+    spec.update(min=limits[0], max=limits[1], interval=None)
+    axis_line = spec.get("axisLine", {})
+    spec["axisLine"] = {**axis_line, "show": True, "onZero": False,
+                        "lineStyle": {"width": 1.2, **axis_line.get("lineStyle", {}), "type": "solid", "opacity": 1}}
+    for part in ("axisLabel", "axisTick", "splitLine"):
+        spec[part] = {**spec.get(part, {}), "customValues": None}
+    spec["axisLabel"].update(showMinLabel=True, showMaxLabel=True)
+    if multiple:
+        specifications = list(specifications)
+        specifications[index] = spec
+        options[f"{dimension}Axis"] = specifications
+    else:
+        options[f"{dimension}Axis"] = spec
 
 
 @dataclass
@@ -186,6 +272,10 @@ class PreviewChartHandle:
     settings: PreviewSettingsControls | None = None
     zoom: Any = None
     zoom_card: Any = None
+    zoom_dialog: Any = None
+    shell: Any = None
+    _navigation: _PreviewNavigation = field(default_factory=_PreviewNavigation, init=False, repr=False)
+    _histogram_dataset: int = field(default=0, init=False, repr=False)
     _revision: int = field(default=0, init=False, repr=False)
     _vector_revision: int = field(default=-1, init=False, repr=False)
     _vector_capture_revision: int = field(default=-1, init=False, repr=False)
@@ -206,10 +296,16 @@ class PreviewChartHandle:
     def update(self) -> None:
         """Update the interactive chart; the vector twin stays lazy."""
 
+        self._apply_navigation()
+        self._refine_data()
+        self._apply_guides()
+        self._position_toolbar()
         if self.settings is not None:
             sync_preview_axis_limits(self.settings, self.options)
             self._apply_aspect_ratio()
         self.canvas.update()
+        if self.zoom is not None and self.zoom_dialog is not None and self.zoom_dialog.value:
+            self._sync_zoom()
         self.invalidate_export()
 
     def invalidate_export(self) -> None:
@@ -222,8 +318,192 @@ class PreviewChartHandle:
 
     def attach_settings(self, controls: PreviewSettingsControls) -> None:
         self.settings = controls
+        self._navigation = controls._navigation
+        self._apply_navigation()
+        self._refine_data()
+        self._apply_guides()
+        self._position_toolbar()
         sync_preview_axis_limits(controls, self.options)
         self._apply_aspect_ratio()
+
+    def _position_toolbar(self) -> None:
+        if self.shell is None:
+            return
+        grid = self.options.get("grid", {})
+        if isinstance(grid, list):
+            grid = grid[0] if grid else {}
+        right = _finite_number(grid.get("right"))
+        bottom = _finite_number(grid.get("bottom"))
+        self.shell.style(
+            f"--dn-plot-grid-right: {max(0, right if right is not None else 24)}px; "
+            f"--dn-plot-grid-bottom: {max(0, bottom if bottom is not None else 58)}px;"
+        )
+
+    def _apply_guides(self) -> None:
+        hover = bool(self.options.get("tooltip", {}).get("show")) and (
+            self.settings is None or bool(self.settings.show_hover.value)
+        )
+        self.options["axisPointer"] = {
+            **self.options.get("axisPointer", {}),
+            "show": "auto" if hover else False,
+            "triggerOn": "mousemove|click" if hover else "none",
+        }
+        if not hover:
+            tooltip = dict(self.options.get("tooltip", {}))
+            tooltip["show"] = False
+            tooltip["triggerOn"] = "none"
+            pointer = tooltip.get("axisPointer", {})
+            tooltip["axisPointer"] = {**pointer, "show": False, "type": "none",
+                                      "label": {**pointer.get("label", {}), "show": False}}
+            self.options["tooltip"] = tooltip
+            for series in self.options.get("series", []):
+                series["emphasis"] = {**series.get("emphasis", {}), "disabled": True}
+                if series.get("type") == "line":
+                    series["symbolSize"] = 0
+        guide = self.options.get("dnascapeHistogramGuides")
+        if hasattr(self.canvas, "classes"):
+            if guide and guide.get("visible"):
+                self.canvas.classes(add="dn-preview-guide-visible")
+            else:
+                self.canvas.classes(remove="dn-preview-guide-visible")
+        if not guide or not guide.get("choices"):
+            return
+        selected = self.settings._histogram_dataset if self.settings is not None else self._histogram_dataset
+        selected = max(0, min(int(selected), len(guide["choices"]) - 1))
+        guide["selected"] = selected
+        self.options["graphic"] = [guide["choices"][selected]["graphic"]] if guide["visible"] else []
+
+    def select_histogram_dataset(self, payload: Any) -> None:
+        if not isinstance(payload, Mapping) or not isinstance(payload.get("index"), int):
+            return
+        selected = payload["index"]
+        guide = self.options.get("dnascapeHistogramGuides", {})
+        if not 0 <= selected < len(guide.get("choices", [])):
+            return
+        self._histogram_dataset = selected
+        if self.settings is not None:
+            object.__setattr__(self.settings, "_histogram_dataset", selected)
+        self.update()
+
+    def _refine_data(self) -> None:
+        def visible_window(key: str) -> tuple[float, float] | None:
+            if key in self._navigation.ranges:
+                return self._navigation.ranges[key]
+            axis = self._navigation.axes.get(key)
+            if axis is None:
+                return None
+            spec = self.options[f"{axis['dimension']}Axis"]
+            if isinstance(spec, list):
+                spec = spec[axis["index"]]
+            current = (_finite_number(spec.get("min")), _finite_number(spec.get("max")))
+            if all(value is not None for value in current) and any(
+                not math.isclose(current[index], axis[endpoint], rel_tol=1e-10, abs_tol=1e-12)
+                for index, endpoint in enumerate(("min", "max"))
+            ):
+                return current
+            return None
+
+        for index, series in enumerate(self.options.get("series", [])):
+            data = series.get("data")
+            if not callable(getattr(data, "refine", None)):
+                continue
+            x_key = "secondary_x" if series.get("xAxisIndex") == 1 else "x"
+            y_key = "secondary_y" if series.get("yAxisIndex") == 1 else "y"
+            window = (visible_window(x_key), visible_window(y_key))
+            if window == (None, None) and not getattr(data, "window", None):
+                continue
+            if getattr(data, "window", None) == window:
+                continue
+            refined = data.refine(*window)
+            hover = refined.pop("hoverData", None)
+            series.update(refined)
+            if hasattr(series["data"], "refine"):
+                series["data"].window = window if any(value is not None for value in window) else None
+            if hover is not None and index + 1 < len(self.options["series"]):
+                self.options["series"][index + 1]["data"] = hover
+
+    def _apply_navigation(self) -> None:
+        axes = _navigation_axes(self.options)
+        if not axes:
+            return
+        context = json.dumps([
+            self.options.get("dnascapePlotType"),
+            {key: {name: value for name, value in axis.items() if name != "inverse"} for key, axis in axes.items()},
+        ], sort_keys=True)
+        if self._navigation.context != context:
+            self._navigation.clear()
+            self._navigation.context = context
+            self._navigation.axes = {key: dict(axis) for key, axis in axes.items()}
+            # Workflows supply zero floors and fixed scientific ranges, such
+            # as fractions from 0 to 1. Preserve those defaults through redraws
+            # whose numeric axis inputs now describe a zoomed view.
+            for key, axis in self._navigation.axes.items():
+                if axis["dimension"] != "y" or axis["log"]:
+                    continue
+                spec = self.options["yAxis"]
+                if isinstance(spec, list):
+                    spec = spec[axis["index"]]
+                provided = (_finite_number(spec.get("min")), _finite_number(spec.get("max")))
+                if all(value is not None for value in provided) and _fixed_scientific_limits(provided) and (
+                    axis["min"] >= provided[0] - (provided[1] - provided[0]) * 0.1
+                    and axis["max"] <= provided[1] + (provided[1] - provided[0]) * 0.1
+                ):
+                    axis["min"], axis["max"] = provided
+                elif spec.get("min") == 0 and math.isclose(spec.get("max", 0), axis["max"], rel_tol=1e-9):
+                    axis["min"] = min(0.0, axis["min"])
+        for key, axis in axes.items():
+            self._navigation.axes[key]["inverse"] = axis["inverse"]
+        axes = self._navigation.axes
+        self.options["dnascapeNavigation"] = dict(context=context, axes=axes)
+        for key, values in tuple(self._navigation.ranges.items()):
+            if key in axes and (limits := _clamp_navigation_range(values, axes[key])) is not None:
+                _set_navigation_axis(self.options, key, limits)
+        self._sync_navigation_fields()
+
+    def _sync_navigation_fields(self) -> None:
+        controls = self.settings
+        if controls is None:
+            return
+        object.__setattr__(controls, "_resetting_limits", True)
+        try:
+            for key, values in self._navigation.ranges.items():
+                field_axis = "histogram_x" if key == "x" and controls.view.value == "Histogram" else key
+                for endpoint, value in zip(("minimum", "maximum"), values, strict=True):
+                    control = getattr(controls, f"{field_axis}_{endpoint}", None)
+                    if control is not None:
+                        control.set_value(float(f"{value:.12g}"))
+        finally:
+            object.__setattr__(controls, "_resetting_limits", False)
+
+    def accept_navigation(self, payload: Any) -> None:
+        """Commit a small browser viewport event, keeping all profile data intact."""
+        if not isinstance(payload, Mapping) or payload.get("context") != self._navigation.context:
+            return
+        axes = self._navigation.axes
+        requested = payload.get("ranges")
+        if not isinstance(requested, Mapping):
+            return
+        for key, values in requested.items():
+            if key not in axes or (limits := _clamp_navigation_range(values, axes[key])) is None:
+                continue
+            if self.settings is not None and key not in self._navigation.source_limits:
+                self._navigation.source_limits[key] = (
+                    histogram_x_limits_from_controls(self.settings)
+                    if key == "x" and self.settings.view.value == "Histogram" else
+                    axis_limits_from_controls(self.settings, key)
+                )
+            self._navigation.ranges[key] = limits
+        self.update()
+
+    def _sync_zoom(self) -> None:
+        if self.zoom.options is not self.options:
+            self.zoom.options.clear()
+            self.zoom.options.update(self.options)
+        self.zoom.update()
+
+    def open_zoom(self) -> None:
+        self._sync_zoom()
+        self.zoom_dialog.open()
 
     def _apply_aspect_ratio(self) -> None:
         control = self.settings.aspect_ratio if self.settings is not None else None
@@ -306,8 +586,9 @@ def histogram_x_limits_from_controls(
 ) -> tuple[float, float] | None:
     """Return a complete, valid histogram X interval from shared controls."""
 
-    lower = _finite_number(controls.histogram_x_minimum.value)
-    upper = _finite_number(controls.histogram_x_maximum.value)
+    source = controls._navigation.source_limits.get("x") if "x" in controls._navigation.ranges else None
+    lower = _finite_number(source[0] if source is not None else controls.histogram_x_minimum.value)
+    upper = _finite_number(source[1] if source is not None else controls.histogram_x_maximum.value)
     if lower is None or upper is None or upper <= lower:
         return None
     if log_x and lower <= 0:
@@ -319,6 +600,8 @@ def axis_limits_from_controls(
     controls: PreviewSettingsControls, axis: str,
 ) -> tuple[float, float] | None:
     """Read an optional complete axis interval from the shared controls."""
+    if axis in controls._navigation.ranges and axis in controls._navigation.source_limits:
+        return controls._navigation.source_limits[axis]
     if axis in getattr(controls, "_automatic_axes", ()):
         return None
     lower_control = getattr(controls, f"{axis}_minimum", None)
@@ -362,6 +645,7 @@ def _reset_preview_axis(
 ) -> None:
     # Suppress intermediate redraws while clearing both endpoints. The frozen
     # control collection owns this internal state; its UI fields stay mutable.
+    controls._navigation.clear(axis)
     object.__setattr__(controls, "_resetting_limits", True)
     try:
         if axis in {"x", "z", "secondary_x"}:
@@ -373,6 +657,21 @@ def _reset_preview_axis(
     finally:
         object.__setattr__(controls, "_resetting_limits", False)
     callback()
+
+
+def _clear_preview_navigation(controls: PreviewSettingsControls) -> None:
+    """Restore the unzoomed inputs before changing representation or binning."""
+    object.__setattr__(controls, "_resetting_limits", True)
+    try:
+        for axis, values in controls._navigation.source_limits.items():
+            field_axis = "histogram_x" if axis == "x" and controls.view.value == "Histogram" else axis
+            for endpoint, value in zip(("minimum", "maximum"), values or (None, None), strict=True):
+                control = getattr(controls, f"{field_axis}_{endpoint}", None)
+                if control is not None:
+                    control.set_value(value)
+        controls._navigation.clear()
+    finally:
+        object.__setattr__(controls, "_resetting_limits", False)
 
 
 def plotting_settings_ready(
@@ -388,6 +687,8 @@ def plotting_settings_ready(
     remains visible and no transient error notification is emitted.
     """
 
+    if plot_type == "Histogram" and controls.density.value and _positive_finite(controls.kde_bandwidth.value) is None:
+        return False
     if plot_type == "Histogram" and (
         _histogram_bin_count(controls.histogram_bins.value) is None
         or _positive_finite(controls.histogram_bin_size.value) is None
@@ -557,16 +858,19 @@ class HistogramBinSynchronizer:
 
     def _bins_changed(self) -> None:
         if not self._updating:
+            _clear_preview_navigation(self.controls)
             self._basis = "bins"
             self.sync_from_bins(redraw=True)
 
     def _bin_size_changed(self) -> None:
         if not self._updating:
+            _clear_preview_navigation(self.controls)
             self._basis = "size"
             self.sync_from_size(redraw=True)
 
     def _x_limits_changed(self) -> None:
-        if not self._updating:
+        if not self._updating and not self.controls._resetting_limits:
+            self.controls._navigation.clear("x")
             self._x_limits_automatic = False
             self._basis = "size"
             self.sync_from_size(redraw=True)
@@ -574,6 +878,7 @@ class HistogramBinSynchronizer:
     def reset_x_limits(self) -> None:
         """Restore the data-derived X interval and preserve the chosen width."""
 
+        self.controls._navigation.clear("x")
         self._x_limits_automatic = True
         self._basis = "size"
         self.sync_from_size(redraw=True)
@@ -602,9 +907,9 @@ def _axis_limit_editor(axis: str, markers: Mapping[str, str]) -> tuple[Any, Any,
             for suffix, endpoint in (("min", "minimum"), ("max", "maximum"))
         )
         reset = _mark(
-            ui.button(icon="restart_alt")
+            ui.button(icon=RESET_ICON, color=None)
             .props(f'flat round dense aria-label="Reset {axis_label} limits to data range"')
-            .classes("dn-y-limit-reset"),
+            .classes("dn-reset-button dn-y-limit-reset"),
             markers,
             f"reset_{axis}_limits",
         )
@@ -656,6 +961,9 @@ _PREVIEW_SETTING_MARKER_SUFFIXES: dict[str, str] = {
     "histogram_bin_size": "histogram-bin-size",
     "histogram_touching": "histogram-touching",
     "histogram_boundary": "histogram-boundary",
+    "kde_bandwidth": "kde-smoothness",
+    "histogram_grouped": "side-by-side-bins",
+    "show_hover": "show-hover",
     "ensemble_profile_options": "ensemble-profile-options",
     "show_individual_profiles": "show-individual-profiles",
     "individual_profile_count": "individual-profile-count",
@@ -742,6 +1050,12 @@ def compact_color_input(
             )
 
         control.on_value_change(sync_brand_swatch)
+
+        def sync_picker_color() -> None:
+            if str(control.value).casefold() == "#b03412":
+                control.picker.set_color(get_export_settings().theme_color)
+
+        control.button.on_click(sync_picker_color)
         sync_brand_swatch()
     return surface, control
 
@@ -762,7 +1076,7 @@ def preview_settings_controls(
 
     markers = {} if markers is None else markers
     with expansion(
-        "Plotting settings",
+        "Plot settings",
         icon="palette",
         extra_classes="dn-preview-settings-section",
     ):
@@ -862,7 +1176,10 @@ def preview_settings_controls(
                         markers,
                         "individual_profile_count",
                     )
-                    individual_profile_count.tooltip("Show up to 50 retained simulation profiles.")
+                    individual_profile_count.tooltip(
+                        "Retain up to this many profiles per run, subject to the memory limit. "
+                        "Run again to retain more after increasing the count."
+                    )
 
                 with ui.element("div").classes("dn-preview-colour-grid"):
                     primary_color_surface, primary_color = compact_color_input(
@@ -870,11 +1187,30 @@ def preview_settings_controls(
                         "#b03412",
                         marker=markers.get("primary_color"),
                     )
+                    line_width = _mark(
+                        ui.number(
+                            label="Thickness",
+                            value=1.8,
+                            min=0.2,
+                            max=8.0,
+                            step=0.1,
+                        )
+                        .props("dense")
+                        .classes("dn-field dn-field-compact"),
+                        markers,
+                        "line_width",
+                    )
+                    line_type = _mark(
+                        ui.select(CURVE_TYPES, value="solid", label="Type")
+                        .props("dense options-dense").classes("dn-field"), markers, "line_type",
+                    )
+                    line_type.tooltip("Default pattern; each curve can use its own.")
                     secondary_color_surface, secondary_color = compact_color_input(
                         "Second color",
                         "#2596be",
                         marker=markers.get("secondary_color"),
                     )
+                    secondary_color_surface.classes("dn-preview-secondary-color")
                 secondary_color_surface.visible = False
                 heatmap_palette = _mark(
                     ui.select(
@@ -887,24 +1223,6 @@ def preview_settings_controls(
                     markers,
                     "heatmap_palette",
                 )
-                line_width = _mark(
-                    ui.number(
-                        label="Curve thickness",
-                        value=1.8,
-                        min=0.2,
-                        max=8.0,
-                        step=0.1,
-                    )
-                    .props("dense")
-                    .classes("dn-field dn-field-compact"),
-                    markers,
-                    "line_width",
-                )
-                line_type = _mark(
-                    ui.select(CURVE_TYPES, value="solid", label="Curve type")
-                    .props("dense options-dense").classes("dn-field"), markers, "line_type",
-                )
-                line_type.tooltip("Default pattern; each curve can use its own.")
                 with ui.element("div").classes("dn-aspect-ratio-editor"):
                     aspect_ratio = _mark(
                         ui.number(label="Aspect ratio", value=None, min=0.25, max=5, step=0.1)
@@ -915,36 +1233,48 @@ def preview_settings_controls(
                         "Width divided by height. Default keeps the current preview size; "
                         "short plots retain enough height for the axes and colorbar."
                     )
-                    reset_aspect_ratio = _mark(
-                        ui.button(icon="restart_alt").props(
-                            'flat round dense aria-label="Reset aspect ratio to default"'
-                        ).classes("dn-y-limit-reset"), markers, "reset_aspect_ratio",
-                    )
+                    with aspect_ratio.add_slot("append"):
+                        reset_aspect_ratio = _mark(
+                            ui.button(icon=RESET_ICON, color=None).props(
+                                'flat round dense aria-label="Reset aspect ratio to default"'
+                            ).classes("dn-reset-button dn-y-limit-reset"), markers, "reset_aspect_ratio",
+                        )
                     reset_aspect_ratio.tooltip("Reset to the default aspect ratio")
-                with ui.element("div").classes("dn-inline-actions"):
+                with ui.element("div").classes("dn-kde-controls"):
                     density = _mark(
                         ui.checkbox("KDE", value=False).tooltip("Gaussian kernel density with Scott's automatic bandwidth"),
                         markers,
                         "density",
                     )
+                    kde_bandwidth = _mark(
+                        ui.number("Smoothness", value=1.0, min=0.05, max=20, step=0.1)
+                        .props("dense inputmode=decimal").classes("dn-field dn-field-compact"),
+                        markers, "kde_bandwidth",
+                    )
+                    kde_bandwidth.tooltip("Multiplier of Scott's bandwidth: higher values give a smoother curve.")
+                with ui.element("div").classes("dn-inline-actions"):
                     histogram_touching = _mark(
                         ui.checkbox("Touching bins", value=True),
                         markers,
                         "histogram_touching",
                     )
+                    histogram_grouped = _mark(
+                        ui.checkbox("Side by side", value=False), markers, "histogram_grouped",
+                    )
+                    histogram_grouped.tooltip("Place datasets beside each other within each shared bin interval.")
 
             with ui.column().classes("dn-preview-setting-group"):
                 ui.label("Axes").classes("dn-setting-group-title")
                 x_axis_label = _mark(
                     ui.input(label="X-axis label", value=initial_x_label)
-                    .props("dense")
+                    .props("dense clearable")
                     .classes("dn-field"),
                     markers,
                     "x_axis_label",
                 )
                 y_axis_label = _mark(
                     ui.input(label="Y-axis label", value=initial_y_label)
-                    .props("dense")
+                    .props("dense clearable")
                     .classes("dn-field"),
                     markers,
                     "y_axis_label",
@@ -990,9 +1320,9 @@ def preview_settings_controls(
                         "histogram_x_maximum",
                     )
                     reset_histogram_x_limits = _mark(
-                        ui.button(icon="restart_alt")
+                        ui.button(icon=RESET_ICON, color=None)
                         .props('flat round dense aria-label="Reset histogram X limits"')
-                        .classes("dn-y-limit-reset"),
+                        .classes("dn-reset-button dn-y-limit-reset"),
                         markers,
                         "reset_histogram_x_limits",
                     )
@@ -1011,13 +1341,13 @@ def preview_settings_controls(
                     dual_y_axes.tooltip("Independent X and Y axes for each of the two datasets.")
                     dual_y_axes.visible = False
                     secondary_y_axis_label = _mark(
-                        ui.input(label="Y2 label", value="Value").props("dense").classes("dn-field"),
+                        ui.input(label="Y2 label", value="Value").props("dense clearable").classes("dn-field"),
                         markers, "secondary_y_axis_label",
                     )
                     secondary_y_limit_editor, secondary_y_minimum, secondary_y_maximum, reset_secondary_y_limits = _axis_limit_editor("secondary_y", markers)
                     secondary_y_axis_label.visible = secondary_y_limit_editor.visible = False
                     secondary_x_axis_label = _mark(
-                        ui.input(label="X2 label", value=initial_x_label).props("dense").classes("dn-field"),
+                        ui.input(label="X2 label", value=initial_x_label).props("dense clearable").classes("dn-field"),
                         markers, "secondary_x_axis_label",
                     )
                     secondary_x_limit_editor, secondary_x_minimum, secondary_x_maximum, reset_secondary_x_limits = _axis_limit_editor("secondary_x", markers)
@@ -1041,7 +1371,7 @@ def preview_settings_controls(
                         "show_legend",
                     )
                     show_histogram_statistics = _mark(
-                        ui.checkbox("Summary statistics", value=True),
+                        ui.checkbox("Statistics", value=True),
                         markers,
                         "show_histogram_statistics",
                     )
@@ -1053,6 +1383,7 @@ def preview_settings_controls(
                         markers,
                         "show_grid",
                     )
+                    show_hover = _mark(ui.checkbox("Hover boxes", value=True), markers, "show_hover")
                     colorbar = _mark(
                         ui.checkbox("Colorbar", value=True),
                         markers,
@@ -1103,6 +1434,9 @@ def preview_settings_controls(
         histogram_bin_size=histogram_bin_size,
         histogram_touching=histogram_touching,
         histogram_boundary=histogram_boundary,
+        kde_bandwidth=kde_bandwidth,
+        histogram_grouped=histogram_grouped,
+        show_hover=show_hover,
         ensemble_profile_options=ensemble_profile_options,
         show_individual_profiles=show_individual_profiles,
         individual_profile_count=individual_profile_count,
@@ -1174,6 +1508,7 @@ def bind_preview_settings_updates(
     on_y_limits_change: Callable[[], Any],
     on_visibility_change: Callable[[], Any],
     on_line_type_change: Callable[[], Any] | None = None,
+    default_aspect_ratio: float | None = None,
 ) -> None:
     """Wire the common plotting settings with identical live behavior.
 
@@ -1195,6 +1530,8 @@ def bind_preview_settings_updates(
         controls.line_width,
         controls.aspect_ratio,
         controls.histogram_touching,
+        controls.histogram_grouped,
+        controls.show_hover,
         controls.histogram_statistics_position,
         controls.legend_position,
         controls.show_grid,
@@ -1202,9 +1539,13 @@ def bind_preview_settings_updates(
         controls.invert_y,
     ):
         control.on_value_change(on_redraw)
-    controls.histogram_boundary.on_value_change(on_histogram_range_change)
+    def change_domain(callback: Callable[[], Any]) -> None:
+        _clear_preview_navigation(controls)
+        callback()
+
+    controls.histogram_boundary.on_value_change(lambda: change_domain(on_histogram_range_change))
     controls.line_type.on_value_change(on_line_type_change or on_redraw)
-    controls.reset_aspect_ratio.on_click(lambda: controls.aspect_ratio.set_value(None))
+    controls.reset_aspect_ratio.on_click(lambda: controls.aspect_ratio.set_value(default_aspect_ratio))
     def refresh_visibility_and_plot() -> None:
         # One event should produce one redraw.  This matters for a dense
         # heatmap, where duplicate browser updates are visibly expensive.
@@ -1213,14 +1554,16 @@ def bind_preview_settings_updates(
 
     controls.show_histogram_statistics.on_value_change(refresh_visibility_and_plot)
     controls.show_legend.on_value_change(refresh_visibility_and_plot)
-    controls.view.on_value_change(on_view_change)
-    controls.density.on_value_change(on_density_change)
-    controls.log_x.on_value_change(on_log_x_change)
-    controls.log_y.on_value_change(on_histogram_range_change)
+    controls.view.on_value_change(lambda: change_domain(on_view_change))
+    controls.density.on_value_change(lambda: change_domain(on_density_change))
+    controls.kde_bandwidth.on_value_change(lambda: change_domain(on_histogram_range_change))
+    controls.log_x.on_value_change(lambda: change_domain(on_log_x_change))
+    controls.log_y.on_value_change(lambda: change_domain(on_histogram_range_change))
     for axis in ("x", "z", *(("secondary_x",) if controls.secondary_x_minimum is not None else ())):
         def limits_changed(_event: Any, selected: str = axis) -> None:
             if controls._resetting_limits:
                 return
+            controls._navigation.clear(selected)
             minimum = getattr(controls, f"{selected}_minimum").value
             maximum = getattr(controls, f"{selected}_maximum").value
             if minimum is None and maximum is None:
@@ -1234,8 +1577,20 @@ def bind_preview_settings_updates(
         getattr(controls, f"reset_{axis}_limits").on_click(
             lambda _event, selected=axis: _reset_preview_axis(controls, selected, on_redraw),
         )
-    controls.y_minimum.on_value_change(lambda: None if controls._resetting_limits else on_y_limits_change())
-    controls.y_maximum.on_value_change(lambda: None if controls._resetting_limits else on_y_limits_change())
+    def y_limits_changed() -> None:
+        if not controls._resetting_limits:
+            controls._navigation.clear("y")
+            on_y_limits_change()
+
+    controls.y_minimum.on_value_change(y_limits_changed)
+    controls.y_maximum.on_value_change(y_limits_changed)
+    if controls.secondary_y_minimum is not None:
+        def secondary_y_edited() -> None:
+            if not controls._resetting_limits:
+                controls._navigation.clear("secondary_y")
+
+        controls.secondary_y_minimum.on_value_change(secondary_y_edited)
+        controls.secondary_y_maximum.on_value_change(secondary_y_edited)
 
 
 def sync_preview_settings_visibility(
@@ -1274,14 +1629,14 @@ def sync_preview_settings_visibility(
     controls.histogram_bin_size.visible = histogram and not kde
     controls.histogram_touching.visible = histogram and not kde
     controls.histogram_boundary.visible = histogram and not kde
+    controls.kde_bandwidth.visible = kde
+    controls.histogram_grouped.visible = histogram and not kde and multiple_curves
     controls.histogram_x_limit_editor.visible = histogram
     controls.x_limit_editor.visible = not histogram
     controls.z_limit_editor.visible = heatmap
     controls.density.visible = histogram
     controls.show_histogram_statistics.visible = histogram
-    controls.histogram_statistics_position.visible = histogram and bool(
-        controls.show_histogram_statistics.value
-    )
+    controls.histogram_statistics_position.visible = False
     individual_profiles = line and allow_individual_profiles
     standard_deviation = line and allow_standard_deviation
     ensemble_profiles = individual_profiles or standard_deviation
@@ -1295,9 +1650,12 @@ def sync_preview_settings_visibility(
     controls.secondary_color_surface.visible = line and multiple_curves
     controls.line_width.visible = line or kde
     controls.line_type.visible = line or kde
-    legend_available = line or ((histogram or boxplot) and multiple_curves)
+    legend_available = line or histogram or (boxplot and multiple_curves)
     controls.show_legend.visible = legend_available
-    controls.legend_position.visible = legend_available and bool(controls.show_legend.value)
+    controls.legend_position.visible = legend_available and bool(
+        controls.show_legend.value or (histogram and controls.show_histogram_statistics.value)
+    )
+    controls.legend_position.props(f'label="{"Panel position" if histogram else "Legend position"}"')
 
 
 def render_preview_chart(
@@ -1318,12 +1676,12 @@ def render_preview_chart(
             ui.button(icon="close", on_click=zoom_dialog.close).props(
                 'flat round dense aria-label="Close enlarged plot"'
             )
-        zoom_chart = ui.echart(options, renderer="canvas").classes("dn-chart-wrap-large").style(
+        zoom_chart = ui.echart(dict(options), renderer="canvas").classes("dn-chart-wrap-large dn-plot-navigation").style(
             "width: 100%; min-height: 0; height: 100%;"
         )
-    with ui.element("div").classes("dn-plot-shell"):
+    with ui.element("div").classes("dn-plot-shell") as shell:
         chart = (
-            ui.echart(options, renderer="canvas").style("width: 100%; height: 360px;").mark(marker)
+            ui.echart(options, renderer="canvas").classes("dn-plot-navigation").style("width: 100%; height: 360px;").mark(marker)
         )
         vector_chart = (
             ui.echart({"animation": False}, renderer="svg")
@@ -1334,7 +1692,13 @@ def render_preview_chart(
                 "opacity: 0; pointer-events: none;"
             )
         )
-        plot_toolbar(on_zoom=zoom_dialog.open, on_download=on_download)
-    handle = PreviewChartHandle(canvas=chart, vector=vector_chart, zoom=zoom_chart, zoom_card=zoom_card)
+        plot_toolbar(on_zoom=lambda: handle.open_zoom(), on_download=on_download)
+    handle = PreviewChartHandle(canvas=chart, vector=vector_chart, zoom=zoom_chart, zoom_card=zoom_card, zoom_dialog=zoom_dialog, shell=shell)
+    handle._apply_navigation()
+    handle._position_toolbar()
+    zoom_chart.options.update(chart.options)
+    for surface in (chart, zoom_chart):
+        surface.on("plotViewport", lambda event: handle.accept_navigation(event.args))
+        surface.on("plotDataset", lambda event: handle.select_histogram_dataset(event.args))
     chart.on("brandTheme", handle.invalidate_export)
     return handle

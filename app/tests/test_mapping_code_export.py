@@ -86,6 +86,26 @@ def test_snapshot_keeps_original_inputs_selections_and_disabled_overrides() -> N
     assert "def rmap" not in script
 
 
+def test_snapshot_keeps_automatic_advanced_fields_editable_without_enabling_them() -> None:
+    snapshot = snapshot_mapping_code(
+        method="timing_and_speed_to_firing_rate", target_shape=None,
+        settings={"maxiter": 25, "fit_step": 1.0, "error": .02},
+        setting_controls={
+            key: SimpleNamespace(
+                active=True, override=None, automatic=True, control=SimpleNamespace(value=value),
+            ) for key, value in {"space_maxiter": 25, "space_fit_step": 1.0, "error": .02}.items()
+        },
+        inputs={}, read_input=lambda _: None, region={}, combination_mode="pairwise",
+        raw_export={}, plotting={},
+    )
+    assert snapshot.recipe["settings"] == {"maxiter": 25, "fit_step": 1.0, "error": .02}
+    assert snapshot.recipe["setting_overrides"] == {
+        "space_maxiter": {"enabled": False, "value": 25},
+        "space_fit_step": {"enabled": False, "value": 1.0},
+        "error": {"enabled": True, "value": .02},
+    }
+
+
 def test_runnable_bundle_executes_its_own_package_and_inputs_without_web_imports(tmp_path: Path) -> None:
     snapshot = _snapshot()
     artifact = build_mapping_code_bundle(snapshot)
@@ -131,12 +151,13 @@ def test_raw_batch_settings_remain_independent_and_optional_plot_matches_page(tm
     source.update(mode="constants", values=[1.0, 2.0])
     results = run_mapping_recipe(snapshot.recipe, base_path=tmp_path)
     options = {"output": "primary", "per_dataset": {
-        "mapping-case-1": {"filename": "first", "file_format": "NPY", "compress": False},
+        "mapping-case-1": {"filename": "first", "file_format": "NPZ", "compress": False},
         "mapping-case-2": {"filename": "second", "file_format": "CSV", "compress": True, "compression": "xz"},
     }}
     paths = save_mapping_outputs(results, options, directory=tmp_path / "outputs")
-    assert [path.name for path in paths] == ["first.npy", "second.csv.xz"]
-    np.testing.assert_array_equal(np.load(paths[0], allow_pickle=False), results[0].result.outputs["replication_timing"])
+    assert [path.name for path in paths] == ["first.npz", "second.csv.xz"]
+    with np.load(paths[0], allow_pickle=False) as archive:
+        np.testing.assert_array_equal(archive["values"], results[0].result.outputs["replication_timing"])
     assert lzma.decompress(paths[1].read_bytes()).decode("utf-8").startswith("replication_timing\n")
 
     # Clearing a filename should use the same automatic name as the page.
@@ -145,7 +166,7 @@ def test_raw_batch_settings_remain_independent_and_optional_plot_matches_page(tm
     from dnascape.workflows.mapping import MappingComparison
 
     automatic = save_mapping_outputs(results[:1], {
-        "output": "primary", "filename": "  ", "file_format": "NPY",
+        "output": "primary", "filename": "  ", "file_format": "NPZ",
         "name_style": get_export_settings().result_name_style,
     }, directory=tmp_path / "automatic")
     assert automatic[0].stem == _mapping_raw_default_filename(results[0], results[0].result.primary_output)

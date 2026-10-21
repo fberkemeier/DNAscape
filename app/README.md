@@ -9,17 +9,38 @@ through `dnascape.rsim`. Mapping resolves the selected target, route, and input 
 automatically inspects uploaded profiles, and runs `dnascape.rmap`. Both live
 workflows use background workers, progress reporting, and result plots in
 Preview. Plot downloads support PNG, SVG, and PDF; selected raw outputs support
-text, NPY, and NPZ downloads. Histogram settings keep the bin count and any
+TSV, TXT, CSV, and NPZ downloads. Histogram settings keep the bin count and any
 positive exact bin size synchronized, can draw touching or spaced bars, and let
 the user choose whether an internal edge belongs to the left or right bin;
 incomplete numeric edits leave the last valid preview in place. Application
 Settings controls plot DPI and the compression format, with GZIP selected by default.
+In every plot preview, drag to pan within the default axis bounds. Hold left Ctrl
+and scroll to zoom both axes, or hold left Ctrl and drag across a shaded region
+to zoom only X. Axis fields and plot downloads follow the current view; the axis
+reset arrows restore the default ranges. Zooming refines curves and heatmaps
+from the underlying data, revealing more detail in the visible region.
+Legends default to the top right. The fit-to-window and download buttons appear
+at the bottom right inside the axes; axis lines stay visible when zoomed in.
+Under Guides, **Hover boxes** toggles value readouts, dashed guides, and matching
+points on hovered curves. Floating boxes show only the datasets' Y values; for
+heatmaps they show only Z, with X and Y readouts on the axes. Axis readouts use
+the DNAscape theme colour. Axis-label crosses remove the corresponding titles.
+
+Histograms combine the legend and **Statistics** in one panel, positioned at
+the top right by default. For combined datasets, use its dropdown or click a
+bin to select the dataset whose statistics are shown. **Side by side** places
+datasets within each shared bin interval, keeping bin size unchanged. Enabling
+**KDE** replaces bars with density curves; the adjacent **Smoothness** multiplies
+Scott's bandwidth (1 by default, larger values give smoother curves).
 **Conversion memory limit (MB)** sets the estimated working-memory budget for
 BigWig and bedGraph preparation, from 64 MB (default) to 4096 MB. The K562 ENCODE
 example at 1 kb bins for all chromosomes needs about 322 MB; choosing 512 MB
 allows that conversion. Related track array and download limits scale with the
 budget. This setting does not reserve RAM, cap actual RAM use, or change upload
 limits. Settings uses grouped switches and draft preferences; Apply saves changes.
+Under Interface, **DNAscape theme** offers a colour picker and hex input for
+the app accents, logo and browser-tab icon, with readable light and dark variants.
+Restore defaults brings back the original DNAscape red.
 Restore defaults fills the draft without clearing any data or results. Application restart and
 Reset everything restore the 64 MB default.
 
@@ -43,24 +64,50 @@ reset buttons; switching it off restores the shared Y scale.
 
 The Analysis page combines plotting with independent moving-average or Gaussian
 smoothing for each selected dataset. **Enable analysis** is off by default;
-switching it on changes **Plot** to **Analyse** and enables Pearson, Spearman,
-and Kendall tau correlations. The **Analysis report** below the plotting settings
-shows a full dataset-by-dataset matrix for each selected method. One download at
-the bottom includes every matrix and its paired sample counts, with CSV as the
-default and TSV available. Pairs use matching array indices over the shared span
+switching it on changes **Plot** to **Analyse** and reveals Pearson, Spearman,
+Kendall tau, and smoothing controls. **Show p-values** adds two-sided, unadjusted
+p-values beneath the coefficients; self-correlations have no p-value. The
+**Analysis report** below the plotting settings combines all selected methods
+into one table with grouped correlation headers and dataset columns. The bottom
+row has an editable report name, CSV/TSV selection, a download arrow, and a cross
+to clear the preview while retaining uploaded data. The single file contains all
+coefficients, paired sample counts, and optional p-values. CSV is the default.
+Disabling analysis hides its controls and bypasses smoothing for plain plots.
+Pairs use matching array indices over the shared span
 and exclude nonfinite values; inputs should have matching regions and resolutions.
 
 Data Manager offers the same missing-value options for every input type:
 Keep empty values, Fill with zero (default), Fill with a value, Fill with minimum,
-Fill with maximum, and Stop if detected. Full tables apply the policy to numeric
+Fill with maximum, and Report error. Full tables apply the policy to numeric
 signal columns while preserving labels and coordinates. Zero and custom-value
 fills are applied after thresholding, smoothing, and value scaling, so the
 requested fill is unchanged in the output.
+Below Configure, **Filter** is collapsed and off by default. Enable **Apply
+filter** to edit selected regions of the converted data, after binning, missing
+value handling, smoothing and scaling. The default replaces values below zero
+with zero. Select values above/below a threshold, between inclusive thresholds,
+at a distance above the converted minimum or below its maximum, missing values,
+an uploaded mask/position list/interval table, or the whole region. With no
+uploaded filter profile, that selection leaves the data unchanged.
+
+Filter operations replace with a value or NaN, average each contiguous region,
+interpolate from surrounding values, add zero-mean Gaussian noise, match a
+minimum/maximum, multiply, or add. Reference extrema use the converted values
+before filtering, either outside the selected regions or across the whole
+profile. Edge interpolation uses the nearest available endpoint; selecting the
+whole profile requires a non-interpolating operation. Noise accepts a standard
+deviation and optional reproducible seed. Each chromosome and time slice is
+handled independently; coordinates and bin counts are preserved. Filter-created
+NaNs are retained in previews and downloads. A mask must contain one value per
+converted bin (non-zero finite values select bins); position lists and half-open
+intervals can use bp, kb, or zero-based bin indices. Genomic intervals select
+overlapping bins. Chromosome-labelled BED filters stay within their chromosomes.
+
 Fill with minimum and Fill with maximum use each profile or chromosome's finite values
 after thresholding and smoothing and fill empty bins before value scaling.
 These fills participate in the scaling calculation. If no finite values remain,
 the conversion reports an error because the requested minimum/maximum is undefined.
-Stop if detected rejects missing samples, including empty bins before interpolation
+Report error rejects missing samples, including empty bins before interpolation
 and thresholded samples. GEO 16-fraction Repli-seq text matrices (`.mat`/`.mat.gz`)
 can be exported as tables or converted into chromosome-specific timing profiles
 using a cumulative sigmoid T50 fit or signal-weighted mean. Missing-value handling
@@ -88,13 +135,34 @@ Keep empty values to retain uncovered bins as missing. The
 source is available in the [OKseqHMM published K562 results](https://github.com/CL-CHEN-Lab/OK-Seq/tree/master/published_results/K562).
 Mapping raw downloads start with TSV (the first format option) and compression
 disabled, for both individual and batch outputs.
+
+Raw-file rows include an **Open in…** action between Download and Remove.
+Choose Data Manager, Mapping, Simulation, or Analysis to add the file to that
+page's uploads, including the current page. The selected name, file type, and
+compression are retained. A matching scientific input is selected when known;
+otherwise Mapping and Simulation let you choose the input. Existing uploads
+remain, and repeated names receive a numbered suffix. Individual-profile ZIPs
+open as separate files and remain excluded from Cached Files.
+In Data Manager, the selector beside each generated file chooses its plot;
+the latest file is selected after conversion, and plot exports use that selection.
+Expand Plot settings below the preview to adjust its appearance and axes or
+switch to a histogram or KDE curve. These settings also apply to plot downloads.
+
 Simulation accepts up to 50,000 replicates. One-dimensional time courses and
 memory-intensive position-by-time matrices have separate off-by-default
 switches; S-phase duration, absolute completion time, origins per replicate,
 inter-origin distances, and replication-timing standard deviation are standard
 outputs. A memory-bounded
-subset of at most 50 individual timing profiles is retained for optional
-overlays.
+subset of individual timing profiles is retained up to **Profiles shown**
+(10 by default, at most 50, subject to the memory limit). Reducing this count
+releases the omitted profiles; run again after increasing it to retain more.
+Enabling **Individual profiles** or **Mean ± standard deviation** adds the
+corresponding downloads below the main raw data. Individual profiles download
+as a ZIP containing one file per displayed replicate (TSV by default, with
+TXT, CSV and NPZ also available). Compression stays on for this archive, whose
+name includes the actual replicate count. Individual profiles and their ZIPs
+are excluded from Cached Files; cached simulation results keep aggregate
+statistics only.
 
 Mapping aligns spatial inputs of different lengths automatically. Start and End
 refer to the longest profile's chromosome coordinates; shorter profiles begin

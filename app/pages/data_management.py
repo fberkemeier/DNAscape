@@ -3,6 +3,9 @@
 from __future__ import annotations
 
 import asyncio
+import csv
+import gzip
+import io
 import math
 import time
 import zipfile
@@ -25,6 +28,7 @@ from app.data_conversion_service import (
     DATA_EXPORT_FORMATS,
     DataConversionRequest,
     DataConversionResult,
+    DataFilterSettings,
     TrackInspection,
     convert_data,
     inspect_track,
@@ -32,8 +36,11 @@ from app.data_conversion_service import (
     transcode_conversion_artifact,
 )
 from app.export_settings import get_export_settings
+from app.data_filter_controls import DataFilterControls
+from app.icons import RESET_ICON
 from app.mapping_catalog import RDATA_UPLOAD_ACCEPT
-from app.notifications import notify
+from app.notifications import notification_message, notify
+from app.raw_data_transfer import RawInputTarget, open_raw_artifact
 from app.mapping_uploads import (
     UploadInspection,
     inspect_upload,
@@ -51,9 +58,25 @@ from app.pages.common import (
     panel,
     panel_title,
     raw_output_file_row,
+    append_raw_uploads,
     set_data_upload_locked,
 )
-from app.preview_plotting import build_preview_plot_options, render_preview_chart
+from app.preview_plotting import (
+    HistogramBinSynchronizer,
+    PreviewSettingsControls,
+    axis_limits_from_controls,
+    bind_preview_settings_updates,
+    build_preview_plot_options,
+    histogram_x_limits_from_controls,
+    nice_linear_limits,
+    _logarithmic_data_limits,
+    plotting_settings_ready,
+    preview_settings_controls,
+    preview_settings_markers,
+    render_preview_chart,
+    sync_preview_settings_visibility,
+)
+from dnascape.workflows.preview import DetailedPreviewData
 from app.remote_sources import RemoteSourceError, fetch_remote_source
 from app.result_naming import (
     RDATA_FILE_PREFIX,
@@ -109,7 +132,7 @@ _PROFILE_MISSING = {
     "fill": "Fill with a value",
     "min": "Fill with minimum",
     "max": "Fill with maximum",
-    "error": "Stop if detected",
+    "error": "Report error",
 }
 _TRACK_MISSING = {"nan" if key == "ignore" else key: label for key, label in _PROFILE_MISSING.items()}
 _TRACK_INTERPOLATION = {
@@ -590,6 +613,54 @@ def _resolved_feature_bounds(
     )
 
 
+def _feature_settings_compatible(
+    feature: str, settings: Mapping[str, Any], *, missing_key: str = "missing_policy",
+) -> bool:
+    """Keep biological names only while the configured value domain fits them."""
+
+    if feature not in _FEATURE_THRESHOLD_DEFAULTS or feature == "generic":
+        return True
+    _enabled, domain_min, domain_max = _FEATURE_THRESHOLD_DEFAULTS[feature]
+    minimum = -math.inf if domain_min is None else domain_min
+    maximum = math.inf if domain_max is None else domain_max
+    try:
+        _enabled, lower, upper = _resolved_feature_bounds(
+            feature, settings.get("threshold_min"), settings.get("threshold_max"),
+        )
+        lower = -math.inf if lower is None else float(lower)
+        upper = math.inf if upper is None else float(upper)
+        if math.isnan(lower) or math.isnan(upper) or lower > upper:
+            return True  # Incomplete edits are validated when Convert is clicked.
+        if lower < minimum or upper > maximum:
+            return False
+        scaling = settings.get("value_scaling", "none")
+        if scaling in {"center", "zscore"}:
+            return False  # Centred scores no longer retain the physical zero.
+        if scaling == "interval":
+            lower = float(settings["rescale_min"])
+            upper = float(settings["rescale_max"])
+            if not math.isfinite(lower) or not math.isfinite(upper) or lower > upper:
+                return True
+        elif scaling == "multiplier":
+            multiplier = float(settings.get("scale", 1.0))
+            if not math.isfinite(multiplier):
+                return True
+            lower, upper = (
+                sorted((lower * multiplier, upper * multiplier)) if multiplier else (0.0, 0.0)
+            )
+        elif scaling == "maxabs":
+            lower, upper = (-1.0 if lower < 0 else 0.0), (1.0 if upper > 0 else 0.0)
+        if lower < minimum or upper > maximum:
+            return False
+        if settings.get(missing_key) == "fill":
+            fill_value = float(settings.get("fill_value", 0.0))
+            if math.isfinite(fill_value) and not minimum <= fill_value <= maximum:
+                return False
+    except (KeyError, TypeError, ValueError):
+        return True
+    return True
+
+
 def _selected_value_name(
     source: _DataManagerSource,
     details: _SelectedData,
@@ -669,7 +740,12 @@ def _value_scaling_options(feature: str) -> dict[str, str]:
     return options
 
 
-def _preview_options(preview: Any) -> dict[str, Any]:
+def _preview_options(
+    preview: Any,
+    controls: PreviewSettingsControls | None = None,
+    *,
+    automatic_y_limits: bool = True,
+) -> dict[str, Any]:
     """Build the small, bounded visual check shown after conversion."""
 
     values = np.asarray(preview.values).reshape(-1)
@@ -677,33 +753,185 @@ def _preview_options(preview: Any) -> dict[str, Any]:
     point_count = min(values.size, x_axis.size)
     values = values[:point_count]
     x_axis = x_axis[:point_count]
-    if point_count > 500:
+    plot_type = "Histogram" if controls is not None and controls.view.value == "Histogram" else "Line"
+    if plot_type == "Line" and point_count > 500:
         sample = np.linspace(0, point_count - 1, 500, dtype=int)
         values = values[sample]
         x_axis = x_axis[sample]
     value_label = str(preview.value_label).replace("_", " ").strip().capitalize()
 
-    return build_preview_plot_options(
-        plot_type="Line",
+    options: dict[str, Any] = {}
+    if controls is not None:
+        options = dict(
+            log_x=bool(controls.log_x.value),
+            invert_x=bool(controls.invert_x.value),
+            x_limits=axis_limits_from_controls(controls, "x"),
+            histogram_bin_size=controls.histogram_bin_size.value,
+            histogram_x_limits=histogram_x_limits_from_controls(
+                controls, log_x=bool(controls.log_x.value),
+            ),
+            histogram_touching=bool(controls.histogram_touching.value),
+            kde_bandwidth=float(controls.kde_bandwidth.value or 1.0),
+            histogram_grouped=bool(controls.histogram_grouped.value),
+            histogram_boundary=str(controls.histogram_boundary.value),
+            show_histogram_statistics=bool(controls.show_histogram_statistics.value),
+            histogram_statistics_position=str(controls.histogram_statistics_position.value),
+            legend_position=str(controls.legend_position.value),
+            line_type=str(controls.line_type.value),
+            aspect_ratio=controls.aspect_ratio.value,
+        )
+    result = build_preview_plot_options(
+        plot_type=plot_type,
         title="Prepared profile",
-        x_label="Position (kb)",
-        y_label=value_label,
-        color="#b03412",
+        x_label=str(controls.x_axis_label.value or "") if controls is not None else "Position (kb)",
+        y_label=str(controls.y_axis_label.value or "") if controls is not None else value_label,
+        color=str(controls.primary_color.value) if controls is not None else "#b03412",
         palette="viridis",
-        histogram_bins=40,
-        density=False,
-        show_legend=False,
+        histogram_bins=int(controls.histogram_bins.value) if controls is not None else 40,
+        density=bool(controls.density.value) if controls is not None else False,
+        show_legend=bool(controls.show_legend.value) if controls is not None else False,
         show_colorbar=False,
-        log_y=False,
-        invert_y=False,
-        y_limits=None,
+        log_y=bool(controls.log_y.value) if controls is not None else False,
+        invert_y=bool(controls.invert_y.value) if controls is not None else False,
+        y_limits=(
+            (float(controls.y_minimum.value), float(controls.y_maximum.value))
+            if controls is not None and not automatic_y_limits
+            and controls.y_minimum.value is not None and controls.y_maximum.value is not None
+            else None
+        ),
         series_label=value_label,
         values=values,
         x_axis=x_axis,
-        show_grid=False,
+        show_grid=bool(controls.show_grid.value) if controls is not None else False,
         interactive=True,
-        line_width=1.8,
+        line_width=float(controls.line_width.value) if controls is not None else 1.8,
+        **options,
     )
+    if plot_type == "Line" and preview.minimum is not None and preview.maximum is not None:
+        global_y = (
+            _logarithmic_data_limits(preview.minimum, preview.maximum)
+            if controls is not None and controls.log_y.value else nice_linear_limits(preview.minimum, preview.maximum)
+        )
+        result["dnascapeDefaultAxes"]["y"] = list(global_y)
+        if automatic_y_limits:
+            result["yAxis"].update(min=global_y[0], max=global_y[1])
+    return result
+
+
+def _converted_preview_data(result: DataConversionResult) -> DetailedPreviewData:
+    """Refine converted profiles by streaming retained bytes, without another full array."""
+    preview = result.preview
+    initial = [[float(x), float(y) if np.isfinite(y) else None] for x, y in zip(preview.x, preview.values, strict=True)]
+    coordinate_names = ("position_kb", "position_bp", "position", "time_min", "time")
+
+    def columns(header: Sequence[str]) -> tuple[int, int | None]:
+        labels = [str(label).strip().casefold() for label in header]
+        excluded = {*coordinate_names, "bin", "end", "end_bp", "start", "start_bp", "x", "index", "chromosome", "chrom", "chr"}
+        value = labels.index(str(preview.value_label).casefold()) if str(preview.value_label).casefold() in labels else next((i for i, name in enumerate(labels) if name not in excluded), 0)
+        coordinate = next((labels.index(name) for name in coordinate_names if name in labels), None)
+        return value, coordinate
+
+    def numeric_rows(stream: Any):
+        """Read small blocks of the first displayed NPZ series, including Fortran arrays."""
+        with zipfile.ZipFile(stream) as archive:
+            names = archive.namelist()
+            name = "values.npy" if "values.npy" in names else next((f"{label}.npy" for label in result.labels if f"{label}.npy" in names), None)
+            if name is None:
+                return
+            header = list(result.labels)
+            if "columns.npy" in names:
+                with archive.open("columns.npy") as metadata:
+                    header = np.lib.format.read_array(metadata, allow_pickle=False).tolist()
+            with archive.open(name) as data:
+                version = np.lib.format.read_magic(data)
+                shape, fortran, dtype = (np.lib.format.read_array_header_1_0(data) if version == (1, 0)
+                                         else np.lib.format.read_array_header_2_0(data))
+                if dtype.hasobject or len(shape) > 2:
+                    return
+                offset = data.tell()
+                row_count = shape[0] if shape else 1
+                column_count = shape[1] if len(shape) == 2 else 1
+                if row_count == 1:
+                    row_count, column_count = column_count, 1
+                value, coordinate = columns(header) if len(header) == column_count else (0, None)
+                if fortran and column_count > 1:
+                    with archive.open(name) as coords:
+                        data.seek(offset + value * row_count * dtype.itemsize)
+                        if coordinate is not None:
+                            coords.seek(offset + coordinate * row_count * dtype.itemsize)
+                        for start in range(0, row_count, 8192):
+                            size = min(8192, row_count - start)
+                            values = np.frombuffer(data.read(size * dtype.itemsize), dtype=dtype)
+                            axis = np.frombuffer(coords.read(size * dtype.itemsize), dtype=dtype) if coordinate is not None else None
+                            for i, y in enumerate(values):
+                                yield start + i, float(axis[i]) if axis is not None else None, float(y)
+                else:
+                    block_size = max(1, 65536 // column_count)
+                    for start in range(0, row_count, block_size):
+                        size = min(block_size, row_count - start)
+                        block = np.frombuffer(data.read(size * column_count * dtype.itemsize), dtype=dtype).reshape(-1, column_count)
+                        for i, row in enumerate(block):
+                            yield start + i, float(row[coordinate]) if coordinate is not None else None, float(row[value])
+
+    def source_rows():
+        raw = io.BytesIO(result.artifact.data)
+        stream = gzip.GzipFile(fileobj=raw) if result.artifact.data.startswith(b"\x1f\x8b") else raw
+        if result.target_format == "npz":
+            yield from numeric_rows(stream)
+            return
+        with io.TextIOWrapper(stream, encoding="utf-8-sig") as text:
+            if result.target_format == "txt":
+                value, coordinate = columns(result.labels)
+                rows = (line.split() for line in text)
+            else:
+                rows = csv.reader(text, delimiter="," if result.target_format == "csv" else "\t")
+                value, coordinate = columns(next(rows, []))
+            if len(preview.source_shape) == 2 and preview.source_shape[0] == 1 and preview.total_count > 1:
+                for index, value_text in enumerate(cell for row in rows for cell in row):
+                    yield index, None, float(value_text) if value_text.strip() else float("nan")
+                return
+            for index, row in enumerate(rows):
+                try:
+                    yield index, float(row[coordinate]) if coordinate is not None else None, float(row[value]) if row[value].strip() else float("nan")
+                except (ValueError, IndexError):
+                    continue
+
+    def refine(x_view: Any, _y_view: Any) -> dict[str, Any]:
+        if x_view is None or preview.total_count <= len(initial):
+            return {"data": DetailedPreviewData(initial, refine)}
+        points: list[list[Any]] = []
+        first_coordinate = None
+        previous = None
+        stride = 1
+        step = (preview.x[-1] - preview.x[0]) / max(1, preview.total_count - 1)
+        ascending = step >= 0
+        for row_index, coordinate, y in source_rows():
+            if coordinate is None:
+                x = float(preview.x[0] + row_index * step)
+            else:
+                if first_coordinate is None:
+                    first_coordinate = coordinate
+                x = coordinate - first_coordinate + float(preview.x[0])
+            point = [x, y if np.isfinite(y) else None]
+            before = x < x_view[0] if ascending else x > x_view[1]
+            after = x > x_view[1] if ascending else x < x_view[0]
+            if before:
+                previous = point
+                continue
+            if not points and previous is not None:
+                points.append(previous)
+            if row_index % stride == 0 or after:
+                points.append(point)
+            if len(points) > 5000:
+                points = points[::2]
+                stride *= 2
+            if after:
+                break
+        if len(points) > 2500:
+            points = [points[index] for index in np.linspace(0, len(points) - 1, 2500, dtype=int)]
+        return {"data": DetailedPreviewData(points or initial, refine)}
+
+    return DetailedPreviewData(initial, refine)
 
 
 def _number(control: Any, label: str) -> float:
@@ -742,6 +970,7 @@ def render(_navigate: Callable[[str], None]) -> None:
     remote_inspections: set[int] = set()
     next_remote_link_id = 1
     converted_results: list[tuple[int, DataConversionResult]] = []
+    selected_result_id: int | None = None
     generated_file_preferences: dict[int, _GeneratedFilePreference] = {}
     next_result_id = 0
     conversion_running = False
@@ -750,6 +979,7 @@ def render(_navigate: Callable[[str], None]) -> None:
     upload_inspection_running = False
     result_chart: Any | None = None
     controls: dict[str, Any] = {}
+    filter_controls: DataFilterControls | None = None
     source_controls: dict[str, Any] = {}
     source_control_states: dict[str, bool] = {}
     request_control_states: dict[tuple[str, str], bool] = {}
@@ -765,7 +995,7 @@ def render(_navigate: Callable[[str], None]) -> None:
         "chromosome": None,
         "start": 0,
         "end": 1,
-        "bin_size": 10_000,
+        "bin_size": 1_000,
         "aggregation": "mean",
         "track_missing": "zero",
         "fill_value": 0.0,
@@ -780,10 +1010,21 @@ def render(_navigate: Callable[[str], None]) -> None:
         "threshold_min": None,
         "threshold_max": None,
         "scale": 1.0,
-        "show_preview": False,
+        "show_preview": True,
         "repliseq_timing_method": "sigmoid",
         "s_phase_duration_min": 600.0,
     }
+
+    def selected_generated_result() -> DataConversionResult | None:
+        nonlocal selected_result_id
+        if not converted_results:
+            selected_result_id = None
+            return None
+        for result_id, result in converted_results:
+            if result_id == selected_result_id:
+                return result
+        selected_result_id, result = converted_results[-1]
+        return result
 
     def source_mode() -> str:
         return str(settings.get("source_mode") or "upload")
@@ -845,6 +1086,7 @@ def render(_navigate: Callable[[str], None]) -> None:
             return
         if (
             upload_inspection_running
+            or (filter_controls is not None and filter_controls.loading)
             or remote_inspections
             or unresolved_link_rows()
             or not sources_for_mode()
@@ -872,6 +1114,8 @@ def render(_navigate: Callable[[str], None]) -> None:
 
     def lock_request_controls(locked: bool) -> None:
         lock_source_controls(locked)
+        if filter_controls is not None:
+            filter_controls.set_locked(locked)
         for name, control in tuple(controls.items()):
             if getattr(control, "is_deleted", False):
                 continue
@@ -887,7 +1131,7 @@ def render(_navigate: Callable[[str], None]) -> None:
     page_intro(
         "Data Manager",
         "Convert genomic data files",
-        "Detect, clean, bin, and export profiles from local files or public genomic tracks.",
+        "Import, prepare, and export genomic profiles from local files or public data sources.",
     )
     with (
         ui.element("div")
@@ -1288,7 +1532,7 @@ def render(_navigate: Callable[[str], None]) -> None:
                                             if adopted:
                                                 row.source_id = source_id
                                                 notify(
-                                                    f"{candidate.name} is ready.",
+                                                    "The source is ready.",
                                                     type="positive",
                                                 )
                                         except (
@@ -1425,7 +1669,7 @@ def render(_navigate: Callable[[str], None]) -> None:
 
                             render_remote_links()
                             ui.label(
-                                "Paste public HTTPS links to profile tables, GEO Repli-seq matrices, or genomic tracks. "
+                                "Paste public HTTPS links to genomic tracks. "
                                 "Private-network and sign-in links are not supported."
                             ).classes("dn-data-manager-url-help")
 
@@ -1734,9 +1978,52 @@ def render(_navigate: Callable[[str], None]) -> None:
 
                         def store_control(name: str) -> None:
                             settings[name] = controls[name].value
+                            if name in {
+                                "threshold_min", "threshold_max", "value_scaling", "scale",
+                                "rescale_min", "rescale_max", "fill_value", "track_missing", "missing_policy",
+                            }:
+                                sync_prepared_feature()
+
+                        def update_source_names() -> None:
+                            for source in retained_sources:
+                                if not source.output_name_customized:
+                                    source.output_name = _automatic_output_name(
+                                        source.inspection.name, str(settings["feature"]),
+                                    )
+                            current = active_source()
+                            if current is not None:
+                                settings["output_name"] = current.output_name
+
+                        def sync_prepared_feature() -> None:
+                            feature = str(settings["feature"])
+                            if _feature_settings_compatible(
+                                feature, settings,
+                                missing_key="track_missing" if "track_missing" in controls else "missing_policy",
+                            ):
+                                return
+                            # Preserve implicit preset bounds and every edited
+                            # setting; changing the label must not reapply defaults.
+                            enabled, lower, upper = _resolved_feature_bounds(
+                                feature, settings["threshold_min"], settings["threshold_max"],
+                            )
+                            settings.update(
+                                feature="generic", threshold_enabled=enabled,
+                                threshold_min=lower, threshold_max=upper,
+                            )
+                            controls["feature"].set_value("generic")
+                            for key in ("threshold_min", "threshold_max"):
+                                if key in controls:
+                                    controls[key].set_value(settings[key])
+                            if "value_scaling" in controls:
+                                controls["value_scaling"].set_options(
+                                    _value_scaling_options("generic"), value=settings["value_scaling"],
+                                )
+                            update_source_names()
 
                         def feature_changed() -> None:
                             feature = str(controls["feature"].value or "generic")
+                            if feature == settings["feature"]:
+                                return
                             current = active_source()
                             _apply_feature_defaults(
                                 settings, feature,
@@ -1744,15 +2031,7 @@ def render(_navigate: Callable[[str], None]) -> None:
                                 current.track_inspection.backend
                                 if current and current.track_inspection else None,
                             )
-                            for source in retained_sources:
-                                if not source.output_name_customized:
-                                    source.output_name = _automatic_output_name(
-                                        source.inspection.name,
-                                        feature,
-                                    )
-                            current = active_source()
-                            if current is not None:
-                                settings["output_name"] = current.output_name
+                            update_source_names()
                             render_conversion_settings.refresh()
 
                         with (
@@ -1770,7 +2049,18 @@ def render(_navigate: Callable[[str], None]) -> None:
                                 .classes("dn-field dn-data-manager-feature-select")
                                 .mark("data-manager-feature")
                             )
+                            controls["show_preview"] = (
+                                ui.checkbox("Show plot", value=bool(settings["show_preview"]))
+                                .classes("dn-data-manager-preview-toggle")
+                                .mark("data-manager-preview-toggle")
+                            )
                         controls["feature"].on_value_change(feature_changed)
+
+                        def preview_changed() -> None:
+                            store_control("show_preview")
+                            render_result.refresh()
+
+                        controls["show_preview"].on_value_change(preview_changed)
 
                         current_source = active_source()
                         if current_source is None:
@@ -1780,42 +2070,45 @@ def render(_navigate: Callable[[str], None]) -> None:
                             return
                         details = selected_data(current_source)
 
-                        def render_output_controls() -> None:
-                            ui.label("Output").classes(
-                                "dn-setting-group-title dn-data-manager-setting-heading"
+                        def render_decimal_places() -> None:
+                            controls["decimal_places"] = (
+                                ui.number(
+                                    label="Decimal places",
+                                    value=settings["decimal_places"],
+                                    min=0,
+                                    max=15,
+                                    step=1,
+                                )
+                                .props("dense")
+                                .classes("dn-field")
+                                .mark("data-manager-decimal-places")
                             )
-                            with ui.element("div").classes(
-                                "dn-data-manager-destination-grid"
-                            ):
-                                controls["decimal_places"] = (
-                                    ui.number(
-                                        label="Decimal places",
-                                        value=settings["decimal_places"],
-                                        min=0,
-                                        max=15,
-                                        step=1,
-                                    )
-                                    .props("dense")
-                                    .classes("dn-field")
-                                    .mark("data-manager-decimal-places")
-                                )
-                                controls["show_preview"] = (
-                                    ui.checkbox(
-                                        "Show plot preview after conversion",
-                                        value=bool(settings["show_preview"]),
-                                    )
-                                    .classes("dn-data-manager-preview-toggle")
-                                    .mark("data-manager-preview-toggle")
-                                )
-
-                            def preview_changed() -> None:
-                                store_control("show_preview")
-                                render_result.refresh()
-
                             controls["decimal_places"].on_value_change(
                                 lambda: store_control("decimal_places")
                             )
-                            controls["show_preview"].on_value_change(preview_changed)
+
+                        def render_bound_controls() -> None:
+                            with (
+                                ui.element("div")
+                                .classes("dn-data-manager-threshold-grid")
+                                .mark("data-manager-threshold-fields")
+                            ):
+                                for key, label, marker in (
+                                    ("threshold_min", "Minimum bound (optional)", "data-manager-threshold-min"),
+                                    ("threshold_max", "Maximum bound (optional)", "data-manager-threshold-max"),
+                                ):
+                                    controls[key] = (
+                                        ui.number(label=label, value=settings[key])
+                                        .props("dense clearable").classes("dn-field").mark(marker)
+                                    )
+                            controls["threshold_min"].tooltip(
+                                "Values below this bound become missing. Leave blank "
+                                "to use the Prepare as default or the data minimum."
+                            )
+                            controls["threshold_max"].tooltip(
+                                "Values above this bound become missing. Leave blank "
+                                "to use the Prepare as default or the data maximum."
+                            )
 
                         def render_value_controls(
                             *,
@@ -1835,6 +2128,7 @@ def render(_navigate: Callable[[str], None]) -> None:
                                     .classes("dn-data-manager-polishing-column")
                                     .mark("data-manager-missing-column")
                                 ):
+                                    render_decimal_places()
                                     missing_key = "track_missing" if missing_kind == "track" else "missing_policy"
                                     controls[missing_key] = (
                                         ui.select(
@@ -1849,7 +2143,7 @@ def render(_navigate: Callable[[str], None]) -> None:
                                         "Minimum and maximum use each profile's finite values "
                                         "after thresholding and smoothing, before scaling. "
                                         "Zero and custom values fill after scaling. "
-                                        "Stop if detected rejects missing values."
+                                        "Report error stops conversion if missing values are detected."
                                     )
                                     controls["fill_value"] = (
                                         ui.number(label="Fill value", value=settings["fill_value"])
@@ -1863,6 +2157,8 @@ def render(_navigate: Callable[[str], None]) -> None:
 
                                     controls[missing_key].on_value_change(missing_changed)
                                     controls["fill_value"].on_value_change(lambda: store_control("fill_value"))
+                                    if polishable:
+                                        render_bound_controls()
 
                                 if not polishable:
                                     return
@@ -1960,7 +2256,7 @@ def render(_navigate: Callable[[str], None]) -> None:
                                     ) as interval_fields:
                                         controls["rescale_min"] = (
                                             ui.number(
-                                                label="Target minimum",
+                                                label="Minimum",
                                                 value=settings["rescale_min"],
                                             )
                                             .props("dense")
@@ -1969,7 +2265,7 @@ def render(_navigate: Callable[[str], None]) -> None:
                                         )
                                         controls["rescale_max"] = (
                                             ui.number(
-                                                label="Target maximum",
+                                                label="Maximum",
                                                 value=settings["rescale_max"],
                                             )
                                             .props("dense")
@@ -1988,37 +2284,6 @@ def render(_navigate: Callable[[str], None]) -> None:
                                             "Map the lowest input value to the target maximum and "
                                             "the highest to the target minimum."
                                         )
-                                    with (
-                                        ui.element("div")
-                                        .classes("dn-data-manager-threshold-grid")
-                                        .mark("data-manager-threshold-fields")
-                                    ):
-                                        controls["threshold_min"] = (
-                                            ui.number(
-                                                label="Minimum bound (optional)",
-                                                value=settings["threshold_min"],
-                                            )
-                                            .props("dense clearable")
-                                            .classes("dn-field")
-                                            .mark("data-manager-threshold-min")
-                                        )
-                                        controls["threshold_max"] = (
-                                            ui.number(
-                                                label="Maximum bound (optional)",
-                                                value=settings["threshold_max"],
-                                            )
-                                            .props("dense clearable")
-                                            .classes("dn-field")
-                                            .mark("data-manager-threshold-max")
-                                        )
-                                    controls["threshold_min"].tooltip(
-                                        "Values below this bound become missing. Leave blank "
-                                        "to use the Prepare as default or the data minimum."
-                                    )
-                                    controls["threshold_max"].tooltip(
-                                        "Values above this bound become missing. Leave blank "
-                                        "to use the Prepare as default or the data maximum."
-                                    )
 
                             smoothing_enabled = settings["smoothing_mode"] == "moving_average"
                             if smoothing_enabled and int(settings["smooth_window"] or 1) < 2:
@@ -2122,7 +2387,6 @@ def render(_navigate: Callable[[str], None]) -> None:
                                 ui.label("Table columns and labels will be preserved.").classes(
                                     "dn-data-manager-section-guidance"
                                 )
-                            render_output_controls()
                             return
 
                         if current_source.inspection.source_format == "bedgraph":
@@ -2159,23 +2423,19 @@ def render(_navigate: Callable[[str], None]) -> None:
                             controls["bedgraph_value_column"].on_value_change(
                                 bedgraph_column_changed
                             )
-                            ui.label(
-                                "BED3 calls have unit signal. Presence marks bins containing "
-                                "origins; coverage measures the fraction overlapped. "
-                                "Smaller bins separate nearby origins."
-                                if current_source.inspection.track_kind == "intervals" else
-                                "Use enrichment to retain peak heights. Maximum keeps the "
-                                "strongest peak in each bin; coverage measures peak width. "
-                                "Smaller bins separate nearby origins. SNS-seq enrichment "
-                                "is relative activity; calibrate its scale for firing-rate units."
-                                if is_peak_track else
-                                "Intervals use standard 0-based, half-open bedGraph "
-                                "coordinates. Bin aggregation below controls how interval "
-                                "coverage is combined."
-                            ).classes(
-                                "dn-data-manager-section-guidance "
-                                "dn-data-manager-bedgraph-guidance"
-                            )
+                            if current_source.inspection.track_kind != "peaks":
+                                ui.label(
+                                    "BED3 calls have unit signal. Presence marks bins containing "
+                                    "origins; coverage measures the fraction overlapped. "
+                                    "Smaller bins separate nearby origins."
+                                    if current_source.inspection.track_kind == "intervals" else
+                                    "Intervals use standard 0-based, half-open bedGraph "
+                                    "coordinates. Bin aggregation below controls how interval "
+                                    "coverage is combined."
+                                ).classes(
+                                    "dn-data-manager-section-guidance "
+                                    "dn-data-manager-bedgraph-guidance"
+                                )
 
                         ui.label("Region & binning").classes("dn-setting-group-title")
                         regions = {
@@ -2257,18 +2517,22 @@ def render(_navigate: Callable[[str], None]) -> None:
                                 .classes("dn-field")
                                 .mark("data-manager-start")
                             )
-                            controls["end"] = (
-                                ui.number(
-                                    label="End (bp)",
-                                    value=settings["end"],
-                                    min=region.start + 1,
-                                    max=region.end,
-                                    step=1_000,
+                            with ui.element("div").classes("dn-data-manager-end-field"):
+                                controls["end"] = (
+                                    ui.number(
+                                        label="End (bp)", value=settings["end"],
+                                        min=region.start + 1, max=region.end, step=1_000,
+                                    )
+                                    .props("dense").classes("dn-field").mark("data-manager-end")
                                 )
-                                .props("dense")
-                                .classes("dn-field")
-                                .mark("data-manager-end")
-                            )
+                                with controls["end"].add_slot("append"):
+                                    controls["reset_region"] = (
+                                        ui.button(icon=RESET_ICON, color=None, on_click=lambda: reset_region())
+                                        .props('flat round dense aria-label="Reset to whole chromosome"')
+                                        .classes("dn-reset-button dn-data-manager-region-reset")
+                                        .mark("data-manager-reset-region")
+                                        .tooltip("Reset Start and End to the whole chromosome")
+                                    )
 
                         single_region_fields.set_visibility(
                             settings["chromosome_scope"] == "single"
@@ -2286,7 +2550,7 @@ def render(_navigate: Callable[[str], None]) -> None:
                             single_region_fields.set_visibility(scope == "single")
                             all_scope_note.set_visibility(scope == "all")
 
-                        def chromosome_changed() -> None:
+                        def reset_region() -> None:
                             selected = str(controls["chromosome"].value)
                             selected_region = regions[selected]
                             settings.update(
@@ -2294,13 +2558,17 @@ def render(_navigate: Callable[[str], None]) -> None:
                                 start=selected_region.start,
                                 end=selected_region.end,
                             )
-                            controls["start"].value = selected_region.start
-                            controls["end"].value = selected_region.end
-                            controls["start"].update()
-                            controls["end"].update()
+                            controls["start"].props(
+                                f"min={selected_region.start} max={selected_region.end - 1}"
+                            )
+                            controls["end"].props(
+                                f"min={selected_region.start + 1} max={selected_region.end}"
+                            )
+                            controls["start"].set_value(selected_region.start)
+                            controls["end"].set_value(selected_region.end)
 
                         controls["chromosome_scope"].on_value_change(scope_changed)
-                        controls["chromosome"].on_value_change(chromosome_changed)
+                        controls["chromosome"].on_value_change(reset_region)
                         for name in (
                             "start",
                             "end",
@@ -2312,9 +2580,10 @@ def render(_navigate: Callable[[str], None]) -> None:
                             "dn-setting-group-title dn-data-manager-setting-heading"
                         )
                         render_value_controls(missing_kind="track")
-                        render_output_controls()
 
                     render_conversion_settings()
+
+                filter_controls = DataFilterControls(set_convert_enabled)
 
                 with action_dock():
                     convert_button = (
@@ -2327,7 +2596,9 @@ def render(_navigate: Callable[[str], None]) -> None:
                         convert_button.disable()
 
         async def download_preview_plot(file_format: str) -> None:
-            if not converted_results or result_chart is None:
+            selected = selected_generated_result()
+            chart = result_chart
+            if selected is None or chart is None:
                 notify("Convert data before downloading a plot.", type="warning")
                 return
             try:
@@ -2339,17 +2610,16 @@ def render(_navigate: Callable[[str], None]) -> None:
                 }
                 if capture_format == "png":
                     capture_options["pixelRatio"] = max(1.0, min(4.0, dpi / 96.0))
-                data_uri = await result_chart.run_chart_method(
+                data_uri = await chart.run_chart_method(
                     "getDataURL",
                     capture_options,
                     timeout=10,
                 )
-                latest = converted_results[-1][1]
                 artifact = await run.io_bound(
                     build_chart_capture_export,
                     data_uri,
                     file_format,
-                    filename=f"{PurePath(latest.artifact.filename).stem}_preview",
+                    filename=f"{PurePath(selected.artifact.filename).stem}_preview",
                     dpi=dpi,
                 )
                 if artifact is None or not artifact.data:
@@ -2382,12 +2652,191 @@ def render(_navigate: Callable[[str], None]) -> None:
                     .mark("data-manager-status")
                 )
                 with ui.element("div").classes("w-full").mark("data-manager-result-container"):
+                    preview_result_id: int | None = None
+                    y_limits_automatic = True
+                    updating_plot_settings = False
+
+                    def preview_values() -> Any | None:
+                        selected = selected_generated_result()
+                        return selected.preview.values if selected is not None and selected.preview is not None else None
+
+                    def redraw_prepared_preview() -> None:
+                        nonlocal updating_plot_settings
+                        if updating_plot_settings or result_chart is None:
+                            return
+                        selected = selected_generated_result()
+                        if selected is None or selected.preview is None:
+                            return
+                        plot_type = "Histogram" if plot_settings.view.value == "Histogram" else "Line"
+                        if not plotting_settings_ready(plot_settings, plot_type=plot_type):
+                            return
+                        try:
+                            options = _preview_options(
+                                selected.preview, plot_settings,
+                                automatic_y_limits=y_limits_automatic,
+                            )
+                            if plot_type == "Line":
+                                options["series"][0]["data"] = _converted_preview_data(selected)
+                            updating_plot_settings = True
+                            try:
+                                if y_limits_automatic:
+                                    for endpoint in ("minimum", "maximum"):
+                                        value = options["yAxis"]["min" if endpoint == "minimum" else "max"]
+                                        getattr(plot_settings, f"y_{endpoint}").set_value(float(f"{value:.12g}"))
+                                result_chart.options.clear()
+                                result_chart.options.update(options)
+                                result_chart.update()
+                            finally:
+                                updating_plot_settings = False
+                        except (RuntimeError, TypeError, ValueError) as exc:
+                            notify(str(exc), type="negative")
+
+                    def reset_preview_y_limits() -> None:
+                        nonlocal y_limits_automatic, updating_plot_settings
+                        y_limits_automatic = True
+                        updating_plot_settings = True
+                        try:
+                            plot_settings.y_minimum.set_value(None)
+                            plot_settings.y_maximum.set_value(None)
+                        finally:
+                            updating_plot_settings = False
+                        redraw_prepared_preview()
+
+                    def sync_plot_visibility() -> None:
+                        sync_preview_settings_visibility(
+                            plot_settings,
+                            plot_type="Histogram" if plot_settings.view.value == "Histogram" else "Line",
+                        )
+
+                    def preview_view_changed() -> None:
+                        nonlocal updating_plot_settings
+                        selected = selected_generated_result()
+                        value_label = (
+                            str(selected.preview.value_label).replace("_", " ").strip().capitalize()
+                            if selected is not None and selected.preview is not None else "Value"
+                        )
+                        histogram = plot_settings.view.value == "Histogram"
+                        updating_plot_settings = True
+                        try:
+                            plot_settings.x_axis_label.set_value(value_label if histogram else "Position (kb)")
+                            plot_settings.y_axis_label.set_value(
+                                "Density" if histogram and plot_settings.density.value else "Count" if histogram else value_label
+                            )
+                            plot_settings._automatic_axes.add("x")
+                        finally:
+                            updating_plot_settings = False
+                        sync_plot_visibility()
+                        histogram_sync.sync_to_data(redraw=False)
+                        reset_preview_y_limits()
+
+                    def preview_log_x_changed() -> None:
+                        histogram_sync.sync_to_data(redraw=False)
+                        reset_preview_y_limits()
+
+                    def preview_y_limits_changed() -> None:
+                        nonlocal y_limits_automatic
+                        if not updating_plot_settings:
+                            y_limits_automatic = (
+                                plot_settings.y_minimum.value is None and plot_settings.y_maximum.value is None
+                            )
+                            redraw_prepared_preview()
+
+                    with (
+                        ui.element("section")
+                        .classes("dn-data-manager-prepared-preview")
+                        .mark("data-manager-result-preview")
+                    ) as preview_surface:
+                        @ui.refreshable
+                        def render_prepared_preview() -> None:
+                            nonlocal result_chart
+                            result_chart = None
+                            selected = selected_generated_result()
+                            if not settings["show_preview"] or selected is None or selected.preview is None:
+                                return
+                            selected_preview = selected.preview
+                            with ui.element("div").classes("w-full"):
+                                with ui.row().classes("dn-data-manager-preview-heading"):
+                                    ui.label("Prepared profile").classes("dn-setting-group-title")
+                                    ui.space()
+                                    sampled = len(selected_preview.values)
+                                    sample_text = f"{selected_preview.total_count:,} values"
+                                    if sampled < selected_preview.total_count:
+                                        sample_text += f" · {sampled:,} shown"
+                                    ui.label(sample_text).classes(
+                                        "dn-data-manager-preview-sampling"
+                                    )
+                                with ui.element("div").classes("dn-data-manager-preview-stats"):
+                                    ui.label(f"Finite {selected_preview.finite_count:,}")
+                                    ui.label(f"Missing {selected_preview.missing_count:,}")
+                                    if (
+                                        selected_preview.minimum is not None
+                                        and selected_preview.maximum is not None
+                                    ):
+                                        ui.label(
+                                            "Range "
+                                            f"{selected_preview.minimum:.4g} to "
+                                            f"{selected_preview.maximum:.4g}"
+                                        )
+                                if selected_preview.finite_count == 0:
+                                    ui.label("No finite values to plot. The raw data remain available below.").classes("dn-data-manager-section-guidance")
+                                    return
+                                result_chart = render_preview_chart(
+                                    _preview_options(selected_preview),
+                                    title="Prepared profile",
+                                    marker="data-manager-preview-chart",
+                                    on_download=download_preview_plot,
+                                )
+                                for chart in (result_chart.canvas, result_chart.vector):
+                                    chart.classes("dn-data-manager-profile-chart")
+                                result_chart.attach_settings(plot_settings)
+                                redraw_prepared_preview()
+
+                        render_prepared_preview()
+                        plot_settings = preview_settings_controls(
+                            initial_title="Prepared profile",
+                            initial_x_label="Position (kb)",
+                            initial_y_label="Value",
+                            on_reset_y_limits=reset_preview_y_limits,
+                            markers=preview_settings_markers("data-manager-plot"),
+                        )
+                        plot_settings.histogram_bins.set_value(40)
+                        plot_settings.line_width.set_value(1.8)
+                        plot_settings.aspect_ratio.set_value(5.0)
+                        plot_settings.show_legend.set_value(False)
+                        plot_settings.show_grid.set_value(False)
+                        histogram_sync = HistogramBinSynchronizer(
+                            plot_settings, values=preview_values,
+                            on_valid_change=reset_preview_y_limits,
+                            log_x=lambda: bool(plot_settings.log_x.value),
+                        )
+                        bind_preview_settings_updates(
+                            plot_settings,
+                            on_redraw=redraw_prepared_preview,
+                            on_view_change=preview_view_changed,
+                            on_density_change=preview_view_changed,
+                            on_histogram_range_change=reset_preview_y_limits,
+                            on_log_x_change=preview_log_x_changed,
+                            on_y_limits_change=preview_y_limits_changed,
+                            on_visibility_change=sync_plot_visibility,
+                            default_aspect_ratio=5.0,
+                        )
+                        sync_plot_visibility()
+                    preview_surface.visible = False
 
                     @ui.refreshable
                     def render_result() -> None:
-                        nonlocal result_chart
+                        nonlocal preview_result_id, result_chart
                         result_chart = None
-                        if not converted_results:
+                        selected = selected_generated_result()
+                        preview_surface.visible = bool(
+                            settings["show_preview"] and selected is not None and selected.preview is not None
+                        )
+                        if preview_result_id != selected_result_id:
+                            histogram_sync._x_limits_automatic = True
+                            preview_view_changed()
+                        preview_result_id = selected_result_id
+                        render_prepared_preview.refresh()
+                        if selected is None:
                             with (
                                 ui.column()
                                 .classes("dn-data-manager-empty")
@@ -2397,41 +2846,11 @@ def render(_navigate: Callable[[str], None]) -> None:
                                 ui.label("Converted files will appear here")
                             return
 
-                        latest_preview = converted_results[-1][1].preview
-                        if settings["show_preview"] and latest_preview is not None:
-                            with (
-                                ui.element("section")
-                                .classes("dn-data-manager-prepared-preview")
-                                .mark("data-manager-result-preview")
-                            ):
-                                with ui.row().classes("dn-data-manager-preview-heading"):
-                                    ui.label("Prepared profile").classes("dn-setting-group-title")
-                                    ui.space()
-                                    sampled = len(latest_preview.values)
-                                    sample_text = f"{latest_preview.total_count:,} values"
-                                    if sampled < latest_preview.total_count:
-                                        sample_text += f" · {sampled:,} shown"
-                                    ui.label(sample_text).classes(
-                                        "dn-data-manager-preview-sampling"
-                                    )
-                                with ui.element("div").classes("dn-data-manager-preview-stats"):
-                                    ui.label(f"Finite {latest_preview.finite_count:,}")
-                                    ui.label(f"Missing {latest_preview.missing_count:,}")
-                                    if (
-                                        latest_preview.minimum is not None
-                                        and latest_preview.maximum is not None
-                                    ):
-                                        ui.label(
-                                            "Range "
-                                            f"{latest_preview.minimum:.4g} to "
-                                            f"{latest_preview.maximum:.4g}"
-                                        )
-                                result_chart = render_preview_chart(
-                                    _preview_options(latest_preview),
-                                    title="Prepared profile",
-                                    marker="data-manager-preview-chart",
-                                    on_download=download_preview_plot,
-                                )
+                        def select_result(result_id: int) -> None:
+                            nonlocal selected_result_id
+                            if selected_result_id != result_id:
+                                selected_result_id = result_id
+                                render_result.refresh()
 
                         def remove_result(result_id: int) -> None:
                             converted_results[:] = [
@@ -2504,138 +2923,155 @@ def render(_navigate: Callable[[str], None]) -> None:
                                 bundled.media_type,
                             )
 
-                        with ui.element("div").classes("dn-download-file-list"):
-                            for result_id, result in reversed(converted_results):
-                                preference = retained_generated_preference(
-                                    result_id,
-                                    result,
-                                )
-
-                                async def download_result(
-                                    controls: Any,
-                                    retained_result: DataConversionResult = result,
-                                ) -> None:
-                                    try:
-                                        artifact = await run.io_bound(
-                                            _generated_download_artifact,
-                                            retained_result,
-                                            file_name=str(
-                                                controls.file_name.value
-                                                or _generated_file_stem(retained_result)
-                                            ),
-                                            file_type=str(
-                                                controls.file_type.value
-                                                or retained_result.target_format
-                                            ),
-                                            compress=bool(controls.compress.value),
-                                        )
-                                    except (OSError, RuntimeError, ValueError) as exc:
-                                        notify(str(exc), type="negative")
-                                        return
-                                    ui.download(
-                                        artifact.data,
-                                        artifact.filename,
-                                        artifact.media_type,
+                        with expansion(
+                            "Raw data", icon=DATA_ICON, expanded=True,
+                            extra_classes="dn-output-section",
+                        ):
+                            with ui.element("div").classes("dn-download-file-list"):
+                                for result_id, result in reversed(converted_results):
+                                    preference = retained_generated_preference(
+                                        result_id,
+                                        result,
                                     )
 
-                                with (
-                                    ui.element("div")
-                                    .classes("dn-mapping-batch-raw-item dn-data-manager-file")
-                                    .mark(f"data-manager-result-{result_id}")
-                                ):
-                                    row_controls = raw_output_file_row(
-                                        file_name=preference.file_name,
-                                        default_type=preference.file_type,
-                                        default_compress=preference.compress,
-                                        on_download=download_result,
-                                        on_remove=(
-                                            lambda _controls, retained_id=result_id: (
-                                                remove_result(retained_id)
+                                    async def download_result(
+                                        controls: Any,
+                                        retained_result: DataConversionResult = result,
+                                        *, open_in: str | None = None,
+                                    ) -> None:
+                                        try:
+                                            artifact = await run.io_bound(
+                                                _generated_download_artifact,
+                                                retained_result,
+                                                file_name=str(
+                                                    controls.file_name.value
+                                                    or _generated_file_stem(retained_result)
+                                                ),
+                                                file_type=str(
+                                                    controls.file_type.value
+                                                    or retained_result.target_format
+                                                ),
+                                                compress=bool(controls.compress.value),
                                             )
-                                        ),
-                                        markers={
-                                            "row": f"data-manager-result-row-{result_id}",
-                                            "file_name": (
-                                                f"data-manager-result-name-{result_id}"
-                                            ),
-                                            "file_type": (
-                                                f"data-manager-result-type-{result_id}"
-                                            ),
-                                            "compression": (
-                                                "data-manager-result-compression-"
-                                                f"{result_id}"
-                                            ),
-                                            "download": "",
-                                            "remove": f"remove-converted-data-{result_id}",
-                                        },
-                                        extra_classes="dn-mapping-batch-raw-row",
-                                    )
-                                    row_controls.file_type.set_options(
-                                        list(_GENERATED_FILE_TYPES),
-                                        value=preference.file_type,
-                                    )
-                                    row_controls.download_button.mark(
-                                        "action-download-converted-data",
-                                        f"action-download-converted-data-{result_id}"
-                                    )
-
-                                    def store_file_name(
-                                        _event: Any = None,
-                                        *,
-                                        control: Any = row_controls.file_name,
-                                        retained: _GeneratedFilePreference = preference,
-                                    ) -> None:
-                                        retained.file_name = str(control.value or "")
-                                        retained.customized = bool(
-                                            retained.file_name
-                                            and retained.file_name
-                                            != retained.automatic_name
+                                        except (OSError, RuntimeError, ValueError) as exc:
+                                            notify(str(exc), type="negative")
+                                            return
+                                        if open_in is not None:
+                                            preferred_input = next((
+                                                key for key in _FEATURE_VALUE_NAMES.values()
+                                                if key != "value" and key in retained_result.labels
+                                            ), None)
+                                            await open_raw_artifact(artifact, open_in, _navigate, preferred_input=preferred_input)
+                                            return
+                                        ui.download(
+                                            artifact.data,
+                                            artifact.filename,
+                                            artifact.media_type,
                                         )
 
-                                    def store_compression(
-                                        _event: Any = None,
-                                        *,
-                                        control: Any = row_controls.compress,
-                                        retained: _GeneratedFilePreference = preference,
-                                    ) -> None:
-                                        retained.compress = bool(control.value)
+                                    with (
+                                        ui.element("div")
+                                        .classes("dn-mapping-batch-raw-item dn-data-manager-file")
+                                        .mark(f"data-manager-result-{result_id}")
+                                    ):
+                                        row_controls = raw_output_file_row(
+                                            file_name=preference.file_name,
+                                            default_type=preference.file_type,
+                                            default_compress=preference.compress,
+                                            on_download=download_result,
+                                            on_open=lambda controls, destination, handler=download_result: handler(controls, open_in=destination),
+                                            on_select=lambda result_id=result_id: select_result(result_id),
+                                            selected=result_id == selected_result_id,
+                                            on_remove=(
+                                                lambda _controls, retained_id=result_id: (
+                                                    remove_result(retained_id)
+                                                )
+                                            ),
+                                            markers={
+                                                "row": f"data-manager-result-row-{result_id}",
+                                                "select": f"data-manager-select-result-{result_id}",
+                                                "file_name": (
+                                                    f"data-manager-result-name-{result_id}"
+                                                ),
+                                                "file_type": (
+                                                    f"data-manager-result-type-{result_id}"
+                                                ),
+                                                "compression": (
+                                                    "data-manager-result-compression-"
+                                                    f"{result_id}"
+                                                ),
+                                                "download": "",
+                                                "remove": f"remove-converted-data-{result_id}",
+                                            },
+                                            extra_classes="dn-mapping-batch-raw-row",
+                                        )
+                                        row_controls.select_button.set_enabled(result.preview is not None)
+                                        row_controls.file_type.set_options(
+                                            list(_GENERATED_FILE_TYPES),
+                                            value=preference.file_type,
+                                        )
+                                        row_controls.download_button.mark(
+                                            "action-download-converted-data",
+                                            f"action-download-converted-data-{result_id}"
+                                        )
 
-                                    def store_file_type(
-                                        _event: Any = None,
-                                        *,
-                                        control: Any = row_controls.file_type,
-                                        retained: _GeneratedFilePreference = preference,
-                                    ) -> None:
-                                        retained.file_type = str(control.value or "TSV")
+                                        def store_file_name(
+                                            _event: Any = None,
+                                            *,
+                                            control: Any = row_controls.file_name,
+                                            retained: _GeneratedFilePreference = preference,
+                                        ) -> None:
+                                            retained.file_name = str(control.value or "")
+                                            retained.customized = bool(
+                                                retained.file_name
+                                                and retained.file_name
+                                                != retained.automatic_name
+                                            )
 
-                                    row_controls.file_name.on_value_change(
-                                        store_file_name
+                                        def store_compression(
+                                            _event: Any = None,
+                                            *,
+                                            control: Any = row_controls.compress,
+                                            retained: _GeneratedFilePreference = preference,
+                                        ) -> None:
+                                            retained.compress = bool(control.value)
+
+                                        def store_file_type(
+                                            _event: Any = None,
+                                            *,
+                                            control: Any = row_controls.file_type,
+                                            retained: _GeneratedFilePreference = preference,
+                                        ) -> None:
+                                            retained.file_type = str(control.value or "TSV")
+
+                                        row_controls.file_name.on_value_change(
+                                            store_file_name
+                                        )
+                                        row_controls.compress.on_value_change(
+                                            store_compression
+                                        )
+                                        row_controls.file_type.on_value_change(store_file_type)
+                            with ui.row().classes("dn-data-manager-delete-all-row"):
+                                (
+                                    ui.button(
+                                        "Download all",
+                                        icon="download",
+                                        on_click=download_all_results,
                                     )
-                                    row_controls.compress.on_value_change(
-                                        store_compression
+                                    .props("flat no-caps")
+                                    .classes("dn-action-secondary dn-data-manager-download-all")
+                                    .mark("download-all-converted-data")
+                                )
+                                (
+                                    ui.button(
+                                        "Delete all",
+                                        icon="delete_sweep",
+                                        on_click=clear_results,
                                     )
-                                    row_controls.file_type.on_value_change(store_file_type)
-                        with ui.row().classes("dn-data-manager-delete-all-row"):
-                            (
-                                ui.button(
-                                    "Download all",
-                                    icon="download",
-                                    on_click=download_all_results,
+                                    .props("flat no-caps")
+                                    .classes("dn-action-secondary dn-data-manager-delete-all")
+                                    .mark("delete-all-converted-data")
                                 )
-                                .props("flat no-caps")
-                                .classes("dn-action-secondary dn-data-manager-download-all")
-                                .mark("download-all-converted-data")
-                            )
-                            (
-                                ui.button(
-                                    "Delete all",
-                                    icon="delete_sweep",
-                                    on_click=clear_results,
-                                )
-                                .props("flat no-caps")
-                                .classes("dn-action-secondary dn-data-manager-delete-all")
-                                .mark("delete-all-converted-data")
-                            )
 
                     render_result()
 
@@ -2658,7 +3094,7 @@ def render(_navigate: Callable[[str], None]) -> None:
             if source.track_inspection is None or chromosome not in {
                 region.chromosome for region in source.track_inspection.regions
             }:
-                raise ValueError(f"{current.name} does not contain chromosome {chromosome}.")
+                raise ValueError(f"The selected data does not contain chromosome {chromosome}.")
             kwargs.update(
                 chromosome=chromosome,
                 repliseq_timing_method=str(controls["repliseq_timing_method"].value),
@@ -2669,13 +3105,13 @@ def render(_navigate: Callable[[str], None]) -> None:
             track_summary = source.track_inspection
             if track_summary is None:
                 raise ValueError(
-                    f"{current.name} could not be inspected as a genomic track."
+                    "The selected data could not be inspected as a genomic track."
                 )
             chromosome_scope = str(controls["chromosome_scope"].value or "single")
             aggregation = str(controls["aggregation"].value)
             if aggregation not in _track_aggregation_options(track_summary.backend, current):
                 raise ValueError(
-                    f"{current.name} does not support the {aggregation} aggregation."
+                    f"The selected data does not support the {aggregation} aggregation."
                 )
             kwargs.update(
                 chromosome_scope=chromosome_scope,
@@ -2692,7 +3128,7 @@ def render(_navigate: Callable[[str], None]) -> None:
                 }
                 if chromosome not in regions:
                     raise ValueError(
-                        f"{current.name} does not contain chromosome {chromosome}."
+                        f"The selected data does not contain chromosome {chromosome}."
                     )
                 available = regions[chromosome]
                 start = _integer(controls["start"], "Start", minimum=0)
@@ -2703,7 +3139,7 @@ def render(_navigate: Callable[[str], None]) -> None:
                     )
                 if start < available.start or end > available.end:
                     raise ValueError(
-                        f"{current.name} covers {chromosome}:"
+                        f"The selected data covers {chromosome}:"
                         f"{available.start:,}-{available.end:,}, which does not include "
                         f"the requested {start:,}-{end:,} interval."
                     )
@@ -2732,12 +3168,12 @@ def render(_navigate: Callable[[str], None]) -> None:
                 scaling_mode=value_scaling,
                 normalize="none",
                 rescale_min=(
-                    _number(controls["rescale_min"], "Target minimum")
+                    _number(controls["rescale_min"], "Minimum")
                     if value_scaling == "interval"
                     else 0.0
                 ),
                 rescale_max=(
-                    _number(controls["rescale_max"], "Target maximum")
+                    _number(controls["rescale_max"], "Maximum")
                     if value_scaling == "interval"
                     else 1.0
                 ),
@@ -2774,6 +3210,7 @@ def render(_navigate: Callable[[str], None]) -> None:
             ),
             fill_value=_number(controls["fill_value"], "Fill value"),
             decimal_places=decimal_places,
+            data_filter=filter_controls.snapshot() if filter_controls is not None else DataFilterSettings(),
             value_name=_selected_value_name(
                 source,
                 details,
@@ -2804,14 +3241,8 @@ def render(_navigate: Callable[[str], None]) -> None:
 
         forms = tuple(selected_data(source).form for source in candidates)
         if len(set(forms)) != 1:
-            readable = ", ".join(
-                f"{source.inspection.name}: "
-                f"{_FORM_LABELS.get(form, form.replace('_', ' ').title())}"
-                for source, form in zip(candidates, forms, strict=True)
-            )
             raise ValueError(
-                "All sources in one conversion batch must use the same data type. "
-                f"Choose compatible profiles ({readable})."
+                "All sources in one conversion batch must use the same data type."
             )
 
         requested_output_names: list[str] = []
@@ -2846,7 +3277,7 @@ def render(_navigate: Callable[[str], None]) -> None:
         )
 
     async def convert() -> None:
-        nonlocal active_cancel, conversion_running, next_result_id
+        nonlocal active_cancel, conversion_running, next_result_id, selected_result_id
         if conversion_running:
             if active_cancel is not None and not active_cancel.is_set():
                 page_activity.stop("data-management")
@@ -2854,7 +3285,7 @@ def render(_navigate: Callable[[str], None]) -> None:
                 conversion_status.text = "Stopping conversion..."
                 convert_button.disable()
             return
-        if upload_inspection_running or remote_inspections:
+        if upload_inspection_running or remote_inspections or (filter_controls is not None and filter_controls.loading):
             notify(
                 "Wait for the sources to finish loading before converting.",
                 type="warning",
@@ -2959,6 +3390,7 @@ def render(_navigate: Callable[[str], None]) -> None:
                 retained_output_bytes += result_bytes
                 cache_dataset(result)
             if completed:
+                selected_result_id = converted_results[-1][0]
                 render_result.refresh()
 
             elapsed = time.perf_counter() - started
@@ -2967,13 +3399,11 @@ def render(_navigate: Callable[[str], None]) -> None:
                 conversion_status.text = (
                     f"Completed {len(completed)}/{total} in {elapsed:.2f} s"
                 )
-                failed_names = ", ".join(name for name, _message in failures)
-                detail = "; ".join(
-                    f"{name}: {message}" for name, message in failures
-                )
+                detail = "; ".join(dict.fromkeys(
+                    notification_message(message) for _name, message in failures
+                ))
                 notify(
-                    f"Converted {len(completed)} of {total}. "
-                    f"Could not convert {failed_names}. {detail}",
+                    f"Converted {len(completed)} of {total}. {detail}",
                     type="warning" if completed else "negative",
                 )
             else:
@@ -3014,6 +3444,18 @@ def render(_navigate: Callable[[str], None]) -> None:
     current_session_cache().register_output_clearer(
         "data-management",
         clear_conversion_outputs,
+    )
+
+    async def receive_raw_files(files) -> None:
+        if conversion_running or upload_inspection_running or remote_inspections:
+            raise ValueError("Wait for the current source operation to finish before adding data.")
+        source_tabs.set_value("upload")
+        for _ in range(4):
+            await asyncio.sleep(0)
+        await append_raw_uploads(lambda: source_controls["uploader"], files)
+
+    current_session_cache().register_input_targets(
+        "data-management", lambda: (RawInputTarget("data", "Data", receive_raw_files),),
     )
 
     def refresh_data_manager_page() -> None:

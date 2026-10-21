@@ -16,6 +16,8 @@ DNAscape is a local browser app for preparing, mapping, simulating, visualising,
 
 The app accepts common profile formats including CSV, TSV, TXT, NPY, NPZ, bedGraph, and BigWig. The Data Manager can load supported files from public links and import GEO 16-fraction Repli-seq text matrices (`.mat` or `.mat.gz`), including chromosome-specific replication timing extraction.
 
+Raw data exports support TSV, TXT, CSV and NPZ. Analysis reports use CSV or TSV.
+
 ## Run locally
 
 ### Requirements
@@ -84,17 +86,17 @@ Use **Data Manager** to turn a Repli-seq BigWig track into a replication-timing 
 
 1. In **Data**, upload or drag in a BigWig file. Alternatively, open **Link**, select **Example: ENCODE Repli-seq (bigWig) - K562**, then click **Inspect**. You can also paste your own public BigWig URL and inspect it.
 2. In **Configure**, set **Prepare as** to **Replication timing**. Under **Region & binning**, choose **One chromosome**, select the chromosome and Start/End coordinates, set **Bin size (bp)** to **1000**, and keep **Aggregation** at **Mean**.
-3. Under **Values**, set **Value scaling** to **Target interval**, **Target minimum** to **30**, and **Target maximum** to **500**. Check **Invert** so higher Repli-seq scores become earlier replication times.
+3. Under **Values**, set **Value scaling** to **Target interval**, **Minimum** to **30**, and **Maximum** to **500**. Check **Invert** so higher Repli-seq scores become earlier replication times.
 4. Set **Missing values** to **Fill with a value**, and **Fill value** to **30**. Custom fills are applied after scaling, so missing bins become exactly 30 minutes.
 5. Under **Output**, optionally enable **Show plot preview after conversion**, then click **Convert**. Download the result from **Generated files**; TSV is the default format. When using the profile in Mapping or Simulation, set the spatial resolution to **1 kb** to match the 1000 bp bins.
 
-The K562 example contains relative timing scores; rescaling them to 30–500 minutes assigns an assumed absolute time range. Filling missing bins with 30 assigns them the earliest time in this example. Other missing-value choices are **Keep empty values**, **Fill with zero** (the default), **Fill with minimum**, **Fill with maximum**, and **Stop if detected**.
+The K562 example contains relative timing scores; rescaling them to 30–500 minutes assigns an assumed absolute time range. Filling missing bins with 30 assigns them the earliest time in this example. Other missing-value choices are **Keep empty values**, **Fill with zero** (the default), **Fill with minimum**, **Fill with maximum**, and **Report error**.
 
 ## Comparing and analysing data
 
-Open **Analysis** and upload the profiles you want to compare. Use matching genomic regions and resolutions: correlations pair samples by array index over their shared span. Each dataset can be smoothed independently with a moving average or Gaussian filter before plotting and analysis.
+Open **Analysis** and upload the profiles you want to compare. Use matching genomic regions and resolutions: correlations pair samples by array index over their shared span. Switch on **Enable analysis** to reveal correlation choices and independent moving-average or Gaussian smoothing for each dataset. **Show p-values** optionally displays two-sided, unadjusted p-values for dataset pairs.
 
-Switch on **Enable analysis**, choose Pearson, Spearman, and/or Kendall tau, then click **Analyse**. The **Analysis report** below the plotting settings shows a matrix for each selected correlation. Its single download at the bottom includes every matrix and the paired sample counts, as CSV by default or TSV. With analysis switched off, the action remains **Plot** and the report is hidden.
+Choose Pearson, Spearman, and/or Kendall tau, then click **Analyse**. The **Analysis report** below the plotting settings combines all selected methods in one table, with each correlation heading its dataset columns. At the bottom, edit the report name, choose CSV (default) or TSV, and use the download arrow to save the coefficients, paired sample counts, and optional p-values. The cross clears the plots and report while retaining uploaded data. With analysis switched off, **Plot** uses the original profiles and the analysis controls and report are hidden.
 
 ## Local data and sessions
 

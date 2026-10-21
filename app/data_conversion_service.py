@@ -9,6 +9,7 @@ from __future__ import annotations
 import sys
 
 from dnascape.workflows import conversion as _workflow
+from dnascape.workflows.filtering import DataFilterSettings as DataFilterSettings
 from dnascape.workflows.conversion import (
     DATA_EXPORT_FORMATS as DATA_EXPORT_FORMATS,
     DEFAULT_TARGET_FORMAT as DEFAULT_TARGET_FORMAT,

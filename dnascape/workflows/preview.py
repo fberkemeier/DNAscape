@@ -12,7 +12,7 @@ import json
 import math
 from collections.abc import Sequence
 from dataclasses import dataclass
-from html import escape
+from functools import wraps
 from typing import Any
 
 import numpy as np
@@ -764,11 +764,32 @@ def _tooltip_options(
         "show": bool(interactive),
         "trigger": trigger,
         "confine": True,
+        "borderColor": "#ddd7d1",
+        "triggerOn": "mousemove|click" if interactive else "none",
         ":valueFormatter": _hover_formatter(integer_only=_whole_numbers(values)),
+        ":formatter": (
+            "params => { const rows=Array.isArray(params)?params:[params]; if(!rows.length)return ''; "
+            f"const fy=({_hover_formatter(integer_only=_whole_numbers(values))}); "
+            "return rows.map(p=>{const v=p.value; "
+            "if(p.seriesType==='boxplot'&&Array.isArray(v)){const values=v.slice(-5); "
+            "return (p.marker||'')+['Min','Q1','Median','Q3','Max'].map((name,i)=>name+': <b>'+fy(values[i])+'</b>').join('<br>');} "
+            "const y=Array.isArray(v)?(p.seriesType==='custom'?v[2]:v[1]):v; "
+            "return (p.marker||'')+'<b>'+fy(y)+'</b>';}).join('<br>'); }"
+        ),
         "axisPointer": {
+            "show": "auto" if interactive else False,
             "type": "line",
+            "axis": "x",
+            "snap": True,
+            "lineStyle": {"color": "#b8b0aa", "width": 1, "type": "dashed"},
             "label": {
                 "show": bool(interactive),
+                "backgroundColor": "#b03412",
+                "color": "#ffffff",
+                "fontSize": 11,
+                "lineHeight": 14,
+                "padding": [3, 6],
+                "borderRadius": 3,
                 ":formatter": "params => (" + _hover_formatter(integer_only=_whole_numbers(x_values)) + ")(params.value)",
             },
         },
@@ -805,60 +826,42 @@ def limit_curve_hover(
     return options
 
 
-def _histogram_statistics_graphic(
-    values: np.ndarray,
-    *,
-    position: str,
-) -> list[dict[str, Any]]:
-    """Return a compact, legend-like histogram summary overlay."""
-
-    normalized_position = str(position or "Top right").strip().casefold()
-    placement: dict[str, Any] = {
-        "top": 24 if normalized_position.startswith("top") else None,
-        "bottom": 8 if normalized_position.startswith("bottom") else None,
-        "left": 84 if normalized_position.endswith("left") else None,
-        "right": 28 if normalized_position.endswith("right") else None,
-    }
-    placement = {key: value for key, value in placement.items() if value is not None}
-    summary = (
-        "No values in range"
-        if values.size == 0
-        else (
-            f"Mean       {_compact_tick(float(np.mean(values)))}\n"
-            f"Median    {_compact_tick(float(np.median(values)))}\n"
-            f"Std dev   {_compact_tick(float(np.std(values)))}"
-        )
-    )
-    return [
-        {
-            "type": "text",
-            **placement,
-            # Keep the summary above custom histogram rectangles, axis
-            # pointers, and any later series added by a caller.
-            "z": 10_000,
-            "z2": 10_000,
-            "zlevel": 20,
-            "silent": True,
-            "style": {
-                "text": summary,
-                "fill": "#625c57",
-                "font": "11px sans-serif",
-                "lineHeight": 16,
-                "backgroundColor": "rgba(255,255,255,0.88)",
-                "borderColor": "#ddd7d1",
-                "borderWidth": 1,
-                "borderRadius": 4,
-                "padding": [5, 7],
-            },
-        }
-    ]
-
-
 def _palette_rgb(palette: str) -> np.ndarray:
     colours = PALETTES.get(palette, PALETTES["viridis"])
     return np.asarray(
         [tuple(int(colour[index : index + 2], 16) for index in (1, 3, 5)) for colour in colours],
         dtype=float,
+    )
+
+
+def _heatmap_value_style(
+    *, palette: str, z_minimum: float, z_maximum: float, log_z: bool, invert_z: bool,
+) -> str:
+    """Colour a hover readout with the same clipped RGB mapping as the raster."""
+
+    anchors = _palette_rgb(palette)
+    if invert_z:
+        anchors = anchors[::-1]
+    return (
+        "value => { const z = Number(value); "
+        "if (!Number.isFinite(z)" + (" || z <= 0" if log_z else "") + ") "
+        "return {background: '#746d68', foreground: '#ffffff'}; "
+        f"const anchors = {json.dumps(anchors.astype(int).tolist())}; "
+        f"const scaled = {'Math.log10(z)' if log_z else 'z'}; "
+        f"const position = Math.max(0, Math.min(1, (scaled - {z_minimum!r}) / "
+        f"({z_maximum!r} - {z_minimum!r}))) * (anchors.length - 1); "
+        "const lower = Math.floor(position), upper = Math.min(lower + 1, anchors.length - 1); "
+        "const weight = position - lower; "
+        # Match NumPy's round-to-even raster conversion at exact half values.
+        "const round = value => {const lower = Math.floor(value); "
+        "return value - lower === 0.5 ? lower + lower % 2 : Math.round(value);}; "
+        "const rgb = anchors[lower].map((channel, i) => "
+        "round(channel * (1 - weight) + anchors[upper][i] * weight)); "
+        "const linear = rgb.map(channel => {const c = channel / 255; "
+        "return c <= 0.04045 ? c / 12.92 : Math.pow((c + 0.055) / 1.055, 2.4);}); "
+        "const luminance = 0.2126 * linear[0] + 0.7152 * linear[1] + 0.0722 * linear[2]; "
+        "return {background: 'rgb(' + rgb.join(',') + ')', "
+        "foreground: luminance > 0.179 ? '#000000' : '#ffffff'}; }"
     )
 
 
@@ -904,10 +907,16 @@ def _heatmap_data_uri(
 
 def _kde_data(
     values: Any, *, log_x: bool = False, x_limits: tuple[float, float] | None = None,
+    bandwidth_scale: float = 1.0,
+    evaluation_limits: tuple[float, float] | None = None,
 ) -> tuple[np.ndarray, np.ndarray]:
     """Bounded Gaussian KDE with Scott bandwidth and a constant-data fallback."""
 
     from scipy.stats import gaussian_kde
+
+    bandwidth_scale = _positive_finite(bandwidth_scale)
+    if bandwidth_scale is None:
+        raise ValueError("KDE smoothness must be finite and greater than zero.")
 
     samples = finite_values(values)
     if log_x:
@@ -921,20 +930,21 @@ def _kde_data(
     bandwidth = (
         max(abs(float(samples[0])) * 0.05, (x_limits[1] - x_limits[0]) * 0.05 if x_limits else 0.05)
         if constant else spread * samples.size ** (-0.2)
-    )
+    ) * bandwidth_scale
     lower = float(np.min(samples)) - 3 * bandwidth
     upper = float(np.max(samples)) + 3 * bandwidth
     if log_x:
         lower = max(lower, float(np.min(samples)) * 0.5)
-    if x_limits is not None:
-        lower, upper = _plot_axis_limits(x_limits, None, label="X", log_axis=log_x)
+    domain = evaluation_limits if evaluation_limits is not None else x_limits
+    if domain is not None:
+        lower, upper = _plot_axis_limits(domain, None, label="X", log_axis=log_x)
     grid = np.geomspace(lower, upper, 256) if log_x else np.linspace(lower, upper, 256)
     if constant:
         curve = np.exp(-0.5 * ((grid - samples[0]) / bandwidth) ** 2) / (
             bandwidth * np.sqrt(2 * np.pi)
         )
     else:
-        curve = gaussian_kde(samples, bw_method="scott")(grid)
+        curve = gaussian_kde(samples, bw_method=lambda estimator: estimator.scotts_factor() * bandwidth_scale)(grid)
     return grid, curve
 
 
@@ -952,6 +962,7 @@ def automatic_y_limits(
     y_axis: Any | None = None,
     fixed_limits: tuple[float, float] | None = None,
     floor_at_zero: bool = False,
+    kde_bandwidth: float = 1.0,
 ) -> tuple[float, float]:
     """Calculate editable Y limits consistently for every preview page."""
 
@@ -967,7 +978,7 @@ def automatic_y_limits(
             heights = []
             for part in finite_parts:
                 if density:
-                    _, counts = _kde_data(part, log_x=log_x, x_limits=histogram_x_limits)
+                    _, counts = _kde_data(part, log_x=log_x, x_limits=histogram_x_limits, bandwidth_scale=kde_bandwidth)
                 else:
                     _, counts, _ = _histogram_data(
                         part, bins=histogram_bins, bin_size=histogram_bin_size,
@@ -1006,19 +1017,58 @@ def _bounded_indices(size: int, limit: int) -> np.ndarray:
     return np.unique(np.linspace(0, size - 1, limit, dtype=int))
 
 
-def _line_points(x: Any, y: Any, *, limit: int = 2_500) -> list[list[float | None]]:
+class DetailedPreviewData(list):
+    """JSON-safe display data with a server-only, bounded refinement callback."""
+
+    def __init__(self, values: Any, refine: Any) -> None:
+        super().__init__(values)
+        self.refine = refine
+
+
+def _visible_slice(axis: np.ndarray, limits: tuple[float, float] | None) -> slice:
+    if limits is None:
+        return slice(0, axis.size)
+    ascending = axis[-1] >= axis[0]
+    ordered = all(np.all((axis[start + 1:stop + 1] >= axis[start:stop]) if ascending else
+                         (axis[start + 1:stop + 1] <= axis[start:stop]))
+                  for start in range(0, max(0, axis.size - 1), 65536)
+                  for stop in (min(axis.size - 1, start + 65536),))
+    if ordered:
+        sorted_axis = axis if ascending else axis[::-1]
+        start, stop = np.searchsorted(sorted_axis, limits[0], side="left"), np.searchsorted(sorted_axis, limits[1], side="right")
+        if not ascending:
+            start, stop = axis.size - stop, axis.size - start
+        return slice(max(0, int(start) - 1), min(axis.size, max(int(stop), int(start) + 1) + 1))
+    first, last = axis.size, -1
+    for start in range(0, axis.size, 65536):
+        block = axis[start:start + 65536]
+        inside = np.flatnonzero((block >= limits[0]) & (block <= limits[1]))
+        if inside.size:
+            first, last = min(first, start + int(inside[0])), start + int(inside[-1])
+    return slice(max(0, first - 1), min(axis.size, last + 2)) if last >= 0 else slice(0, min(axis.size, 2))
+
+
+def _visible_indices(axis: np.ndarray, limits: tuple[float, float] | None, limit: int) -> np.ndarray:
+    selection = _visible_slice(axis, limits)
+    return selection.start + _bounded_indices(selection.stop - selection.start, limit)
+
+
+def _line_points(x: Any, y: Any, *, limit: int = 2_500, view: tuple[float, float] | None = None) -> list[list[float | None]]:
     axis = np.asarray(x, dtype=float).reshape(-1)
     values = np.asarray(y, dtype=float).reshape(-1)
     if axis.size != values.size:
         raise ValueError("The selected output has no matching axis.")
-    indices = _bounded_indices(values.size, limit)
-    return [
+    indices = _visible_indices(axis, view, limit)
+    points = [
         [
             float(axis[index]),
             float(values[index]) if np.isfinite(values[index]) else None,
         ]
         for index in indices
     ]
+    return DetailedPreviewData(points, lambda x_limits, _y_limits: {
+        "data": _line_points(axis, values, limit=limit, view=x_limits),
+    })
 
 
 def _band_segments(
@@ -1026,6 +1076,7 @@ def _band_segments(
     *,
     log_y: bool,
     limit: int = 2_500,
+    view: tuple[float, float] | None = None,
 ) -> list[list[float]]:
     """Return bounded adjacent polygons for one variable-width filled band."""
 
@@ -1036,7 +1087,8 @@ def _band_segments(
         raise ValueError("The filled interval has no matching axis.")
     if axis.size < 2:
         return []
-    indices = _bounded_indices(axis.size, limit)
+    full_axis, full_lower, full_upper = axis, lower, upper
+    indices = _visible_indices(axis, view, limit)
     axis = axis[indices]
     lower = lower[indices]
     upper = upper[indices]
@@ -1058,7 +1110,9 @@ def _band_segments(
         if log_y and np.any(values[[1, 2, 4, 5]] <= 0):
             continue
         segments.append(values.tolist())
-    return segments
+    return DetailedPreviewData(segments, lambda x_limits, _y_limits: {
+        "data": _band_segments(PreviewBand(band.name, full_axis, full_lower, full_upper, band.color, opacity=band.opacity), log_y=log_y, limit=limit, view=x_limits),
+    })
 
 
 def _sample_heatmap(
@@ -1312,6 +1366,7 @@ def _combined_preview_options(
                 min=0.5, max=len(lines) + 0.5,
                 position="bottom", inverse=bool(settings["invert_x"]),
             )
+            part["dnascapeDefaultAxes"]["x"] = [0.5, len(lines) + 0.5]
             if settings["x_limits"] is not None:
                 axis["min"], axis["max"] = _plot_axis_limits(
                     settings["x_limits"], None, label="X", log_axis=settings["log_x"],
@@ -1336,15 +1391,23 @@ def _combined_preview_options(
                 series["xAxisIndex"] = index
     for axis_name, independent in (("yAxis", dual), ("xAxis", independent_x)):
         axes = [part[axis_name] for part in parts]
+        key = axis_name[0]
+        defaults = [part["dnascapeDefaultAxes"][key] for part in parts]
         if independent:
+            options["dnascapeDefaultAxes"][key] = defaults[0]
+            options["dnascapeDefaultAxes"][f"secondary_{key}"] = defaults[1]
             for index, axis in enumerate(axes):
                 axis["position"] = ("left" if index == 0 else "right") if axis_name == "yAxis" else (
                     "bottom" if index == 0 else "top"
                 )
-                axis["axisLine"] = {"onZero": False, "lineStyle": {"color": lines[index].color}}
+                axis["axisLine"] = {**axis["axisLine"], "show": True, "onZero": False,
+                                    "lineStyle": {**axis["axisLine"].get("lineStyle", {}), "color": lines[index].color}}
                 axis["nameTextStyle"] = {**axis["nameTextStyle"], "color": lines[index].color}
             options[axis_name] = axes
         else:
+            options["dnascapeDefaultAxes"][key] = [
+                min(item[0] for item in defaults), max(item[1] for item in defaults),
+            ]
             axis = axes[0]
             axis["min"] = min(float(item["min"]) for item in axes)
             axis["max"] = max(float(item["max"]) for item in axes)
@@ -1378,16 +1441,11 @@ def _combined_preview_options(
         interactive=arguments["interactive"], trigger="item" if plot_type == "Boxplot" else "axis",
         x_values=np.concatenate(hover_x), values=np.concatenate(hover_y),
     )
-    if plot_type == "Histogram" and arguments["show_histogram_statistics"]:
-        options["graphic"] = _histogram_statistics_graphic(
-            np.concatenate([finite_values(line.y) for line in lines]),
-            position=arguments["histogram_statistics_position"],
-        )
     limit_curve_hover(options)
     return options
 
 
-def build_preview_plot_options(
+def _build_preview_plot_options(
     *,
     plot_type: str,
     title: str,
@@ -1422,6 +1480,8 @@ def build_preview_plot_options(
     histogram_bin_size: float | None = None,
     histogram_x_limits: tuple[float, float] | None = None,
     histogram_touching: bool = True,
+    kde_bandwidth: float = 1.0,
+    histogram_grouped: bool = False,
     histogram_boundary: str = "left",
     x_limits: tuple[float, float] | None = None,
     z_limits: tuple[float, float] | None = None,
@@ -1452,7 +1512,8 @@ def build_preview_plot_options(
         aspect_ratio = _positive_finite(aspect_ratio)
         if aspect_ratio is None:
             raise ValueError("Aspect ratio must be finite and positive.")
-    axis_line = {"onZero": False, "lineStyle": {"color": "#a69e98"}}
+    axis_line = {"show": True, "onZero": False,
+                 "lineStyle": {"color": "#a69e98", "width": 1.2, "type": "solid", "opacity": 1}}
     axis_tick = {
         "show": True,
         "inside": False,
@@ -1609,6 +1670,38 @@ def build_preview_plot_options(
             "height: Math.abs(b[1] - a[1])}, "
             "style: {fill: 'rgba(0,0,0,0.001)', stroke: null}}; }"
         )
+        hover_data = _heatmap_tooltip_data(
+            sampled, x_limits=(x_data_minimum, x_data_maximum),
+            y_limits=(y_data_minimum, y_data_maximum), log_z=log_z,
+            x_coordinates=x_values, y_coordinates=y_values,
+        )
+        initial_raster = [[x_data_minimum, y_data_minimum, x_data_maximum, y_data_maximum]]
+        source_x = np.asarray(x_axis, dtype=float).reshape(-1)
+        source_y = np.asarray(y_axis, dtype=float).reshape(-1)
+        source_matrix = np.asarray(values)
+        if source_matrix.shape != (source_y.size, source_x.size):
+            source_matrix = source_matrix.reshape(source_x.size, source_y.size).T
+
+        def refine_heatmap(x_view: Any, y_view: Any) -> dict[str, Any]:
+            def selection(axis: np.ndarray, view: Any) -> slice:
+                return _visible_slice(axis, view)
+
+            xs, ys = selection(source_x, x_view), selection(source_y, y_view)
+            if xs.start == 0 and xs.stop == source_x.size and ys.start == 0 and ys.stop == source_y.size:
+                return {"data": DetailedPreviewData(initial_raster, refine_heatmap), ":renderItem": render_item, "hoverData": hover_data}
+            crop_x, crop_y, crop, _, _ = _sample_heatmap(
+                source_matrix[ys, xs], source_x[xs], source_y[ys], log_x=log_x, log_y=log_y, log_z=log_z,
+            )
+            xmin, xmax = _data_axis_bounds(crop_x, log_axis=log_x)
+            ymin, ymax = _data_axis_bounds(crop_y, log_axis=log_y)
+            image = _heatmap_data_uri(crop, palette=palette, z_minimum=z_minimum, z_maximum=z_maximum,
+                                      invert_x=invert_x, invert_y=invert_y, invert_z=invert_z)
+            return {
+                "data": DetailedPreviewData([[xmin, ymin, xmax, ymax]], refine_heatmap),
+                ":renderItem": render_item.replace(image_literal, json.dumps(image)),
+                "hoverData": _heatmap_tooltip_data(crop, x_limits=(xmin, xmax), y_limits=(ymin, ymax),
+                                                  log_z=log_z, x_coordinates=crop_x, y_coordinates=crop_y),
+            }
         tooltip_series = (
             [
                 {
@@ -1629,14 +1722,7 @@ def build_preview_plot_options(
                     "silent": False,
                     "clip": True,
                     "emphasis": {"disabled": True},
-                    "data": _heatmap_tooltip_data(
-                        sampled,
-                        x_limits=(x_data_minimum, x_data_maximum),
-                        y_limits=(y_data_minimum, y_data_maximum),
-                        log_z=log_z,
-                        x_coordinates=x_values,
-                        y_coordinates=y_values,
-                    ),
+                    "data": hover_data,
                 }
             ]
             if interactive
@@ -1669,18 +1755,30 @@ def build_preview_plot_options(
             tick_upper=x_maximum,
         )
         tooltip = _tooltip_options(interactive=interactive, trigger="item", x_values=x_values, values=sampled)
+        tooltip["axisPointer"].update(
+            type="cross", axis="auto", snap=False,
+            crossStyle={"color": "#b8b0aa", "width": 1, "type": "dashed"},
+        )
+        tooltip["axisPointer"]["label"][":formatter"] = (
+            "params => (params.axisDimension === 'y' ? ("
+            + _hover_formatter(integer_only=_whole_numbers(y_values)) + ") : ("
+            + _hover_formatter(integer_only=_whole_numbers(x_values)) + "))(params.value)"
+        )
         tooltip[":formatter"] = (
             "params => { const v = params.value; "
-            f"const fx = ({_hover_formatter(integer_only=_whole_numbers(x_values))}); "
-            f"const fy = ({_hover_formatter(integer_only=_whole_numbers(y_values))}); "
             f"const fz = ({_hover_formatter(integer_only=not log_z and _whole_numbers(sampled))}); "
-            f"return {json.dumps(escape(x_label or 'X') + ': ')} + fx(v[0]) + '<br>' + "
-            f"{json.dumps(escape(y_label or 'Y') + ': ')} + fy(v[1]) + '<br>' + "
-            f"(params.marker || '') + {json.dumps(escape(series_label or title or 'Value') + ': ')} + fz(v[2]); }}"
+            f"const colour = ({_heatmap_value_style(palette=palette, z_minimum=z_minimum, z_maximum=z_maximum, log_z=log_z, invert_z=invert_z)})(v[2]); "
+            "return '<span style=\"background:' + colour.background + ';color:' + colour.foreground + "
+            "';padding:1px 4px;border-radius:3px;font-weight:600\">' + fz(v[2]) + '</span>'; }"
         )
         return {
             "animation": False,
             "dnascapeAspectRatio": aspect_ratio,
+            "dnascapePlotType": "Heatmap",
+            "dnascapeDefaultAxes": {
+                "x": [x_data_minimum, _visual_axis_endpoint(x_axis) or x_data_maximum],
+                "y": [y_data_minimum, y_data_maximum],
+            },
             "title": title_options,
             "tooltip": tooltip,
             "graphic": (
@@ -1719,14 +1817,7 @@ def build_preview_plot_options(
                     "type": "custom",
                     "z": 0,
                     "coordinateSystem": "cartesian2d",
-                    "data": [
-                        [
-                            x_data_minimum,
-                            y_data_minimum,
-                            x_data_maximum,
-                            y_data_maximum,
-                        ]
-                    ],
+                    "data": DetailedPreviewData(initial_raster, refine_heatmap),
                     "encode": {"x": [0, 2], "y": [1, 3]},
                     ":renderItem": render_item,
                     "silent": True,
@@ -1744,7 +1835,7 @@ def build_preview_plot_options(
         if log_x:
             _validate_log_axis(finite, "Log X")
         if density:
-            kde_x, kde_y = _kde_data(finite, log_x=log_x, x_limits=histogram_x_limits)
+            kde_x, kde_y = _kde_data(finite, log_x=log_x, x_limits=histogram_x_limits, bandwidth_scale=kde_bandwidth)
             options = build_preview_plot_options(
                 plot_type="Line", title=title, x_label=x_label, y_label=y_label,
                 color=color, palette=palette, histogram_bins=histogram_bins, density=False,
@@ -1755,17 +1846,16 @@ def build_preview_plot_options(
                 log_x=log_x, invert_x=invert_x, show_grid=show_grid,
                 interactive=interactive, aspect_ratio=aspect_ratio, legend_position=legend_position,
             )
-            options["graphic"] = (
-                _histogram_statistics_graphic(finite[finite > 0] if log_x else finite,
-                                              position=histogram_statistics_position)
-                if show_histogram_statistics else []
-            )
-            if show_histogram_statistics and histogram_statistics_position.lower().startswith("bottom"):
-                options["grid"]["bottom"] = max(options["grid"]["bottom"], 100)
-                options["legend"] = build_legend_options(
-                    [series_label], grid=options["grid"], position=legend_position,
-                    show=show_legend, interactive=interactive,
-                )
+            options["dnascapePlotType"] = "Histogram"
+            kde_samples = finite if finite.size <= 20_000 else finite[np.linspace(0, finite.size - 1, 20_000, dtype=int)]
+
+            def refine_kde(x_view: Any, _y_view: Any) -> dict[str, Any]:
+                detail_x, detail_y = _kde_data(kde_samples, log_x=log_x,
+                                              x_limits=histogram_x_limits, bandwidth_scale=kde_bandwidth,
+                                              evaluation_limits=x_view)
+                return {"data": DetailedPreviewData(_line_points(detail_x, detail_y), refine_kde)}
+
+            options["series"][0]["data"] = DetailedPreviewData(options["series"][0]["data"], refine_kde)
             return options
         finite, counts, edges = _histogram_data(
             finite,
@@ -1788,7 +1878,7 @@ def build_preview_plot_options(
         histogram_y_axis: dict[str, Any] = {
             "type": "log" if log_y else "value",
             "splitNumber": 6,
-            "name": y_label or ("Density" if density else "Count"),
+            "name": y_label,
             "nameLocation": "middle",
             "nameTextStyle": _axis_name_options(),
             "inverse": bool(invert_y),
@@ -1924,26 +2014,37 @@ def build_preview_plot_options(
             for left, right, value in zip(edges[:-1], edges[1:], counts)
             if not log_y or value > 0
         ]
-        bottom_statistics = bool(show_histogram_statistics) and str(
-            histogram_statistics_position or ""
-        ).strip().casefold().startswith("bottom")
+        default_domain = histogram_domain(finite, log_x=log_x)[1]
+        default_counts = counts
+        if histogram_x_limits is not None and not _limits_match(histogram_x_limits, default_domain):
+            _, default_counts, _ = _histogram_data(
+                finite, bins=histogram_bins, bin_size=histogram_bin_size,
+                density=False, log_x=log_x, x_limits=default_domain, boundary=histogram_boundary,
+            )
+            # Shared bin intervals can concentrate one dataset in a single
+            # slot. Navigation must include the counts actually on screen.
+            default_counts = np.concatenate((default_counts, counts))
+        default_y = (
+            _logarithmic_data_limits(
+                float(np.min(default_counts[default_counts > 0])), float(np.max(default_counts)),
+            ) if log_y else nice_linear_limits(0.0, float(np.max(default_counts)), floor_at_zero=True)
+        )
         return {
             "animation": False,
             "dnascapeAspectRatio": aspect_ratio,
+            "dnascapePlotType": "Histogram",
+            "dnascapeDefaultAxes": {
+                "x": list(default_domain if histogram_x_limits is not None else (
+                    _logarithmic_data_limits(*default_domain) if log_x else nice_linear_limits(*default_domain)
+                )),
+                "y": list(default_y),
+            },
             "title": title_options,
-            "graphic": (
-                _histogram_statistics_graphic(
-                    finite,
-                    position=histogram_statistics_position,
-                )
-                if show_histogram_statistics
-                else []
-            ),
             "tooltip": _tooltip_options(interactive=interactive, trigger="axis", x_values=edges, values=counts),
             "grid": _cartesian_grid(
                 y_name_gap=y_name_gap,
                 y_name=histogram_y_axis["name"],
-                bottom_legend=bottom_statistics,
+                bottom_legend=False,
             ),
             "xAxis": histogram_x_axis,
             "yAxis": histogram_y_axis,
@@ -2055,6 +2156,14 @@ def build_preview_plot_options(
         return {
             "animation": False,
             "dnascapeAspectRatio": aspect_ratio,
+            "dnascapePlotType": "Boxplot",
+            "dnascapeDefaultAxes": {
+                "x": [-0.5, 0.5],
+                "y": list(
+                    _logarithmic_data_limits(float(np.min(finite)), float(np.max(finite)))
+                    if log_y else nice_linear_limits(float(np.min(finite)), float(np.max(finite)))
+                ),
+            },
             "title": title_options,
             "tooltip": _tooltip_options(interactive=interactive, trigger="item", values=[lower, q1, median, q3, upper]),
             "grid": _cartesian_grid(
@@ -2146,11 +2255,10 @@ def build_preview_plot_options(
             {
                 "type": "scatter" if scalar else "line",
                 "name": line.name,
-                # ECharts substitutes a circle in line legends for "none".
-                # Hidden line markers retain a plain line legend instead.
-                "symbol": "circle" if scalar else "line",
+                # Hidden symbols appear only at the hovered curve samples.
+                "symbol": "circle",
                 "showSymbol": bool(scalar),
-                "symbolSize": 12 if scalar else 0,
+                "symbolSize": 12 if scalar else 6,
                 "silent": not interactive,
                 "connectNulls": False,
                 "sampling": "lttb",
@@ -2162,7 +2270,7 @@ def build_preview_plot_options(
                     "type": curve_dash_pattern(line.line_type or line_type),
                 },
                 "itemStyle": {"color": line.color, "opacity": line.opacity},
-                "emphasis": {"disabled": not interactive},
+                "emphasis": {"disabled": not interactive, "scale": False},
                 "data": _line_points(line.x, flattened),
             }
         )
@@ -2318,6 +2426,14 @@ def build_preview_plot_options(
     return limit_curve_hover({
         "animation": False,
         "dnascapeAspectRatio": aspect_ratio,
+        "dnascapePlotType": "Line",
+        "dnascapeDefaultAxes": {
+            "x": list(automatic_x_limits),
+            "y": list(
+                _logarithmic_data_limits(line_y_data_lower, line_y_data_upper) if log_y else
+                nice_linear_limits(line_y_data_lower, line_y_data_upper)
+            ),
+        },
         "title": title_options,
         "tooltip": {
             **_tooltip_options(
@@ -2333,3 +2449,94 @@ def build_preview_plot_options(
         "yAxis": y_axis_options,
         "series": line_options,
     })
+
+
+def histogram_guide_options(
+    options: dict[str, Any], datasets: Sequence[tuple[str, str, Any]], *,
+    legend: bool, statistics: bool, position: str = "Top right",
+) -> None:
+    """One colour-keyed, selectable guide panel, also present in plot exports."""
+    options["legend"] = {**options.get("legend", {}), "show": False}
+    choices = []
+    grid = options.get("grid", {})
+    panel_width = min(240, max(160, max((len(str(name)[:28]) for name, _, _ in datasets), default=0) * 6 + 50))
+    for name, color, values in datasets:
+        finite = finite_values(values)
+        heading = legend or len(datasets) > 1
+        title = str(name).replace("{", "(").replace("}", ")").replace("|", " ")
+        title = title[:27] + "…" if len(title) > 28 else title
+        lines = ([f"{{dot|●}} {{name|{title}}}" + ("  ▾" if len(datasets) > 1 else "")] if heading else [])
+        if statistics:
+            lines.extend([
+                f"Mean       {_compact_tick(float(np.mean(finite)))}" if finite.size else "No finite values",
+                f"Median    {_compact_tick(float(np.median(finite)))}" if finite.size else "",
+                f"Std dev   {_compact_tick(float(np.std(finite)))}" if finite.size else "",
+            ])
+        placement = {
+            "top" if position.startswith("Top") else "bottom": grid.get("top" if position.startswith("Top") else "bottom", 24) + 8,
+            "left" if position.endswith("left") else "right": grid.get("left" if position.endswith("left") else "right", 28) + 8,
+        }
+        graphic = dict(
+            id="dn-histogram-guide", type="text", **placement,
+            z=10000, z2=10000, zlevel=20, silent=len(datasets) <= 1,
+            style=dict(
+                text="\n".join(lines), fill="#625c57", font="11px sans-serif", lineHeight=17,
+                backgroundColor="rgba(255,255,255,0.94)", borderColor="#ddd7d1", borderWidth=1,
+                borderRadius=5, padding=[7, 9],
+                width=panel_width - 18, overflow="truncate",
+                rich=dict(dot=dict(fill=color), name=dict(fill="#625c57", fontWeight=500)),
+            ),
+        )
+        if len(datasets) > 1:
+            graphic[":onclick"] = "event => window.dnascapeHistogramMenu?.(event)"
+        choices.append(dict(name=str(name), color=color, graphic=graphic))
+    visible = bool(choices and (legend or statistics))
+    options["graphic"] = [choices[0]["graphic"]] if visible else []
+    options["dnascapeHistogramGuides"] = dict(
+        choices=choices, selected=0, visible=visible,
+        width=panel_width,
+        height=14 + 17 * ((1 if legend or len(datasets) > 1 else 0) + (3 if statistics else 0)),
+        position=position,
+    )
+
+
+def arrange_histogram_bins(options: dict[str, Any], dataset_count: int) -> None:
+    for index, series in enumerate(options.get("series", [])):
+        renderer = series.get(":renderItem", "")
+        series[":renderItem"] = renderer.replace(
+            "const x0 = Math.min(baseLeft[0], baseRight[0]); const x1 = Math.max(baseLeft[0], baseRight[0]);",
+            "const slot0=Math.min(baseLeft[0],baseRight[0]),slot1=Math.max(baseLeft[0],baseRight[0]); "
+            f"const x0=slot0+(slot1-slot0)*{index}/{dataset_count},x1=slot0+(slot1-slot0)*{index + 1}/{dataset_count};",
+        )
+
+
+@wraps(_build_preview_plot_options)
+def build_preview_plot_options(**kwargs: Any) -> dict[str, Any]:
+    options = _build_preview_plot_options(**kwargs)
+    if kwargs.get("plot_type") == "Histogram":
+        lines = kwargs.get("lines", ())
+        datasets = (
+            [(line.name, line.color, line.y) for line in lines]
+            if lines else [(kwargs.get("series_label") or kwargs.get("title", "Values"), kwargs.get("color", "#b03412"), kwargs.get("values", []))]
+        )
+        filtered = []
+        for index, (name, color, values) in enumerate(datasets):
+            finite = finite_values(values)
+            logarithmic = kwargs.get("secondary_log_x") if index == 1 and kwargs.get("secondary_x_label") is not None else kwargs.get("log_x")
+            if logarithmic:
+                finite = finite[finite > 0]
+            domain = kwargs.get("secondary_x_limits") if index == 1 and kwargs.get("secondary_x_label") is not None else kwargs.get("histogram_x_limits")
+            if domain is not None and not kwargs.get("density"):
+                finite = finite[(finite >= domain[0]) & (finite <= domain[1])]
+            filtered.append((name, color, finite))
+        datasets = filtered
+        histogram_guide_options(
+            options, datasets, legend=kwargs.get("show_legend", False),
+            statistics=kwargs.get("show_histogram_statistics", False),
+            position=kwargs.get("legend_position", "Top right"),
+        )
+        for index, series in enumerate(options.get("series", [])):
+            series["dnascapeDataset"] = index
+        if kwargs.get("histogram_grouped") and not kwargs.get("density") and len(datasets) > 1:
+            arrange_histogram_bins(options, len(datasets))
+    return options

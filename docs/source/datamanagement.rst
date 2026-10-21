@@ -41,7 +41,8 @@ Main helpers:
 Files
 -----
 
-Supported plain formats: CSV, TSV, TXT, NPY, NPV, NPZ, and gzipped CSV/TSV/TXT.
+Supported input formats: CSV, TSV, TXT, NPY, NPV, NPZ, and gzipped CSV/TSV/TXT.
+Export formats: TSV, TXT, CSV, and NPZ.
 
 Load one chromosome:
 
@@ -184,6 +185,13 @@ Inputs
 Controls
    Target format, gzip, data form, column, NPZ key, rounding, chromosome,
    interval, bin size, aggregation, missing values, smoothing, normalization.
+   The collapsed **Filter** section below Configure is off by default. Enable
+   it to select regions by signal thresholds, missing values, an uploaded mask
+   or genomic positions/intervals, or the whole region. Its default replaces
+   converted values below zero with zero. Operations include region means,
+   interpolation, replacement with a value or NaN, Gaussian noise, reference
+   minimum/maximum, multiplication, and addition. Filtering follows Configure
+   and preserves bin positions; previews and downloads contain the edited data.
 
 Outputs
    Converted file, inferred shape, track preview, download, cached artifact.
@@ -194,7 +202,7 @@ Python
 Export
 ------
 
-Use TSV/CSV for readable profiles, NPY/NPZ for exact numerical intermediates,
+Use TSV/CSV for readable profiles, NPZ for exact numerical intermediates,
 and TXT for simple vectors.
 
 Checklist

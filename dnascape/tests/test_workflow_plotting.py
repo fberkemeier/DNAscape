@@ -83,6 +83,23 @@ def _settings() -> dict[str, Any]:
     )
 
 
+def test_combined_histograms_share_bins_and_keep_all_counts_in_navigation_bounds():
+    first = replace(_result(), outputs={"replication_timing": np.array([1.0, 2.0, 3.0])})
+    second = replace(_result(), outputs={"replication_timing": np.array([100.0, 200.0, 300.0])})
+    results = tuple(SimpleNamespace(key=str(index), name=f"Dataset {index}", result=result)
+                    for index, result in enumerate((first, second)))
+    settings = {**_settings(), "plot_type": "Histogram", "histogram_x_limits": None,
+                "histogram_bin_size": None, "y_limits": None, "histogram_grouped": True}
+    options = combined_mapping_plot_options(results, **settings)
+    assert [row[:2] for row in options["series"][0]["data"]] == [row[:2] for row in options["series"][1]["data"]]
+    assert sum(row[2] for row in options["series"][0]["data"]) == 3
+    assert "*0/2" in options["series"][0][":renderItem"]
+    assert "*1/2" in options["series"][1][":renderItem"]
+    assert options["dnascapeDefaultAxes"]["x"] == [1, 300]
+    assert options["dnascapeDefaultAxes"]["y"][1] >= 3
+    assert options["yAxis"]["max"] >= 3
+
+
 class _Scripts(HTMLParser):
     def __init__(self, html: str) -> None:
         super().__init__()
@@ -382,7 +399,8 @@ for (const [width, height] of [[800, 360], [360, 240], [1200, 540]]) {
   chart.renderToSVGString();
   const model = chart.getModel();
   const grid = model.getComponent('grid').coordinateSystem.getRect();
-  const group = chart.getViewOfComponentModel(model.getComponent('legend')).group;
+  const guide = model.getComponent('legend').get('show') ? 'legend' : 'graphic';
+  const group = chart.getViewOfComponentModel(model.getComponent(guide)).group;
   const rect = group.getBoundingRect();
   const [x, y] = group.transformCoordToGlobal(rect.x, rect.y);
   layouts.push({grid, legend: {x, y, width: rect.width, height: rect.height}});

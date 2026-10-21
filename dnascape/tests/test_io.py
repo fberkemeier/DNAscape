@@ -80,17 +80,18 @@ class IOTests(unittest.TestCase):
 
     def test_rdata_writes_temporal_vectors_as_transposed_arrays(self):
         with tempfile.TemporaryDirectory() as tmpdir:
-            output_path = Path(tmpdir) / "temporal.npv"
+            output_path = Path(tmpdir) / "temporal.npz"
 
             result = rdata(
                 np.array([1.0, 2.0, 3.0]),
-                target="npv",
+                target="npz",
                 output_path=output_path,
                 data_form="time",
                 return_data=True,
             )
 
-            loaded = np.load(output_path, allow_pickle=False)
+            with np.load(output_path, allow_pickle=False) as archive:
+                loaded = archive["values"]
             self.assertEqual(result["data_form"], "time")
             self.assertEqual(loaded.shape, (1, 3))
             np.testing.assert_allclose(loaded, np.array([[1.0, 2.0, 3.0]]))
@@ -321,7 +322,7 @@ class IOTests(unittest.TestCase):
 
     def test_rdata_can_write_gzip_binary_output(self):
         with tempfile.TemporaryDirectory() as tmpdir:
-            output_path = Path(tmpdir) / "values.npy.gz"
+            output_path = Path(tmpdir) / "values.npz.gz"
 
             result_path = rdata(
                 np.array([1.0, 2.0, 3.0]),
@@ -331,7 +332,8 @@ class IOTests(unittest.TestCase):
 
             self.assertEqual(result_path, output_path)
             with gzip.open(output_path, "rb") as handle:
-                loaded = np.load(BytesIO(handle.read()), allow_pickle=False)
+                with np.load(BytesIO(handle.read()), allow_pickle=False) as archive:
+                    loaded = archive["values"]
             np.testing.assert_allclose(loaded, np.array([1.0, 2.0, 3.0]))
 
     def test_rload_extracts_chromosome_as_dnascape_vector(self):
@@ -441,15 +443,31 @@ class IOTests(unittest.TestCase):
             self.assertEqual(result_path, output_path)
             self.assertEqual(output_path.read_text(encoding="utf-8"), "t0\tt1\n1.0\t2.0\n3.0\t4.0\n")
 
-    def test_rsave_time_form_writes_transposed_npv(self):
+    def test_rsave_time_form_writes_transposed_npz(self):
         with tempfile.TemporaryDirectory() as tmpdir:
-            output_path = Path(tmpdir) / "time.npv"
+            output_path = Path(tmpdir) / "time.npz"
 
             rsave(np.array([1.0, 2.0, 3.0]), output_path, data_form="time")
 
-            values = np.load(output_path, allow_pickle=False)
+            with np.load(output_path, allow_pickle=False) as archive:
+                values = archive["values"]
             self.assertEqual(values.shape, (1, 3))
             np.testing.assert_allclose(values, np.array([[1.0, 2.0, 3.0]]))
+
+    def test_legacy_numpy_arrays_remain_readable_but_are_not_export_targets(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            for file_format in ("npy", "npv"):
+                with self.subTest(file_format=file_format):
+                    source = Path(tmpdir) / f"input.{file_format}"
+                    with source.open("wb") as handle:
+                        np.save(handle, np.array([1.0, 2.0]), allow_pickle=False)
+                    np.testing.assert_array_equal(rload(source), [1.0, 2.0])
+                    output = Path(tmpdir) / f"output.{file_format}"
+                    with self.assertRaisesRegex(ValueError, "Unsupported output format"):
+                        rsave([1.0, 2.0], output)
+                    with self.assertRaisesRegex(ValueError, "Unsupported output format"):
+                        rdata(source, target=file_format, output_path=output)
+                    self.assertFalse(output.exists())
 
     def test_rload_and_rsave_are_public_api(self):
         from dnascape import rload as public_rload

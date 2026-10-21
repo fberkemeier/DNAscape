@@ -8,15 +8,20 @@ from collections.abc import Callable, Iterator, Mapping, Sequence
 from contextlib import contextmanager
 from dataclasses import dataclass
 from functools import partial
+from pathlib import PurePath
 from typing import Any
 from urllib.parse import quote
 
 from nicegui import background_tasks, events, helpers, ui
+from nicegui.elements.upload_files import SmallFileUpload
 
 from app.export_settings import DATA_FILE_FORMAT_OPTIONS, get_export_settings
 from app.icons import DATA_ICON, DATA_ICON_SVG, OUTLINE_ICON_SVGS, PLOT_ICON_SVG
 from app.mapping_uploads import MAX_DECOMPRESSED_BYTES, MAX_UPLOAD_BYTES
 from app.notifications import notify
+from app.raw_data_transfer import RAW_DATA_PAGES
+from app.session_cache import internal_upload
+from app.simulation_exports import ExportArtifact
 
 # Keep every data-export selector in the same user-facing order.
 RAW_DATA_FORMATS = tuple(DATA_FILE_FORMAT_OPTIONS.values())
@@ -41,6 +46,8 @@ class RawOutputControls:
     row: Any
     remove_button: Any | None = None
     extra_slot: Any | None = None
+    open_button: Any | None = None
+    select_button: Any | None = None
 
 
 @dataclass(kw_only=True)
@@ -58,6 +65,8 @@ class _DataUploadState:
     locked: bool
     remove_controls: list[Any]
     inspecting_names: list[str]
+    uploaded_names: list[str]
+    receive: Callable[..., Any] | None = None
 
 
 _DATA_UPLOAD_STATES: weakref.WeakKeyDictionary[Any, _DataUploadState] = weakref.WeakKeyDictionary()
@@ -153,23 +162,30 @@ def expansion(
     *,
     expanded: bool = False,
     icon: str | None = None,
+    icon_svg: str | None = None,
     extra_classes: str = "",
 ) -> Iterator[None]:
     """Render a compact workflow section."""
 
     classes = f"dn-expansion {extra_classes}".strip()
     custom_data_icon = icon == DATA_ICON
+    custom_icon_svg = DATA_ICON_SVG if custom_data_icon else icon_svg
     section = (
-        ui.expansion(title, value=expanded, icon=None if custom_data_icon else icon)
+        ui.expansion(title, value=expanded, icon=None if custom_icon_svg else icon)
         .classes(classes)
         .props("dense")
     )
-    if custom_data_icon:
+    if custom_icon_svg:
         with section.add_slot("header"):
             with ui.item_section().props("avatar"):
-                ui.html(DATA_ICON_SVG).classes("dn-expansion-data-icon dn-outline-icon").mark(
-                    "data-outline-icon"
-                )
+                if custom_data_icon:
+                    ui.html(custom_icon_svg).classes("dn-expansion-data-icon dn-outline-icon").mark(
+                        "data-outline-icon"
+                    )
+                else:
+                    ui.html(custom_icon_svg).classes("dn-expansion-custom-icon").mark(
+                        "section-outline-icon"
+                    )
             with ui.item_section():
                 ui.item_label(title)
     with section:
@@ -304,6 +320,37 @@ def is_data_upload(control: Any) -> bool:
         return False
 
 
+async def append_raw_uploads(get_uploader: Callable[[], Any], artifacts: Sequence[ExportArtifact]) -> None:
+    """Append internal files through normal inspection, without replacing names."""
+    for artifact in artifacts:
+        uploader = get_uploader()
+        state = _DATA_UPLOAD_STATES.get(uploader)
+        if state is None or state.receive is None or uploader.is_deleted:
+            raise ValueError("The selected file input is no longer available.")
+        if state.locked or not uploader.enabled or state.inspecting_names:
+            raise ValueError("Wait for the current operation to finish before adding data.")
+        if not artifact.data or len(artifact.data) > MAX_UPLOAD_BYTES:
+            raise ValueError("The file is empty or too large to open in this local session.")
+        name = PurePath(artifact.filename.replace("\\", "/")).name
+        suffixes = PurePath(name).suffixes
+        extension = "".join(suffixes[-2:] if name.casefold().endswith(".gz") else suffixes[-1:])
+        stem = name[:-len(extension)] if extension else name
+        index = 2
+        while name in state.uploaded_names:
+            name = f"{stem} ({index}){extension}"
+            index += 1
+        event = events.UploadEventArguments(
+            sender=uploader, client=uploader.client,
+            file=SmallFileUpload(name=name, content_type=artifact.media_type, _data=artifact.data),
+        )
+        # Reusing outputs must not duplicate them in Cached Files; this also
+        # keeps individual simulation profiles outside the cache.
+        with internal_upload():
+            accepted = await state.receive(event)
+        if accepted is False:
+            break  # The normal inspector already explained the rejected data.
+
+
 def data_upload(
     *,
     accept: str,
@@ -383,6 +430,7 @@ def data_upload(
             locked=False,
             remove_controls=[],
             inspecting_names=inspecting_names,
+            uploaded_names=uploaded_names,
         )
         _DATA_UPLOAD_STATES[uploader] = upload_state
         # Quasar does not finish its XHR entry until after the Python upload
@@ -544,7 +592,7 @@ def data_upload(
 
             uploaded_file_rows()
 
-        async def handle_upload(event: events.UploadEventArguments) -> None:
+        async def handle_upload(event: events.UploadEventArguments) -> bool:
             # NiceGUI dispatches files in a multiple-upload batch as individual
             # event tasks. Serialize them to preserve the user's file order
             # through inspection, state storage, and scientific pairing.
@@ -564,13 +612,13 @@ def data_upload(
                     raise
                 inspecting_names.remove(event.file.name)
                 if uploader.is_deleted:
-                    return
+                    return accepted is not False
                 # A callback can explicitly reject a file after inspecting its
                 # contents.  Exceptions likewise stop here, so an invalid file can
                 # never acquire the completed/check presentation.
                 if accepted is False:
                     uploaded_file_rows.refresh()
-                    return
+                    return False
                 if allow_multiple:
                     # Replacing a same-name item must retain its position: the
                     # scientific batch pairer uses this stable upload order.
@@ -580,7 +628,9 @@ def data_upload(
                     uploaded_names.clear()
                     uploaded_names.append(event.file.name)
                 uploaded_file_rows.refresh()
+                return True
 
+        upload_state.receive = handle_upload
         uploader.on_upload(handle_upload)
         if show_accepted_formats:
             ui.label(f"Accepted: {accepted_formats}").classes("dn-upload-formats")
@@ -675,13 +725,30 @@ def stat_strip(items: Sequence[tuple[str, str]]) -> dict[str, Any]:
     return values
 
 
+def raw_data_open_menu(on_open: Callable[[str], Any], *, marker: str = "action-open-raw-data") -> Any:
+    """The same open action and destination order for all raw data rows."""
+    with (
+        ui.button(icon="open_in_new").props('flat round dense aria-label="Open raw data in a page"')
+        .classes("dn-download-file-action dn-raw-output-open").mark(marker)
+    ) as button:
+        ui.tooltip("Open in…")
+        with ui.menu().props('anchor="bottom right" self="top right"').mark(f"{marker}-menu"):
+            for slug, label in RAW_DATA_PAGES:
+                ui.menu_item(label, on_click=partial(on_open, slug)).mark(f"{marker}-{slug}")
+    return button
+
+
 def raw_output_file_row(
     *,
     file_name: str,
-    default_type: str = "NPY",
+    default_type: str = "TSV",
     default_compress: bool = True,
     on_download: Callable[[RawOutputControls], Any] | None = None,
     on_remove: Callable[[RawOutputControls], Any] | None = None,
+    on_open: Callable[[RawOutputControls, str], Any] | None = None,
+    on_select: Callable[[], Any] | None = None,
+    selected: bool = False,
+    reserve_remove_space: bool = False,
     markers: Mapping[str, str] | None = None,
     extra_classes: str = "",
 ) -> RawOutputControls:
@@ -694,14 +761,28 @@ def raw_output_file_row(
         "remove": "action-remove-raw-data",
         **dict(markers or {}),
     }
-    removable_class = "dn-raw-output-row-removable" if on_remove is not None else ""
+    removable_class = (
+        "dn-raw-output-row-removable" if on_remove is not None or reserve_remove_space else ""
+    )
     row_classes = (
-        f"dn-download-file-row dn-raw-output-row {removable_class} {extra_classes}"
+        f"dn-download-file-row dn-raw-output-row {removable_class} "
+        f"{'dn-raw-output-row-openable' if on_open else ''} {extra_classes}"
     ).strip()
     with ui.element("div").classes(row_classes) as row:
         if marker := resolved_markers.get("row"):
             row.mark(marker)
-        ui.icon("description").classes("dn-download-file-icon")
+        select_button = None
+        if on_select is None:
+            ui.icon("description").classes("dn-download-file-icon")
+        else:
+            select_button = (
+                ui.button(icon="radio_button_checked" if selected else "radio_button_unchecked", on_click=on_select)
+                .props(f'flat round dense aria-label="Select file for plot" aria-pressed="{str(selected).lower()}"')
+                .classes("dn-download-file-icon dn-download-file-action dn-raw-output-select")
+            )
+            if marker := resolved_markers.get("select"):
+                select_button.mark(marker)
+            select_button.tooltip("Selected for plot" if selected else "Show in plot")
         with ui.element("div").classes("dn-raw-output-fields"):
             file_name_control = (
                 ui.input(label="File name", value=file_name)
@@ -734,6 +815,13 @@ def raw_output_file_row(
         if marker := resolved_markers.get("download"):
             download_button.mark(marker)
         download_button.tooltip("Download")
+        open_button = None
+        if on_open is not None:
+            open_button = raw_data_open_menu(
+                lambda destination: on_open(controls, destination),
+                marker=resolved_markers.get("open", f"{resolved_markers['row']}-open"),
+            )
+            open_button.bind_enabled_from(download_button, "enabled")
         remove_button = None
         if on_remove is not None:
             remove_button = (
@@ -744,6 +832,10 @@ def raw_output_file_row(
             if marker := resolved_markers.get("remove"):
                 remove_button.mark(marker)
             remove_button.tooltip("Remove")
+        elif reserve_remove_space:
+            ui.element("div").classes(
+                "dn-download-file-action dn-raw-output-remove dn-raw-output-action-spacer"
+            ).props('aria-hidden="true"')
     controls = RawOutputControls(
         file_name=file_name_control,
         file_type=file_type_control,
@@ -751,6 +843,8 @@ def raw_output_file_row(
         download_button=download_button,
         row=row,
         remove_button=remove_button,
+        open_button=open_button,
+        select_button=select_button,
     )
     if on_download is not None:
         download_button.on_click(lambda: on_download(controls))
@@ -762,17 +856,19 @@ def raw_output_file_row(
 def raw_output_controls(
     *,
     file_name: str,
-    default_type: str = "NPY",
+    default_type: str = "TSV",
     default_compress: bool = True,
     on_download: Callable[[RawOutputControls], Any] | None = None,
     on_remove: Callable[[RawOutputControls], Any] | None = None,
+    on_open: Callable[[RawOutputControls, str], Any] | None = None,
+    extra_classes: str = "",
 ) -> RawOutputControls:
     """Render the shared raw-data export section and an optional extension slot."""
 
     with expansion(
         "Raw data",
         icon=DATA_ICON,
-        extra_classes="dn-output-section",
+        extra_classes=f"dn-output-section {extra_classes}".strip(),
     ):
         controls = raw_output_file_row(
             file_name=file_name,
@@ -780,6 +876,7 @@ def raw_output_controls(
             default_compress=default_compress,
             on_download=on_download,
             on_remove=on_remove,
+            on_open=on_open,
         )
         extra_slot = ui.element("div").classes("dn-raw-output-extra")
     return RawOutputControls(
@@ -790,6 +887,7 @@ def raw_output_controls(
         row=controls.row,
         remove_button=controls.remove_button,
         extra_slot=extra_slot,
+        open_button=controls.open_button,
     )
 
 

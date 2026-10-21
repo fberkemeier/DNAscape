@@ -172,7 +172,7 @@ def test_simulation_batch_raw_rows_are_independent_and_bulk_uses_each_preference
             await user.should_see("Files: 2", retries=40)
             user.find(marker="action-simulate").click()
             await user.should_see("2 datasets complete", retries=60)
-            user.find("Plotting settings").click()
+            user.find("Plot settings").click()
             shared_type = next(iter(user.find(marker="simulation-curve-type").elements))
             with user.client:
                 shared_type.set_value("dashed")

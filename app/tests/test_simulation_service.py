@@ -50,6 +50,17 @@ def _request(**changes: Any) -> ConstantSimulationRequest:
     return replace(baseline, **changes)
 
 
+@pytest.mark.parametrize("fork_speed", [1.4, np.linspace(1., 2., 4), np.array([[1., 1.5, 2.]]),
+                                        np.linspace(1., 2., 4)[:, None] * np.array([[1., 1.5, 2.]])])
+def test_stochastic_speed_is_forwarded_and_used_for_every_dependence(fork_speed):
+    request = _request(firing_rate=np.array([10., 0., 0., 0.]), fork_speed=fork_speed, fork_speed_std=0.3)
+    first = run_constant_simulation(request)
+    second = run_constant_simulation(request)
+    deterministic = run_constant_simulation(replace(request, fork_speed_std=0))
+    np.testing.assert_array_equal(first.replication_time_profiles, second.replication_time_profiles)
+    assert not np.array_equal(first.replication_time_profiles, deterministic.replication_time_profiles)
+
+
 def _fake_detailed_output(
     *,
     profile_shape: tuple[int, ...] = (2, 4),
@@ -225,7 +236,7 @@ def test_large_ensemble_uses_bounded_progress_cadence(
         return {
             "replication_timing": np.ones(n_bins),
             "replication_timing_std": np.zeros(n_bins),
-            "rep_times_per_sim": np.ones((MAX_RETAINED_REPLICATION_PROFILES, n_bins)),
+            "rep_times_per_sim": np.ones((assumptions["retain_rep_times_limit"], n_bins)),
             "origin_efficiency": np.ones(n_bins),
             "fork_directionality": np.zeros(n_bins),
             "s_phase_duration": np.ones(replicates),
@@ -385,9 +396,12 @@ def test_uploaded_kinetic_field_validation_matches_rsim(
     (
         ({"firing_rate": math.nan}, "Firing rate must be finite"),
         ({"fork_speed": 0.0}, "Fork speed must be finite and greater than zero"),
+        ({"fork_speed_std": -0.1}, "Fork-speed standard deviation must be non-negative"),
+        ({"fork_speed_std": math.inf}, "Fork-speed standard deviation must be finite"),
+        ({"fork_speed_std": math.nan}, "Fork-speed standard deviation must be finite"),
         ({"resolution_x": math.inf}, "Spatial resolution must be finite"),
         ({"region_end_kb": 0.0}, "Region end must be greater than region start"),
-        ({"replicates": 1.5}, "Replicates must be a positive integer"),
+        ({"replicates": 1.5}, r"Simulations \(replicates\) must be a positive integer"),
         ({"geometry": "circular"}, "Geometry must be 'linear' or 'periodic'"),
         ({"missing_values": "ignore"}, "Missing values must be"),
         ({"time_window": 0.0}, "Time window must be finite and greater than zero"),
@@ -496,6 +510,26 @@ def test_retained_profile_count_is_bounded_by_memory() -> None:
         n_bins * np.dtype(float).itemsize
     )
     assert validated.retained_profile_count == expected
+
+
+def test_requested_profile_count_caps_retention_without_changing_ensemble_statistics() -> None:
+    baseline = _request(replicates=6, retained_profile_count=6)
+    full = run_constant_simulation(baseline)
+    limited = run_constant_simulation(replace(baseline, retained_profile_count=2))
+    aggregate = run_constant_simulation(replace(baseline, retained_profile_count=0))
+    assert full.replication_time_profiles.shape == (6, 4)
+    assert limited.replication_time_profiles.shape == (2, 4)
+    assert aggregate.replication_time_profiles is None
+    np.testing.assert_array_equal(limited.replication_time_profiles, full.replication_time_profiles[:2])
+    for result in (limited, aggregate):
+        np.testing.assert_array_equal(result.replication_timing, full.replication_timing)
+        np.testing.assert_allclose(result.replication_timing_std, full.replication_timing_std)
+
+
+@pytest.mark.parametrize("count", (-1, 1.5, math.inf, math.nan))
+def test_invalid_profile_retention_count_is_rejected(count) -> None:
+    with pytest.raises(ValueError, match="Profiles shown"):
+        validate_constant_simulation(_request(retained_profile_count=count))
 
 
 def test_detailed_preallocation_limit_fails_before_time_grid_allocation(

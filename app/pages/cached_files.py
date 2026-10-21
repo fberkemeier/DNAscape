@@ -13,7 +13,8 @@ from app.export_settings import get_export_settings
 from app.mapping_exports import build_mapping_raw_export
 from app.mapping_service import MappingResult
 from app.notifications import notify
-from app.pages.common import page_intro, panel, panel_title, stat_strip
+from app.pages.common import page_intro, panel, panel_title, raw_data_open_menu, stat_strip
+from app.raw_data_transfer import open_raw_artifact
 from app.result_naming import (
     RMAP_FILE_PREFIX,
     RSIM_FILE_PREFIX,
@@ -121,6 +122,7 @@ def _entry_row(
     open_entry: Callable[[str], None],
     remove: Callable[[str], None],
     set_keep: Callable[[str, bool], None],
+    open_raw: Callable[[str, str], Any] | None = None,
 ) -> None:
     with ui.element("div").classes("dn-cache-item").mark(f"cache-entry-{entry.id}"):
         keep_control = (
@@ -160,7 +162,12 @@ def _entry_row(
                     .mark(f"cache-download-{entry.id}")
                 ):
                     ui.tooltip(f"Download {entry.name}")
-            if entry.navigate_to is not None and entry.payload is not None:
+            if entry.kind == "raw" and entry.artifact is not None and open_raw is not None:
+                raw_data_open_menu(
+                    lambda destination, entry_id=entry.id: open_raw(entry_id, destination),
+                    marker=f"cache-open-{entry.id}",
+                ).classes("dn-cache-icon-action")
+            elif entry.navigate_to is not None and entry.payload is not None:
                 with (
                     ui.button(
                         icon="open_in_new",
@@ -275,7 +282,7 @@ def render(navigate: Callable[[str], None]) -> None:
                 )
             )
 
-        with ui.tabs().classes("dn-tabs dn-cache-tabs") as tabs:
+        with ui.tabs().props("align=left breakpoint=0").classes("dn-tabs dn-cache-tabs") as tabs:
             tab_objects: dict[CacheView, Any] = {
                 category: ui.tab(label, icon=_CATEGORY_ICONS[category])
                 for category, label in _CATEGORY_LABELS.items()
@@ -301,6 +308,13 @@ def render(navigate: Callable[[str], None]) -> None:
                 return
             ui.download(artifact.data, artifact.filename, artifact.media_type)
 
+        async def open_raw_entry(entry_id: str, destination: str) -> None:
+            entry = cache.get(entry_id)
+            if entry is None or entry.artifact is None:
+                notify("The cached data are no longer available.", type="warning")
+                return
+            await open_raw_artifact(entry.artifact, destination, navigate)
+
         def open_entry(entry_id: str) -> None:
             try:
                 entry = cache.activate(entry_id)
@@ -316,7 +330,7 @@ def render(navigate: Callable[[str], None]) -> None:
             if entry is None:
                 return
             cache.remove(entry_id)
-            notify(f"Removed {entry.name}.", type="positive")
+            notify("Cached item removed.", type="positive")
             refresh_all()
 
         def keep_entry(entry_id: str, value: bool) -> None:
@@ -376,6 +390,7 @@ def render(navigate: Callable[[str], None]) -> None:
                         entry,
                         download=download_entry,
                         open_entry=open_entry,
+                        open_raw=open_raw_entry,
                         remove=remove_entry,
                         set_keep=keep_entry,
                     )

@@ -58,15 +58,78 @@ def test_static_firing_step_adapts_to_stalling_and_preserves_user_choice(
             await _set(user, "mapping-route", "firing_rate--space--replication_timing-and-fork_speed")
             controls = latest["settings"]
             assert mapping_page._read_setting(controls["fit_step"]) == 2.
+            assert not {"space_fit_step", "space_maxiter"} & controls.keys()
+            for key in ("error", "deviation_threshold"):
+                assert controls[key].override is None
+                with pytest.raises(KeyError):
+                    mapping_page._read_setting(controls[key])
             await _set(user, "mapping-setting-stall-rate-per-kb", .001)
             assert mapping_page._read_setting(controls["fit_step"]) == .6
+            assert controls["deviation_threshold"].active is False
             await _set(user, "mapping-setting-stall-rate-per-kb", 0.)
             assert mapping_page._read_setting(controls["fit_step"]) == 2.
+            assert controls["deviation_threshold"].active is True
             await _set(user, "mapping-setting-fit-step", 1.)
             await _set(user, "mapping-setting-stall-rate-per-kb", .001)
             assert mapping_page._read_setting(controls["fit_step"]) == 1.
             await _set(user, "mapping-setting-stall-rate-per-kb", 0.)
             assert mapping_page._read_setting(controls["fit_step"]) == 1.
+            await _set(user, "mapping-setting-maxiter", 25)
+            assert mapping_page._read_setting(controls["maxiter"]) == 25
+            await _set(user, "mapping-setting-maxiter", 30)
+            assert mapping_page._read_setting(controls["maxiter"]) == 30
+            await _set(user, "mapping-setting-deviation-threshold", .02)
+            assert mapping_page._read_setting(controls["deviation_threshold"]) == .02
+            await _set(user, "mapping-setting-deviation-threshold", None)
+            with pytest.raises(KeyError):
+                mapping_page._read_setting(controls["deviation_threshold"])
+            await _set(user, "mapping-setting-refine-edge-kb", 120.)
+            await _set(user, "mapping-setting-perq", True)
+            assert controls["refine_edge_kb"].active is False
+            assert controls["refine_edge_kb"].holder.visible is False
+            with pytest.raises(KeyError):
+                mapping_page._read_setting(controls["refine_edge_kb"])
+            await _set(user, "mapping-setting-perq", False)
+            assert controls["refine_edge_kb"].active is True
+            assert mapping_page._read_setting(controls["refine_edge_kb"]) == 120.
+
+            # Refreshing dependence-specific controls must retain global choices.
+            await _set(user, "mapping-region-missing", "zero")
+            await _set(user, "mapping-show-plot", False)
+            await _set(user, "mapping-target-form", "time")
+            assert _element(user, "mapping-region-missing").value == "zero"
+            assert _element(user, "mapping-show-plot").value is False
+
+    asyncio.run(scenario())
+
+
+def test_variable_speed_firing_hides_advanced_controls_ignored_by_simulations(monkeypatch) -> None:
+    latest = _record_settings(monkeypatch)
+
+    async def scenario() -> None:
+        async with user_simulation(index) as user:
+            await user.open("/")
+            user.find(marker="nav-mapping").click()
+            await user.should_see(marker="mapping-target", retries=60)
+            await _set(user, "mapping-input-fork-speed-type", "profile")
+            await _set(user, "mapping-input-fork-speed-form", "x")
+            controls = latest["settings"]
+            assert controls["deviation_threshold"].active is False
+            assert controls["deviation_threshold"].holder.visible is False
+            assert not {"space_maxiter", "space_fit_step"} & controls.keys()
+            await _set(user, "mapping-target-form", "constant")
+            controls = latest["settings"]
+            assert _element(user, "mapping-input-fork-speed-form").value == "scalar"
+            assert controls["neighbourhood_range"].active is True
+            await _set(user, "mapping-input-fork-speed-type", "profile")
+            await _set(user, "mapping-input-fork-speed-form", "x")
+            controls = latest["settings"]
+            assert controls["neighbourhood_range"].active is False
+            assert controls["neighbourhood_range"].holder.visible is False
+            await _set(user, "mapping-input-fork-speed-type", "scalar")
+            controls = latest["settings"]
+            assert controls["neighbourhood_range"].active is True
+            assert controls["neighbourhood_range"].holder.visible is True
 
     asyncio.run(scenario())
 

@@ -153,7 +153,7 @@ def test_mapping_batch_raw_rows_are_independent_and_bulk_uses_each_preference(
             user.find(marker="action-map").click()
             await user.should_see(marker="mapping-batch-raw-files", retries=60)
             assert user.client is not None
-            user.find("Plotting settings").click()
+            user.find("Plot settings").click()
             shared_type = next(iter(user.find(marker="mapping-curve-type").elements))
             with user.client:
                 shared_type.set_value("dashed")

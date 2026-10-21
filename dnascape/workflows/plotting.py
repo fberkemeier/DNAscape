@@ -9,7 +9,6 @@ from __future__ import annotations
 import json
 import re
 from collections.abc import Callable, Mapping, Sequence
-from dataclasses import replace
 from html import escape
 from pathlib import Path
 from typing import Any
@@ -19,12 +18,15 @@ import numpy as np
 from .preview import (
     FIXED_QUANTITY_Y_LIMITS,
     PreviewLine,
+    arrange_histogram_bins,
     automatic_y_limits,
     build_legend_options,
     build_preview_plot_options,
     curve_dash_pattern,
     finite_values,
     has_finite_values,
+    histogram_domain,
+    histogram_guide_options,
     limit_curve_hover,
 )
 
@@ -273,33 +275,6 @@ def _result_axis(result: Any, *, kind: str, length: int) -> np.ndarray:
     return np.arange(length, dtype=float)
 
 
-def _periodic_mapping(result: Any) -> bool:
-    """Return whether rmap evaluated the selected region as a closed ring."""
-
-    assumptions = getattr(result, "assumptions", {})
-    geometry = str(assumptions.get("geometry", "")).strip().casefold()
-    return bool(assumptions.get("perQ", False)) or geometry == "periodic"
-
-
-def _closed_periodic_profile(
-    axis: np.ndarray,
-    values: np.ndarray,
-) -> tuple[np.ndarray, np.ndarray]:
-    """Append the first ring bin at the next coordinate for an honest closed preview."""
-
-    coordinates = np.asarray(axis, dtype=float).reshape(-1)
-    profile = np.asarray(values, dtype=float).reshape(-1)
-    if coordinates.size < 2 or coordinates.size != profile.size:
-        return coordinates, profile
-    steps = np.diff(coordinates)
-    finite_steps = steps[np.isfinite(steps) & (steps > 0)]
-    step = float(np.median(finite_steps)) if finite_steps.size else 1.0
-    return (
-        np.append(coordinates, coordinates[-1] + step),
-        np.append(profile, profile[0]),
-    )
-
-
 def mapping_plot_options(
     result: Any,
     *,
@@ -333,13 +308,20 @@ def mapping_plot_options(
     histogram_bin_size: float | None = None,
     histogram_x_limits: tuple[float, float] | None = None,
     histogram_touching: bool = True,
+    kde_bandwidth: float = 1.0,
+    histogram_grouped: bool = False,
     histogram_boundary: str = "left",
     x_limits: tuple[float, float] | None = None,
     z_limits: tuple[float, float] | None = None,
     aspect_ratio: float | None = None,
     line_type: str = "solid",
 ) -> dict[str, Any]:
-    """Build a bounded ECharts view for scalar, X, T, XT, and bundle outputs."""
+    """Build a bounded ECharts view for scalar, X, T, XT, and bundle outputs.
+
+    Observed profiles always display only their supplied bins. A smooth
+    periodic firing-rate fit also shows its model value at the period end;
+    this closes the model curve without changing observations or raw arrays.
+    """
 
     output_key = resolved_output_key(result, output_key)
     from .preview_inputs import INPUT_PREFIX, input_preview_result, input_profile_label
@@ -379,11 +361,6 @@ def mapping_plot_options(
             if comparison.form in {"scalar", "regions", "supplied"}
             else _result_axis(result, kind=axis_kind, length=observed.size)
         )
-        if comparison.form == "x" and _periodic_mapping(result):
-            observed_axis, observed = _closed_periodic_profile(axis, observed)
-            fitted_axis, fitted = _closed_periodic_profile(axis, fitted)
-        else:
-            observed_axis = fitted_axis = axis
         return build_preview_plot_options(
             plot_type="Line",
             aspect_ratio=aspect_ratio,
@@ -402,8 +379,8 @@ def mapping_plot_options(
             y_limits=y_limits,
             series_label=series_label,
             lines=(
-                PreviewLine("Observed", observed_axis, observed, color),
-                PreviewLine("Fitted", fitted_axis, fitted, secondary_color),
+                PreviewLine("Observed", axis, observed, color),
+                PreviewLine("Fitted", axis, fitted, secondary_color),
             ),
             line_width=line_width,
             line_type=line_type,
@@ -473,11 +450,6 @@ def mapping_plot_options(
             space_axis = np.asarray(getattr(result, "x_axis", []), dtype=float).reshape(-1)
             if space_axis.size == 0:
                 space_axis = np.asarray([0.0])
-            if _periodic_mapping(result) and space_axis.size > 1:
-                space_axis, _ = _closed_periodic_profile(
-                    space_axis,
-                    np.zeros(space_axis.size, dtype=float),
-                )
             display_matrix = np.broadcast_to(values.reshape(-1, 1), (values.size, space_axis.size))
         elif output_form == "xt":
             matrix = np.asarray(values)
@@ -485,9 +457,6 @@ def mapping_plot_options(
                 raise ValueError("Heatmap view requires a temporal or space-time mapping output.")
             space_axis = _result_axis(result, kind="space", length=matrix.shape[0])
             time_axis = _result_axis(result, kind="time", length=matrix.shape[1])
-            if _periodic_mapping(result) and matrix.shape[0] > 1:
-                space_axis, _ = _closed_periodic_profile(space_axis, matrix[:, 0])
-                matrix = np.concatenate((matrix, matrix[:1, :]), axis=0)
             # rmap returns canonical (position, time) arrays. DNAscape's
             # plotting API transposes them for a position-X, time-Y image.
             display_matrix = matrix.T
@@ -530,7 +499,7 @@ def mapping_plot_options(
             x_limits=x_limits,
             title=resolved_title,
             x_label=x_label,
-            y_label=y_label or ("Density" if density else "Count"),
+            y_label=y_label,
             color=color,
             palette=palette,
             histogram_bins=histogram_bins,
@@ -551,6 +520,8 @@ def mapping_plot_options(
             histogram_bin_size=histogram_bin_size,
             histogram_x_limits=histogram_x_limits,
             histogram_touching=histogram_touching,
+            kde_bandwidth=kde_bandwidth,
+            histogram_grouped=histogram_grouped,
             histogram_boundary=histogram_boundary,
         )
 
@@ -589,8 +560,13 @@ def mapping_plot_options(
         axis = np.arange(flattened.size, dtype=float)
     else:
         axis = _result_axis(result, kind=axis_kind, length=flattened.size)
-    if axis_kind == "space" and output_form == "x" and _periodic_mapping(result):
-        axis, flattened = _closed_periodic_profile(axis, flattened)
+    if (
+        output_key == "firing_rate" and output_form == "x" and axis.size > 1
+        and bool(getattr(result, "assumptions", {}).get("perQ", False))
+        and float(getattr(result, "diagnostics", {}).get("fit_periodic_smoothing_kb", 0.)) > 0
+    ):
+        axis = np.append(axis, axis[-1] + (axis[-1] - axis[-2]))
+        flattened = np.append(flattened, flattened[0])
     return build_preview_plot_options(
         plot_type="Line",
         aspect_ratio=aspect_ratio,
@@ -628,6 +604,7 @@ def mapping_automatic_y_limits(
     plot_type: str,
     histogram_bins: int,
     density: bool,
+    kde_bandwidth: float = 1.0,
     log_y: bool,
     log_x: bool = False,
     histogram_bin_size: float | None = None,
@@ -674,6 +651,7 @@ def mapping_automatic_y_limits(
         plot_type=plot_type,
         histogram_bins=histogram_bins,
         density=density,
+        kde_bandwidth=kde_bandwidth,
         log_y=log_y,
         log_x=log_x,
         histogram_bin_size=histogram_bin_size,
@@ -713,6 +691,19 @@ def combined_mapping_plot_options(
     x_maxima: list[float] = []
     base: dict[str, Any] | None = None
     output_key = str(plot_kwargs.get("output_key") or "output")
+    if histogram and not plot_kwargs.get("density") and plot_kwargs.get("histogram_x_limits") is None:
+        extents = []
+        for named in results:
+            values = finite_values(named.result.outputs[resolved_output_key(named.result, output_key)])
+            if plot_kwargs.get("log_x"):
+                values = values[values > 0]
+            if values.size:
+                extents.extend((float(values.min()), float(values.max())))
+        domain = histogram_domain(extents, log_x=bool(plot_kwargs.get("log_x")))
+        if domain is not None:
+            plot_kwargs["histogram_x_limits"] = domain[1]
+    axis_defaults: dict[str, list[list[float]]] = {}
+    y_ranges: list[tuple[float, float]] = []
     curve_index = 0
     for named in results:
         color = _BATCH_COLOURS[curve_index % len(_BATCH_COLOURS)]
@@ -722,6 +713,11 @@ def combined_mapping_plot_options(
             (curve_index + 1) % len(_BATCH_COLOURS)
         ]
         options = build_options(named.result, **kwargs)
+        for key, bounds in options.get("dnascapeDefaultAxes", {}).items():
+            axis_defaults.setdefault(key, []).append(list(bounds))
+        y_axis = options.get("yAxis", {})
+        if isinstance(y_axis, dict) and "min" in y_axis and "max" in y_axis:
+            y_ranges.append((y_axis["min"], y_axis["max"]))
         series = list(options.get("series", ()))
         accepted_series = {"custom"} if histogram and not bool(plot_kwargs.get("density")) else {"line", "scatter"}
         if not series or any(item.get("type") not in accepted_series for item in series):
@@ -769,45 +765,37 @@ def combined_mapping_plot_options(
             curve_index += 1
     assert base is not None
     base["series"] = combined_series
+    base["dnascapeDefaultAxes"] = {
+        key: [min(bounds[0] for bounds in ranges), max(bounds[1] for bounds in ranges)]
+        for key, ranges in axis_defaults.items()
+    }
+    if y_ranges and plot_kwargs.get("y_limits") is None:
+        base["yAxis"] = {**base["yAxis"], "min": min(bounds[0] for bounds in y_ranges),
+                        "max": max(bounds[1] for bounds in y_ranges)}
     if x_minima and x_maxima:
         base_x_axis = dict(base.get("xAxis", {}))
         base_x_axis["min"] = min(x_minima)
         base_x_axis["max"] = max(x_maxima)
         base["xAxis"] = base_x_axis
     if histogram:
-        # The one-result histogram renderer intentionally has no legend. A
-        # combined distribution needs one, and summary statistics should
-        # describe the pooled values rather than whichever dataset happened
-        # to become the base chart.
-        base["legend"] = build_legend_options(
-            combined_names,
-            grid=base["grid"],
-            position=str(plot_kwargs.get("legend_position") or "Top right"),
-            show=bool(plot_kwargs.get("show_legend", True)),
-            item_width=16,
-            item_height=8,
-        )
-        if bool(plot_kwargs.get("show_histogram_statistics", False)):
-            actual_keys = tuple(
-                resolved_output_key(named.result, output_key) for named in results
-            )
-            pooled = np.concatenate(
-                tuple(
-                    np.asarray(named.result.outputs[actual], dtype=float).reshape(-1)
-                    for named, actual in zip(results, actual_keys, strict=True)
-                )
-            )
-            first = results[0].result
-            first_key = actual_keys[0]
-            aggregate = replace(
-                first,
-                outputs={**first.outputs, first_key: pooled},
-            )
-            aggregate_kwargs = dict(plot_kwargs)
-            aggregate_kwargs["color"] = _BATCH_COLOURS[0]
-            aggregate_kwargs["secondary_color"] = _BATCH_COLOURS[1]
-            aggregate_options = build_options(aggregate, **aggregate_kwargs)
-            base["graphic"] = aggregate_options.get("graphic", [])
+        datasets = []
+        for index, named in enumerate(results):
+            actual = resolved_output_key(named.result, output_key)
+            series = combined_series[index]
+            color = series.get("itemStyle", {}).get("color") or series.get("lineStyle", {}).get("color") or _BATCH_COLOURS[index % len(_BATCH_COLOURS)]
+            series["dnascapeDataset"] = index
+            values = finite_values(named.result.outputs[actual])
+            if plot_kwargs.get("log_x"):
+                values = values[values > 0]
+            domain = plot_kwargs.get("histogram_x_limits")
+            if domain is not None and not plot_kwargs.get("density"):
+                values = values[(values >= domain[0]) & (values <= domain[1])]
+            datasets.append((combined_names[index], color, values))
+        histogram_guide_options(base, datasets, legend=bool(plot_kwargs.get("show_legend", True)),
+                                statistics=bool(plot_kwargs.get("show_histogram_statistics", False)),
+                                position=str(plot_kwargs.get("legend_position") or "Top right"))
+        if plot_kwargs.get("histogram_grouped") and not plot_kwargs.get("density"):
+            arrange_histogram_bins(base, len(datasets))
     else:
         legend = dict(base.get("legend", {}))
         legend["data"] = combined_names
