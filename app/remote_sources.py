@@ -32,6 +32,13 @@ DEFAULT_TIMEOUT_SECONDS = 20.0
 DEFAULT_MAX_REDIRECTS = 4
 
 _ALLOWED_PORTS = {"http": 80, "https": 443}
+# UCSC's current download hostname has a valid HTTPS certificate; its older
+# aliases can fail before the server can redirect. Keep the path/query intact
+# and validate the canonical host through the same DNS and TLS checks.
+_LEGACY_UCSC_HTTPS_HOSTS = {
+    "hgdownload.soe.ucsc.edu": "hgdownload.gi.ucsc.edu",
+    "hgdownload.cse.ucsc.edu": "hgdownload.gi.ucsc.edu",
+}
 _REDIRECT_STATUSES = frozenset({301, 302, 303, 307, 308})
 _READ_CHUNK_BYTES = 256 * 1024
 _MAX_CONNECT_ATTEMPT_SECONDS = 5.0
@@ -204,8 +211,15 @@ def _validated_target(url: str) -> _Target:
             "Remote files must use standard HTTPS (443) or HTTP (80) ports."
         )
 
+    canonical_hostname = (
+        _LEGACY_UCSC_HTTPS_HOSTS.get(hostname, hostname) if scheme == "https" else hostname
+    )
+    netloc = parts.netloc
+    if canonical_hostname != hostname:
+        hostname = canonical_hostname
+        netloc = hostname + (f":{port}" if parts.port is not None else "")
     addresses = _resolve_public_addresses(hostname, port)
-    normalized_url = urlunsplit((scheme, parts.netloc, parts.path or "/", parts.query, ""))
+    normalized_url = urlunsplit((scheme, netloc, parts.path or "/", parts.query, ""))
     return _Target(
         url=normalized_url,
         scheme=scheme,
@@ -347,7 +361,16 @@ def _request_once(
             failures.append(exc)
             connection.close()
     if failures:
-        raise RemoteSourceError("The remote file could not be reached securely.") from failures[-1]
+        certificate_error = next(
+            (error for error in failures if isinstance(error, ssl.SSLCertVerificationError)), None
+        )
+        if certificate_error is not None:
+            raise RemoteSourceError("The remote server's HTTPS certificate could not be verified.") from certificate_error
+        if any(isinstance(error, ssl.SSLError) for error in failures):
+            raise RemoteSourceError("The secure connection to the remote server failed.") from failures[-1]
+        if all(isinstance(error, TimeoutError) for error in failures):
+            raise RemoteSourceError("The remote server did not respond in time. Try again.") from failures[-1]
+        raise RemoteSourceError("The remote server could not be reached. Try again later.") from failures[-1]
     raise RemoteSourceError("The remote hostname has no reachable public address.")
 
 

@@ -25,10 +25,10 @@ MAX_SPATIAL_BINS = 1_000_000
 MAX_TIME_POINTS = 100_000
 MAX_REPLICATES = 50_000
 
-# ``rsim`` allocates five float32 (time, position) accumulators when detailed
+# ``rsim`` allocates six float32 (time, position) accumulators when detailed
 # space-time statistics are requested. Keep their combined preallocation below
 # 64 MiB; ensemble size itself is independently capped and cancellable.
-DETAILED_XT_ARRAY_COUNT = 5
+DETAILED_XT_ARRAY_COUNT = 6
 DETAILED_XT_ITEM_BYTES = np.dtype(np.float32).itemsize
 MAX_DETAILED_XT_BYTES = 64 * 1024 * 1024
 MAX_DETAILED_XT_CELLS = MAX_DETAILED_XT_BYTES // (DETAILED_XT_ARRAY_COUNT * DETAILED_XT_ITEM_BYTES)
@@ -37,6 +37,7 @@ MAX_RETAINED_REPLICATION_PROFILE_BYTES = 64 * 1024 * 1024
 # ``rsim`` retains an exact prefix of neighbouring-origin distances and reports
 # both the total count and whether that prefix was truncated.
 MAX_INTER_ORIGIN_SAMPLES = 2_000_000
+MAX_REPLICON_SAMPLES = 2_000_000
 
 CORE_OUTPUT_KEYS = (
     "replication_timing",
@@ -49,12 +50,14 @@ REPLICATE_OUTPUT_KEYS = (
     "num_origins",
 )
 POOLED_DISTRIBUTION_OUTPUT_KEYS = ("inter_origin_distances",)
-DISTRIBUTION_OUTPUT_KEYS = REPLICATE_OUTPUT_KEYS + POOLED_DISTRIBUTION_OUTPUT_KEYS
+TIME_DISTRIBUTION_OUTPUT_KEYS = ("replicon_lengths",)
+DISTRIBUTION_OUTPUT_KEYS = REPLICATE_OUTPUT_KEYS + POOLED_DISTRIBUTION_OUTPUT_KEYS + TIME_DISTRIBUTION_OUTPUT_KEYS
 TIME_OUTPUT_KEYS = (
     "replicated_fraction",
     "total_forks",
     "active_forks",
     "stalled_forks",
+    "origin_firing",
     "firing_factors",
 )
 XT_OUTPUT_KEYS = (
@@ -63,6 +66,7 @@ XT_OUTPUT_KEYS = (
     "coalescence_events_xt",
     "right_moving_fork_density_xt",
     "left_moving_fork_density_xt",
+    "fork_density_xt",
 )
 _RUN_LOCK = Lock()
 
@@ -98,6 +102,7 @@ class ConstantSimulationRequest:
     stall_rate_per_kb: float | None = None
     fork_speed_std: float = 0.0
     retained_profile_count: int = 10
+    stall_shared_directions: bool = False
 
 
 @dataclass(frozen=True)
@@ -119,6 +124,8 @@ class ConstantSimulationResult:
     inter_origin_distances_truncated: bool = False
     input_forms: Mapping[str, str] = field(default_factory=dict)
     input_axes: Mapping[str, tuple[np.ndarray, np.ndarray]] = field(default_factory=dict)
+    replicon_length_count: int = 0
+    replicon_lengths_truncated: bool = False
 
 
 @dataclass(frozen=True)
@@ -306,7 +313,7 @@ def validate_constant_simulation(request: ConstantSimulationRequest) -> _Validat
                 )
                 raise ValueError(
                     "Detailed space-time outputs would preallocate "
-                    f"approximately {estimated_mib:.1f} MiB across five matrices; "
+                    f"approximately {estimated_mib:.1f} MiB across six matrices; "
                     f"the local limit is {MAX_DETAILED_XT_BYTES / 1024**2:.0f} MiB. "
                     "Increase the spatial or time resolution, or narrow the requested windows."
                 )
@@ -318,6 +325,8 @@ def validate_constant_simulation(request: ConstantSimulationRequest) -> _Validat
         time_grid = np.empty(0, dtype=float)
 
     stall_rate = _finite(request.stall_rate, "Stall rate")
+    if not isinstance(request.stall_shared_directions, bool):
+        raise ValueError("Shared directional stalling must be a boolean.")
     speed_std = _finite(request.fork_speed_std, "Fork-speed standard deviation")
     if speed_std < 0:
         raise ValueError("Fork-speed standard deviation must be non-negative.")
@@ -391,7 +400,7 @@ def _collect_outputs(
         if value is None:
             raise RuntimeError(f"DNAscape did not return the requested {name!r} output.")
         # Preserve rsim's float32 memmap-backed XT views. Converting these to
-        # float64 would silently materialize five additional matrices in RAM.
+        # float64 would silently materialize additional matrices in RAM.
         array = np.asarray(value) if name in XT_OUTPUT_KEYS else np.asarray(value, dtype=float)
         expected = expected_shapes[name]
         if array.shape != expected:
@@ -423,20 +432,21 @@ def _collect_outputs(
             )
         distribution.setflags(write=False)
         outputs[name] = distribution
-    for name in POOLED_DISTRIBUTION_OUTPUT_KEYS:
+    distribution_keys = POOLED_DISTRIBUTION_OUTPUT_KEYS + (TIME_DISTRIBUTION_OUTPUT_KEYS if request.track_time_outputs else ())
+    for name in distribution_keys:
         value = raw.get(name)
-        if value is None:
+        if value is None and name == "inter_origin_distances":
             # ``rsim`` exposes both spellings. Keep the plural name as the app
             # contract while accepting results from an older engine.
             value = raw.get("inter_origin_distance")
         if value is None:
             raise RuntimeError(
-                "DNAscape did not return the requested inter-origin distances."
+                f"DNAscape did not return the requested {name!r} output."
             )
         distribution = np.asarray(value, dtype=float).reshape(-1)
         if np.any(~np.isfinite(distribution)) or np.any(distribution <= 0):
             raise RuntimeError(
-                "DNAscape returned invalid inter-origin distances; expected "
+                f"DNAscape returned invalid {name.replace('_', ' ')}; expected "
                 "finite values greater than zero."
             )
         distribution.setflags(write=False)
@@ -533,6 +543,7 @@ def run_constant_simulation(
             "ffiring_recycle": float(request.firing_factor_recycle),
             "ffiring_forkQ": bool(request.firing_factor_fork_coupling),
             "fork_speed_std": float(request.fork_speed_std),
+            "stall_shared_directions": bool(request.stall_shared_directions),
             "time_statsQ": time_outputs,
             "time_stats_xtQ": detailed,
             "max_rep_time": float(request.max_replication_time),
@@ -549,6 +560,7 @@ def run_constant_simulation(
             "retain_rep_times_limit": validated.retained_profile_count,
             "retain_inter_origin_distances": True,
             "retain_inter_origin_distances_limit": MAX_INTER_ORIGIN_SAMPLES,
+            "retain_replicon_lengths_limit": MAX_REPLICON_SAMPLES,
         }
         if request.stall_rate_per_kb is None:
             assumptions["stall_rate"] = float(request.stall_rate)
@@ -587,6 +599,16 @@ def run_constant_simulation(
             bool(raw.get("inter_origin_distances_truncated", False))
             or inter_origin_distance_count > retained_iods.size
         )
+        retained_replicons = outputs.get("replicon_lengths", np.empty(0))
+        try:
+            replicon_length_count = int(raw.get("replicon_length_count", retained_replicons.size))
+        except (TypeError, ValueError) as exc:
+            raise RuntimeError("DNAscape returned an invalid replicon length count.") from exc
+        if replicon_length_count < retained_replicons.size:
+            raise RuntimeError("DNAscape returned fewer total replicon lengths than retained values.")
+        replicon_lengths_truncated = (
+            bool(raw.get("replicon_lengths_truncated", False)) or replicon_length_count > retained_replicons.size
+        )
         cancel()
         replication_timing = outputs["replication_timing"]
         position_kb = float(request.region_start_kb) + np.arange(
@@ -609,6 +631,8 @@ def run_constant_simulation(
             replication_timing_std=replication_timing_std,
             inter_origin_distance_count=inter_origin_distance_count,
             inter_origin_distances_truncated=inter_origin_distances_truncated,
+            replicon_length_count=replicon_length_count,
+            replicon_lengths_truncated=replicon_lengths_truncated,
         )
         from .preview_inputs import add_simulation_input_previews
 

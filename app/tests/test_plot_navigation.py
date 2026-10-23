@@ -17,7 +17,7 @@ from nicegui.elements.upload import Upload
 from nicegui.testing import user_simulation
 
 from app.main import index
-from app.preview_plotting import PreviewChartHandle, PreviewLine, build_preview_plot_options
+from app.preview_plotting import PreviewBand, PreviewChartHandle, PreviewLine, build_preview_plot_options
 from dnascape.workflows.plotting import prepare_echarts_runtime
 
 
@@ -44,6 +44,38 @@ class CaptureChart:
 
     def update(self):
         self.updates += 1
+
+
+@pytest.mark.parametrize("axis,log_x", [
+    ([0, 124000, 249003.1415926], False),
+    ([40000, 40450, 40999.75], False),
+    ([.13, .47, .81], False),
+    ([np.sqrt(2), np.sqrt(5), np.sqrt(11)], False),
+    ([-9.7, -5.1, -2.3], False),
+    ([.13, .47, .81], True),
+    ([10, 1000, 9999], True),
+])
+@pytest.mark.parametrize("invert_x", [False, True])
+def test_native_horizontal_bounds_are_independent_of_tick_labels(axis, log_x, invert_x):
+    options = navigation_options(values=[1, 2, 3], x_axis=axis, log_x=log_x, invert_x=invert_x)
+    assert [options["xAxis"]["min"], options["xAxis"]["max"]] == [axis[0], axis[-1]]
+    assert options["dnascapeDefaultAxes"]["x"] == [axis[0], axis[-1]]
+    ticks = options["xAxis"]["axisLabel"]["customValues"]
+    if ticks:
+        assert all(axis[0] <= tick <= axis[-1] for tick in ticks)
+        assert axis[-1] not in ticks
+    custom = navigation_options(values=[1, 2, 3], x_axis=axis, log_x=log_x, x_limits=(1, 12))
+    assert (custom["xAxis"]["min"], custom["xAxis"]["max"]) == (1, 12)
+
+
+def test_navigation_preserves_exact_viewport_edges_without_forcing_endpoint_labels():
+    options = navigation_options()
+    handle = PreviewChartHandle(CaptureChart(options), CaptureChart({}))
+    handle._apply_navigation()
+    handle.accept_navigation(dict(context=handle._navigation.context, ranges={"x": (2.13, 7.91)}))
+    assert (options["xAxis"]["min"], options["xAxis"]["max"]) == (2.13, 7.91)
+    for section in ("axisLabel", "axisTick", "splitLine"):
+        assert options["xAxis"][section]["customValues"] == [3, 4, 5, 6, 7]
 
 
 @pytest.mark.parametrize("plot_type", ("Line", "Heatmap", "Histogram", "Boxplot"))
@@ -187,6 +219,70 @@ def test_navigation_updates_fields_and_survives_styles_without_rebinning(monkeyp
     asyncio.run(scenario())
 
 
+@pytest.mark.parametrize("data_manager", [False, True])
+def test_real_nicegui_chart_retains_native_resolution_across_zoom_pan_styles_and_reset(monkeypatch, data_manager):
+    handles = []
+    attach = PreviewChartHandle.attach_settings
+
+    def capture(handle, controls):
+        attach(handle, controls)
+        handles.append(handle)
+
+    monkeypatch.setattr(PreviewChartHandle, "attach_settings", capture)
+    values = np.sin(np.arange(10_001) / 50)
+    values[3334] = 17.0  # A native peak absent from the initial preview.
+    payload = ("signal\n" + "\n".join(map(str, values))).encode()
+
+    async def scenario():
+        async with user_simulation(index) as user:
+            await user.open("/")
+            name = "data-management" if data_manager else "plotting"
+            prefix = "data-manager" if data_manager else "plotting"
+            user.find(marker=f"nav-{name}").click()
+
+            def control(marker):
+                return next(item for item in user.client.elements.values()
+                            if f"{prefix}-{marker}" in item._markers and not item.is_deleted)
+
+            await control("upload" if data_manager else "data-upload").handle_uploads([
+                Upload.SmallFileUpload("signal.tsv", "text/tab-separated-values", payload),
+            ])
+            await user.should_see("Array size: 10001", retries=80)
+            user.find(marker="action-convert" if data_manager else "action-plot").click()
+            await user.should_see(marker=f"{prefix}-{'preview-chart' if data_manager else 'result-plot'}", retries=100)
+            handle = handles[-1]
+            assert handle.options is not handle.canvas.options
+            assert callable(handle.options["series"][0]["data"].refine)
+            assert not hasattr(handle.canvas.options["series"][0]["data"], "refine")
+            assert len(handle.canvas.options["series"][0]["data"]) == 1000
+            assert not any(point[0] == 3334 for point in handle.canvas.options["series"][0]["data"])
+
+            def navigate(lower, upper):
+                with user.client:
+                    handle.accept_navigation(dict(context=handle._navigation.context, ranges={"x": (lower, upper)}))
+                return np.asarray(handle.canvas.options["series"][0]["data"])
+
+            detailed = navigate(3320, 3340)
+            np.testing.assert_equal(detailed[(detailed[:, 0] >= 3319) & (detailed[:, 0] <= 3341), 0], np.arange(3319, 3342))
+            assert detailed[0, 0] == 0 and detailed[-1, 0] == 10_000
+            assert detailed[detailed[:, 0] == 3334, 1] == 17
+            with user.client:
+                control("plot-line-width" if data_manager else "line-width").set_value(3)
+                handle.open_zoom()
+            np.testing.assert_equal(handle.zoom.options["series"][0]["data"], detailed)
+            broad = navigate(1000, 6000)
+            assert len(broad[(broad[:, 0] >= 999) & (broad[:, 0] <= 6001)]) == 1000
+            assert broad[0, 0] == 0 and broad[-1, 0] == 10_000
+            assert len(broad) <= 2000
+            panned = navigate(7000, 7020)
+            np.testing.assert_equal(panned[(panned[:, 0] >= 6999) & (panned[:, 0] <= 7021), 0], np.arange(6999, 7022))
+            user.find(marker=f"{prefix}-{'plot-' if data_manager else ''}reset-x-limits").click()
+            reset = np.asarray(handle.canvas.options["series"][0]["data"])
+            assert len(reset) == 1000 and reset[0, 0] == 0 and reset[-1, 0] == 10_000
+
+    asyncio.run(scenario())
+
+
 def test_mouse_gestures_in_real_echarts_previews(tmp_path):
     chrome = shutil.which("chromium") or shutil.which("google-chrome") or shutil.which("chrome")
     windows_chrome = Path("C:/Program Files/Google/Chrome/Application/chrome.exe")
@@ -197,16 +293,19 @@ def test_mouse_gestures_in_real_echarts_previews(tmp_path):
     root = Path(__file__).resolve().parents[2]
     cases = []
 
-    def add(name, *, hover=True, **kwargs):
+    def add(name, *, hover=True, refinement=None, **kwargs):
         options = navigation_options(**kwargs)
         handle = PreviewChartHandle(CaptureChart(options), CaptureChart({}))
         handle._apply_navigation()
+        if refinement is not None:
+            handle.accept_navigation(dict(context=handle._navigation.context, ranges=refinement))
         if not hover:
             handle.settings = SimpleNamespace(show_hover=SimpleNamespace(value=False))
         handle._apply_guides()
         cases.append(dict(name=name, options=options))
 
     add("line")
+    add("unrounded endpoint", x_axis=np.linspace(0, 249003.1415926, 1001), values=np.linspace(1, 10, 1001))
     add("line hover off", hover=False)
     add("line hover again")
     add("line with legend", show_legend=True)
@@ -220,6 +319,22 @@ def test_mouse_gestures_in_real_echarts_previews(tmp_path):
     add("log histogram", plot_type="Histogram", log_x=True, log_y=True)
     add("KDE", plot_type="Histogram", density=True)
     add("boxplot", plot_type="Boxplot")
+    long_axis = np.arange(10_001.)
+    add("retained curve overview", x_axis=long_axis, values=np.full(long_axis.size, 4.),
+        refinement={"x": (4200, 4400)}, show_grid=False)
+    add("retained inverted overview", x_axis=long_axis, values=np.full(long_axis.size, 4.),
+        refinement={"x": (4200, 4400)}, invert_x=True, show_grid=False)
+    add("retained band overview", x_axis=long_axis, values=np.full(long_axis.size, 4.),
+        bands=(PreviewBand("SD", long_axis, np.full(long_axis.size, 3.), np.full(long_axis.size, 5.), "#b03412"),),
+        refinement={"x": (4200, 4400)}, show_grid=False)
+    heatmap = np.ones((601, 1201))
+    heatmap[300, 600] = np.nan
+    add("retained heatmap overview", plot_type="Heatmap", values=heatmap,
+        x_axis=np.arange(1201.), y_axis=np.arange(601.), show_grid=False,
+        refinement={"x": (598, 602), "y": (298, 302)})
+    add("retained inverted heatmap overview", plot_type="Heatmap", values=heatmap,
+        x_axis=np.arange(1201.), y_axis=np.arange(601.), show_grid=False, invert_x=True, invert_y=True,
+        refinement={"x": (598, 602), "y": (298, 302)})
     lines = (
         PreviewLine("First", np.arange(1.0, 11.0), np.arange(1.0, 11.0), "#b03412"),
         PreviewLine("Second", np.arange(1.0, 11.0), np.arange(1.0, 11.0) * 100, "#2596be"),
@@ -249,7 +364,7 @@ def test_mouse_gestures_in_real_echarts_previews(tmp_path):
     )
     completed = subprocess.run([
         chrome, "--headless", "--disable-gpu", "--no-first-run", "--no-default-browser-check",
-        "--allow-file-access-from-files", "--window-size=1000,600", "--virtual-time-budget=8000",
+        "--allow-file-access-from-files", "--window-size=1000,600", "--virtual-time-budget=12000",
         f"--user-data-dir={tmp_path / 'browser'}", "--dump-dom", document.as_uri(),
     ], capture_output=True, text=True, encoding="utf-8", timeout=30, check=True)
     match = re.search(r'<pre id="result">([^<]+)</pre>', completed.stdout)

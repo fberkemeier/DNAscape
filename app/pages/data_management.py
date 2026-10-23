@@ -14,6 +14,7 @@ from concurrent.futures import CancelledError
 from dataclasses import dataclass, field
 from pathlib import PurePath
 from threading import Event, Lock
+from types import SimpleNamespace
 from typing import Any
 
 import numpy as np
@@ -35,8 +36,9 @@ from app.data_conversion_service import (
     inspect_repliseq,
     transcode_conversion_artifact,
 )
-from app.export_settings import get_export_settings
+from app.export_settings import get_export_settings, preview_point_limit
 from app.data_filter_controls import DataFilterControls
+from app.data_transform_controls import DataTransformControls
 from app.icons import RESET_ICON
 from app.mapping_catalog import RDATA_UPLOAD_ACCEPT
 from app.notifications import notification_message, notify
@@ -76,7 +78,9 @@ from app.preview_plotting import (
     render_preview_chart,
     sync_preview_settings_visibility,
 )
-from dnascape.workflows.preview import DetailedPreviewData
+from dnascape.workflows.preview import DetailedPreviewData, retain_curve_overview
+from dnascape.workflows.conversion import filter_positions_artifact, convert_combined_data
+from dnascape.workflows.filtering import FilterSelection
 from app.remote_sources import RemoteSourceError, fetch_remote_source
 from app.result_naming import (
     RDATA_FILE_PREFIX,
@@ -190,7 +194,7 @@ _FEATURE_THRESHOLD_DEFAULTS: Mapping[str, tuple[bool, float | None, float | None
     "replicated_fraction": (True, 0.0, 1.0),
 }
 _ENCODE_EXAMPLE_URL = (
-    "https://hgdownload.soe.ucsc.edu/goldenPath/hg19/encodeDCC/"
+    "https://hgdownload.gi.ucsc.edu/goldenPath/hg19/encodeDCC/"
     "wgEncodeUwRepliSeq/wgEncodeUwRepliSeqK562WaveSignalRep1.bigWig"
 )
 _SNS_EXAMPLE_URL = (
@@ -239,6 +243,7 @@ class _DataManagerSource:
     track_inspection: TrackInspection | None = None
     remote_metadata: dict[str, Any] = field(default_factory=dict)
     output_name_customized: bool = False
+    configuration: dict[str, Any] = field(default_factory=dict)
 
 
 @dataclass(slots=True)
@@ -479,7 +484,7 @@ def _selection_options(inspection: UploadInspection) -> Mapping[str, str]:
         options.update(
             {f"{_COLUMN_PREFIX}{column}": column for column in inspection.numeric_columns}
         )
-    if inspection.source_format in {"csv", "tsv"}:
+    if inspection.source_format in {"csv", "tsv"} and len(inspection.numeric_columns) > 1 and not row_time_profile:
         options[_TABLE] = "Full table"
     if inspection.source_layout == "geo_repliseq":
         options[_REPLISEQ_TIMING] = "Replication timing (S1–S16)"
@@ -754,11 +759,15 @@ def _preview_options(
     values = values[:point_count]
     x_axis = x_axis[:point_count]
     plot_type = "Histogram" if controls is not None and controls.view.value == "Histogram" else "Line"
-    if plot_type == "Line" and point_count > 500:
-        sample = np.linspace(0, point_count - 1, 500, dtype=int)
+    if plot_type == "Line" and point_count > preview_point_limit():
+        sample = np.linspace(0, point_count - 1, preview_point_limit(), dtype=int)
         values = values[sample]
         x_axis = x_axis[sample]
     value_label = str(preview.value_label).replace("_", " ").strip().capitalize()
+    series_label = (
+        str(controls.legend_name.value or "").strip() or value_label
+        if controls is not None and controls.legend_name is not None else value_label
+    )
 
     options: dict[str, Any] = {}
     if controls is not None:
@@ -799,7 +808,7 @@ def _preview_options(
             and controls.y_minimum.value is not None and controls.y_maximum.value is not None
             else None
         ),
-        series_label=value_label,
+        series_label=series_label,
         values=values,
         x_axis=x_axis,
         show_grid=bool(controls.show_grid.value) if controls is not None else False,
@@ -816,6 +825,18 @@ def _preview_options(
         if automatic_y_limits:
             result["yAxis"].update(min=global_y[0], max=global_y[1])
     return result
+
+
+class _FilterPreviewRegions(list):
+    """Serializable ECharts areas with native-bin detail on viewport changes."""
+
+    def __init__(self, selection: FilterSelection, x_limits=None):
+        super().__init__([[{"xAxis": start}, {"xAxis": end}] for start, end in selection.ranges(x_limits)])
+        self.selection = selection
+        self.window = x_limits
+
+    def refine(self, x_limits):
+        return _FilterPreviewRegions(self.selection, x_limits)
 
 
 def _converted_preview_data(result: DataConversionResult) -> DetailedPreviewData:
@@ -897,41 +918,60 @@ def _converted_preview_data(result: DataConversionResult) -> DetailedPreviewData
                     continue
 
     def refine(x_view: Any, _y_view: Any) -> dict[str, Any]:
-        if x_view is None or preview.total_count <= len(initial):
+        limit = preview_point_limit()
+        if x_view is None and len(initial) == min(limit, preview.total_count):
             return {"data": DetailedPreviewData(initial, refine)}
-        points: list[list[Any]] = []
-        first_coordinate = None
-        previous = None
-        stride = 1
+        if x_view is None:
+            x_view = (min(preview.x[0], preview.x[-1]), max(preview.x[0], preview.x[-1]))
         step = (preview.x[-1] - preview.x[0]) / max(1, preview.total_count - 1)
         ascending = step >= 0
-        for row_index, coordinate, y in source_rows():
-            if coordinate is None:
-                x = float(preview.x[0] + row_index * step)
-            else:
-                if first_coordinate is None:
-                    first_coordinate = coordinate
-                x = coordinate - first_coordinate + float(preview.x[0])
-            point = [x, y if np.isfinite(y) else None]
-            before = x < x_view[0] if ascending else x > x_view[1]
-            after = x > x_view[1] if ascending else x < x_view[0]
-            if before:
-                previous = point
-                continue
-            if not points and previous is not None:
-                points.append(previous)
-            if row_index % stride == 0 or after:
-                points.append(point)
-            if len(points) > 5000:
-                points = points[::2]
-                stride *= 2
-            if after:
-                break
-        if len(points) > 2500:
-            points = [points[index] for index in np.linspace(0, len(points) - 1, 2500, dtype=int)]
-        return {"data": DetailedPreviewData(points or initial, refine)}
 
-    return DetailedPreviewData(initial, refine)
+        def window_rows():
+            first_coordinate, previous = None, None
+            started = False
+            for row_index, coordinate, y in source_rows():
+                if coordinate is None:
+                    x = float(preview.x[0] + row_index * step)
+                else:
+                    if first_coordinate is None:
+                        first_coordinate = coordinate
+                    x = coordinate - first_coordinate + float(preview.x[0])
+                point = [x, y if np.isfinite(y) else None]
+                before = x < x_view[0] if ascending else x > x_view[1]
+                after = x > x_view[1] if ascending else x < x_view[0]
+                if before:
+                    previous = point
+                    continue
+                if not started:
+                    if previous is not None:
+                        yield previous
+                    started = True
+                yield point
+                if after:
+                    break
+
+        points = []
+        count = 0
+        for point in window_rows():
+            count += 1
+            if count <= limit:
+                points.append(point)
+        if count > limit:
+            # Count first, then select evenly spaced native rows. Memory
+            # stays bounded even for a broad viewport over a large text file.
+            selected_indices = iter(np.linspace(0, count - 1, limit, dtype=int))
+            selected_index = next(selected_indices)
+            points = []
+            for index, point in enumerate(window_rows()):
+                if index == selected_index:
+                    points.append(point)
+                    selected_index = next(selected_indices, None)
+                    if selected_index is None:
+                        break
+        overview = initial if len(initial) <= limit else [initial[index] for index in np.linspace(0, len(initial) - 1, limit, dtype=int)]
+        return {"data": DetailedPreviewData(retain_curve_overview(overview, points), refine)}
+
+    return refine(None, None)["data"]
 
 
 def _number(control: Any, label: str) -> float:
@@ -980,10 +1020,12 @@ def render(_navigate: Callable[[str], None]) -> None:
     result_chart: Any | None = None
     controls: dict[str, Any] = {}
     filter_controls: DataFilterControls | None = None
+    transform_controls: DataTransformControls | None = None
     source_controls: dict[str, Any] = {}
     source_control_states: dict[str, bool] = {}
     request_control_states: dict[tuple[str, str], bool] = {}
     settings: dict[str, Any] = {
+        "apply_configuration": True,
         "source_mode": "upload",
         "source_url": "",
         "feature": "generic",
@@ -1014,6 +1056,30 @@ def render(_navigate: Callable[[str], None]) -> None:
         "repliseq_timing_method": "sigmoid",
         "s_phase_duration_min": 600.0,
     }
+    configuration_defaults = {
+        key: value for key, value in settings.items()
+        if key not in {"source_mode", "source_url", "output_name", "show_preview"}
+    }
+    displayed_source_id: str | None = None
+
+    def save_source_configuration() -> None:
+        source = next((item for item in retained_sources if item.source_id == displayed_source_id), None)
+        if source is not None:
+            source.configuration.update({key: settings[key] for key in configuration_defaults})
+
+    def load_source_configuration(source: _DataManagerSource) -> None:
+        nonlocal displayed_source_id
+        settings.update(configuration_defaults)
+        settings.update(source.configuration)
+        settings["output_name"] = source.output_name
+        displayed_source_id = source.source_id
+
+    def configuration_for(source: _DataManagerSource) -> dict[str, Any]:
+        return {
+            **configuration_defaults,
+            **source.configuration,
+            **({key: settings[key] for key in configuration_defaults} if source.source_id == displayed_source_id else {}),
+        }
 
     def selected_generated_result() -> DataConversionResult | None:
         nonlocal selected_result_id
@@ -1036,9 +1102,8 @@ def render(_navigate: Callable[[str], None]) -> None:
         ]
         if selected_mode == "url":
             row_order = {
-                row.source_id: index
+                row.source_id or f"url:{row.row_id}": index
                 for index, row in enumerate(remote_link_inputs)
-                if row.source_id is not None
             }
             candidates.sort(
                 key=lambda source: row_order.get(source.source_id, len(row_order))
@@ -1063,7 +1128,7 @@ def render(_navigate: Callable[[str], None]) -> None:
         details = _selected_data(source.inspection, source.selection)
         if source.selection == _REPLISEQ_TIMING and source.track_inspection is not None:
             regions = {region.chromosome: region for region in source.track_inspection.regions}
-            region = regions.get(str(settings["chromosome"]), next(iter(regions.values())))
+            region = regions.get(str(configuration_for(source)["chromosome"]), next(iter(regions.values())))
             bin_size = int(dict(source.track_inspection.metadata)["native_bin_size_bp"])
             return _SelectedData("x", (math.ceil(region.end / bin_size),))
         return details
@@ -1116,6 +1181,8 @@ def render(_navigate: Callable[[str], None]) -> None:
         lock_source_controls(locked)
         if filter_controls is not None:
             filter_controls.set_locked(locked)
+        if transform_controls is not None:
+            transform_controls.set_locked(locked)
         for name, control in tuple(controls.items()):
             if getattr(control, "is_deleted", False):
                 continue
@@ -1145,8 +1212,17 @@ def render(_navigate: Callable[[str], None]) -> None:
                     source_controls.clear()
 
                     async def refresh_active_source_views() -> None:
+                        current = active_source()
+                        if current is not None and current.source_id != displayed_source_id:
+                            save_source_configuration()
+                            load_source_configuration(current)
+                        else:
+                            save_source_configuration()
                         await render_source_details.refresh()
                         await render_conversion_settings.refresh()
+                        save_source_configuration()
+                        if transform_controls is not None:
+                            transform_controls.refresh()
                         set_convert_enabled()
 
                     async def adopt_candidate(
@@ -1227,9 +1303,15 @@ def render(_navigate: Callable[[str], None]) -> None:
                             and existing.selection in _selection_options(candidate)
                         ):
                             candidate_selection = existing.selection
+                        save_source_configuration()
+                        source_configuration = dict(existing.configuration) if existing is not None else {
+                            key: settings[key] for key in configuration_defaults
+                        }
+                        if existing is None and retained_sources:
+                            source_configuration["apply_configuration"] = True
                         automatic_name = _automatic_output_name(
                             candidate.name,
-                            str(settings["feature"]),
+                            str(source_configuration["feature"]),
                         )
                         adopted = _DataManagerSource(
                             source_id=source_id,
@@ -1247,13 +1329,14 @@ def render(_navigate: Callable[[str], None]) -> None:
                             output_name_customized=bool(
                                 existing is not None and existing.output_name_customized
                             ),
+                            configuration=source_configuration,
                         )
                         if existing_index is None:
                             retained_sources.append(adopted)
                         else:
                             retained_sources[existing_index] = adopted
                         active_source_ids[mode] = source_id
-                        settings["output_name"] = adopted.output_name
+                        load_source_configuration(adopted)
                         cache_upload(
                             candidate,
                             source="Data Manager",
@@ -1368,15 +1451,16 @@ def render(_navigate: Callable[[str], None]) -> None:
                             source_controls["uploader"] = data_upload(
                                 accept=f"{RDATA_UPLOAD_ACCEPT},.bed,.mat,.map",
                                 accepted_formats=(
-                                    "CSV, TSV, TXT, NPY, NPV, NPZ, BED, bedGraph, BigWig, GEO MAT, GZ"
+                                    "TSV, TXT, CSV, NPZ, bigWig, bedGraph"
                                 ),
                                 marker="data-manager-upload",
-                                show_accepted_formats=False,
+                                show_accepted_formats=True,
                                 on_upload=uploaded,
                                 on_clear=cleared,
                                 multiple=True,
                                 max_files=None,
                                 hide_when_loaded=False,
+                                number_sources=True,
                                 initial_names=tuple(
                                     source.inspection.name
                                     for source in sources_for_mode("upload")
@@ -1402,7 +1486,11 @@ def render(_navigate: Callable[[str], None]) -> None:
                                         ):
                                             url_input = (
                                                 ui.input(
-                                                    label="Public file link",
+                                                    label=(
+                                                        f"Source {row_index + 1} (public file link)"
+                                                        if len(remote_link_inputs) > 1
+                                                        else "Source (public file link)"
+                                                    ),
                                                     value=row_state.url,
                                                     placeholder="https://.../signal.bigWig",
                                                 )
@@ -1416,7 +1504,7 @@ def render(_navigate: Callable[[str], None]) -> None:
                                                 )
                                             )
                                             inspect_button = (
-                                                ui.button("Inspect")
+                                                ui.button("✓" if row_state.source_id else "Inspect")
                                                 .props(
                                                     'flat dense no-caps aria-label="Inspect public link"'
                                                 )
@@ -1429,6 +1517,10 @@ def render(_navigate: Callable[[str], None]) -> None:
                                                     f"action-inspect-data-link-{row_state.row_id}",
                                                 )
                                             )
+                                            if row_state.source_id:
+                                                inspect_button.props(
+                                                    'aria-label="Source inspected; inspect again"'
+                                                )
                                             remove_button = (
                                                 ui.button(icon="close")
                                                 .props(
@@ -1531,6 +1623,10 @@ def render(_navigate: Callable[[str], None]) -> None:
                                             )
                                             if adopted:
                                                 row.source_id = source_id
+                                                action.set_text("✓")
+                                                action.props(
+                                                    'aria-label="Source inspected; inspect again"'
+                                                )
                                                 notify(
                                                     "The source is ready.",
                                                     type="positive",
@@ -1593,7 +1689,10 @@ def render(_navigate: Callable[[str], None]) -> None:
                                     async def url_changed(
                                         row: _RemoteLinkInput = row_state,
                                         input_control: Any = url_input,
+                                        action: Any = inspect_button,
                                     ) -> None:
+                                        action.set_text("Inspect")
+                                        action.props('aria-label="Inspect public link"')
                                         new_url = str(input_control.value or "").strip()
                                         row.url = new_url
                                         if row.source_id is None:
@@ -1609,12 +1708,6 @@ def render(_navigate: Callable[[str], None]) -> None:
                                         )
                                         if loaded is None:
                                             row.source_id = None
-                                            set_convert_enabled()
-                                            return
-                                        loaded_url = str(
-                                            loaded.remote_metadata.get("requested_url") or ""
-                                        ).strip()
-                                        if new_url == loaded_url:
                                             set_convert_enabled()
                                             return
                                         retained_sources.remove(loaded)
@@ -1829,42 +1922,6 @@ def render(_navigate: Callable[[str], None]) -> None:
                         if current_source is None:
                             return
 
-                        if len(candidates) > 1:
-                            labels = unique_dataset_names(
-                                tuple(source.inspection.name for source in candidates)
-                            )
-                            dataset_select = (
-                                ui.select(
-                                    {
-                                        source.source_id: label
-                                        for source, label in zip(
-                                            candidates,
-                                            labels,
-                                            strict=True,
-                                        )
-                                    },
-                                    value=current_source.source_id,
-                                    label="Dataset",
-                                )
-                                .props("dense options-dense")
-                                .classes("dn-field dn-data-manager-source-select")
-                                .mark("data-manager-source-dataset")
-                            )
-
-                            async def dataset_changed() -> None:
-                                if dataset_select.value is None:
-                                    return
-                                active_source_ids[source_mode()] = str(
-                                    dataset_select.value
-                                )
-                                selected = active_source()
-                                if selected is not None:
-                                    settings["output_name"] = selected.output_name
-                                await refresh_active_source_views()
-
-                            dataset_select.on_value_change(dataset_changed)
-                            source_controls["source-detail-dataset"] = dataset_select
-
                         options = _selection_options(current_source.inspection)
                         if (
                             len(options) > 1
@@ -1975,6 +2032,31 @@ def render(_navigate: Callable[[str], None]) -> None:
                     @ui.refreshable
                     def render_conversion_settings() -> None:
                         controls.clear()
+                        candidates = sources_for_mode()
+                        current_source = active_source()
+
+                        if len(candidates) > 1:
+                            controls["configuration_source"] = (
+                                ui.select(
+                                    {
+                                        source.source_id: f"Source {index} · {label}"
+                                        for index, (source, label) in enumerate(zip(
+                                            candidates,
+                                            unique_dataset_names(tuple(source.inspection.name for source in candidates)),
+                                        ), 1)
+                                    },
+                                    value=current_source.source_id if current_source else None,
+                                    label="Source",
+                                ).props("dense options-dense").classes("dn-field")
+                                .mark("data-manager-source-dataset", "data-manager-configuration-source")
+                            )
+
+                            async def configuration_source_changed(event: Any) -> None:
+                                save_source_configuration()
+                                active_source_ids[source_mode()] = str(event.value)
+                                await refresh_active_source_views()
+
+                            controls["configuration_source"].on_value_change(configuration_source_changed)
 
                         def store_control(name: str) -> None:
                             settings[name] = controls[name].value
@@ -1985,7 +2067,9 @@ def render(_navigate: Callable[[str], None]) -> None:
                                 sync_prepared_feature()
 
                         def update_source_names() -> None:
-                            for source in retained_sources:
+                            for source in [active_source()]:
+                                if source is None:
+                                    continue
                                 if not source.output_name_customized:
                                     source.output_name = _automatic_output_name(
                                         source.inspection.name, str(settings["feature"]),
@@ -1993,6 +2077,12 @@ def render(_navigate: Callable[[str], None]) -> None:
                             current = active_source()
                             if current is not None:
                                 settings["output_name"] = current.output_name
+
+                        controls["apply_configuration"] = (
+                            ui.switch("Apply configuration", value=bool(settings["apply_configuration"]))
+                            .mark("data-manager-apply-configuration")
+                        )
+                        controls["apply_configuration"].on_value_change(lambda: store_control("apply_configuration"))
 
                         def sync_prepared_feature() -> None:
                             feature = str(settings["feature"])
@@ -2094,8 +2184,8 @@ def render(_navigate: Callable[[str], None]) -> None:
                                 .mark("data-manager-threshold-fields")
                             ):
                                 for key, label, marker in (
-                                    ("threshold_min", "Minimum bound (optional)", "data-manager-threshold-min"),
-                                    ("threshold_max", "Maximum bound (optional)", "data-manager-threshold-max"),
+                                    ("threshold_min", "Lower bound", "data-manager-threshold-min"),
+                                    ("threshold_max", "Upper bound", "data-manager-threshold-max"),
                                 ):
                                     controls[key] = (
                                         ui.number(label=label, value=settings[key])
@@ -2583,6 +2673,9 @@ def render(_navigate: Callable[[str], None]) -> None:
 
                     render_conversion_settings()
 
+                transform_controls = DataTransformControls(
+                    lambda: [(source.source_id, source.inspection.name) for source in sources_for_mode()]
+                )
                 filter_controls = DataFilterControls(set_convert_enabled)
 
                 with action_dock():
@@ -2660,10 +2753,19 @@ def render(_navigate: Callable[[str], None]) -> None:
                         selected = selected_generated_result()
                         return selected.preview.values if selected is not None and selected.preview is not None else None
 
+                    def filter_applied() -> bool:
+                        selected = selected_generated_result()
+                        return bool(
+                            filter_controls.controls["enabled"].value
+                            and selected is not None and "filter_action" in dict(selected.metadata)
+                            and selected.preview is not None and selected.preview.filter_selection is not None
+                        )
+
                     def redraw_prepared_preview() -> None:
                         nonlocal updating_plot_settings
                         if updating_plot_settings or result_chart is None:
                             return
+                        sync_plot_visibility()
                         selected = selected_generated_result()
                         if selected is None or selected.preview is None:
                             return
@@ -2677,6 +2779,22 @@ def render(_navigate: Callable[[str], None]) -> None:
                             )
                             if plot_type == "Line":
                                 options["series"][0]["data"] = _converted_preview_data(selected)
+                                if plot_settings.show_filter.value and filter_applied():
+                                    name = str(plot_settings.filter_name.value or "").strip() or "Filter"
+                                    if name == options["series"][0]["name"]:
+                                        name += " (filter)"
+                                    options["series"].append({
+                                        "name": name, "type": "line", "data": [], "silent": True,
+                                        "showSymbol": False, "tooltip": {"show": False},
+                                        "itemStyle": {"color": "#b5b5b5"}, "lineStyle": {"opacity": 0},
+                                        "markArea": {
+                                            "silent": True, "label": {"show": False},
+                                            "itemStyle": {"color": "rgba(128, 128, 128, 0.16)"},
+                                            "emphasis": {"disabled": True},
+                                            "data": _FilterPreviewRegions(selected.preview.filter_selection),
+                                        },
+                                    })
+                                    options["legend"]["data"].append({"name": name, "icon": "roundRect"})
                             updating_plot_settings = True
                             try:
                                 if y_limits_automatic:
@@ -2706,6 +2824,7 @@ def render(_navigate: Callable[[str], None]) -> None:
                         sync_preview_settings_visibility(
                             plot_settings,
                             plot_type="Histogram" if plot_settings.view.value == "Histogram" else "Line",
+                            filter_available=filter_applied(),
                         )
 
                     def preview_view_changed() -> None:
@@ -2758,12 +2877,17 @@ def render(_navigate: Callable[[str], None]) -> None:
                                 with ui.row().classes("dn-data-manager-preview-heading"):
                                     ui.label("Prepared profile").classes("dn-setting-group-title")
                                     ui.space()
-                                    sampled = len(selected_preview.values)
+                                    sampled = min(selected_preview.total_count, preview_point_limit())
                                     sample_text = f"{selected_preview.total_count:,} values"
                                     if sampled < selected_preview.total_count:
                                         sample_text += f" · {sampled:,} shown"
                                     ui.label(sample_text).classes(
                                         "dn-data-manager-preview-sampling"
+                                    ).bind_text_from(
+                                        get_export_settings(), "preview_points",
+                                        backward=lambda limit, total=selected_preview.total_count: (
+                                            f"{total:,} values" + (f" · {min(total, int(limit)):,} shown" if int(limit) < total else "")
+                                        ),
                                     )
                                 with ui.element("div").classes("dn-data-manager-preview-stats"):
                                     ui.label(f"Finite {selected_preview.finite_count:,}")
@@ -2798,10 +2922,10 @@ def render(_navigate: Callable[[str], None]) -> None:
                             initial_y_label="Value",
                             on_reset_y_limits=reset_preview_y_limits,
                             markers=preview_settings_markers("data-manager-plot"),
+                            allow_filter=True, allow_legend_name=True,
                         )
                         plot_settings.histogram_bins.set_value(40)
                         plot_settings.line_width.set_value(1.8)
-                        plot_settings.aspect_ratio.set_value(5.0)
                         plot_settings.show_legend.set_value(False)
                         plot_settings.show_grid.set_value(False)
                         histogram_sync = HistogramBinSynchronizer(
@@ -2818,10 +2942,64 @@ def render(_navigate: Callable[[str], None]) -> None:
                             on_log_x_change=preview_log_x_changed,
                             on_y_limits_change=preview_y_limits_changed,
                             on_visibility_change=sync_plot_visibility,
-                            default_aspect_ratio=5.0,
+                            default_aspect_ratio=3.0,
                         )
                         sync_plot_visibility()
+                        def filter_application_changed() -> None:
+                            sync_plot_visibility()
+                            redraw_prepared_preview()
+
+                        filter_controls.controls["enabled"].on_value_change(filter_application_changed)
                     preview_surface.visible = False
+
+                    filter_file_preferences: dict[int, _GeneratedFilePreference] = {}
+
+                    @ui.refreshable
+                    def render_filter_exports() -> None:
+                        if not plot_settings.export_filter.value or not filter_controls.controls["enabled"].value:
+                            return
+                        for result_id, result in reversed(converted_results):
+                            if not result.filter_positions:
+                                continue
+                            automatic = _generated_file_stem(result) + "_filter_positions"
+                            preference = filter_file_preferences.setdefault(result_id, _GeneratedFilePreference(
+                                file_name=automatic, file_type="TSV", compress=False, automatic_name=automatic,
+                            ))
+
+                            async def download_filter(controls, retained=result, *, open_in=None):
+                                try:
+                                    artifact = await run.io_bound(
+                                        filter_positions_artifact, retained,
+                                        output_name=str(controls.file_name.value or (_generated_file_stem(retained) + "_filter_positions")),
+                                        target_format=str(controls.file_type.value).lower(),
+                                        gzip_output=bool(controls.compress.value),
+                                    )
+                                    if open_in is not None:
+                                        await open_raw_artifact(artifact, open_in, _navigate)
+                                    else:
+                                        ui.download(artifact.data, artifact.filename, artifact.media_type)
+                                except (OSError, RuntimeError, ValueError) as exc:
+                                    notify(str(exc), type="negative")
+
+                            with ui.column().classes("w-full dn-filter-export-row dn-mapping-batch-raw-item dn-data-manager-file").mark(f"data-manager-filter-result-{result_id}"):
+                                ui.label("Filter positions").classes("dn-setting-group-title")
+                                row = raw_output_file_row(
+                                    file_name=preference.file_name, default_type=preference.file_type,
+                                    default_compress=preference.compress,
+                                    on_download=download_filter,
+                                    on_open=lambda controls, destination, handler=download_filter: handler(controls, open_in=destination),
+                                    reserve_remove_space=True,
+                                    extra_classes="dn-mapping-batch-raw-row",
+                                    markers={"row": f"data-manager-filter-result-row-{result_id}",
+                                             "file_name": f"data-manager-filter-result-name-{result_id}",
+                                             "file_type": f"data-manager-filter-result-type-{result_id}",
+                                             "compression": f"data-manager-filter-result-compression-{result_id}",
+                                             "download": f"download-filter-positions-{result_id}"},
+                                )
+                                row.file_type.set_options(list(_GENERATED_FILE_TYPES), value=preference.file_type)
+                                row.file_name.on_value_change(lambda event, pref=preference: setattr(pref, "file_name", str(event.value)))
+                                row.file_type.on_value_change(lambda event, pref=preference: setattr(pref, "file_type", str(event.value)))
+                                row.compress.on_value_change(lambda event, pref=preference: setattr(pref, "compress", bool(event.value)))
 
                     @ui.refreshable
                     def render_result() -> None:
@@ -2857,11 +3035,13 @@ def render(_navigate: Callable[[str], None]) -> None:
                                 item for item in converted_results if item[0] != result_id
                             ]
                             generated_file_preferences.pop(result_id, None)
+                            filter_file_preferences.pop(result_id, None)
                             render_result.refresh()
 
                         def clear_results() -> None:
                             converted_results.clear()
                             generated_file_preferences.clear()
+                            filter_file_preferences.clear()
                             render_result.refresh()
 
                         def retained_generated_preference(
@@ -2900,6 +3080,15 @@ def render(_navigate: Callable[[str], None]) -> None:
                             )
                             if not snapshots:
                                 return
+                            filter_snapshots = tuple(
+                                (result, preference.file_name, preference.file_type, preference.compress)
+                                for result_id, result in converted_results
+                                if plot_settings.export_filter.value and filter_controls.controls["enabled"].value and result.filter_positions
+                                for preference in (filter_file_preferences.get(result_id) or _GeneratedFilePreference(
+                                    file_name=_generated_file_stem(result) + "_filter_positions", file_type="TSV", compress=False,
+                                    automatic_name=_generated_file_stem(result) + "_filter_positions",
+                                ),)
+                            )
                             try:
                                 def prepare_archive() -> ExportArtifact:
                                     artifacts = tuple(
@@ -2911,6 +3100,9 @@ def render(_navigate: Callable[[str], None]) -> None:
                                         )
                                         for result, file_name, file_type, compress in snapshots
                                     )
+                                    artifacts += tuple(filter_positions_artifact(
+                                        result, output_name=file_name, target_format=file_type.lower(), gzip_output=compress,
+                                    ) for result, file_name, file_type, compress in filter_snapshots)
                                     return _build_generated_files_archive(artifacts)
 
                                 bundled = await run.io_bound(prepare_archive)
@@ -3051,6 +3243,7 @@ def render(_navigate: Callable[[str], None]) -> None:
                                             store_compression
                                         )
                                         row_controls.file_type.on_value_change(store_file_type)
+                                render_filter_exports()
                             with ui.row().classes("dn-data-manager-delete-all-row"):
                                 (
                                     ui.button(
@@ -3074,12 +3267,17 @@ def render(_navigate: Callable[[str], None]) -> None:
                                 )
 
                     render_result()
+                    plot_settings.export_filter.on_value_change(render_filter_exports.refresh)
+                    filter_controls.controls["enabled"].on_value_change(render_filter_exports.refresh)
 
     def build_request(
         source: _DataManagerSource,
         *,
         output_name: str,
     ) -> DataConversionRequest:
+        settings = configuration_for(source)
+        controls = {key: SimpleNamespace(value=value) for key, value in settings.items()}
+        apply_configuration = bool(settings["apply_configuration"])
         current = source.inspection
         details = selected_data(source)
         target_format = "tsv"
@@ -3087,7 +3285,7 @@ def render(_navigate: Callable[[str], None]) -> None:
             controls["decimal_places"],
             "Decimal places",
             minimum=0,
-        )
+        ) if apply_configuration else None
         kwargs: dict[str, Any] = {}
         if source.selection == _REPLISEQ_TIMING:
             chromosome = str(controls["chromosome"].value or "")
@@ -3118,8 +3316,8 @@ def render(_navigate: Callable[[str], None]) -> None:
                 memory_limit_mb=get_export_settings().conversion_memory_limit_mb,
                 bin_size=_integer(controls["bin_size"], "Bin size", minimum=1),
                 aggregation=aggregation,
-                track_missing=str(controls["track_missing"].value),
-                interpolation=str(controls["interpolation"].value),
+                track_missing=str(controls["track_missing"].value) if apply_configuration else "nan",
+                interpolation=str(controls["interpolation"].value) if apply_configuration else "none",
             )
             if chromosome_scope == "single":
                 chromosome = str(controls["chromosome"].value)
@@ -3150,7 +3348,7 @@ def render(_navigate: Callable[[str], None]) -> None:
                 )
             else:
                 kwargs.update(chromosome=None, start=None, end=None)
-        if details.form in _POLISHABLE_FORMS:
+        if details.form in _POLISHABLE_FORMS and apply_configuration:
             value_scaling = str(controls["value_scaling"].value)
             threshold_enabled, threshold_min, threshold_max = (
                 _resolved_feature_bounds(
@@ -3207,10 +3405,11 @@ def render(_navigate: Callable[[str], None]) -> None:
                 str(controls["missing_policy"].value)
                 if "missing_policy" in controls
                 else "zero"
-            ),
-            fill_value=_number(controls["fill_value"], "Fill value"),
+            ) if apply_configuration else "ignore",
+            fill_value=_number(controls["fill_value"], "Fill value") if apply_configuration else 0.0,
             decimal_places=decimal_places,
             data_filter=filter_controls.snapshot() if filter_controls is not None else DataFilterSettings(),
+            transform_formula=transform_controls.formula_for(source.source_id) if transform_controls is not None else None,
             value_name=_selected_value_name(
                 source,
                 details,
@@ -3238,9 +3437,10 @@ def render(_navigate: Callable[[str], None]) -> None:
         candidates = tuple(sources_for_mode())
         if not candidates:
             raise ValueError("Add at least one data source before converting.")
+        save_source_configuration()
 
         forms = tuple(selected_data(source).form for source in candidates)
-        if len(set(forms)) != 1:
+        if len(set(forms)) != 1 and not (transform_controls is not None and transform_controls.combining):
             raise ValueError(
                 "All sources in one conversion batch must use the same data type."
             )
@@ -3251,11 +3451,11 @@ def render(_navigate: Callable[[str], None]) -> None:
                 str(source.output_name).strip()
                 or _automatic_output_name(
                     source.inspection.name,
-                    str(settings["feature"]),
+                    str(configuration_for(source)["feature"]),
                 )
             )
             if source.selection == _REPLISEQ_TIMING:
-                base += "_" + str(controls["chromosome"].value)
+                base += "_" + str(configuration_for(source)["chromosome"])
             requested_output_names.append(base or f"{_DATA_FILE_STEM}_{index}")
 
         output_names = _unique_conversion_output_names(
@@ -3307,14 +3507,20 @@ def render(_navigate: Callable[[str], None]) -> None:
         convert_button.enable()
         try:
             requests = build_requests()
+            combining = transform_controls is not None and transform_controls.combining
+            combined_formula = (
+                transform_controls.combined_formula if transform_controls.combined_formula is not None
+                else " + ".join(f"source{i}" for i in range(1, len(requests) + 1))
+            ) if combining else None
             check_cancelled()
             started = time.perf_counter()
-            total = len(requests)
+            jobs = requests[:1] if combining else requests
+            total = len(jobs)
             completed: list[DataConversionResult] = []
             failures: list[tuple[str, str]] = []
             conversion_progress.visible = True
             conversion_progress.value = 0.01
-            for index, (source, request) in enumerate(requests):
+            for index, (source, request) in enumerate(jobs):
                 progress_state = _ConversionProgressState()
                 item_number = index + 1
                 conversion_status.text = (
@@ -3322,6 +3528,10 @@ def render(_navigate: Callable[[str], None]) -> None:
                 )
                 worker = asyncio.create_task(
                     run.io_bound(
+                        convert_combined_data, tuple(item for _source, item in requests),
+                        combined_formula, output_name=f"{_DATA_FILE_STEM}_combined",
+                        progress=progress_state.report, cancel=check_cancelled,
+                    ) if combining else run.io_bound(
                         convert_data,
                         request,
                         progress_state.report,
@@ -3355,6 +3565,16 @@ def render(_navigate: Callable[[str], None]) -> None:
                 check_cancelled()
 
             check_cancelled()
+            if combining and completed:
+                keep_names = {result.artifact.filename.casefold() for result in completed}
+                converted_results[:] = [
+                    (result_id, result) for result_id, result in converted_results
+                    if result.artifact.filename.casefold() in keep_names
+                ]
+                kept_ids = {result_id for result_id, _result in converted_results}
+                for result_id in tuple(generated_file_preferences):
+                    if result_id not in kept_ids:
+                        generated_file_preferences.pop(result_id)
             retained_output_bytes = sum(
                 len(result.artifact.data) for _result_id, result in converted_results
             )

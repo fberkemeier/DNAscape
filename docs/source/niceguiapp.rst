@@ -37,6 +37,11 @@ Data Manager
    Z-score, or maximum absolute. A target interval is defined explicitly by its
    target minimum and target maximum. Thresholds are evaluated before smoothing
    and value scaling.
+   The ENCODE K562 Repli-seq example uses ``hgdownload.gi.ucsc.edu``.
+   Older HTTPS links to ``hgdownload.soe.ucsc.edu`` or
+   ``hgdownload.cse.ucsc.edu`` use this current host with their file paths and
+   queries preserved. HTTPS verification stays enabled; connection timeouts
+   and certificate errors are reported separately.
    **Decimal places** sits above **Missing values**, with optional bounds below it.
    **Report error** stops conversion and reports missing samples. The reset
    button in **End** restores Start and End to the selected chromosome's
@@ -92,13 +97,22 @@ Data Manager
    **Filter**, below Configure, starts collapsed with **Apply filter** off.
    It edits the converted values after Configure. Its default selection is
    values below zero, replaced with zero. Other selections include values
-   above/below a threshold, an inclusive interval, a threshold at a distance
+   above/below a threshold, within or outside an inclusive interval, a threshold at a distance
    above the converted minimum or below its maximum, NaN regions, an uploaded
    mask or genomic positions/intervals, and the whole region. An absent filter
    profile leaves the data unchanged. Masks require one value per converted
    bin; non-zero finite entries select bins. Position lists and half-open
    intervals use bp, kb, or zero-based bin indices; intervals select overlapping
    bins and optional chromosome labels restrict the selection.
+
+   Filter controls remain editable while **Apply filter** is unchecked. In
+   **Plot settings → Guides**, enable **Filter** to shade the applied selection
+   in grey. With **Legend** enabled, name both the signal and filter. Plot
+   previews refresh up to 1,000 native curve points within the visible window by default
+   after zooming or panning. A coarse full-region overview remains available
+   while finer curve or heatmap detail loads, keeping navigation continuous.
+   Aspect ratios from 0.2 to 8 set the preview's
+   width-to-height ratio directly.
 
    Operations include replacing with a value or NaN, the mean of each contiguous
    region, interpolation from surrounding endpoints (linear, smooth PCHIP,
@@ -110,6 +124,24 @@ Data Manager
    at least one unselected finite value. Chromosomes and space-time columns
    are processed independently, retaining their grid. Previews and every raw
    export format use the filtered result, including any new NaNs.
+
+   **Modulate with profile** accepts aligned gene annotations or signals such as
+   RNA-seq, ATAC-seq and ChIP-seq. It checks the full post-Configure bin count and
+   matrix shape before editing selected regions, with no implicit broadcasting
+   or resampling. Explicit coordinates must match when supplied by both inputs.
+   Chromosome columns and NPZ arrays can be matched by name. **Combine using**
+   offers a live **Formula** editor for weighted sums, multiplication and division,
+   with separate multipliers, powers and log/exp functions for each input.
+   Minimum, maximum and convolution are separate methods. Pointwise profile scaling offers original values, mean 1,
+   maximum magnitude 1, or a 0–1 interval. Missing-value and division-by-zero
+   choices are explicit; errors preserve the previous generated result.
+
+   Convolution uses the modulation profile as a centred kernel and preserves
+   output size. Kernel normalization is on by default, with reflected
+   boundaries; periodic, nearest-value and zero-padding boundaries are also
+   available. Inputs must be finite on a uniform grid, or missing values can be
+   filled with zero. Space-time columns are convolved independently along
+   space. All previews and raw downloads use the same modulated result.
 
    A curated UCSC ENCODE DCC K562 Repli-seq BigWig link is available as a test
    source. Its wavelet signal is a relative timing score (larger values are
@@ -126,7 +158,7 @@ Data Manager
    and BigWig retain their supported signal aggregations. Interpolation is
    unavailable between called peaks, and firing-rate scaling excludes centre
    and Z-score. BED peak previews retain local extrema at their original
-   coordinates within the 500-point limit. Repli-seq BigWig conversion and
+   coordinates within the configured preview point limit. Repli-seq BigWig conversion and
    preview behavior are unchanged.
 
    The OKseqHMM K562 OK-seq BigWig example provides hg19 fork directionality
@@ -204,18 +236,30 @@ Simulation
    Under **Origin & fork behaviour**, **Firing factor** places Fork coupling next
    to Finite pool, with Pool size and Recycle rate below. **Fork movement** offers
    separate Fork stalling and Stochastic movement switches, both off by default.
-   Fork stalling reveals the physical stall rate and Stall recovery option,
-   which is off by default. Enable Stall recovery to set a recovery time;
+   Fork stalling reveals the physical stall rate, **Shared between directions**,
+   and Stall recovery option. Shared stalls use identical genomic positions
+   and recovery delays for both directions; off by default, directions stall
+   independently. Stall recovery is off by default. Enable it to set a recovery time;
    with recovery off, stalls are permanent. Disabling stalling resets its
    rate to zero. Stochastic movement reveals Standard deviation (kb/min), applied
    around the local fork speed for constant, spatial, temporal, and space-time
-   inputs. Non-positive normal speed draws are resampled. **Fix seed** makes the
-   simulation reproducible, including these movement choices.
+   inputs. Positive lognormal speeds preserve the requested mean and standard
+   deviation; temporal speeds are integrated during bin crossings. With
+   stochastic movement off, existing models and seeded results are unchanged.
+   **Fix seed** makes the simulation reproducible, including these movement choices.
    Progress appears in Preview while the scientific worker runs. Completion
    times, origins per replicate, and pooled inter-origin distances are standard
    ensemble outputs and do not require temporal tracking. Enable **Track time
-   courses** for one-dimensional time summaries, and enable **Track space-time
-   outputs** only for the five position-by-time matrices. The app validates
+   courses** for one-dimensional time summaries, including **Origin firing
+   (time)** (mean actual initiations per sampling interval), and the **Replicon
+   length** distribution. Replicon lengths measure the completed DNA domains
+   copied from individual fired origins, joining domains across periodic
+   boundaries and excluding unfinished domains. Samples have a bounded
+   retention limit, with a warning if truncated. Time-only output names carry
+   **(time)**. Enable **Track space-time outputs** for the six position-by-time
+   matrices, including **Total fork density (space-time)**, the sum of the two
+   directional densities. Initiation-event heatmaps include only origins that
+   actually fired. The app validates
    actual retained-array sizes before allocation. Inter-origin distances use
    ``rsim`` values in kb, appear as a histogram by default, and can be switched
    to a box plot without rerunning the simulation. Very large IOD pools retain a
@@ -248,10 +292,16 @@ Simulation
    budget. It does not reserve RAM, cap actual process RAM use, or change upload
    limits. Settings uses grouped switches and draft preferences; **Apply** saves
    changes. **Restore defaults** fills the draft without clearing data or results.
-   Under **Interface**, **DNAscape theme** changes the accent colour across the
+   Under **Visualisation**, **DNAscape theme** changes the accent colour across the
    interface, default plot curves, logos, and browser-tab icon. Choose a colour
    with the picker or enter a hex value; light and dark variants keep labels
    readable. **Restore defaults** restores the original DNAscape red.
+   This section also contains **Controls font size** and **Preview points**.
+   The point budget defaults to 1,000 per curve in the visible range, with
+   100–10,000 supported. Applying it updates mounted previews without resetting
+   their zoom window. Plot settings default to an aspect ratio of 3, edited
+   beside **View** in **Style**. **Fill** shades below or above curves and KDEs
+   using a light version of each curve's colour, within the displayed Y limits.
    Application restart and
    Reset everything restore the 64 MB default.
    Histogram views expose synchronized bin-count, exact bin-size, and editable
@@ -263,7 +313,9 @@ Simulation
    the mean, median, and population standard deviation by default in a compact
    **Statistics** panel combined with the legend. The panel defaults to the
    top right and can be positioned in any corner. For combined histograms,
-   choose a dataset from the panel dropdown or click its bins. **Side by side**
+   choose a dataset from the panel dropdown or click its bins when Statistics
+   is enabled. Turning Statistics off replaces the panel with a legend listing
+   every dataset, without a selector. **Side by side**
    places datasets within each shared bin interval, so bin size still refers
    to the whole interval. **KDE** replaces bars with Gaussian density curves;
    **Smoothness** scales Scott's bandwidth, with 1 as the default and larger
@@ -287,6 +339,13 @@ Analysis
    box-plot previews with the same plotting controls used by Mapping and
    Simulation.
 
+   Combined layouts offer per-dataset **Curves**, **Histograms**, or **Boxes**
+   sections, depending on the view. All support editable names and colours.
+   Histograms add opacity and, when KDE is on, thickness and type. Boxes add
+   outline thickness, numeric X position, and an optional X label. Leaving the
+   X label empty shows the position. Each box is centered on its tick, including
+   after zooming. These sections are hidden when the layout is Separate.
+
    **Enable analysis** is off by default. Turning it on changes **Plot** to
    **Analyse** and reveals Spearman, Pearson, Kendall tau, and smoothing controls.
    The **Analysis report** below the plotting settings combines the methods in
@@ -298,6 +357,21 @@ Analysis
    also available, and include all coefficients, paired sample counts, and
    optional p-values. Disabling analysis hides its controls and report and
    bypasses smoothing when plotting.
+
+   **Data transformations**, immediately below Analysis, is collapsed and off
+   by default and also works when analysis is disabled. Choose one dataset or
+   all selected profiles, then select the regions and operation. The default
+   fills missing samples by linear interpolation. Other operations include
+   replacement, arithmetic, noise, and modulation with an uploaded profile of
+   matching dimensions and, when provided, matching coordinates. The formula
+   editor accepts Python/NumPy expressions using **source** and **profile**;
+   **convolve** and **smooth** are also available. Only selected regions change.
+
+   Transformations apply after smoothing and before plotting and correlations.
+   **Keep original profiles** adds transformed curves beside the original
+   curves. Each run starts from the uploaded data, preserving the uploads and
+   avoiding repeated application. Transformed profiles appear in **Raw data**
+   with TSV, TXT, CSV, and NPZ exports, optional compression, and **Open in**.
 
    Each selected dataset has independent Off, Moving average, or Gaussian
    smoothing controls. Smoothing applies to both plots and correlations on
@@ -341,9 +415,11 @@ Constant Simulation Example
 2. Keep both inputs set to **Constant**.
 3. Choose the genomic interval, resolution, replicate count, and seed.
 4. Leave both optional trackers off for the quickest summary preview. Enable
-   **Track time courses** for replicated fraction and fork-count curves; enable
-   **Track space-time outputs** for initiation/coalescence and fork-density
-   heatmaps. Inter-origin-distance histograms and box plots are always available.
+   **Track time courses** for replicated fraction, fork-count and origin-firing
+   curves, and the completed replicon-length distribution; enable **Track
+   space-time outputs** for initiation/coalescence and directional/total
+   fork-density heatmaps. Inter-origin-distance histograms and box plots are
+   always available.
 5. Select **Simulate** and monitor progress in Preview.
 6. Choose the output to display, then use the hover toolbar or Raw data section
    to export it.

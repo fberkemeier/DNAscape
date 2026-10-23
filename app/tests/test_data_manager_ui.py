@@ -188,13 +188,13 @@ def test_generated_plot_settings_update_preview_and_export_without_changing_data
             await user.should_see(marker="data-manager-preview-chart", retries=80)
             await user.should_see("Plot settings")
             await user.should_see("Raw data")
-            assert control("data-manager-plot-aspect-ratio").value == 5.0
-            assert options()["dnascapeAspectRatio"] == 5.0
+            assert control("data-manager-plot-aspect-ratio").value == 3.0
+            assert options()["dnascapeAspectRatio"] == 3.0
             with user.client:
                 control("data-manager-plot-aspect-ratio").set_value(2.0)
             assert options()["dnascapeAspectRatio"] == 2.0
             user.find(marker="data-manager-plot-reset-aspect-ratio").click()
-            assert options()["dnascapeAspectRatio"] == 5.0
+            assert options()["dnascapeAspectRatio"] == 3.0
             settings = control("data-manager-plot-preview-settings")
             # Shared settings follow the plot and precede every generated row.
             container = control("data-manager-result-container")
@@ -629,7 +629,7 @@ def test_data_manager_starts_with_auto_detection_and_an_explicit_url_source() ->
                 next(iter(user.find(marker="data-manager-source-url").elements)),
             )
             assert url.value == (
-                "https://hgdownload.soe.ucsc.edu/goldenPath/hg19/encodeDCC/"
+                "https://hgdownload.gi.ucsc.edu/goldenPath/hg19/encodeDCC/"
                 "wgEncodeUwRepliSeq/wgEncodeUwRepliSeqK562WaveSignalRep1.bigWig"
             )
             feature = cast(

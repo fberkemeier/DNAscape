@@ -124,7 +124,7 @@ def write_plot_html(
         aspect_ratio = float(aspect_ratio)
         if not np.isfinite(aspect_ratio) or aspect_ratio <= 0:
             raise ValueError("Plot aspect ratio must be a positive finite number.")
-        chart_size = f"height: auto; aspect-ratio: {aspect_ratio}; min-height: 240px;"
+        chart_size = f"height: auto; aspect-ratio: {aspect_ratio}; min-height: 0;"
     destination.parent.mkdir(parents=True, exist_ok=True)
     options_json = json.dumps(
         _html_option_values(specification), ensure_ascii=True, allow_nan=False

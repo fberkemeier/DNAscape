@@ -576,7 +576,7 @@ def test_histogram_kde_uses_scott_bandwidth_instead_of_density_bars(boundary: st
     assert len(options["series"]) == 1
     assert options["series"][0]["type"] == "line"
     data = np.asarray(options["series"][0]["data"])
-    assert data.shape == (256, 2)
+    assert data.shape == (1000, 2)
     assert (data[0, 0], data[-1, 0]) == (0.0, 2.0)
     np.testing.assert_allclose(data[:, 1], gaussian_kde(samples, bw_method="scott")(data[:, 0]))
 
@@ -606,7 +606,7 @@ def test_histogram_custom_rectangles_preserve_exact_edges_and_spacing_choice() -
     assert "* 0.14" in spaced["series"][0][":renderItem"]
 
 
-def test_default_line_domains_use_exact_dynamic_padding_not_rounded_ticks() -> None:
+def test_default_line_domain_matches_native_x_coordinates_and_keeps_y_margin() -> None:
     options = build_preview_plot_options(
         plot_type="Line",
         title="Measured profile",
@@ -626,8 +626,9 @@ def test_default_line_domains_use_exact_dynamic_padding_not_rounded_ticks() -> N
         x_axis=np.asarray([2.3, 5.1, 9.7]),
     )
 
-    assert options["xAxis"]["min"] == pytest.approx(2.3 - 7.4 * 0.04)
-    assert options["xAxis"]["max"] == pytest.approx(9.7 + 7.4 * 0.04)
+    assert options["xAxis"]["min"] == 2.3
+    assert options["xAxis"]["max"] == 9.7
+    assert options["dnascapeDefaultAxes"]["x"] == [2.3, 9.7]
     assert options["yAxis"]["min"] == pytest.approx(11.2 - 3.6 * 0.04)
     assert options["yAxis"]["max"] == pytest.approx(14.8 + 3.6 * 0.04)
     assert options["xAxis"]["min"] != pytest.approx(2.0)
@@ -706,15 +707,14 @@ def test_line_grid_keeps_real_endpoint_ticks_without_gridding_padded_limits() ->
         x_axis=np.asarray([0.0, 500.0, 1_000.0]),
     )
 
-    # The exact data range plus dynamic whitespace remains untouched.
+    # X ends at the data; Y retains its readability margin.
     assert options["xAxis"]["min"] == 0.0
-    assert options["xAxis"]["max"] == pytest.approx(1_040.0)
+    assert options["xAxis"]["max"] == 1_000.0
     assert options["yAxis"]["min"] == pytest.approx(17.32)
     assert options["yAxis"]["max"] == pytest.approx(35.68)
 
-    # Labels and ticks are globally aligned rather than offset by the padded
-    # minimum. Real endpoint ticks retain their grid lines; the padded 1,040
-    # boundary is absent from customValues and therefore has no grid line.
+    # Ticks stay globally aligned. An aligned real endpoint retains its tick
+    # and grid line without extending the horizontal domain.
     assert options["xAxis"]["axisTick"]["customValues"] == [
         0.0,
         200.0,

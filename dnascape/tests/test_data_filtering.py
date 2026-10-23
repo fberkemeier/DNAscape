@@ -11,7 +11,8 @@ import pytest
 
 from dnascape.workflows.conversion import DataConversionRequest, convert_data, prepare_data, transcode_conversion_artifact
 from dnascape.workflows.filtering import (
-    DataFilterSettings, FilterProfile, apply_data_filter, read_filter_profile, resolve_filter,
+    DataFilterSettings, FilterProfile, FilterSelection, apply_data_filter,
+    capture_filter_selection, read_filter_profile, resolve_filter,
 )
 from dnascape.workflows.uploads import inspect_upload
 
@@ -39,6 +40,81 @@ def test_defaults_are_inert_and_enabled_defaults_replace_only_negative_bins():
 ])
 def test_signal_selection_uses_the_unedited_converted_values(options, expected):
     np.testing.assert_equal(apply_data_filter([0, 4, 5, 8, 10], settings(value=99, **options)), expected)
+
+
+@pytest.mark.parametrize("mode,expected", [
+    ("within", [0, 99, 99, 99, 10, np.nan]),
+    ("outside", [99, 4, 5, 8, 99, np.nan]),
+])
+def test_between_thresholds_includes_boundaries_within_and_preserves_nan(mode, expected):
+    config = settings(selection="between", lower=4, upper=8, between_mode=mode, value=99)
+    np.testing.assert_equal(apply_data_filter([0, 4, 5, 8, 10, np.nan], config), expected)
+    result = convert_data(DataConversionRequest(
+        inspection=inspect_upload("signal.tsv", b"value\n0\n4\n5\n8\n10\n"), input_form="x",
+        data_filter=config,
+    ))
+    assert dict(result.metadata)["filter_between_mode"] == mode
+    with pytest.raises(ValueError, match="threshold range"):
+        apply_data_filter([1], replace(config, between_mode="invalid"))
+
+
+@pytest.mark.parametrize("enabled", [False, True])
+def test_filter_preview_uses_post_configure_pre_edit_values_independently_of_apply(enabled):
+    result = convert_data(DataConversionRequest(
+        inspection=inspect_upload("signal.tsv", b"value\n-2\n1\n3\n"), input_form="x",
+        scaling_mode="multiplier", scale=-2, data_filter=DataFilterSettings(enabled=enabled),
+    ))
+    assert result.preview.filter_selection.ranges() == [(.5, 2.5)]
+    np.testing.assert_equal(result.preview.values, [4, 0, 0] if enabled else [4, -2, -6])
+
+
+def test_preview_selection_ignores_unfinished_operation_and_inactive_selection_fields():
+    selection = capture_filter_selection([1, -2, -3, 4], DataFilterSettings(action="modulate"))
+    assert selection.ranges() == [(.5, 2.5)]
+    assert capture_filter_selection([1, 2], DataFilterSettings(threshold=None)) is None
+    assert capture_filter_selection([1, 2], DataFilterSettings(selection="profile")) is None
+    assert FilterSelection.from_mask([]).ranges() == []
+    assert FilterSelection.from_mask([True]).ranges() == [(-.5, .5)]
+
+
+def test_preview_selection_is_packed_and_zoom_recovers_narrow_native_regions():
+    mask = np.zeros(100_000, dtype=bool)
+    mask[12_345] = True
+    mask[80_000:80_003] = True
+    selection = FilterSelection.from_mask(mask)
+    assert len(selection.packed) == 12_500
+    assert selection.ranges((12_340, 12_350)) == [(12_344.5, 12_345.5)]
+    assert selection.ranges((79_998, 80_005)) == [(79_999.5, 80_002.5)]
+    assert selection.ranges((100_001, 100_010)) == []
+    alternating = FilterSelection.from_mask(np.arange(100_000) % 2 == 0)
+    assert len(alternating.ranges()) <= 750
+    assert len(alternating.ranges((1000, 1010))) > 1
+
+
+@pytest.mark.parametrize("enabled", [False, True])
+def test_track_preview_shading_uses_relative_positions_first_chromosome_and_partial_bins(enabled):
+    source = inspect_upload("track.bedgraph", b"chr1\t10000\t11000\t1\nchr1\t11000\t12100\t-2\nchr2\t0\t2000\t-3\n")
+    result = convert_data(DataConversionRequest(
+        inspection=source, input_form="track", chromosome="chr1", start=10000, end=12100,
+        bin_size=1000, data_filter=DataFilterSettings(enabled=enabled),
+    ))
+    np.testing.assert_allclose(result.preview.x, [0, 1, 1.55])
+    np.testing.assert_allclose(result.preview.filter_selection.ranges(), [(.5, 1.825)])
+    result = convert_data(DataConversionRequest(
+        inspection=source, input_form="track", chromosome_scope="all", bin_size=1000,
+        data_filter=DataFilterSettings(enabled=enabled), target_format="npz",
+    ))
+    assert result.preview.filter_selection.length == 13
+
+
+def test_preview_shading_selects_only_the_displayed_time_slice():
+    stream = io.BytesIO()
+    np.savez(stream, values=np.array([[1, -1], [-2, 2], [3, -3]]))
+    result = convert_data(DataConversionRequest(
+        inspection=inspect_upload("matrix.npz", stream.getvalue()), input_form="xt",
+        data_filter=DataFilterSettings(enabled=True),
+    ))
+    assert result.preview.filter_selection.ranges() == [(.5, 1.5)]
 
 
 def test_means_are_per_contiguous_region_and_per_time_slice():
@@ -208,7 +284,9 @@ def test_timing_extraction_and_scaling_both_precede_filtering():
         data_filter=settings(comparison="above", threshold=200, value=7),
     )
     np.testing.assert_allclose(prepare_data(request).values, [187.5, 7])
-    with np.load(io.BytesIO(convert_data(request).artifact.data)) as archive:
+    result = convert_data(request)
+    assert result.preview.filter_selection.ranges() == [(.5, 1.5)]
+    with np.load(io.BytesIO(result.artifact.data)) as archive:
         np.testing.assert_allclose(archive["values"], [187.5, 7])
 
 

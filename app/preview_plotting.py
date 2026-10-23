@@ -153,6 +153,14 @@ class PreviewSettingsControls:
     aspect_ratio: Any = None
     reset_aspect_ratio: Any = None
     line_type: Any = None
+    show_fill: Any = None
+    fill_side: Any = None
+    fill_options: Any = None
+    legend_name: Any = None
+    show_filter: Any = None
+    export_filter: Any = None
+    filter_guide_options: Any = None
+    filter_name: Any = None
     dual_y_axes: Any = None
     secondary_y_axis_label: Any = None
     secondary_y_limit_editor: Any = None
@@ -248,6 +256,14 @@ def _set_navigation_axis(options: dict[str, Any], key: str, limits: tuple[float,
     for part in ("axisLabel", "axisTick", "splitLine"):
         spec[part] = {**spec.get(part, {}), "customValues": None}
     spec["axisLabel"].update(showMinLabel=True, showMaxLabel=True)
+    if dimension == "x" and "dnascapeBoxPositions" in spec:
+        ticks = [value for value in spec["dnascapeBoxPositions"] if limits[0] <= value <= limits[1]]
+        for part in ("axisLabel", "axisTick", "splitLine"):
+            spec[part]["customValues"] = ticks
+    elif dimension == "x" and spec.get("type") == "value":
+        _use_endpoint_safe_ticks(
+            spec, data_lower=limits[0], data_upper=limits[1], log_axis=False,
+        )
     if multiple:
         specifications = list(specifications)
         specifications[index] = spec
@@ -274,9 +290,11 @@ class PreviewChartHandle:
     zoom_card: Any = None
     zoom_dialog: Any = None
     shell: Any = None
+    source_options: dict[str, Any] | None = field(default=None, repr=False)
     _navigation: _PreviewNavigation = field(default_factory=_PreviewNavigation, init=False, repr=False)
     _histogram_dataset: int = field(default=0, init=False, repr=False)
     _revision: int = field(default=0, init=False, repr=False)
+    _had_histogram_guide: bool = field(default=False, init=False, repr=False)
     _vector_revision: int = field(default=-1, init=False, repr=False)
     _vector_capture_revision: int = field(default=-1, init=False, repr=False)
     _vector_capture_key: str | None = field(default=None, init=False, repr=False)
@@ -291,18 +309,27 @@ class PreviewChartHandle:
     def options(self) -> dict[str, Any]:
         """Expose the visible chart options for existing live-update callers."""
 
-        return self.canvas.options
+        # NiceGUI wraps nested lists in ObservableList, dropping refinement
+        # callbacks. Keep the native sources in a separate server-side dict.
+        return self.source_options if self.source_options is not None else self.canvas.options
+
+    def _sync_canvas_options(self) -> None:
+        if self.canvas.options is not self.options:
+            self.canvas.options.clear()
+            self.canvas.options.update(self.options)
 
     def update(self) -> None:
         """Update the interactive chart; the vector twin stays lazy."""
 
         self._apply_navigation()
         self._refine_data()
+        self._apply_curve_fill()
         self._apply_guides()
         self._position_toolbar()
         if self.settings is not None:
             sync_preview_axis_limits(self.settings, self.options)
             self._apply_aspect_ratio()
+        self._sync_canvas_options()
         self.canvas.update()
         if self.zoom is not None and self.zoom_dialog is not None and self.zoom_dialog.value:
             self._sync_zoom()
@@ -321,10 +348,39 @@ class PreviewChartHandle:
         self._navigation = controls._navigation
         self._apply_navigation()
         self._refine_data()
+        self._apply_curve_fill()
         self._apply_guides()
         self._position_toolbar()
         sync_preview_axis_limits(controls, self.options)
         self._apply_aspect_ratio()
+        self._sync_canvas_options()
+
+    def _apply_curve_fill(self) -> None:
+        """Fill each curve to the displayed edge, including inverted/log axes.
+
+        ECharts resolves start/end against the current axis limits, so the fill
+        follows browser gestures and vector exports without extra data series.
+        """
+        control = getattr(self.settings, "show_fill", None)
+        if control is None:
+            return
+        enabled = bool(control.value)
+        above = self.settings.fill_side.value == "above"
+        axes = self.options.get("yAxis", {})
+        axes = axes if isinstance(axes, list) else [axes]
+        for series in self.options.get("series", []):
+            if series.get("type") != "line":
+                continue
+            if not enabled:
+                series["areaStyle"] = None
+                continue
+            axis = axes[min(int(series.get("yAxisIndex", 0)), len(axes) - 1)]
+            style = series.get("lineStyle", {})
+            series["areaStyle"] = {
+                "color": style.get("color", series.get("itemStyle", {}).get("color")),
+                "opacity": 0.15 * float(style.get("opacity", 1.0)),
+                "origin": "end" if above != bool(axis.get("inverse")) else "start",
+            }
 
     def _position_toolbar(self) -> None:
         if self.shell is None:
@@ -361,6 +417,14 @@ class PreviewChartHandle:
                 if series.get("type") == "line":
                     series["symbolSize"] = 0
         guide = self.options.get("dnascapeHistogramGuides")
+        if guide and guide.get("visible"):
+            self._had_histogram_guide = True
+        elif self._had_histogram_guide:
+            # ECharts merges graphic elements by id; an empty list leaves the
+            # previous statistics panel on screen, including in the zoom view.
+            self.options["graphic"] = [
+                item for item in self.options.get("graphic", []) if item.get("id") != "dn-histogram-guide"
+            ] + [{"id": "dn-histogram-guide", "$action": "remove"}]
         if hasattr(self.canvas, "classes"):
             if guide and guide.get("visible"):
                 self.canvas.classes(add="dn-preview-guide-visible")
@@ -378,6 +442,8 @@ class PreviewChartHandle:
             return
         selected = payload["index"]
         guide = self.options.get("dnascapeHistogramGuides", {})
+        if not guide.get("selectable"):
+            return
         if not 0 <= selected < len(guide.get("choices", [])):
             return
         self._histogram_dataset = selected
@@ -385,7 +451,7 @@ class PreviewChartHandle:
             object.__setattr__(self.settings, "_histogram_dataset", selected)
         self.update()
 
-    def _refine_data(self) -> None:
+    def _refine_data(self, *, force: bool = False) -> None:
         def visible_window(key: str) -> tuple[float, float] | None:
             if key in self._navigation.ranges:
                 return self._navigation.ranges[key]
@@ -404,15 +470,20 @@ class PreviewChartHandle:
             return None
 
         for index, series in enumerate(self.options.get("series", [])):
+            x_key = "secondary_x" if series.get("xAxisIndex") == 1 else "x"
+            areas = series.get("markArea", {}).get("data")
+            if callable(getattr(areas, "refine", None)):
+                area_window = visible_window(x_key)
+                if areas.window != area_window:
+                    series["markArea"]["data"] = areas.refine(area_window)
             data = series.get("data")
             if not callable(getattr(data, "refine", None)):
                 continue
-            x_key = "secondary_x" if series.get("xAxisIndex") == 1 else "x"
             y_key = "secondary_y" if series.get("yAxisIndex") == 1 else "y"
             window = (visible_window(x_key), visible_window(y_key))
-            if window == (None, None) and not getattr(data, "window", None):
+            if not force and window == (None, None) and not getattr(data, "window", None):
                 continue
-            if getattr(data, "window", None) == window:
+            if not force and getattr(data, "window", None) == window:
                 continue
             refined = data.refine(*window)
             hover = refined.pop("hoverData", None)
@@ -507,11 +578,11 @@ class PreviewChartHandle:
 
     def _apply_aspect_ratio(self) -> None:
         control = self.settings.aspect_ratio if self.settings is not None else None
-        ratio = _positive_finite(control.value) if control is not None else None
+        ratio = (_positive_finite(control.value) or 3.0) if control is not None else None
         self.options["dnascapeAspectRatio"] = ratio
         size = "height: 360px; aspect-ratio: auto; min-height: 0;"
         if ratio is not None:
-            size = f"height: auto; aspect-ratio: {ratio}; min-height: 240px;"
+            size = f"height: auto; aspect-ratio: {ratio}; min-height: 0 !important; flex: none;"
         for chart in (self.canvas, self.vector):
             if hasattr(chart, "style"):
                 chart.style("width: 100%; " + size)
@@ -940,6 +1011,9 @@ _PREVIEW_SETTING_MARKER_SUFFIXES: dict[str, str] = {
     "z_axis_options": "z-axis-options",
     "line_width": "line-width",
     "line_type": "curve-type",
+    "show_fill": "fill",
+    "fill_side": "fill-side",
+    "fill_options": "fill-options",
     "dual_y_axes": "dual-y-axes",
     "secondary_y_axis_label": "y2-axis-label",
     "secondary_x_axis_label": "x2-axis-label",
@@ -975,6 +1049,11 @@ _PREVIEW_SETTING_MARKER_SUFFIXES: dict[str, str] = {
     "show_histogram_statistics": "show-histogram-statistics",
     "histogram_statistics_position": "histogram-statistics-position",
     "show_legend": "show-legend",
+    "legend_name": "legend-name",
+    "show_filter": "show-filter",
+    "export_filter": "export-filter",
+    "filter_guide_options": "filter-guide-options",
+    "filter_name": "filter-name",
     "legend_position": "legend-position",
     "show_grid": "show-grid",
     "density": "density",
@@ -1069,12 +1148,15 @@ def preview_settings_controls(
     markers: Mapping[str, str] | None = None,
     allow_dual_y_axes: bool = False,
     on_reset_secondary_y_limits: Callable[[], Any] | None = None,
+    allow_filter: bool = False,
+    allow_legend_name: bool = False,
 ) -> PreviewSettingsControls:
     """Render the common, thematically grouped preview settings panel."""
 
     from app.pages.common import expansion
 
     markers = {} if markers is None else markers
+    legend_name = show_filter = export_filter = filter_name = filter_guide_options = None
     with expansion(
         "Plot settings",
         icon="palette",
@@ -1087,17 +1169,34 @@ def preview_settings_controls(
         with settings_grid:
             with ui.column().classes("dn-preview-setting-group"):
                 ui.label("Style").classes("dn-setting-group-title")
-                view = _mark(
-                    ui.select(
-                        ["Default", "Histogram"],
-                        value="Default",
-                        label="View",
+                with ui.element("div").classes("dn-preview-view-grid"):
+                    view = _mark(
+                        ui.select(
+                            ["Default", "Histogram"],
+                            value="Default",
+                            label="View",
+                        )
+                        .props("dense options-dense")
+                        .classes("dn-field"),
+                        markers,
+                        "view",
                     )
-                    .props("dense options-dense")
-                    .classes("dn-field"),
-                    markers,
-                    "view",
-                )
+                    with ui.element("div").classes("dn-aspect-ratio-editor"):
+                        aspect_ratio = _mark(
+                            ui.number(label="Aspect ratio", value=3.0, min=0.2, max=8, step=0.1)
+                            .props('dense placeholder="Default"').classes("dn-field dn-field-compact"),
+                            markers, "aspect_ratio",
+                        )
+                        aspect_ratio.tooltip(
+                            "Width divided by height (0.2–8). Default: 3."
+                        )
+                        with aspect_ratio.add_slot("append"):
+                            reset_aspect_ratio = _mark(
+                                ui.button(icon=RESET_ICON, color=None).props(
+                                    'flat round dense aria-label="Reset aspect ratio to default"'
+                                ).classes("dn-reset-button dn-y-limit-reset"), markers, "reset_aspect_ratio",
+                            )
+                        reset_aspect_ratio.tooltip("Reset to the default aspect ratio")
                 title = _PlotTitle(initial_title)
                 with ui.element("div").classes("dn-preview-histogram-grid"):
                     histogram_bins = _mark(
@@ -1223,23 +1322,14 @@ def preview_settings_controls(
                     markers,
                     "heatmap_palette",
                 )
-                with ui.element("div").classes("dn-aspect-ratio-editor"):
-                    aspect_ratio = _mark(
-                        ui.number(label="Aspect ratio", value=None, min=0.25, max=5, step=0.1)
-                        .props('dense placeholder="Default"').classes("dn-field dn-field-compact"),
-                        markers, "aspect_ratio",
+                with _mark(
+                    ui.element("div").classes("dn-preview-fill-controls"), markers, "fill_options",
+                ) as fill_options:
+                    show_fill = _mark(ui.checkbox("Fill", value=False), markers, "show_fill")
+                    fill_side = _mark(
+                        ui.select({"below": "Below", "above": "Above"}, value="below", label="Side")
+                        .props("dense options-dense").classes("dn-field"), markers, "fill_side",
                     )
-                    aspect_ratio.tooltip(
-                        "Width divided by height. Default keeps the current preview size; "
-                        "short plots retain enough height for the axes and colorbar."
-                    )
-                    with aspect_ratio.add_slot("append"):
-                        reset_aspect_ratio = _mark(
-                            ui.button(icon=RESET_ICON, color=None).props(
-                                'flat round dense aria-label="Reset aspect ratio to default"'
-                            ).classes("dn-reset-button dn-y-limit-reset"), markers, "reset_aspect_ratio",
-                        )
-                    reset_aspect_ratio.tooltip("Reset to the default aspect ratio")
                 with ui.element("div").classes("dn-kde-controls"):
                     density = _mark(
                         ui.checkbox("KDE", value=False).tooltip("Gaussian kernel density with Scott's automatic bandwidth"),
@@ -1378,16 +1468,26 @@ def preview_settings_controls(
                     show_histogram_statistics.tooltip(
                         "Show the mean, median, and standard deviation on the histogram."
                     )
-                    show_grid = _mark(
-                        ui.checkbox("Grid", value=True),
-                        markers,
-                        "show_grid",
-                    )
-                    show_hover = _mark(ui.checkbox("Hover boxes", value=True), markers, "show_hover")
+                    with ui.element("div").classes("dn-guide-pair"):
+                        show_grid = _mark(ui.checkbox("Grid", value=True), markers, "show_grid")
+                        show_hover = _mark(ui.checkbox("Hover", value=True), markers, "show_hover")
                     colorbar = _mark(
-                        ui.checkbox("Colorbar", value=True),
-                        markers,
-                        "colorbar",
+                        ui.checkbox("Colorbar", value=True), markers, "colorbar",
+                    )
+                if allow_filter:
+                    with ui.element("div").classes("dn-inline-actions") as filter_guide_options:
+                        _mark(filter_guide_options, markers, "filter_guide_options")
+                        show_filter = _mark(ui.checkbox("Filter", value=False), markers, "show_filter")
+                        export_filter = _mark(ui.checkbox("Export filter", value=False), markers, "export_filter")
+                if allow_legend_name:
+                    legend_name = _mark(
+                        ui.input("Legend name", value="").props('dense placeholder="Automatic"').classes("dn-field"),
+                        markers, "legend_name",
+                    )
+                if allow_filter:
+                    filter_name = _mark(
+                        ui.input("Filter name", value="Filter").props("dense").classes("dn-field"),
+                        markers, "filter_name",
                     )
                 legend_position = _mark(
                     ui.select(
@@ -1468,6 +1568,14 @@ def preview_settings_controls(
         aspect_ratio=aspect_ratio,
         reset_aspect_ratio=reset_aspect_ratio,
         line_type=line_type,
+        show_fill=show_fill,
+        fill_side=fill_side,
+        fill_options=fill_options,
+        legend_name=legend_name,
+        show_filter=show_filter,
+        export_filter=export_filter,
+        filter_guide_options=filter_guide_options,
+        filter_name=filter_name,
         dual_y_axes=dual_y_axes,
         secondary_y_axis_label=secondary_y_axis_label,
         secondary_y_limit_editor=secondary_y_limit_editor,
@@ -1508,7 +1616,7 @@ def bind_preview_settings_updates(
     on_y_limits_change: Callable[[], Any],
     on_visibility_change: Callable[[], Any],
     on_line_type_change: Callable[[], Any] | None = None,
-    default_aspect_ratio: float | None = None,
+    default_aspect_ratio: float | None = 3.0,
 ) -> None:
     """Wire the common plotting settings with identical live behavior.
 
@@ -1529,6 +1637,7 @@ def bind_preview_settings_updates(
         controls.invert_z,
         controls.line_width,
         controls.aspect_ratio,
+        controls.fill_side,
         controls.histogram_touching,
         controls.histogram_grouped,
         controls.show_hover,
@@ -1539,6 +1648,9 @@ def bind_preview_settings_updates(
         controls.invert_y,
     ):
         control.on_value_change(on_redraw)
+    for control in (controls.legend_name, controls.filter_name):
+        if control is not None:
+            control.on_value_change(on_redraw)
     def change_domain(callback: Callable[[], Any]) -> None:
         _clear_preview_navigation(controls)
         callback()
@@ -1554,6 +1666,9 @@ def bind_preview_settings_updates(
 
     controls.show_histogram_statistics.on_value_change(refresh_visibility_and_plot)
     controls.show_legend.on_value_change(refresh_visibility_and_plot)
+    controls.show_fill.on_value_change(refresh_visibility_and_plot)
+    if controls.show_filter is not None:
+        controls.show_filter.on_value_change(refresh_visibility_and_plot)
     controls.view.on_value_change(lambda: change_domain(on_view_change))
     controls.density.on_value_change(lambda: change_domain(on_density_change))
     controls.kde_bandwidth.on_value_change(lambda: change_domain(on_histogram_range_change))
@@ -1602,6 +1717,7 @@ def sync_preview_settings_visibility(
     allow_boxplot: bool = False,
     allow_individual_profiles: bool = False,
     allow_standard_deviation: bool = False,
+    filter_available: bool = False,
 ) -> None:
     """Show only controls that apply to the current plot representation."""
 
@@ -1650,12 +1766,26 @@ def sync_preview_settings_visibility(
     controls.secondary_color_surface.visible = line and multiple_curves
     controls.line_width.visible = line or kde
     controls.line_type.visible = line or kde
+    controls.fill_options.visible = line or kde
+    controls.fill_side.visible = (line or kde) and bool(controls.show_fill.value)
     legend_available = line or histogram or (boxplot and multiple_curves)
     controls.show_legend.visible = legend_available
+    if controls.legend_name is not None:
+        controls.legend_name.visible = legend_available and bool(controls.show_legend.value)
+    if controls.show_filter is not None:
+        controls.show_filter.visible = line and filter_available
+        controls.show_filter.set_enabled(filter_available)
+        controls.export_filter.visible = line and filter_available
+        controls.export_filter.set_enabled(filter_available)
+        if getattr(controls, "filter_guide_options", None) is not None:
+            controls.filter_guide_options.visible = line and filter_available
+        controls.filter_name.visible = (
+            line and filter_available and bool(controls.show_filter.value) and bool(controls.show_legend.value)
+        )
     controls.legend_position.visible = legend_available and bool(
         controls.show_legend.value or (histogram and controls.show_histogram_statistics.value)
     )
-    controls.legend_position.props(f'label="{"Panel position" if histogram else "Legend position"}"')
+    controls.legend_position.props(f'label="{"Panel position" if histogram and controls.show_histogram_statistics.value else "Legend position"}"')
 
 
 def render_preview_chart(
@@ -1693,12 +1823,24 @@ def render_preview_chart(
             )
         )
         plot_toolbar(on_zoom=lambda: handle.open_zoom(), on_download=on_download)
-    handle = PreviewChartHandle(canvas=chart, vector=vector_chart, zoom=zoom_chart, zoom_card=zoom_card, zoom_dialog=zoom_dialog, shell=shell)
+    handle = PreviewChartHandle(canvas=chart, vector=vector_chart, zoom=zoom_chart, zoom_card=zoom_card,
+                                zoom_dialog=zoom_dialog, shell=shell, source_options=options)
+    chart._dn_preview_handle = handle
     handle._apply_navigation()
     handle._position_toolbar()
+    handle._sync_canvas_options()
     zoom_chart.options.update(chart.options)
     for surface in (chart, zoom_chart):
         surface.on("plotViewport", lambda event: handle.accept_navigation(event.args))
         surface.on("plotDataset", lambda event: handle.select_histogram_dataset(event.args))
     chart.on("brandTheme", handle.invalidate_export)
     return handle
+
+
+def refresh_preview_points() -> None:
+    """Apply the global display budget to existing charts without losing viewports."""
+    for element in list(ui.context.client.elements.values()):
+        handle = getattr(element, "_dn_preview_handle", None)
+        if handle is not None and not element.is_deleted and handle.options.get("dnascapePlotType") in {"Line", "Histogram"}:
+            handle._refine_data(force=True)
+            handle.update()

@@ -367,6 +367,7 @@ def data_upload(
     hide_when_loaded: bool = False,
     initial_names: Sequence[str] = (),
     file_details: Callable[[str], None] | None = None,
+    number_sources: bool = False,
 ) -> Any:
     """Render the shared drag-and-drop surface with immediate upload.
 
@@ -472,7 +473,13 @@ def data_upload(
                         ui.spinner(size="xs").classes("dn-upload-file-spinner")
                         ui.label(name).classes("dn-upload-file-name")
                         ui.label("Inspecting…").classes("dn-upload-file-state")
-                for name in uploaded_names:
+                for source_index, name in enumerate(uploaded_names, 1):
+                    if number_sources:
+                        caption = ui.label(
+                            "Source" if len(uploaded_names) == 1 else f"Source {source_index}"
+                        ).classes("dn-upload-formats dn-upload-source-label")
+                        if marker:
+                            caption.mark(f"{marker}-source-label", f"{marker}-source-label-{source_index}")
                     row_marker = f"{marker}-file" if marker else None
                     remove_marker = f"{marker}-remove" if marker else None
 

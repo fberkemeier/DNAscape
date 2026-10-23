@@ -28,6 +28,9 @@ MAX_CONVERSION_MEMORY_LIMIT_MB = 4096
 DEFAULT_CONTROL_FONT_SIZE_PX = 14
 MIN_CONTROL_FONT_SIZE_PX = 12
 MAX_CONTROL_FONT_SIZE_PX = 18
+DEFAULT_PREVIEW_POINTS = 1000
+MIN_PREVIEW_POINTS = 100
+MAX_PREVIEW_POINTS = 10000
 
 
 @dataclass(slots=True)
@@ -46,6 +49,7 @@ class ExportSettings:
     conversion_memory_limit_mb: int = DEFAULT_CONVERSION_MEMORY_LIMIT_MB
     control_font_size_px: int = DEFAULT_CONTROL_FONT_SIZE_PX
     theme_color: str = "#b03412"
+    preview_points: int = DEFAULT_PREVIEW_POINTS
 
 
 _EXPORT_SETTINGS = ExportSettings()
@@ -73,7 +77,13 @@ def reset_export_settings() -> ExportSettings:
     _EXPORT_SETTINGS.conversion_memory_limit_mb = defaults.conversion_memory_limit_mb
     _EXPORT_SETTINGS.control_font_size_px = defaults.control_font_size_px
     _EXPORT_SETTINGS.theme_color = defaults.theme_color
+    _EXPORT_SETTINGS.preview_points = defaults.preview_points
     return _EXPORT_SETTINGS
+
+
+def preview_point_limit() -> int:
+    """Bound the per-curve display budget independently of native data size."""
+    return max(MIN_PREVIEW_POINTS, min(MAX_PREVIEW_POINTS, int(_EXPORT_SETTINGS.preview_points)))
 
 
 def normalize_compression(value: str | None) -> str:
@@ -106,11 +116,15 @@ __all__ = [
     "DATA_FILE_FORMAT_OPTIONS",
     "DEFAULT_CONVERSION_MEMORY_LIMIT_MB",
     "DEFAULT_CONTROL_FONT_SIZE_PX",
+    "DEFAULT_PREVIEW_POINTS",
+    "MIN_PREVIEW_POINTS",
+    "MAX_PREVIEW_POINTS",
     "MAX_CONVERSION_MEMORY_LIMIT_MB",
     "MAX_CONTROL_FONT_SIZE_PX",
     "MIN_CONTROL_FONT_SIZE_PX",
     "ExportSettings",
     "get_export_settings",
+    "preview_point_limit",
     "normalize_compression",
     "reset_export_settings",
 ]

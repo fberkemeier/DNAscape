@@ -11,6 +11,7 @@ from typing import Any
 
 from nicegui import ui
 
+from app._startup_cache import read_asset_text
 from app.export_settings import get_export_settings
 
 DEFAULT_THEME_COLOR = "#b03412"
@@ -84,7 +85,7 @@ def theme_css(color: str) -> dict[str, str]:
 def logo_sources(asset: str, color: str) -> tuple[str, str]:
     if asset not in _LOGOS:
         raise ValueError("Unknown DNAscape logo.")
-    source = (_ASSETS / asset).read_text(encoding="utf-8")
+    source = read_asset_text(_ASSETS / asset)
     palette = theme_css(color)
     images = []
     for accent, neutral in ((palette["--dn-theme-light"], "#403932"), (palette["--dn-theme-dark"], "#f3eee8")):

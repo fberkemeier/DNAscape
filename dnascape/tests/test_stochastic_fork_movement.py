@@ -58,7 +58,7 @@ def test_local_mean_uses_the_current_position_and_time(monkeypatch, form):
         calls.append(np.array(mean, copy=True))
         return np.broadcast_to(np.asarray(mean) * 2, (size,)).copy()
 
-    monkeypatch.setattr(engine, "_positive_normal_speeds", doubled_speed)
+    monkeypatch.setattr(engine, "_positive_speed_samples", doubled_speed)
     field = speed_field(form, n=5)
     result = engine.simulate_replication(
         firing_rate=np.array([1000., 0, 0, 0, 0]), fork_speed=field, n_bins=5,
@@ -68,19 +68,77 @@ def test_local_mean_uses_the_current_position_and_time(monkeypatch, form):
     expected = np.empty(5)
     expected[0] = result[2][0]
     for position in range(1, 5):
-        row = min(int(expected[position - 1] // 0.25), 2)
-        mean = field if form == "scalar" else field[position] if form == "x" else field[0, row] if form == "t" else field[position, row]
-        expected[position] = expected[position - 1] + 1 / (2 * mean)
+        if form in {"scalar", "x"}:
+            mean = field if form == "scalar" else field[position]
+            expected[position] = expected[position - 1] + 1 / (2 * mean)
+        else:
+            # Independently invert the cumulative distance curve, including
+            # the held final sample, rather than freezing speed at entry.
+            speeds = 2 * (field[0] if form == "t" else field[position])
+            clock = np.arange(4) * .25
+            distance = np.r_[0., np.cumsum(speeds * .25)]
+            start = expected[position - 1]
+            travelled = (np.interp(start, clock, distance) if start <= clock[-1]
+                         else distance[-1] + (start - clock[-1]) * speeds[-1])
+            target = travelled + 1
+            expected[position] = (np.interp(target, distance, clock) if target <= distance[-1]
+                                  else clock[-1] + (target - distance[-1]) / speeds[-1])
     np.testing.assert_allclose(times, expected)
     assert calls
 
 
-def test_normal_draws_have_requested_centre_and_spread_and_resample_negative_tail():
-    speeds = engine._positive_normal_speeds(np.random.default_rng(71), 2., 0.2, size=100_000)
+def test_positive_speed_draws_preserve_requested_moments_and_finite_mean_crossing_time():
+    speeds = engine._positive_speed_samples(np.random.default_rng(71), 2., 0.2, size=100_000)
     assert speeds.mean() == pytest.approx(2, abs=0.003)
     assert speeds.std() == pytest.approx(0.2, abs=0.002)
-    broad = engine._positive_normal_speeds(np.random.default_rng(71), 0.1, 2., size=10_000)
+    broad = engine._positive_speed_samples(np.random.default_rng(73), 1.4, 1., size=1_000_000)
     assert np.isfinite(broad).all() and np.all(broad > 0)
+    assert broad.mean() == pytest.approx(1.4, abs=.005)
+    assert broad.std() == pytest.approx(1., abs=.01)
+    assert np.mean(1 / broad) == pytest.approx((1 + (1 / 1.4) ** 2) / 1.4, rel=.01)
+
+
+def test_zero_deviation_does_not_draw_and_extreme_variation_has_a_clear_error():
+    np.testing.assert_array_equal(engine._positive_speed_samples(None, [1., 2.], 0., size=2), [1., 2.])
+    with pytest.raises(ValueError, match="numeric range"):
+        engine._positive_speed_samples(np.random.default_rng(1), 1e-300, 1e300, size=2)
+
+
+@pytest.mark.parametrize("form", ["t", "xt"])
+def test_temporal_stochastic_crossings_use_later_speeds_and_preserve_arrival_order(monkeypatch, form):
+    monkeypatch.setattr(engine, "_positive_speed_samples", lambda rng, mean, sd, *, size: np.full(size, mean))
+
+    class OriginAt:
+        def __init__(self, time):
+            self.time = time
+
+        def random(self, size):
+            return np.ones(size)
+
+        def exponential(self, scale, size=None):
+            return np.full(np.asarray(scale).shape, self.time)
+
+    speeds = np.array([[.01, 10.]])
+    if form == "xt":
+        speeds = np.repeat(speeds, 2, axis=0)
+    arguments = dict(firing_rate=np.array([1., 0.]), fork_speed=speeds,
+                     resolution_t=1., fork_speed_std=.3, max_rep_time=None)
+    early = engine.simulate_replication(**arguments, rng=OriginAt(0.))[3][1]
+    late = engine.simulate_replication(**arguments, rng=OriginAt(1.))[3][1]
+    assert early == pytest.approx(1.099)
+    assert late == pytest.approx(1.1)
+    assert early <= late  # The entry-speed approximation produced 100 versus 1.1.
+
+
+@pytest.mark.parametrize("form", ["scalar", "x", "t", "xt"])
+def test_sd_one_does_not_create_the_seeded_neighbouring_bin_spike(form):
+    n = 100
+    speed = {"scalar": 1.4, "x": np.linspace(1., 1.8, n),
+             "t": np.array([[1., 1.4, 1.8]]),
+             "xt": np.linspace(1., 1.8, n)[:, None] * np.array([[1., 1.2, .8]])}[form]
+    result = rsim(firing_rate=.01, fork_speed=speed, fork_speed_std=1., sim_number=10,
+                  n_bins=n, resolution_t=5., seed=6, verbose=False)
+    assert np.max(np.abs(np.diff(result["replication_timing"]))) < 5
 
 
 @pytest.mark.parametrize("invalid", [-0.1, np.nan, np.inf, "invalid"])

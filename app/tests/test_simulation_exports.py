@@ -289,7 +289,7 @@ def test_automatic_y_limits_follow_the_selected_data_and_view() -> None:
 
     log_limits = _automatic_y_limits(
         result,
-        output_label="Replicated fraction",
+        output_label="Replicated fraction (time)",
         view_mode="Default",
         histogram_bins=60,
         density=False,
@@ -319,7 +319,7 @@ def test_output_defaults_use_scientific_domains_and_clean_dynamic_ticks() -> Non
     result = _result()
     for output_label, expected in (
         ("Fork directionality", (-1.0, 1.0)),
-        ("Replicated fraction", (0.0, 1.0)),
+        ("Replicated fraction (time)", (0.0, 1.0)),
     ):
         assert _default_y_limits(output_label) == expected
         assert (
@@ -523,7 +523,7 @@ def test_nonnegative_count_outputs_auto_floor_at_zero_except_on_log_axes() -> No
     result = _result()
     linear_limits = _automatic_y_limits(
         result,
-        output_label="Total forks",
+        output_label="Total forks (time)",
         view_mode="Default",
         histogram_bins=60,
         density=False,
@@ -534,7 +534,7 @@ def test_nonnegative_count_outputs_auto_floor_at_zero_except_on_log_axes() -> No
 
     log_limits = _automatic_y_limits(
         result,
-        output_label="Total forks",
+        output_label="Total forks (time)",
         view_mode="Default",
         histogram_bins=60,
         density=False,
@@ -708,8 +708,8 @@ def test_time_profiles_offer_hover_and_keep_rounded_numeric_axes() -> None:
 
     options = _result_plot_options(
         _result(),
-        output_label="Replicated fraction",
-        title="Replicated fraction",
+        output_label="Replicated fraction (time)",
+        title="Replicated fraction (time)",
         series_label="Mean",
         x_axis_label="",
         y_axis_label="",

@@ -1,9 +1,8 @@
-"""DNAscape NiceGUI interface prototype.
+"""DNAscape NiceGUI interface with a local application bytecode cache."""
 
-The Simulation page contains the first live package integration: constant
-kinetic inputs run through :func:`dnascape.rsim` in a background worker. Other
-scientific workflows are still being connected incrementally.
-"""
+from app._startup_cache import install_local_bytecode_cache as _install_cache
+
+_install_cache()
 
 __all__ = ["__version__"]
 

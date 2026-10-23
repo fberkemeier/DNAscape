@@ -497,7 +497,7 @@ def test_mapping_batch_runs_all_files_tabs_exports_and_preserves_previous_result
                     histogram_chart.options.get("yAxis", {}).get("name") == "Density"
                     and all(
                         item.get("type") == "line"
-                        and len(item.get("data", ())) == 256
+                        and len(item.get("data", ())) == 1000
                         for item in histogram_chart.options.get("series", ())
                     )
                 ):
@@ -505,7 +505,7 @@ def test_mapping_batch_runs_all_files_tabs_exports_and_preserves_previous_result
                 await asyncio.sleep(0.01)
             assert histogram_chart.options["yAxis"]["name"] == "Density"
             assert all(
-                item["type"] == "line" and len(item["data"]) == 256
+                item["type"] == "line" and len(item["data"]) == 1000
                 for item in histogram_chart.options["series"]
             )
             with user.client:
@@ -1109,7 +1109,7 @@ def test_mapping_plot_settings_redraw_the_completed_preview(
             await asyncio.sleep(0)
             histogram = chart()
             assert bins.value == 2
-            assert len(histogram.options["series"][0]["data"]) == 256
+            assert len(histogram.options["series"][0]["data"]) == 1000
             assert histogram.options["series"][0]["type"] == "line"
             assert histogram.options["yAxis"]["name"] == "Density"
 
@@ -1130,7 +1130,7 @@ def test_mapping_plot_settings_redraw_the_completed_preview(
             assert bin_size.value == pytest.approx(0.125)
             assert bins.value == 4
             histogram = chart()
-            assert len(histogram.options["series"][0]["data"]) == 256
+            assert len(histogram.options["series"][0]["data"]) == 1000
             assert histogram.options["xAxis"]["min"] == pytest.approx(0.3)
             assert histogram.options["xAxis"]["max"] == pytest.approx(0.7)
             assert "Mean       0.5" in histogram.options["graphic"][0]["style"]["text"]
@@ -1971,8 +1971,8 @@ def test_axis_log_and_inversion_options_apply_to_each_numeric_dimension() -> Non
         invert_x=True,
     )
     assert line["xAxis"]["type"] == "log"
-    assert line["xAxis"]["min"] < 1.0
-    assert line["xAxis"]["max"] > 10.0
+    assert line["xAxis"]["min"] == 1.0
+    assert line["xAxis"]["max"] == 10.0
     assert line["xAxis"]["inverse"] is True
     assert line["yAxis"]["type"] == "log"
     assert line["yAxis"]["inverse"] is True
@@ -2049,7 +2049,7 @@ def test_large_heatmap_is_block_averaged_to_a_bounded_static_raster() -> None:
     assert options["tooltip"]["show"] is False
 
 
-def test_numeric_plot_axes_use_exact_padded_limits_and_compact_tick_formatters() -> None:
+def test_numeric_plot_axes_use_native_x_limits_and_compact_tick_formatters() -> None:
     from app.preview_plotting import build_preview_plot_options
 
     options = build_preview_plot_options(
@@ -2071,8 +2071,8 @@ def test_numeric_plot_axes_use_exact_padded_limits_and_compact_tick_formatters()
         x_axis=np.asarray([0.13, 0.47, 0.81]),
     )
 
-    assert options["xAxis"]["min"] == pytest.approx(0.1028)
-    assert options["xAxis"]["max"] == pytest.approx(0.8372)
+    assert options["xAxis"]["min"] == 0.13
+    assert options["xAxis"]["max"] == 0.81
     assert options["xAxis"]["interval"] is None
     assert options["yAxis"]["min"] == pytest.approx(0.1832)
     assert options["yAxis"]["max"] == pytest.approx(0.3668)

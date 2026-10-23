@@ -32,7 +32,8 @@ from dnascape.workflows.uploads import (
 from dnascape.workflows.result_naming import RDATA_FILE_PREFIX
 from dnascape.workflows.repliseq import replication_timing_from_fractions
 from dnascape.workflows.filtering import (
-    DataFilterSettings, apply_data_filter, filter_metadata, profile_chromosome, profile_coordinates, resolve_filter,
+    DataFilterSettings, FilterSelection, apply_data_filter, capture_filter_selection,
+    filter_metadata, profile_chromosome, profile_coordinates, resolve_filter,
 )
 from dnascape.workflows.exports import ExportArtifact, safe_export_filename
 from dnascape.io import inspect_genomic_track, rdata, rload, rsave, rtrack
@@ -195,6 +196,8 @@ class DataConversionRequest:
     repliseq_timing_method: str | None = None
     s_phase_duration_min: float = 600.0
     data_filter: DataFilterSettings = field(default_factory=DataFilterSettings)
+    transform_formula: str | None = None
+    _prepared_data: PreparedData | None = field(default=None, repr=False, compare=False)
 
 
 def _track_limits(request: DataConversionRequest) -> _TrackLimits:
@@ -243,7 +246,7 @@ class PreparedData:
 
 @dataclass(frozen=True, slots=True)
 class DataPreview:
-    """At most 500 display points and full-series summary statistics."""
+    """A bounded display sample and full-series summary statistics."""
 
     x: np.ndarray = field(repr=False, compare=False)
     values: np.ndarray = field(repr=False, compare=False)
@@ -255,6 +258,7 @@ class DataPreview:
     missing_count: int
     minimum: float | None
     maximum: float | None
+    filter_selection: FilterSelection | None = field(default=None, repr=False, compare=False)
 
 
 @dataclass(frozen=True, slots=True)
@@ -269,6 +273,50 @@ class DataConversionResult:
     labels: tuple[str, ...]
     metadata: tuple[tuple[str, str], ...] = ()
     preview: DataPreview | None = field(default=None, repr=False, compare=False)
+    filter_positions: tuple[FilterPositionGroup, ...] = field(default=(), repr=False, compare=False)
+
+
+@dataclass(frozen=True, slots=True)
+class FilterPositionGroup:
+    """Compressed native positions selected before a filter changes values."""
+
+    data: bytes = field(repr=False)
+    coordinate: str = "bin_index"
+    chromosome: str | None = None
+    time_index: int | None = None
+
+
+def filter_positions_artifact(result: DataConversionResult, *, output_name: str, target_format="tsv", gzip_output=False) -> ExportArtifact:
+    """Export a headerless integer position list, independent of preview sampling.
+
+    Genomic coordinates are stored internally in kb and exported in bp to
+    retain sub-kb bins as whole numbers. Repeated positions across chromosomes
+    or time slices form one selection; bin-index sources remain zero-based.
+    """
+    if not result.filter_positions:
+        raise ValueError("This result has no applied filter to export.")
+    groups = result.filter_positions
+    arrays = []
+    for group in groups:
+        values = np.frombuffer(gzip.decompress(group.data), dtype="<f8")
+        # Choose a base inside a half-open genomic bin, even for 1-bp bins
+        # whose centres fall halfway between integer base coordinates.
+        integers = np.floor(values * 1000 + 1e-9) if group.coordinate == "position_kb" else np.rint(values)
+        arrays.append(integers.astype(np.int64))
+    positions = np.unique(np.concatenate(arrays))
+    target_format = target_format.lower()
+    if target_format == "npz":
+        stream = io.BytesIO()
+        np.savez_compressed(stream, positions=positions)
+        payload = stream.getvalue()
+    elif target_format in {"tsv", "csv", "txt"}:
+        payload = "".join(f"{position}\n" for position in positions).encode()
+    else:
+        raise ValueError("Choose TSV, TXT, CSV or NPZ for filter positions.")
+    if gzip_output:
+        payload = gzip.compress(payload, mtime=0)
+    filename = safe_export_filename(output_name, target_format, default_stem="filter_positions", gzip_output=gzip_output)
+    return ExportArtifact(payload, filename, "application/gzip" if gzip_output else _MEDIA_TYPES[target_format])
 
 
 def transcode_conversion_artifact(
@@ -510,6 +558,8 @@ def _normalized_request(request: DataConversionRequest) -> DataConversionRequest
             f"Conversion memory limit (MB) cannot exceed {MAX_CONVERSION_MEMORY_LIMIT_MB:,}."
         )
     input_form = _choice(request.input_form, "input dependence", _INPUT_FORMS)
+    if request.transform_formula is not None and input_form == "table":
+        raise ValueError("Choose a numeric profile before applying a data transform to a full table.")
     data_filter = resolve_filter(request.data_filter)
     if data_filter.enabled and input_form in {"scalar", "table"}:
         raise ValueError("Filtering requires a profile. Choose a numeric profile rather than a constant or full table.")
@@ -767,7 +817,7 @@ def _preview(
     labels: tuple[str, ...] = (),
     coordinates: Mapping[str, np.ndarray] | None = None,
     table: Any = None,
-    max_points: int = 500,
+    max_points: int | None = None,
     preserve_peaks: bool = False,
 ) -> DataPreview | None:
     """Build a bounded display series without retaining prepared full arrays."""
@@ -837,6 +887,9 @@ def _preview(
 
     finite_mask = np.isfinite(series)
     finite = series[finite_mask]
+    if max_points is None:
+        from dnascape.workflows.export_settings import preview_point_limit
+        max_points = preview_point_limit()
     sample_count = min(max(1, int(max_points)), series.size)
     indices = (
         _peak_preview_indices(series, sample_count)
@@ -1016,6 +1069,7 @@ def _prepare_repliseq_timing(
     *,
     progress: Callable[[float], None] | None = None,
     cancel: _CancelChecker | None = None,
+    filter_preview: list[FilterSelection | None] | None = None,
 ) -> PreparedData:
     _check_cancelled(cancel)
     table = _repliseq_table(request.inspection)
@@ -1044,11 +1098,18 @@ def _prepare_repliseq_timing(
     values[starts // bin_size] = timings
     invalid_bins = int(np.isnan(values).sum())
     values = _postprocess_profile_values(values, request, cancel)
+    values = _transform_values(values, request, cancel)
     coordinates = np.arange(length, dtype=float) * (bin_size / 1000)
+    intervals = (np.column_stack((coordinates, np.minimum(coordinates + bin_size / 1000, end / 1000)))
+                 if request.data_filter.selection == "profile" else None)
+    if filter_preview is not None:
+        filter_preview.append(capture_filter_selection(
+            values, request.data_filter, positions=coordinates, intervals=intervals,
+            chromosome=chromosome, display_positions=coordinates,
+        ))
     values = apply_data_filter(
         values, request.data_filter, positions=coordinates,
-        intervals=(np.column_stack((coordinates, np.minimum(coordinates + bin_size / 1000, end / 1000)))
-                   if request.data_filter.enabled and request.data_filter.selection == "profile" else None),
+        intervals=intervals,
         chromosome=chromosome, cancel=cancel,
     )
     metadata = dict(_profile_metadata(request))
@@ -1206,7 +1267,10 @@ def _resolved_track_request(
                 f"The track contains {len(slices):,} sequences; labelled NPZ export supports "
                 f"at most {max_profiles:,}. Export TSV/CSV or reduce the sequence set."
             )
-    estimated_bytes = total_bins * (_TRACK_ESTIMATED_BYTES_PER_BIN + (64 if request.data_filter.enabled else 0))
+    filter_bytes = (64 if request.data_filter.enabled else 0) + (64 if request.transform_formula is not None else 0)
+    if request.data_filter.enabled and request.data_filter.action == "modulate" and request.data_filter.modulation.operation == "convolve":
+        filter_bytes += 96
+    estimated_bytes = total_bins * (_TRACK_ESTIMATED_BYTES_PER_BIN + filter_bytes)
     if request.chromosome_scope == "all":
         estimated_bytes += padded_cells * np.dtype(float).itemsize
     if estimated_bytes > limits.max_bytes:
@@ -1415,6 +1479,7 @@ def _provenance_metadata(request: DataConversionRequest) -> tuple[tuple[str, str
         ("source_url", request.source_url),
         ("biological_role", request.biological_role),
         ("semantic_note", request.semantic_note),
+        ("transform_formula", request.transform_formula),
     )
     return tuple((name, value) for name, value in values if value is not None)
 
@@ -1511,6 +1576,7 @@ def _processed_profile(
     item: _TrackSlice,
     request: DataConversionRequest,
     cancel: _CancelChecker | None = None,
+    filter_preview: list[FilterSelection | None] | None = None,
 ) -> tuple[np.ndarray, np.ndarray]:
     _check_cancelled(cancel)
     values = np.asarray(raw_values, dtype=float).reshape(-1)
@@ -1534,11 +1600,17 @@ def _processed_profile(
     _check_cancelled(cancel)
     coordinates = _slice_coordinates(item, request.bin_size)
     intervals = None
-    if request.data_filter.enabled and request.data_filter.selection == "profile":
+    if request.data_filter.selection == "profile":
         starts = np.arange(item.start, item.end, request.bin_size, dtype=np.int64)
         intervals = np.column_stack((starts, np.minimum(starts + request.bin_size, item.end))) / 1000.
+    values = _transform_values(np.asarray(table[request.value_name], dtype=float), request, cancel)
+    if filter_preview is not None and not filter_preview:
+        filter_preview.append(capture_filter_selection(
+            values, request.data_filter, positions=coordinates, intervals=intervals,
+            chromosome=item.chromosome, display_positions=coordinates,
+        ))
     filtered = apply_data_filter(
-        np.asarray(table[request.value_name], dtype=float), request.data_filter,
+        values, request.data_filter,
         positions=coordinates, intervals=intervals,
         chromosome=item.chromosome, cancel=cancel,
     )
@@ -1593,6 +1665,7 @@ def _prepare_bigwig(
     *,
     progress: Callable[[float], None] | None = None,
     cancel: _CancelChecker | None = None,
+    filter_preview: list[FilterSelection | None] | None = None,
 ) -> PreparedData:
     _check_cancelled(cancel)
     profiles: dict[str, np.ndarray] = {}
@@ -1631,6 +1704,7 @@ def _prepare_bigwig(
                 item,
                 request,
                 cancel,
+                filter_preview,
             )
             completed_bins += item.bins
             if progress is not None:
@@ -1645,6 +1719,7 @@ def _prepare_bedgraph(
     *,
     progress: Callable[[float], None] | None = None,
     cancel: _CancelChecker | None = None,
+    filter_preview: list[FilterSelection | None] | None = None,
 ) -> PreparedData:
     _check_cancelled(cancel)
     profiles: dict[str, np.ndarray] = {}
@@ -1686,6 +1761,7 @@ def _prepare_bedgraph(
             item,
             request,
             cancel,
+            filter_preview,
         )
         if progress is not None:
             progress(0.6 + 0.4 * (index + 1) / len(slices))
@@ -1698,23 +1774,24 @@ def _prepare_track(
     slices: tuple[_TrackSlice, ...],
     progress: Callable[[float], None] | None = None,
     cancel: _CancelChecker | None = None,
+    filter_preview: list[FilterSelection | None] | None = None,
 ) -> PreparedData:
     return (
-        _prepare_bigwig(request, slices, progress=progress, cancel=cancel)
+        _prepare_bigwig(request, slices, progress=progress, cancel=cancel, filter_preview=filter_preview)
         if request.inspection.source_format == "bigwig"
-        else _prepare_bedgraph(request, slices, progress=progress, cancel=cancel)
+        else _prepare_bedgraph(request, slices, progress=progress, cancel=cancel, filter_preview=filter_preview)
     )
 
 
-def prepare_data(request: DataConversionRequest) -> PreparedData:
+def prepare_data(request: DataConversionRequest, cancel: _CancelChecker | None = None) -> PreparedData:
     """Prepare values for preview/mapping without writing a download file."""
 
     request = _normalized_request(request)
     if request.repliseq_timing_method is not None:
-        return _prepare_repliseq_timing(request)
+        return _prepare_repliseq_timing(request, cancel=cancel)
     if request.input_form == "track":
-        request, _summary, slices = _resolved_track_request(request)
-        return _prepare_track(request, slices)
+        request, _summary, slices = _resolved_track_request(request, cancel)
+        return _prepare_track(request, slices, cancel=cancel)
 
     if request.input_form == "table" and request.value_column is None:
         raise ValueError("Choose a numeric value column before preparing a full table preview.")
@@ -1725,8 +1802,8 @@ def prepare_data(request: DataConversionRequest) -> PreparedData:
         array_key=request.array_key,
         missing_policy="interpolate" if request.missing_policy == "interpolate" else "ignore",
     )
-    values = _postprocess_profile_values(values, request)
-    values = _filter_plain_values(values, request)
+    values = _postprocess_profile_values(values, request, cancel)
+    values = _filter_plain_values(values, request, cancel)
     labels: tuple[str, ...] = ()
     if request.value_column:
         labels = (request.value_column,)
@@ -1734,11 +1811,14 @@ def prepare_data(request: DataConversionRequest) -> PreparedData:
         labels = (request.array_key,)
     elif request.input_form == "xt" and len(request.inspection.numeric_columns) == values.shape[1]:
         labels = tuple(request.inspection.numeric_columns)
+    length = values.size if values.ndim < 2 or values.shape[0] == 1 else values.shape[0]
+    positions, _intervals = profile_coordinates(request.inspection, length)
     return PreparedData(
         values=values,
         source_format=request.inspection.source_format,
         data_form=_FORM_TO_RDATA[request.input_form],
         labels=labels,
+        coordinates=_readonly_coordinates({"position_kb": positions}) if positions is not None else MappingProxyType({}),
         metadata=(
             _profile_metadata(request)
             if request.input_form in {"x", "t", "xt"}
@@ -1772,6 +1852,7 @@ def _source_labels(request: DataConversionRequest, values: np.ndarray) -> list[s
 def _plain_source(
     request: DataConversionRequest,
     cancel: _CancelChecker | None = None,
+    filter_preview: list[FilterSelection | None] | None = None,
 ) -> tuple[Any, list[str] | None]:
     _check_cancelled(cancel)
     values = extract_values(
@@ -1784,23 +1865,52 @@ def _plain_source(
     )
     labels = _source_labels(request, values)
     result = _postprocess_profile_values(values, request, cancel)
-    result = _filter_plain_values(result, request, cancel)
+    result = _filter_plain_values(result, request, cancel, filter_preview)
     _check_cancelled(cancel)
     return result, labels
 
 
+def _transform_values(values, request, cancel=None):
+    if request.transform_formula is None:
+        return values
+    from dnascape.workflows.formulas import evaluate_formula
+    _check_cancelled(cancel)
+    result = evaluate_formula(request.transform_formula, {"source": values})
+    _check_cancelled(cancel)
+    return result
+
+
 def _filter_plain_values(
     values: np.ndarray, request: DataConversionRequest, cancel: _CancelChecker | None = None,
+    filter_preview: list[FilterSelection | None] | None = None,
 ) -> np.ndarray:
-    if not request.data_filter.enabled:
+    values = _transform_values(values, request, cancel)
+    if not request.data_filter.enabled and filter_preview is None:
         return values
     length = values.size if values.ndim < 2 or values.shape[0] == 1 else values.shape[0]
-    positions, intervals = (profile_coordinates(request.inspection, length)
-                            if request.data_filter.selection == "profile" or request.data_filter.action == "interpolate"
-                            else (None, None))
-    chromosome = request.chromosome
-    if chromosome is None and request.data_filter.profile is not None and request.data_filter.profile.chromosomes is not None:
-        chromosome = profile_chromosome(request.inspection)
+    try:
+        positions, intervals = (profile_coordinates(request.inspection, length)
+                                if request.data_filter.selection == "profile" or (
+                                    request.data_filter.enabled and (request.data_filter.action in {"interpolate", "modulate"} or request.data_filter._position_sink is not None))
+                                else (None, None))
+        chromosome = request.chromosome
+        if chromosome is None and request.data_filter.profile is not None and request.data_filter.profile.chromosomes is not None:
+            chromosome = profile_chromosome(request.inspection)
+        if chromosome is None and request.data_filter.selection == "profile" and request.data_filter.upload is not None:
+            chromosome = profile_chromosome(request.inspection)
+        if request.data_filter.enabled and chromosome is None and request.data_filter.action == "modulate" and None not in request.data_filter.modulation.profiles:
+            array_key = request.array_key or request.inspection.default_array_key
+            chromosome = (array_key if array_key in request.data_filter.modulation.profiles else None) or profile_chromosome(request.inspection)
+    except (ValueError, TypeError):
+        if request.data_filter.enabled:
+            raise
+        if filter_preview is not None:
+            filter_preview.append(None)
+        return values
+    if filter_preview is not None:
+        filter_preview.append(capture_filter_selection(
+            values, request.data_filter, positions=positions, intervals=intervals, chromosome=chromosome,
+        ))
     return _readonly(apply_data_filter(
         values, request.data_filter, positions=positions, intervals=intervals,
         chromosome=chromosome, cancel=cancel,
@@ -1959,12 +2069,98 @@ def _write_all_chromosome_npz(
     _check_cancelled(cancel)
 
 
+def _filter_prepared_track(prepared, request, slices, cancel=None, filter_preview=None):
+    profiles = {}
+    for item in slices:
+        _check_cancelled(cancel)
+        values = prepared.profile_values[item.chromosome]
+        positions = prepared.profile_coordinates[item.chromosome]
+        starts = np.arange(item.start, item.end, request.bin_size, dtype=np.int64)
+        intervals = np.column_stack((starts, np.minimum(starts + request.bin_size, item.end))) / 1000.
+        if filter_preview is not None and not filter_preview:
+            filter_preview.append(capture_filter_selection(
+                values, request.data_filter, positions=positions, intervals=intervals,
+                chromosome=item.chromosome, display_positions=positions,
+            ))
+        profiles[item.chromosome] = apply_data_filter(
+            values, request.data_filter, positions=positions, intervals=intervals,
+            chromosome=item.chromosome, cancel=cancel,
+        )
+    result = _combine_track_profiles(request, slices, profiles, prepared.profile_coordinates, cancel)
+    return replace(result, metadata=prepared.metadata + filter_metadata(request.data_filter))
+
+
+def convert_combined_data(
+    requests: tuple[DataConversionRequest, ...], formula: str, *, output_name="rdata_combined",
+    progress=False, cancel=None,
+) -> DataConversionResult:
+    """Configure aligned sources once, combine them, then apply one final filter."""
+    from dnascape.workflows.formulas import evaluate_formula
+    if len(requests) < 2:
+        raise ValueError("Combine requires at least two data sources.")
+    prepared = []
+    budget = min(request.memory_limit_mb for request in requests) * 1024**2
+    used = 0
+    for index, request in enumerate(requests):
+        _check_cancelled(cancel)
+        item = prepare_data(replace(request, data_filter=DataFilterSettings(), transform_formula=None), cancel)
+        used += item.values.nbytes + sum(values.nbytes for values in item.profile_values.values())
+        if used * 3 > budget:
+            raise ValueError("Combining these sources exceeds the conversion memory limit. Increase the limit in Settings or use fewer bins.")
+        prepared.append(item)
+        if callable(progress):
+            progress({"progress": .7 * (index + 1) / len(requests), "message": "Preparing sources"})
+    base_index = next((i for i, item in enumerate(prepared) if item.profile_values), 0)
+    base = prepared[base_index]
+    base_request = requests[base_index]
+
+    def aligned(arrays, coordinates):
+        shape = arrays[base_index].shape
+        if any(values.shape != shape for values in arrays):
+            raise ValueError("Combined sources must have matching post-Configure array sizes and dimensions.")
+        supplied = [value for value in coordinates if value is not None]
+        if supplied and any(value.shape != supplied[0].shape or not np.allclose(value, supplied[0], rtol=1e-10, atol=1e-9) for value in supplied[1:]):
+            raise ValueError("Combined sources must have matching regions, resolution and bin order.")
+        _check_cancelled(cancel)
+        return evaluate_formula(formula, {f"source{i + 1}": value for i, value in enumerate(arrays)})
+
+    if base.profile_values:
+        profiles = {}
+        for chromosome in base.profile_values:
+            arrays, coordinates = [], []
+            for item in prepared:
+                if item.profile_values:
+                    if set(item.profile_values) != set(base.profile_values):
+                        raise ValueError("Combined sources must contain the same chromosomes.")
+                    arrays.append(item.profile_values[chromosome])
+                    coordinates.append(item.profile_coordinates[chromosome])
+                elif len(base.profile_values) == 1:
+                    arrays.append(item.values.reshape(-1) if 1 in item.values.shape else item.values)
+                    coordinates.append(item.coordinates.get("position_kb"))
+                else:
+                    raise ValueError("Combining multiple chromosomes requires matching chromosome profiles in every source.")
+            profiles[chromosome] = aligned(arrays, coordinates)
+        resolved, _summary, slices = _resolved_track_request(_normalized_request(base_request), cancel)
+        combined = _combine_track_profiles(resolved, slices, profiles, base.profile_coordinates, cancel)
+    else:
+        if any(item.data_form != base.data_form for item in prepared):
+            raise ValueError("Combined sources must use matching data dimensions.")
+        values = aligned([item.values for item in prepared], [item.coordinates.get("position_kb") for item in prepared])
+        combined = replace(base, values=_readonly(values))
+    combined = replace(combined, metadata=base.metadata + (("combine_formula", formula), ("combined_sources", str(len(requests)))))
+    _check_cancelled(cancel)
+    return convert_data(replace(
+        base_request, output_name=output_name, transform_formula=None, _prepared_data=combined,
+    ), progress=progress, cancel=cancel)
+
+
 def _convert_track(
     request: DataConversionRequest,
     slices: tuple[_TrackSlice, ...],
     output_path: Path,
     progress: Callable[[dict[str, Any]], None] | bool,
     cancel: _CancelChecker | None = None,
+    filter_preview: list[FilterSelection | None] | None = None,
 ) -> tuple[PreparedData, bytes]:
     callback = _progress_callback(progress)
     _check_cancelled(cancel)
@@ -1981,7 +2177,8 @@ def _convert_track(
             0.4 * fraction,
         ),
         cancel=cancel,
-    )
+        filter_preview=filter_preview,
+    ) if request._prepared_data is None else _filter_prepared_track(request._prepared_data, request, slices, cancel, filter_preview)
     _check_cancelled(cancel)
     _emit_track_progress(callback, request, "load", "done", 0.4)
     _check_cancelled(cancel)
@@ -2040,8 +2237,17 @@ def convert_data(
     _check_cancelled(cancel)
     if len(request.inspection.content) > MAX_DECOMPRESSED_BYTES:
         raise ValueError("The uploaded source exceeds the local conversion limit.")
+    filter_positions = []
+    def retain_positions(mask, positions, chromosome, time_index):
+        selected = np.flatnonzero(mask).astype(float) if positions is None else np.asarray(positions)[mask]
+        filter_positions.append(FilterPositionGroup(
+            gzip.compress(np.asarray(selected, dtype="<f8").tobytes(), compresslevel=1, mtime=0),
+            "bin_index" if positions is None else "time_min" if request.input_form == "t" else "position_kb", chromosome, time_index,
+        ))
+    request = replace(request, data_filter=replace(request.data_filter, _position_sink=retain_positions))
     track_summary: TrackInspection | None = None
     track_slices: tuple[_TrackSlice, ...] = ()
+    filter_preview: list[FilterSelection | None] = []
     if request.input_form == "track":
         request, track_summary, track_slices = _resolved_track_request(request, cancel)
     _check_cancelled(cancel)
@@ -2065,6 +2271,7 @@ def convert_data(
                 output_path,
                 progress,
                 cancel,
+                filter_preview,
             )
             _check_cancelled(cancel)
             data_form = prepared.data_form
@@ -2088,10 +2295,17 @@ def convert_data(
             _check_cancelled(cancel)
         else:
             repliseq_prepared = None
-            if request.repliseq_timing_method is not None:
+            if request._prepared_data is not None:
+                provided = request._prepared_data
+                source = _filter_plain_values(provided.values, request, cancel, filter_preview)
+                repliseq_prepared = replace(provided, values=source, metadata=provided.metadata + filter_metadata(request.data_filter))
+                labels = list(provided.labels) or None
+                source_format = "auto"
+            elif request.repliseq_timing_method is not None:
                 callback = _progress_callback(progress)
                 repliseq_prepared = _prepare_repliseq_timing(
                     request, cancel=cancel,
+                    filter_preview=filter_preview,
                     progress=lambda fraction: _emit_track_progress(callback, request, "timing", "running", 0.8 * fraction),
                 )
                 source = repliseq_prepared.values
@@ -2102,7 +2316,7 @@ def convert_data(
             elif request.input_form == "table":
                 source, source_format = _table_source(directory, request, cancel)
             else:
-                source, labels = _plain_source(request, cancel)
+                source, labels = _plain_source(request, cancel, filter_preview)
                 source_format = "auto"
             _check_cancelled(cancel)
 
@@ -2146,6 +2360,8 @@ def convert_data(
             _check_cancelled(cancel)
 
     media_type = "application/gzip" if request.gzip_output else _MEDIA_TYPES[request.target_format]
+    if preview is not None and filter_preview:
+        preview = replace(preview, filter_selection=filter_preview[0])
     if track_summary is not None and track_summary.backend:
         result_metadata += (("backend", track_summary.backend),)
     result = DataConversionResult(
@@ -2157,6 +2373,7 @@ def convert_data(
         labels=result_labels,
         metadata=result_metadata,
         preview=preview,
+        filter_positions=tuple(filter_positions),
     )
     _check_cancelled(cancel)
     return result
@@ -2175,6 +2392,7 @@ __all__ = [
     "TrackInspection",
     "TrackRegion",
     "convert_data",
+    "convert_combined_data",
     "extract_values",
     "inspect_data_source",
     "inspect_track",

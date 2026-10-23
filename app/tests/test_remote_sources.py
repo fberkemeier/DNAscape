@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import contextlib
 import socket
+import ssl
+import time
 from email.message import Message
 from typing import Any
 
@@ -115,6 +117,74 @@ def test_fetch_returns_bounded_bytes_and_response_metadata(
     assert result.accept_ranges is True
     assert result.etag == '"abc"'
     assert result.last_modified == "Sun, 23 Aug 2026 10:00:00 GMT"
+
+
+@pytest.mark.parametrize("hostname", ["hgdownload.soe.ucsc.edu", "hgdownload.cse.ucsc.edu", "HGDOWNLOAD.SOE.UCSC.EDU."])
+@pytest.mark.parametrize("port", ["", ":443"])
+def test_old_ucsc_https_links_use_current_verified_host_without_changing_the_file(monkeypatch, public_dns, hostname, port):
+    requested = _responses(monkeypatch, _FakeResponse(b"bigwig"))
+    source_url = f"https://{hostname}{port}/goldenPath/hg19/a%2Fb.bigWig?sig=a%2Fb%2Bc"
+    result = fetch_remote_source(source_url)
+    expected = f"https://hgdownload.gi.ucsc.edu{port}/goldenPath/hg19/a%2Fb.bigWig?sig=a%2Fb%2Bc"
+    assert requested == [expected]
+    assert result.requested_url == source_url
+    assert result.final_url == expected
+    assert result.redirects == ()  # Host migration does not invent an HTTP redirect.
+    assert result.content == b"bigwig"
+
+
+@pytest.mark.parametrize("url", [
+    "http://hgdownload.soe.ucsc.edu/a.bw",
+    "https://hgdownload.soe.ucsc.edu.attacker.example/a.bw",
+    "https://example.org/a.bw",
+])
+def test_ucsc_migration_does_not_rewrite_other_hosts_or_plain_http(monkeypatch, public_dns, url):
+    requested = _responses(monkeypatch, _FakeResponse(b"bigwig"))
+    assert fetch_remote_source(url).final_url == url
+    assert requested == [url]
+
+
+def test_migrated_ucsc_host_still_requires_public_dns_addresses(monkeypatch):
+    resolved = []
+
+    def private_dns(hostname, port, **kwargs):
+        resolved.append(hostname)
+        return [(socket.AF_INET, socket.SOCK_STREAM, socket.IPPROTO_TCP, "", ("127.0.0.1", port))]
+
+    monkeypatch.setattr(socket, "getaddrinfo", private_dns)
+    requested = _responses(monkeypatch, _FakeResponse(b"unreachable"))
+    with pytest.raises(UnsafeRemoteSourceError, match="private"):
+        fetch_remote_source("https://hgdownload.soe.ucsc.edu/a.bw")
+    assert resolved == ["hgdownload.gi.ucsc.edu"]
+    assert requested == []
+
+
+@pytest.mark.parametrize("failure,message", [
+    (ssl.SSLCertVerificationError(1, "hostname mismatch"), "certificate could not be verified"),
+    (ssl.SSLError(1, "handshake failure"), "secure connection"),
+    (TimeoutError("handshake timed out"), "did not respond in time"),
+    (ConnectionResetError("connection reset"), "could not be reached"),
+])
+def test_certificate_timeout_and_network_failures_have_distinct_messages(monkeypatch, public_dns, failure, message):
+    connections = []
+
+    class FailedConnection:
+        def __init__(self, *args):
+            self.closed = False
+            connections.append(self)
+
+        def request(self, *args, **kwargs):
+            raise failure
+
+        def close(self):
+            self.closed = True
+
+    monkeypatch.setattr(remote, "_PinnedHTTPSConnection", FailedConnection)
+    target = remote._validated_target("https://example.org/file.bw")
+    with pytest.raises(RemoteSourceError, match=message) as raised:
+        remote._request_once(target, deadline=time.monotonic() + 20, context=ssl.create_default_context())
+    assert raised.value.__cause__ is failure
+    assert all(connection.closed for connection in connections)
 
 
 @pytest.mark.parametrize(

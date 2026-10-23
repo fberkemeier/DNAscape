@@ -70,6 +70,14 @@
       check(found, name + ' must have a solid visible line along the plot boundary after zooming');
     }
   }
+  async function pixelsAround(position) {
+    chart.getZr().refreshImmediately();
+    const image = new Image();
+    await new Promise(resolve => { image.onload = resolve; image.src = chart.getDataURL({type:'png',pixelRatio:1}); });
+    const canvas = document.createElement('canvas'); canvas.width=image.width; canvas.height=image.height;
+    const context=canvas.getContext('2d'); context.drawImage(image,0,0);
+    return context.getImageData(Math.round(position[0])-2,Math.round(position[1])-2,5,5).data;
+  }
   for (const item of window.navigationCases) {
     try {
       component.options = structuredClone(item.options);
@@ -81,6 +89,18 @@
       const rect = chart.getModel().getComponent('grid', 0).coordinateSystem.getRect();
       const cx = rect.x + rect.width / 2, cy = rect.y + rect.height / 2;
       const original = bounds();
+      if (item.name.includes('retained') && item.name.includes('heatmap')) {
+        const pixel = chart.convertToPixel({xAxisIndex:0,yAxisIndex:0},[600,300]);
+        const rgba=await pixelsAround(pixel), alpha=[...rgba].filter((_value,index)=>index%4===3);
+        check(alpha[12]<=2, 'A native NaN must not reveal the coarse raster beneath its tile: '+JSON.stringify(alpha));
+      }
+      if (item.name === 'unrounded endpoint') {
+        const data = chart.getOption().series[0].data, last = data[data.length - 1];
+        check(original.x[1] === last[0], 'Automatic X range must end exactly at the final data coordinate');
+        check(close(chart.convertToPixel({seriesIndex:0}, last)[0], rect.x + rect.width), 'Last point must meet the right plot edge');
+        const labels = chart.getOption().xAxis[0].axisLabel.customValues;
+        check(labels.at(-1) === 200000 && !labels.includes(last[0]), 'Irregular data endpoint must not become a forced tick');
+      }
       if (['line', 'line hover again', 'hovered curves', 'heatmap', 'line hover off', 'heatmap hover off'].includes(item.name)) {
         const disabled = item.name.endsWith('off'), heatmap = item.name.startsWith('heatmap');
         const dataSeries = heatmap ? 1 : 0, index = 4;
@@ -124,6 +144,10 @@
       key('ControlLeft', true);
       check(wheel(cx, cy, -300, true), 'Left Ctrl wheel must prevent browser zoom');
       const zoomed = bounds();
+      if (item.name === 'unrounded endpoint') {
+        const labels = chart.getOption().xAxis[0].axisLabel.customValues;
+        check(labels?.length && labels[0] > zoomed.x[0] && labels.at(-1) < zoomed.x[1], 'Zoomed endpoints must not become forced ticks');
+      }
       for (const [name, range] of Object.entries(zoomed)) check(span(range, axes[name]) < span(original[name], axes[name]), name + ' did not zoom');
       visibleAxes();
       key('ControlLeft', false);
@@ -131,6 +155,22 @@
       mouse('mousemove', cx + 10000, cy + 10000);
       mouse('mouseup', cx + 10000, cy + 10000);
       const panned = bounds();
+      if (item.name.startsWith('retained')) {
+        // There is deliberately no backend response in this probe. Pan from
+        // the loaded tile to an unrendered end and inspect existing pixels.
+        await pause(30);
+        if (item.name.includes('heatmap')) {
+          const area=chart.getModel().getComponent('grid',0).coordinateSystem.getRect();
+          const rgba=await pixelsAround([area.x+area.width/2,area.y+area.height/2]);
+          check([...rgba].some((value,index)=>index%4===3&&value>0), 'The heatmap went blank while waiting for refinement');
+        } else {
+          const series=chart.getOption().series, index=series.findIndex(s=>s.type==='line');
+          const available=series[index].data.filter(row=>row[0]>=panned.x[0]&&row[0]<=panned.x[1]);
+          check(available.length>0, 'No coarse points available immediately after panning');
+          const rgba=await pixelsAround(chart.convertToPixel({seriesIndex:index},available[Math.floor(available.length/2)]));
+          check([...rgba].some((value,index)=>index%4===3&&value>0), 'The curve went blank while waiting for refinement');
+        }
+      }
       for (const [name, range] of Object.entries(panned)) check(close(span(range, axes[name]), span(zoomed[name], axes[name])), name + ' pan changed the span');
       bounded();
       visibleAxes();
@@ -163,6 +203,18 @@
       if (item.name === 'boxplot') {
         const html = tooltip({value:[1,2,3,4,5],seriesName:'Profile',seriesType:'boxplot',marker:'<i style="color:red"></i>'});
         check(!html.includes('Profile') && /Median: <b>3(?:\.00)?<\/b>/.test(html) && /Max: <b>5(?:\.00)?<\/b>/.test(html), 'Boxplot hovering must preserve all five summary values: ' + html);
+      }
+      if (item.name === 'independent Boxplot') {
+        chart.getModel().getSeries().forEach((series, index) => {
+          const values = series.getData().getRawDataItem(0);
+          const rect = series.getData().getItemGraphicEl(0)?.children().find(shape => shape.type === 'rect');
+          check(!!rect, 'Each numeric box must render');
+          const center = rect.transformCoordToGlobal(rect.shape.x + rect.shape.width / 2, rect.shape.y)[0];
+          const expected = chart.convertToPixel({seriesIndex: index}, [values[0], values[3]])[0];
+          check(Math.abs(center - expected) < .5, 'Box is offset from its X tick');
+        });
+        const ticks = chart.getOption().xAxis[0].axisTick.customValues;
+        check(ticks.includes(1) && ticks.includes(2), 'Box ticks must survive zooming');
       }
       if (item.name === 'grouped histogram guides') {
         const guide = component.options.dnascapeHistogramGuides;

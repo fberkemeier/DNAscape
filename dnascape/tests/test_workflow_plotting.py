@@ -517,14 +517,14 @@ def test_large_temporal_mapping_heatmap_is_bounded_before_and_during_sampling() 
 
 
 @pytest.mark.parametrize("kind", ("Line", "Heatmap"))
-def test_round_zero_based_position_counts_keep_the_terminal_tick(kind: str) -> None:
+def test_zero_based_profiles_end_at_the_last_coordinate_without_an_extra_tick(kind: str) -> None:
     common = dict(
         plot_type=kind, title="Rate", x_label="Position (kb)", y_label="Time (min)",
         color="#b03412", palette="viridis", histogram_bins=10, density=False,
         show_legend=False, show_colorbar=False, log_y=False, invert_y=False,
         y_limits=None, series_label="Firing rate",
     )
-    for count in (10_000, 10_003):
+    for count in (10_000, 10_001, 10_003):
         axis = np.arange(float(count))
         values = np.linspace(.00001, .00005, count)
         if kind == "Heatmap":
@@ -533,7 +533,10 @@ def test_round_zero_based_position_counts_keep_the_terminal_tick(kind: str) -> N
             **common, values=values, x_axis=axis, y_axis=np.asarray([0., 10.]),
         )
         ticks = options["xAxis"]["axisLabel"]["customValues"]
-        assert (float(count) in ticks) is (count == 10_000)
+        assert options["xAxis"]["max"] == float(count - 1)
+        assert options["dnascapeDefaultAxes"]["x"] == [0, float(count - 1)]
+        assert float(count) not in ticks
+        assert (float(count - 1) in ticks) is (count == 10_001)
         if kind == "Heatmap":
             assert options["series"][0]["data"][0][2] == float(count - 1)
         else:
@@ -569,7 +572,7 @@ def test_custom_aspect_ratio_is_preserved_in_portable_mapping_html(tmp_path: Pat
     options = mapping_plot_options(_result(), **settings)
     assert options["dnascapeAspectRatio"] == 2.0
     html = write_plot_html(options, tmp_path / "ratio.html").read_text(encoding="utf-8")
-    assert "width: 100%; height: auto; aspect-ratio: 2.0;" in html
+    assert "width: 100%; height: auto; aspect-ratio: 2.0; min-height: 0;" in html
     assert "surface.style.height = chart.getHeight()" in html
     default_html = write_plot_html(mapping_plot_options(_result(), **_settings()), tmp_path / "default.html")
     assert "width: 100%; height: 360px;" in default_html.read_text(encoding="utf-8")

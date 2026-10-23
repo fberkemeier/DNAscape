@@ -143,14 +143,19 @@ _DISTRIBUTION_OUTPUTS = {
     ),
 }
 _TIME_OUTPUTS = {
-    "Replicated fraction": _OutputSpec(
+    "Replicated fraction (time)": _OutputSpec(
         "replicated_fraction", "Time (min)", "Replicated fraction", "time"
     ),
-    "Total forks": _OutputSpec("total_forks", "Time (min)", "Total forks", "time"),
-    "Active forks": _OutputSpec("active_forks", "Time (min)", "Active forks", "time"),
-    "Stalled forks": _OutputSpec("stalled_forks", "Time (min)", "Stalled forks", "time"),
-    "Firing factors": _OutputSpec("firing_factors", "Time (min)", "Available factors", "time"),
+    "Total forks (time)": _OutputSpec("total_forks", "Time (min)", "Total forks", "time"),
+    "Active forks (time)": _OutputSpec("active_forks", "Time (min)", "Active forks", "time"),
+    "Stalled forks (time)": _OutputSpec("stalled_forks", "Time (min)", "Stalled forks", "time"),
+    "Origin firing (time)": _OutputSpec("origin_firing", "Time (min)", "Origins per interval", "time"),
+    "Firing factors (time)": _OutputSpec("firing_factors", "Time (min)", "Available factors", "time"),
 }
+_TIME_DISTRIBUTION_OUTPUTS = {
+    "Replicon length": _OutputSpec("replicon_lengths", "Sample", "Length (kb)", "distribution"),
+}
+_TIME_TRACKED_OUTPUTS = {**_TIME_OUTPUTS, **_TIME_DISTRIBUTION_OUTPUTS}
 _SPACETIME_OUTPUTS = {
     "Replicated fraction (space-time)": _OutputSpec(
         "replicated_fraction_xt", "Position (kb)", "Time (min)", "xt"
@@ -167,6 +172,9 @@ _SPACETIME_OUTPUTS = {
     "Left fork density (space-time)": _OutputSpec(
         "left_moving_fork_density_xt", "Position (kb)", "Time (min)", "xt"
     ),
+    "Total fork density (space-time)": _OutputSpec(
+        "fork_density_xt", "Position (kb)", "Time (min)", "xt"
+    ),
 }
 _STANDARD_OUTPUTS = {**_BASE_OUTPUTS, **_DISTRIBUTION_OUTPUTS}
 _INPUT_OUTPUTS = {
@@ -175,7 +183,7 @@ _INPUT_OUTPUTS = {
 }
 _OUTPUT_SPECS = {
     **_STANDARD_OUTPUTS,
-    **_TIME_OUTPUTS,
+    **_TIME_TRACKED_OUTPUTS,
     **_SPACETIME_OUTPUTS,
     **_INPUT_OUTPUTS,
 }
@@ -197,10 +205,11 @@ def _output_spec(label: str, result: ConstantSimulationResult | None = None) -> 
 # automatic, data-dependent range chosen by ECharts.
 _NONNEGATIVE_LINE_OUTPUTS = {
     "Origin efficiency",
-    "Total forks",
-    "Active forks",
-    "Stalled forks",
-    "Firing factors",
+    "Total forks (time)",
+    "Active forks (time)",
+    "Stalled forks (time)",
+    "Origin firing (time)",
+    "Firing factors (time)",
 }
 
 _SOURCE_ACCEPT = ".csv,.tsv,.txt,.npy,.npv,.npz,.gz"
@@ -1640,7 +1649,7 @@ def _result_plot_options(
     if values is None:
         if spec.key == "firing_factors":
             raise ValueError("Enable a finite firing-factor pool to plot firing factors.")
-        if output_label in _TIME_OUTPUTS:
+        if output_label in _TIME_TRACKED_OUTPUTS:
             raise ValueError(
                 "Run the simulation again with time courses enabled to plot this result."
             )
@@ -1655,6 +1664,10 @@ def _result_plot_options(
             raise ValueError(
                 "No inter-origin distances were recorded. At least two origins must "
                 "fire in a realization."
+            )
+        if spec.key == "replicon_lengths":
+            raise ValueError(
+                "No completed replicons were recorded. Increase the maximum replication time or firing rate."
             )
         raise ValueError(
             "The selected output has no finite values. Try a positive firing rate or a "
@@ -2239,8 +2252,8 @@ def render(_navigate: Callable[[str], None]) -> None:
                                 ),
                             ).mark("simulation-track-time-outputs")
                             track_time_outputs.tooltip(
-                                "Retain replicated fraction, fork counts, and firing-factor "
-                                "availability across time."
+                                "Retain replicated fraction, fork counts, origin firing and firing-factor "
+                                "availability over time, plus completed replicon lengths."
                             )
                             track_detailed_outputs = ui.checkbox(
                                 "Track space-time outputs",
@@ -2309,6 +2322,13 @@ def render(_navigate: Callable[[str], None]) -> None:
                                                     .props("dense").classes("dn-field")
                                                     .mark("simulation-stall-rate-per-kb")
                                                 )
+                                                shared_stalls = ui.checkbox(
+                                                    "Shared between directions", value=False,
+                                                ).mark("simulation-stall-shared-directions")
+                                                shared_stalls.tooltip(
+                                                    "Use the same stall positions and recovery delays for forks arriving from either direction. "
+                                                    "Off: each direction stalls independently."
+                                                )
                                                 stall_recovery = ui.checkbox("Stall recovery", value=False).mark("simulation-stall-recovery")
                                                 stall_duration = (
                                                     ui.number(label="Recovery time (min)", value=10.0, min=0.000001, step=1.0)
@@ -2326,8 +2346,8 @@ def render(_navigate: Callable[[str], None]) -> None:
                                             )
                                             fork_speed_std.bind_visibility_from(stochastic_movement, "value")
                                             fork_speed_std.tooltip(
-                                                "Normal speed variation around the local input speed. "
-                                                "Non-positive draws are resampled; zero keeps the input speed."
+                                                "Positive lognormal speeds with the local input mean and this standard deviation. "
+                                                "Time-dependent speeds are integrated during crossings; zero keeps the input speed."
                                             )
 
                 def combined_preview_compatible() -> bool:
@@ -2955,6 +2975,7 @@ def render(_navigate: Callable[[str], None]) -> None:
                             fork_speed_std,
                             stall_recovery,
                             stall_duration,
+                            shared_stalls,
                             finite_pool,
                             pool_size,
                             recycle_rate,
@@ -3135,6 +3156,7 @@ def render(_navigate: Callable[[str], None]) -> None:
                             missing_values=str(missing_values.value),
                             seed=_integer(seed, "Seed") if fixed_seed.value else None,
                             stall_rate_per_kb=_number(stall_rate, "Stall rate (stalls/kb)") if fork_stalling.value else 0.0,
+                            stall_shared_directions=bool(shared_stalls.value) if fork_stalling.value else False,
                             fork_speed_std=_number(fork_speed_std, "Standard deviation") if stochastic_movement.value else 0.0,
                             stall_duration=(
                                 math.inf
@@ -3337,6 +3359,11 @@ def render(_navigate: Callable[[str], None]) -> None:
                                 "some datasets because it exceeded the local data limit.",
                                 type="warning",
                             )
+                        if any(item.result.replicon_lengths_truncated for item in latest_items):
+                            notify(
+                                "Replicon length retention was truncated because it exceeded the local data limit.",
+                                type="warning",
+                            )
                         if len(latest_items) > 1:
                             presentation.value = "Combined"
                             presentation.update()
@@ -3438,7 +3465,7 @@ def render(_navigate: Callable[[str], None]) -> None:
                                     *(
                                         [
                                             label
-                                            for label, spec in _TIME_OUTPUTS.items()
+                                            for label, spec in _TIME_TRACKED_OUTPUTS.items()
                                             if spec.key in latest_result.outputs
                                         ]
                                         if latest_result is not None
@@ -4301,7 +4328,7 @@ def render(_navigate: Callable[[str], None]) -> None:
                     elif latest_result is None:
                         labels = list(_STANDARD_OUTPUTS)
                         if track_time_outputs.value:
-                            labels.extend(_TIME_OUTPUTS)
+                            labels.extend(_TIME_TRACKED_OUTPUTS)
                         if track_detailed_outputs.value:
                             labels.extend(_SPACETIME_OUTPUTS)
                     else:
@@ -4312,7 +4339,7 @@ def render(_navigate: Callable[[str], None]) -> None:
                         ]
                         labels.extend(
                             label
-                            for label, spec in _TIME_OUTPUTS.items()
+                            for label, spec in _TIME_TRACKED_OUTPUTS.items()
                             if spec.key in latest_result.outputs
                         )
                         labels.extend(

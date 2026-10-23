@@ -6,8 +6,12 @@ import csv
 import io
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass
+from typing import TYPE_CHECKING
 
 import numpy as np
+
+if TYPE_CHECKING:
+    from dnascape.workflows.exports import ExportArtifact
 
 CORRELATION_METHODS = {
     "spearman": "Spearman",
@@ -90,6 +94,46 @@ def smooth_profile(values: np.ndarray, settings: SmoothingSettings, *, dependenc
         raise ValueError("Choose no smoothing, moving average, or Gaussian smoothing.")
     smoothed[missing] = np.nan
     return smoothed.reshape(array.shape)
+
+
+def export_profile_data(
+    values: np.ndarray, *, dependence: str = "x", file_format: str = "tsv",
+    filename: str = "transformed_profile", compress: bool = False,
+) -> ExportArtifact:
+    """Export a transformed profile without rounding or filling missing values."""
+    import pandas as pd
+    from dnascape.workflows.exports import (
+        MAX_BINARY_EXPORT_BYTES, MAX_TEXT_EXPORT_VALUES,
+        compressed_export_artifact, safe_export_filename,
+    )
+    array = np.asarray(values, dtype=float)
+    if dependence not in {"x", "t", "xt"} or not array.size:
+        raise ValueError("Choose a non-empty space, time or space-time profile.")
+    file_format = file_format.lower()
+    if file_format == "npz":
+        if array.nbytes > MAX_BINARY_EXPORT_BYTES:
+            raise ValueError("This profile exceeds the binary export size limit.")
+        stream = io.BytesIO()
+        np.savez_compressed(stream, values=array)
+        data, mime = stream.getvalue(), "application/octet-stream"
+    elif file_format in {"csv", "tsv", "txt"}:
+        if array.size > MAX_TEXT_EXPORT_VALUES:
+            raise ValueError("This profile exceeds the text export size limit. Use NPZ instead.")
+        matrix = array.reshape(1, -1) if dependence == "t" else array if dependence == "xt" else array.reshape(-1, 1)
+        if file_format == "txt":
+            stream = io.StringIO()
+            np.savetxt(stream, matrix, fmt="%.17g")
+            data = stream.getvalue().encode()
+        else:
+            labels = ["value"] if matrix.shape[1] == 1 else [f"value_{index}" for index in range(matrix.shape[1])]
+            data = pd.DataFrame(matrix, columns=labels).to_csv(index=False, sep="," if file_format == "csv" else "\t", float_format="%.17g", na_rep="nan").encode()
+        mime = "text/csv" if file_format == "csv" else "text/plain"
+    else:
+        raise ValueError("Choose TSV, TXT, CSV or NPZ for profile data.")
+    return compressed_export_artifact(
+        data=data, filename=safe_export_filename(filename, file_format, default_stem="transformed_profile"),
+        media_type=mime, compression="gzip" if compress else "none",
+    )
 
 
 def _paired_values(first: AnalysisDataset, second: AnalysisDataset) -> tuple[np.ndarray, np.ndarray]:

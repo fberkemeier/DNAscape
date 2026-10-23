@@ -47,7 +47,7 @@ def test_displayed_axis_defaults_custom_limits_and_reset(form: str) -> None:
                 assert control("z-maximum").value == pytest.approx(options()["visualMap"]["max"])
             assert user.client is not None
             original_x = (control("x-minimum").value, control("x-maximum").value)
-            assert control("aspect-ratio").value is None
+            assert control("aspect-ratio").value == 3.0
             assert control("aspect-ratio")._props["stack-label"] is True
             assert control("x-axis-label")._props["stack-label"] is True
             with user.client:
@@ -60,9 +60,9 @@ def test_displayed_axis_defaults_custom_limits_and_reset(form: str) -> None:
             assert chart_styles["height"] == "auto"
             user.find(marker="plotting-reset-aspect-ratio").click()
             await asyncio.sleep(0)
-            assert options()["dnascapeAspectRatio"] is None
+            assert options()["dnascapeAspectRatio"] == 3.0
             assert control("aspect-ratio")._props["stack-label"] is True
-            assert control("result-plot")._style["height"] == "360px"
+            assert control("result-plot")._style["height"] == "auto"
             with user.client:
                 control("x-minimum").set_value(0.25)
                 control("x-maximum").set_value(1.5)

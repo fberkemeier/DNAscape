@@ -1402,9 +1402,14 @@ def test_plotting_preserves_independent_settings_across_layout_toggles() -> None
                 Select,
                 next(iter(user.find(marker="plotting-view-separate-2").elements)),
             )
+            first_fill = next(iter(user.find(marker="plotting-fill-separate-1").elements))
+            first_fill_side = next(item for item in user.client.elements.values()
+                                   if "plotting-fill-side-separate-1" in item._markers and not item.is_deleted)
             with user.client:
                 first_title.set_value("First custom plot")
                 first_color.set_value("#8b6f37")
+                first_fill.set_value(True)
+                first_fill_side.set_value("above")
                 second_title.set_value("Second distribution")
                 second_color.set_value("#6f5b8f")
                 second_view.set_value("Histogram")
@@ -1457,6 +1462,8 @@ def test_plotting_preserves_independent_settings_across_layout_toggles() -> None
             assert restored_second_color.value == "#6f5b8f"
             assert restored_second_view.value == "Histogram"
             assert restored_second_bins.value == 3
+            assert next(iter(user.find(marker="plotting-fill-separate-1").elements)).value is True
+            assert next(iter(user.find(marker="plotting-fill-side-separate-1").elements)).value == "above"
 
             charts = [
                 cast(EChart, next(iter(user.find(marker=marker).elements)))
@@ -1464,6 +1471,9 @@ def test_plotting_preserves_independent_settings_across_layout_toggles() -> None
             ]
             assert charts[0].options["xAxis"]["name"] == "First custom plot"
             assert charts[0].options["series"][0]["lineStyle"]["color"] == "#8b6f37"
+            assert charts[0].options["series"][0]["areaStyle"] == {
+                "origin": "end", "color": "#8b6f37", "opacity": .15,
+            }
             assert charts[1].options["xAxis"]["name"] == "Second distribution"
             assert charts[1].options["series"][0]["type"] == "custom"
             assert len(charts[1].options["series"][0]["data"]) == 3
@@ -2076,12 +2086,12 @@ def test_constant_simulation_reports_progress_and_renders_worker_result(
             assert output_after_run is output_before_run
             assert output_after_run.value == "Replication timing"
             assert "Inter-origin distance" in output_after_run.options
-            assert "Replicated fraction" not in output_after_run.options
+            assert "Replicated fraction (time)" not in output_after_run.options
             assert "Replicated fraction (space-time)" not in output_after_run.options
             user.find("Simulation settings").click()
             user.find(marker="simulation-track-time-outputs").click()
             user.find(marker="simulation-track-detailed-outputs").click()
-            assert "Replicated fraction" not in output_after_run.options
+            assert "Replicated fraction (time)" not in output_after_run.options
             assert "Replicated fraction (space-time)" not in output_after_run.options
 
     try:
@@ -2263,7 +2273,7 @@ def test_detailed_simulation_switch_exposes_xt_plot_and_live_downloads(
                 next(iter(user.find(marker="simulation-output").elements)),
             ).options
             assert "Inter-origin distance" in available_outputs
-            assert "Replicated fraction" in available_outputs
+            assert "Replicated fraction (time)" in available_outputs
             assert "Replicated fraction (space-time)" in available_outputs
 
             user.find("Plot settings").click()

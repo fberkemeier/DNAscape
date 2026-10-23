@@ -15,6 +15,8 @@ from app.export_settings import (
     MAX_CONVERSION_MEMORY_LIMIT_MB,
     MAX_CONTROL_FONT_SIZE_PX,
     MIN_CONTROL_FONT_SIZE_PX,
+    MIN_PREVIEW_POINTS,
+    MAX_PREVIEW_POINTS,
     ExportSettings,
     get_export_settings,
 )
@@ -103,33 +105,6 @@ def settings_dialog(*, on_apply: Callable[[], None]) -> SettingsDialog:
             switch("show_examples", "Example links", "settings-show-examples")
             switch("show_help", "Field help", "settings-show-help")
             switch("dev_mode", "Developer mode", "settings-dev-mode")
-            with ui.element("div").classes("dn-settings-grid"):
-                controls["theme_color"] = (
-                    ui.color_input(label="DNAscape theme", value=settings.theme_color, preview=True)
-                    .props("dense stack-label")
-                    .classes("dn-field dn-settings-theme-color")
-                    .mark("settings-theme-color")
-                )
-                controls["theme_color"].picker.q_color.props("format-model=hex")
-                controls["theme_color"].picker.q_color._props["palette"] = list(THEME_SWATCHES)
-                controls["theme_color"].button.props('dense aria-label="Choose theme colour"')
-                controls["control_font_size_px"] = (
-                    ui.number(
-                        label="Controls font size (px)",
-                        value=settings.control_font_size_px,
-                        min=MIN_CONTROL_FONT_SIZE_PX,
-                        max=MAX_CONTROL_FONT_SIZE_PX,
-                        step=1,
-                        validation={
-                            f"Enter a whole number from {MIN_CONTROL_FONT_SIZE_PX} "
-                            f"to {MAX_CONTROL_FONT_SIZE_PX}.": lambda value: (
-                                value is not None
-                                and MIN_CONTROL_FONT_SIZE_PX <= value <= MAX_CONTROL_FONT_SIZE_PX
-                                and float(value).is_integer()
-                            ),
-                        },
-                    ).props("dense").classes("dn-field").mark("settings-control-font-size")
-                )
         with ui.column().classes("dn-settings-section"):
             ui.label("Files and exports").classes("dn-setting-group-title")
             with ui.element("div").classes("dn-settings-grid"):
@@ -162,6 +137,46 @@ def settings_dialog(*, on_apply: Callable[[], None]) -> SettingsDialog:
                     "Estimated working-memory budget for genomic tracks; does not reserve RAM. "
                     "All K562 chromosomes at 1 kb need 512 MB."
                 )
+        with ui.column().classes("dn-settings-section"):
+            ui.label("Visualisation").classes("dn-setting-group-title")
+            with ui.element("div").classes("dn-settings-grid"):
+                controls["theme_color"] = (
+                    ui.color_input(label="DNAscape theme", value=settings.theme_color, preview=True)
+                    .props("dense stack-label")
+                    .classes("dn-field dn-settings-theme-color")
+                    .mark("settings-theme-color")
+                )
+                controls["theme_color"].picker.q_color.props("format-model=hex")
+                controls["theme_color"].picker.q_color._props["palette"] = list(THEME_SWATCHES)
+                controls["theme_color"].button.props('dense aria-label="Choose theme colour"')
+                controls["control_font_size_px"] = (
+                    ui.number(
+                        label="Controls font size (px)",
+                        value=settings.control_font_size_px,
+                        min=MIN_CONTROL_FONT_SIZE_PX,
+                        max=MAX_CONTROL_FONT_SIZE_PX,
+                        step=1,
+                        validation={
+                            f"Enter a whole number from {MIN_CONTROL_FONT_SIZE_PX} "
+                            f"to {MAX_CONTROL_FONT_SIZE_PX}.": lambda value: (
+                                value is not None
+                                and MIN_CONTROL_FONT_SIZE_PX <= value <= MAX_CONTROL_FONT_SIZE_PX
+                                and float(value).is_integer()
+                            ),
+                        },
+                    ).props("dense").classes("dn-field").mark("settings-control-font-size")
+                )
+                controls["preview_points"] = ui.number(
+                    label="Preview points", value=settings.preview_points,
+                    min=MIN_PREVIEW_POINTS, max=MAX_PREVIEW_POINTS, step=100,
+                    validation={
+                        f"Enter a whole number from {MIN_PREVIEW_POINTS} to {MAX_PREVIEW_POINTS:,}.": lambda value: (
+                            value is not None and MIN_PREVIEW_POINTS <= value <= MAX_PREVIEW_POINTS
+                            and float(value).is_integer()
+                        ),
+                    },
+                ).props("dense").classes("dn-field").style("grid-column: 1 / -1").mark("settings-preview-points")
+                controls["preview_points"].tooltip("Maximum displayed points per curve in the visible range. Zoom uses the original data.")
         editor = SettingsDialog(dialog, controls)
 
         def apply() -> None:
@@ -177,6 +192,9 @@ def settings_dialog(*, on_apply: Callable[[], None]) -> SettingsDialog:
             if not controls["control_font_size_px"].validate():
                 notify("Enter a valid controls font size.", type="negative")
                 return
+            if not controls["preview_points"].validate():
+                notify("Enter a valid preview point limit.", type="negative")
+                return
             try:
                 theme_color = normalize_theme_color(controls["theme_color"].value)
             except ValueError as exc:
@@ -184,7 +202,7 @@ def settings_dialog(*, on_apply: Callable[[], None]) -> SettingsDialog:
                 return
             for key, control in controls.items():
                 value = int(control.value) if key in {
-                    "plot_dpi", "conversion_memory_limit_mb", "control_font_size_px",
+                    "plot_dpi", "conversion_memory_limit_mb", "control_font_size_px", "preview_points",
                 } else theme_color if key == "theme_color" else control.value
                 setattr(settings, key, value)
             editor.load(settings)

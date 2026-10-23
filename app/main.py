@@ -11,6 +11,7 @@ from nicegui.elements.button import Button
 from nicegui.elements.tooltip import Tooltip
 
 from app import __version__
+from app._startup_cache import read_asset_text
 from app.export_settings import (
     DEFAULT_CONTROL_FONT_SIZE_PX,
     get_export_settings,
@@ -64,12 +65,12 @@ def index() -> None:
 
     from app.session_cache import current_session_cache
 
-    ui.add_css(STYLE_PATH.read_text(encoding="utf-8"))
+    ui.add_css(read_asset_text(STYLE_PATH))
     ui.add_body_html(
-        "<script>" + (STYLE_PATH.parent / "brand_theme.js").read_text(encoding="utf-8") + "</script>"
+        "<script>" + read_asset_text(STYLE_PATH.parent / "brand_theme.js") + "</script>"
     )
     ui.add_body_html(
-        "<script>" + (STYLE_PATH.parent / "plot_navigation.js").read_text(encoding="utf-8") + "</script>"
+        "<script>" + read_asset_text(STYLE_PATH.parent / "plot_navigation.js") + "</script>"
     )
     ui.add_body_html(
         """
@@ -445,7 +446,10 @@ def index() -> None:
             with ui.item_section():
                 ui.label(label)
 
+    applied_preview_points = export_settings.preview_points
+
     def apply_application_settings() -> None:
+        nonlocal applied_preview_points
         sync_control_font_size()
         sync_theme()
         body.classes(
@@ -457,6 +461,10 @@ def index() -> None:
                 discard_page(slug)
             else:
                 current_session_cache().refresh_page(slug)
+        if applied_preview_points != export_settings.preview_points:
+            from app.preview_plotting import refresh_preview_points
+            refresh_preview_points()
+            applied_preview_points = export_settings.preview_points
 
     settings_dialog = create_settings_dialog(on_apply=apply_application_settings)
 

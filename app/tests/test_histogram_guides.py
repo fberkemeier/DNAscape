@@ -15,7 +15,7 @@ from PIL import Image
 
 from app.main import index
 from app.pages.data_management import _converted_preview_data
-from app.preview_plotting import PreviewChartHandle, PreviewLine
+from app.preview_plotting import PreviewBand, PreviewChartHandle, PreviewLine
 from app.simulation_exports import ExportArtifact
 from app.tests.test_plot_navigation import CaptureChart, navigation_options
 from dnascape.workflows.conversion import DataConversionResult, DataPreview
@@ -72,9 +72,62 @@ def test_line_zoom_refines_from_native_points_and_can_restore_full_view():
     handle.accept_navigation({"context": handle._navigation.context, "ranges": {"x": [12000, 12080]}})
     detail = options["series"][0]["data"]
     assert [12031.0, 50.0] in detail
-    assert len(detail) <= 2500
-    assert len(detail) > sum(12000 <= row[0] <= 12080 for row in initial)
+    assert len(initial) == 1000
+    visible = [row for row in detail if 12000 <= row[0] <= 12080]
+    assert len(visible) <= 1000
+    assert len(visible) > sum(12000 <= row[0] <= 12080 for row in initial)
+    assert detail[0][0] == axis[0] and detail[-1][0] == axis[-1]
+    assert len(detail) <= 2000
     assert list(detail.refine(None, None)["data"]) == initial
+
+
+@pytest.mark.parametrize("descending", [False, True])
+def test_overview_detail_samples_remain_bounded_and_preserve_native_nan_gaps(descending):
+    axis = np.arange(100_001.)
+    values = np.sin(axis / 50)
+    values[12340:12350] = np.nan
+    if descending:
+        axis, values = axis[::-1], values[::-1]
+    options = navigation_options(values=values, x_axis=axis)
+    handle = PreviewChartHandle(CaptureChart(options), CaptureChart({}))
+    handle._apply_navigation()
+    for lower, upper in ((12330, 12360), (90000, 90500), (0, 50000), (20, 25)):
+        handle.accept_navigation(dict(context=handle._navigation.context, ranges={"x": (lower, upper)}))
+        data = options["series"][0]["data"]
+        visible = [row for row in data if lower <= row[0] <= upper]
+        assert len(visible) <= 1000 and len(data) <= 2000
+        assert data[0][0] == axis[0] and data[-1][0] == axis[-1]
+        if lower == 12330:
+            assert [row[0] for row in visible if row[1] is None] == list(np.arange(12340, 12350)[::-1 if descending else 1])
+
+
+def test_uncertainty_band_keeps_a_coarse_outer_profile_and_a_native_inner_gap():
+    axis = np.arange(100_001.)
+    lower, upper = np.full(axis.size, 3.), np.full(axis.size, 5.)
+    lower[12340:12350] = np.nan
+    options = navigation_options(values=np.full(axis.size, 4.), x_axis=axis,
+                                 bands=(PreviewBand("SD", axis, lower, upper, "#b03412"),))
+    handle = PreviewChartHandle(CaptureChart(options), CaptureChart({}))
+    handle._apply_navigation()
+    handle.accept_navigation(dict(context=handle._navigation.context, ranges={"x": (12330, 12360)}))
+    polygons = options["series"][0]["data"]
+    assert len(polygons) < 2000
+    assert polygons[0][0] == 0 and polygons[-1][3] == 100000
+    assert not any(row[0] < 12350 and row[3] > 12339 for row in polygons)
+
+
+def test_kde_refinement_retains_its_full_support_without_adding_legend_entries():
+    options = navigation_options("Histogram", density=True, values=np.linspace(1, 10, 1001))
+    initial = list(options["series"][0]["data"])
+    legend = list(options["legend"]["data"])
+    handle = PreviewChartHandle(CaptureChart(options), CaptureChart({}))
+    handle._apply_navigation()
+    handle.accept_navigation(dict(context=handle._navigation.context, ranges={"x": (4.2, 4.4)}))
+    data = options["series"][0]["data"]
+    assert data[0] == initial[0] and data[-1] == initial[-1]
+    assert len([row for row in data if 4.2 <= row[0] <= 4.4]) == 1000
+    assert options["legend"]["data"] == legend
+    assert len(options["series"]) == 1
 
 
 def test_heatmap_zoom_reveals_native_cells_without_changing_colour_scale():
@@ -87,11 +140,13 @@ def test_heatmap_zoom_reveals_native_cells_without_changing_colour_scale():
     handle._apply_navigation()
     handle.accept_navigation({"context": handle._navigation.context, "ranges": {"x": [598, 602], "y": [298, 302]}})
     renderer = options["series"][0][":renderItem"]
-    def pixels(source):
-        encoded = re.search(r"data:image/png;base64,([A-Za-z0-9+/=]+)", source)[1]
+    def pixels(source, index=0):
+        encoded = re.findall(r"data:image/png;base64,([A-Za-z0-9+/=]+)", source)[index]
         return Image.open(io.BytesIO(base64.b64decode(encoded)))
     assert pixels(original).width == 720
-    assert pixels(renderer).width == 7
+    assert pixels(renderer).width == 720  # The full-region overview is retained.
+    assert pixels(renderer, -1).width == 7
+    assert options["series"][0]["data"] == [[0, 0, 1200, 600]]
     assert options["visualMap"] == color_scale
     assert any(row[:3] == [600, 300, 1] for row in options["series"][1]["data"])
 
@@ -129,8 +184,12 @@ def test_data_manager_zoom_streams_converted_profile_bytes(compressed, format_na
     assert [12031.0, 99.0] not in data
     refined = data.refine((12000, 12080), None)["data"]
     assert [12031.0, 99.0] in refined
-    assert len(refined) < 100
+    assert len([row for row in refined if 12000 <= row[0] <= 12080]) < 100
+    assert refined[0][0] == 0 and refined[-1][0] == values.size - 1
     assert data.refine((0, 2), None)["data"][0] == [0.0, 0.0]
+    broad = data.refine((1000, 14000), None)["data"]
+    assert len([row for row in broad if 999 <= row[0] <= 14001]) == 1000
+    assert broad[0][0] == 0 and broad[-1][0] == values.size - 1
 
 
 def test_histogram_controls_select_guides_and_clear_axis_labels(monkeypatch):

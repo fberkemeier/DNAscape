@@ -12,6 +12,9 @@ import numpy as np
 import pandas as pd
 
 from dnascape.workflows.uploads import UploadInspection, materialize_upload
+from dnascape.workflows.modulation import (
+    ProfileModulationSettings, aligned_modulation, modulate_region, modulation_metadata, resolve_modulation,
+)
 
 
 FILTER_SELECTIONS = {
@@ -33,6 +36,7 @@ FILTER_ACTIONS = {
     "multiply": "Multiply by value",
     "add": "Add value",
     "nan": "Replace with NaN",
+    "modulate": "Modulate with profile",
 }
 FILTER_INTERPOLATIONS = {
     "linear": "Linear", "pchip": "Smooth (PCHIP)", "nearest": "Nearest value",
@@ -73,6 +77,74 @@ class DataFilterSettings:
     profile_units: str = "bp"
     profile_column: str | None = None
     profile_array_key: str | None = None
+    modulation: ProfileModulationSettings = field(default_factory=ProfileModulationSettings)
+    between_mode: str = "within"
+    _position_sink: Callable | None = field(default=None, repr=False, compare=False)
+
+
+@dataclass(frozen=True, slots=True)
+class FilterSelection:
+    """Packed native-bin selection for the displayed profile, before editing."""
+
+    packed: bytes = field(repr=False)
+    length: int
+    step: float = 1.0
+    end: float = 0.0
+
+    @classmethod
+    def from_mask(cls, mask, display_positions=None):
+        mask = np.asarray(mask, dtype=bool).reshape(-1)
+        positions = None if display_positions is None else np.asarray(display_positions)
+        step = float(positions[1] - positions[0]) if positions is not None and len(positions) > 1 else 1.
+        end = float(positions[-1] - positions[0]) if positions is not None and len(positions) else max(0, mask.size - 1)
+        return cls(np.packbits(mask).tobytes(), mask.size, step, end)
+
+    def ranges(self, x_limits=None, *, max_regions: int = 750) -> list[tuple[float, float]]:
+        """Bound shading to screen detail; recover exact bins when zooming in."""
+        if not self.length or self.step <= 0:
+            return []
+        first, stop = 0, self.length
+        if x_limits is not None:
+            first = max(0, int(np.floor(min(x_limits) / self.step)) - 2)
+            stop = min(self.length, int(np.ceil(max(x_limits) / self.step)) + 3)
+        if first >= stop:
+            return []
+        byte_start, byte_stop = first // 8, (stop + 7) // 8
+        mask = np.unpackbits(np.frombuffer(self.packed[byte_start:byte_stop], dtype=np.uint8))
+        mask = mask[first - byte_start * 8:stop - byte_start * 8]
+        stride = max(1, int(np.ceil(mask.size / (2 * max_regions))))
+        mask = np.maximum.reduceat(mask, np.arange(0, mask.size, stride))
+        edges = np.flatnonzero(np.diff(np.r_[0, mask, 0]))
+
+        def boundary(index):
+            if self.length == 1:
+                return -.5 if index == 0 else .5
+            if index == self.length:
+                return self.end + (self.end - (self.length - 2) * self.step) / 2
+            if index == self.length - 1:
+                return ((self.length - 2) * self.step + self.end) / 2
+            return (index - .5) * self.step
+
+        return [(boundary(first + int(start) * stride), boundary(min(stop, first + int(end) * stride)))
+                for start, end in edges.reshape(-1, 2)]
+
+
+def capture_filter_selection(values, settings, *, positions=None, intervals=None,
+                             chromosome=None, display_positions=None) -> FilterSelection | None:
+    """Inspect a selection independently of Apply and of operation parameters."""
+    try:
+        selection = resolve_filter(replace(settings, enabled=True, action="replace", value=0.))
+        if not selection.enabled:
+            return None
+        array = np.asarray(values, dtype=float)
+        series = array.reshape(-1) if array.ndim < 2 or array.shape[0] == 1 else array[:, 0]
+        mask = _selected(series, selection, positions, intervals, chromosome)
+        return FilterSelection.from_mask(mask, display_positions)
+    except (ValueError, TypeError):
+        # Inactive, unfinished controls must never prevent an unfiltered conversion.
+        if settings.enabled:
+            raise
+        return None
 
 
 def _choice(value: str, choices, label: str) -> str:
@@ -94,18 +166,21 @@ def _finite(value: float, label: str) -> float:
 def resolve_filter(settings: DataFilterSettings) -> DataFilterSettings:
     """Validate active fields only and materialize an optional uploaded mask once."""
     if not settings.enabled:
-        return DataFilterSettings()
+        return settings
     _choice(settings.selection, FILTER_SELECTIONS, "filter selection")
     if settings.selection == "profile" and settings.profile is None and settings.upload is None:
-        return DataFilterSettings()
+        return replace(settings, enabled=False)
     _choice(settings.action, FILTER_ACTIONS, "filter operation")
     changes = {}
+    if settings.action == "modulate":
+        changes["modulation"] = resolve_modulation(settings.modulation)
     if settings.selection in {"threshold", "minimum", "maximum"}:
         _choice(settings.comparison, {"below", "above"}, "threshold comparison")
         changes["threshold"] = _finite(settings.threshold, "Filter threshold")
         if settings.selection != "threshold" and changes["threshold"] < 0:
             raise ValueError("Distance from the minimum or maximum must be non-negative.")
     if settings.selection == "between":
+        _choice(settings.between_mode, {"within", "outside"}, "threshold range")
         changes.update(lower=_finite(settings.lower, "Lower filter threshold"),
                        upper=_finite(settings.upper, "Upper filter threshold"))
         if changes["lower"] > changes["upper"]:
@@ -310,6 +385,8 @@ def _selected(values: np.ndarray, settings: DataFilterSettings, positions, inter
     if settings.selection == "nan":
         return np.isnan(values)
     if settings.selection == "between":
+        if settings.between_mode == "outside":
+            return (values < settings.lower) | (values > settings.upper)
         return (values >= settings.lower) & (values <= settings.upper)
     threshold = settings.threshold
     if settings.selection in {"minimum", "maximum"}:
@@ -337,6 +414,8 @@ def apply_data_filter(
     source = np.asarray(values, dtype=float)
     result = source.copy()
     columns = result.reshape(-1, 1) if result.ndim < 2 or result.shape[0] == 1 else result
+    modulation = (aligned_modulation(source, settings.modulation, coordinates=positions, chromosome=chromosome)
+                  if settings.action == "modulate" else None)
     # Reproducible, distinct noise across chromosome outputs and time slices.
     seed = settings.seed
     rng = np.random.default_rng(None if seed is None else np.random.SeedSequence([seed, zlib.crc32((chromosome or "").encode())]))
@@ -345,6 +424,8 @@ def apply_data_filter(
             cancel()
         original = columns[:, column].copy()
         selected = _selected(original, settings, positions, intervals, chromosome)
+        if settings._position_sink is not None:
+            settings._position_sink(selected, positions, chromosome, column if columns.shape[1] > 1 else None)
         if not selected.any():
             continue
         output = columns[:, column]
@@ -388,6 +469,10 @@ def apply_data_filter(
                 else:
                     indices = np.where(target - x[known[left]] <= x[known[right]] - target, left, right)
                 output[selected] = original[known[indices]]
+        elif action == "modulate":
+            output[selected] = modulate_region(
+                original, modulation[:, column], selected, settings.modulation, coordinates=positions, cancel=cancel,
+            )
         else:
             with np.errstate(over="ignore", invalid="ignore"):
                 if action == "noise":
@@ -410,7 +495,8 @@ def filter_metadata(settings: DataFilterSettings) -> tuple[tuple[str, str], ...]
     if settings.selection in {"threshold", "minimum", "maximum"}:
         metadata.update(filter_comparison=settings.comparison, filter_threshold=str(settings.threshold))
     elif settings.selection == "between":
-        metadata.update(filter_lower=str(settings.lower), filter_upper=str(settings.upper))
+        metadata.update(filter_lower=str(settings.lower), filter_upper=str(settings.upper),
+                        filter_between_mode=settings.between_mode)
     elif settings.selection == "profile":
         metadata.update(filter_profile_layout=settings.profile_layout, filter_profile_units=settings.profile_units,
                         filter_profile_present=str(settings.profile is not None or settings.upload is not None).lower())
@@ -422,4 +508,4 @@ def filter_metadata(settings: DataFilterSettings) -> tuple[tuple[str, str], ...]
         metadata["filter_interpolation"] = settings.interpolation
     elif settings.action in {"minimum", "maximum"}:
         metadata["filter_reference"] = settings.reference
-    return tuple(metadata.items())
+    return tuple(metadata.items()) + (modulation_metadata(settings.modulation) if settings.action == "modulate" else ())

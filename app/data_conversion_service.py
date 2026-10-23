@@ -22,6 +22,7 @@ from dnascape.workflows.conversion import (
     TrackInspection as TrackInspection,
     TrackRegion as TrackRegion,
     convert_data as convert_data,
+    convert_combined_data as convert_combined_data,
     extract_values as extract_values,
     inspect_data_source as inspect_data_source,
     inspect_track as inspect_track,

@@ -220,17 +220,31 @@ def _validated_fork_speed_std(value):
     return value
 
 
-def _positive_normal_speeds(rng, mean, standard_deviation, *, size):
-    """Draw local fork speeds, resampling the unphysical non-positive tail."""
+def _positive_speed_samples(rng, mean, standard_deviation, *, size):
+    """Positive lognormal speeds with the requested arithmetic mean and SD.
 
-    with np.errstate(over="ignore", invalid="ignore"):
-        speeds = np.asarray(rng.normal(mean, standard_deviation, size=size), dtype=float)
-        means = np.broadcast_to(mean, speeds.shape)
-        invalid = (~np.isfinite(speeds)) | (speeds <= 0)
-        while np.any(invalid):
-            speeds[invalid] = rng.normal(means[invalid], standard_deviation)
-            invalid = (~np.isfinite(speeds)) | (speeds <= 0)
+    A normal distribution conditioned on v > 0 has nonzero density at zero,
+    giving 1/v an infinite mean and arbitrarily large bin-crossing artifacts.
+    Matching lognormal moments avoids that singularity without a speed floor.
+    """
+    means = np.broadcast_to(np.asarray(mean, dtype=float), (size,))
+    if standard_deviation == 0:
+        return means.copy()
+    log_means = np.log(means)
+    log_variance = np.logaddexp(0., 2 * (np.log(standard_deviation) - log_means))
+    with np.errstate(over="ignore", under="ignore", invalid="ignore"):
+        speeds = rng.lognormal(log_means - .5 * log_variance, np.sqrt(log_variance), size=size)
+    if np.any(~np.isfinite(speeds)) or np.any(speeds <= 0):
+        raise ValueError(
+            "Speed variation exceeds the numeric range. Reduce the standard deviation or increase the input speed."
+        )
     return speeds
+
+
+def _validated_stall_shared_directions(value):
+    if not isinstance(value, (bool, np.bool_)):
+        raise ValueError("stall_shared_directions must be a boolean.")
+    return bool(value)
 
 
 def _normalise_firing_rate(firing_rate=None, ori_rate=None, initiation_rate=None):
@@ -381,6 +395,23 @@ def _phase_timing_summary(fired_times_min, replication_time_min):
     return completion, duration
 
 
+def _replicon_lengths(src, arrival_times, fired_idx, resolution_space, max_rep_time):
+    """Completed DNA domains owned by individual fired origins, in kb.
+
+    Ownership joins domains across the periodic seam. Exclude a domain if any
+    of its bins remain unreplicated at the simulation's stopping time.
+    """
+    if not len(fired_idx):
+        return np.empty(0, dtype=float)
+    lengths = np.bincount(src, minlength=len(src))[fired_idx]
+    last_arrival = np.full(len(src), -np.inf)
+    np.maximum.at(last_arrival, src, arrival_times)
+    completed = np.isfinite(last_arrival[fired_idx])
+    if max_rep_time is not None:
+        completed &= last_arrival[fired_idx] <= max_rep_time
+    return lengths[completed].astype(float) * resolution_space
+
+
 def simulate_replication(
     firing_rate=None,
     fork_speed=1.4,
@@ -411,6 +442,7 @@ def simulate_replication(
     stall_rate_per_kb=None,
     _compute_inter_origin_distances=True,
     fork_speed_std=0.0,
+    stall_shared_directions=False,
 ):
     """Run one stochastic replication simulation.
 
@@ -420,12 +452,15 @@ def simulate_replication(
     ``interval_kb``. ``stall_rate_per_kb`` is a physical stall density and is
     converted to a per-bin probability after resolving the spatial resolution.
     ``stall_rate`` remains the legacy probability-per-bin input.
-    ``fork_speed_std`` enables normally distributed speeds in kb/min around the
-    local input speed, independently by bin, direction, and replicate (also by
-    time slice for temporal fields). Non-positive draws are resampled.
+    ``fork_speed_std`` enables positive lognormal speeds matching the local
+    input mean and the requested SD in kb/min, independently by bin, direction
+    and replicate (also by time slice for temporal fields). Temporal stochastic
+    speeds are integrated across each crossing. ``stall_shared_directions``
+    makes stall positions and recovery delays identical in both directions.
     """
     rng = np.random.default_rng() if rng is None else rng
     fork_speed_std = _validated_fork_speed_std(fork_speed_std)
+    stall_shared_directions = _validated_stall_shared_directions(stall_shared_directions)
     if resolution_x is not None:
         resolution_space = resolution_x
     if resolution_t is not None:
@@ -509,15 +544,18 @@ def simulate_replication(
         raise RuntimeError(f"Unknown prepared fork-speed field kind: {v_kind!r}.")
 
     p = stall_rate
+    shared_stalls = stall_shared_directions and p > 0
     stall_left_mask = rng.random(n) < p
-    stall_right_mask = rng.random(n) < p
+    stall_right_mask = stall_left_mask if shared_stalls else rng.random(n) < p
     stall_delay_left = np.zeros(n, float)
     stall_delay_right = np.zeros(n, float)
     if p > 0.0:
         if np.isfinite(tau):
             if stall_left_mask.any():
                 stall_delay_left[stall_left_mask] = rng.exponential(scale=tau, size=int(stall_left_mask.sum()))
-            if stall_right_mask.any():
+            if shared_stalls:
+                stall_delay_right[:] = stall_delay_left
+            elif stall_right_mask.any():
                 stall_delay_right[stall_right_mask] = rng.exponential(scale=tau, size=int(stall_right_mask.sum()))
         else:
             stall_delay_left[stall_left_mask] = np.inf
@@ -563,8 +601,8 @@ def simulate_replication(
     if fork_speed_std > 0:
         if v_kind in {"scalar", "x"}:
             means = 1.0 / inv_v_values
-            inverse_forward = 1.0 / _positive_normal_speeds(rng, means, fork_speed_std, size=n)
-            inverse_backward = 1.0 / _positive_normal_speeds(rng, means, fork_speed_std, size=n)
+            inverse_forward = 1.0 / _positive_speed_samples(rng, means, fork_speed_std, size=n)
+            inverse_backward = 1.0 / _positive_speed_samples(rng, means, fork_speed_std, size=n)
 
             def _edge_forward(t_here, k_to):
                 return resolution_space * inverse_forward[k_to] + stall_delay_left[k_to]
@@ -578,20 +616,40 @@ def simulate_replication(
             forward_samples = {}
             backward_samples = {}
 
-            def stochastic_inverse(t_here, k_to, samples):
-                row = _row_for_time(t_here)
+            def stochastic_speed(row, k_to, samples):
                 key = row * n + k_to
                 if key not in samples:
                     inverse = inv_v_t[row] if inv_v_t is not None else inv_v_xt[row, k_to]
-                    speed = _positive_normal_speeds(rng, 1.0 / inverse, fork_speed_std, size=1)[0]
-                    samples[key] = 1.0 / speed
+                    samples[key] = _positive_speed_samples(rng, 1.0 / inverse, fork_speed_std, size=1)[0]
                 return samples[key]
 
+            def stochastic_crossing(t_here, k_to, samples):
+                # Integrate distance over clock slices. Freezing entry speed
+                # over a long crossing can let a later fork arrive first,
+                # violating the FIFO condition used by propagation.
+                if not np.isfinite(t_here):
+                    return np.inf
+                current = t_here
+                remaining = resolution_space
+                row = _row_for_time(current)
+                while True:
+                    speed = stochastic_speed(row, k_to, samples)
+                    if row == Tv - 1:
+                        return current - t_here + remaining / speed
+                    boundary = (row + 1) * resolution_time
+                    available_time = max(0., boundary - current)
+                    distance = available_time * speed
+                    if remaining <= distance:
+                        return current - t_here + remaining / speed
+                    remaining -= distance
+                    current = max(current, boundary)
+                    row += 1
+
             def _edge_forward(t_here, k_to):
-                return resolution_space * stochastic_inverse(t_here, k_to, forward_samples) + stall_delay_left[k_to]
+                return stochastic_crossing(t_here, k_to, forward_samples) + stall_delay_left[k_to]
 
             def _edge_backward(t_here, k_to):
-                return resolution_space * stochastic_inverse(t_here, k_to, backward_samples) + stall_delay_right[k_to]
+                return stochastic_crossing(t_here, k_to, backward_samples) + stall_delay_right[k_to]
 
     # firing proposals t0
     t0 = np.full(n, np.inf, float)
@@ -1010,12 +1068,17 @@ def simulate_replication(
                         ei += 1
                     firing_factors[j] = _recover(A, tj - last_t)
 
+        event_cutoff = min(t_max_grid, max_rep_time) if max_rep_time is not None else t_max_grid
+        origin_times = fired_times_min[np.isfinite(fired_times_min) & (fired_times_min <= event_cutoff)]
+        origin_bins = np.searchsorted(time_grid, origin_times, side="left")
         time_stats = dict(
             time_grid=time_grid,
             total_forks=total_forks,
             active_forks=active_forks,
             stalled_forks=stalled_forks,
             firing_factors=firing_factors,
+            replicon_lengths=_replicon_lengths(src, g, fired_idx, resolution_space, max_rep_time),
+            origin_firing=np.bincount(origin_bins, minlength=len(time_grid)).astype(float),
         )
 
     return (
@@ -1069,6 +1132,8 @@ def rsim(
     stall_rate_per_kb=None,
     retain_inter_origin_distances_limit=None,
     fork_speed_std=0.0,
+    retain_replicon_lengths_limit=None,
+    stall_shared_directions=False,
 ):
     """Run replicate stochastic simulations and return averaged features.
 
@@ -1086,8 +1151,15 @@ def rsim(
     Per-simulation profiles, pooled inter-origin distances, one-dimensional
     time courses, and space-time fields have independent retention/statistics
     controls; inter-origin distances do not require either time-statistics flag.
-    ``fork_speed_std`` enables independent, positive normal speed draws around
-    the local input speed in kb/min for every supported speed dependence.
+    ``time_statsQ`` also records actual origin firing per time-grid interval and
+    completed replicon lengths. Replicons are the DNA domains copied from each
+    fired origin; unfinished domains are excluded. Their retained sample count
+    can be bounded with ``retain_replicon_lengths_limit``.
+    ``fork_speed_std`` enables positive lognormal speed draws matching the local
+    input mean and requested SD, for every supported dependence. Stochastic
+    temporal speeds are integrated through clock boundaries during crossings.
+    ``stall_shared_directions=True`` shares stall positions and recovery delays
+    between both fork directions; False preserves independent directional stalls.
     """
     params = {
         "firing_rate": firing_rate,
@@ -1101,6 +1173,7 @@ def rsim(
         "perQ": perQ,
         "stall_rate": stall_rate,
         "stall_rate_per_kb": stall_rate_per_kb,
+        "stall_shared_directions": stall_shared_directions,
         "tau": tau,
         "ffiring_nr": ffiring_nr,
         "ffiring_recycle": ffiring_recycle,
@@ -1126,6 +1199,7 @@ def rsim(
         "retain_inter_origin_distances": retain_inter_origin_distances,
         "retain_rep_times_limit": retain_rep_times_limit,
         "retain_inter_origin_distances_limit": retain_inter_origin_distances_limit,
+        "retain_replicon_lengths_limit": retain_replicon_lengths_limit,
     }
 
     if source is not None:
@@ -1177,6 +1251,7 @@ def rsim(
     perQ = params["perQ"]
     stall_rate = params["stall_rate"]
     stall_rate_per_kb = params["stall_rate_per_kb"]
+    stall_shared_directions = _validated_stall_shared_directions(params["stall_shared_directions"])
     tau = params["tau"]
     ffiring_nr = params["ffiring_nr"]
     ffiring_recycle = params["ffiring_recycle"]
@@ -1204,6 +1279,7 @@ def rsim(
     retain_inter_origin_distances_limit = params[
         "retain_inter_origin_distances_limit"
     ]
+    retain_replicon_lengths_limit = params["retain_replicon_lengths_limit"]
 
     if time_stats_densQ is not None:
         time_stats_xtQ = bool(time_stats_densQ)
@@ -1293,6 +1369,11 @@ def rsim(
     else:
         retained_iod_limit = None
 
+    retained_replicon_limit = (
+        _validated_nonnegative_integer(retain_replicon_lengths_limit, "retain_replicon_lengths_limit")
+        if time_statsQ and retain_replicon_lengths_limit is not None else None
+    )
+
     ss = np.random.SeedSequence(seed) if seed is not None else np.random.SeedSequence()
 
     sum_rep_time = np.zeros(n, dtype=float)
@@ -1312,6 +1393,9 @@ def rsim(
     all_iods = [] if retain_inter_origin_distances else None
     retained_iod_count = 0
     total_iod_count = 0
+    all_replicons = [] if time_statsQ else None
+    retained_replicon_count = 0
+    total_replicon_count = 0
     fire_counts = np.zeros(n, dtype=np.int64)
 
     sum_fdir = np.zeros(n, dtype=float)
@@ -1335,12 +1419,14 @@ def rsim(
         sum_total_forks = np.zeros(m, float)
         sum_active_forks = np.zeros(m, float)
         sum_stalled_forks = np.zeros(m, float)
+        sum_origin_firing = np.zeros(m, float)
         sum_firing_factors = np.zeros(m, float)
         count_firing_factors = 0
     else:
         sum_total_forks = None
         sum_active_forks = None
         sum_stalled_forks = None
+        sum_origin_firing = None
         sum_firing_factors = None
         count_firing_factors = 0
 
@@ -1376,12 +1462,14 @@ def rsim(
         sum_coalescence_events_xt = _mm("sum_coalescence_events_xt", (m, n), np.float32)
         sum_right_moving_fork_density_xt = _mm("sum_right_moving_fork_density_xt", (m, n), np.float32)
         sum_left_moving_fork_density_xt = _mm("sum_left_moving_fork_density_xt", (m, n), np.float32)
+        sum_fork_density_xt = _mm("sum_fork_density_xt", (m, n), np.float32)
 
         sum_replicated_fraction_xt[:] = 0.0
         sum_initiation_events_xt[:] = 0.0
         sum_coalescence_events_xt[:] = 0.0
         sum_right_moving_fork_density_xt[:] = 0.0
         sum_left_moving_fork_density_xt[:] = 0.0
+        sum_fork_density_xt[:] = 0.0
 
     else:
         sum_replicated_fraction_xt = None
@@ -1389,6 +1477,7 @@ def rsim(
         sum_coalescence_events_xt = None
         sum_right_moving_fork_density_xt = None
         sum_left_moving_fork_density_xt = None
+        sum_fork_density_xt = None
 
     start_time = time.time()
 
@@ -1465,6 +1554,7 @@ def rsim(
             _prepared_inverse_speed_field=prepared_inverse_speed_field,
             _compute_inter_origin_distances=retain_this_iod,
             fork_speed_std=fork_speed_std,
+            stall_shared_directions=stall_shared_directions,
         )
 
         if rep_times_per_sim is not None and i <= retained_rep_times:
@@ -1535,6 +1625,19 @@ def rsim(
             sum_total_forks += time_stats["total_forks"]
             sum_active_forks += time_stats["active_forks"]
             sum_stalled_forks += time_stats["stalled_forks"]
+            assert sum_origin_firing is not None
+            assert all_replicons is not None
+            sum_origin_firing += time_stats["origin_firing"]
+            lengths = time_stats["replicon_lengths"]
+            total_replicon_count += len(lengths)
+            remaining = (
+                len(lengths) if retained_replicon_limit is None
+                else max(0, retained_replicon_limit - retained_replicon_count)
+            )
+            if remaining:
+                retained = lengths[:remaining].copy()
+                all_replicons.append(retained)
+                retained_replicon_count += len(retained)
             ff = time_stats.get("firing_factors", None)
             if ff is not None:
                 sum_firing_factors += ff
@@ -1557,10 +1660,10 @@ def rsim(
                 sum_replicated_fraction_xt[:, x0:x1] += blk.astype(np.float32)
 
             # (b) initiation events: sparse binning
-            tf = t_fire
-            ok = np.isfinite(tf) & (tf <= t_max_grid)
+            tf = fired_times
+            ok = np.isfinite(tf) & (tf <= t_max_grid) & (tf <= (max_rep_time if max_rep_time is not None else np.inf))
             if np.any(ok):
-                cols = np.flatnonzero(ok).astype(np.int64, copy=False)
+                cols = fired_idx[ok]
                 bins = np.searchsorted(time_grid, tf[ok], side="left").astype(np.int64, copy=False)
                 np.add.at(sum_initiation_events_xt, (bins, cols), 1.0)
 
@@ -1659,16 +1762,19 @@ def rsim(
         assert sum_total_forks is not None
         assert sum_active_forks is not None
         assert sum_stalled_forks is not None
+        assert sum_origin_firing is not None
         assert sum_firing_factors is not None
         invS = 1.0 / float(sim_number)
         avg_total_forks = sum_total_forks * invS
         avg_active_forks = sum_active_forks * invS
         avg_stalled_forks = sum_stalled_forks * invS
+        avg_origin_firing = sum_origin_firing * invS
         avg_firing_factors = (sum_firing_factors / float(count_firing_factors)) if count_firing_factors > 0 else None
     else:
         avg_total_forks = None
         avg_active_forks = None
         avg_stalled_forks = None
+        avg_origin_firing = None
         avg_firing_factors = None
 
     if time_stats_xtQ:
@@ -1678,6 +1784,7 @@ def rsim(
         assert sum_coalescence_events_xt is not None
         assert sum_right_moving_fork_density_xt is not None
         assert sum_left_moving_fork_density_xt is not None
+        assert sum_fork_density_xt is not None
         post_start = time.time()
         post_blocks = (n + dens_block_n - 1) // dens_block_n
         for j, x0 in enumerate(range(0, n, dens_block_n), start=1):
@@ -1687,6 +1794,8 @@ def rsim(
             sum_coalescence_events_xt[:, x0:x1] /= float(sim_number)
             sum_right_moving_fork_density_xt[:, x0:x1] /= float(sim_number)
             sum_left_moving_fork_density_xt[:, x0:x1] /= float(sim_number)
+            np.add(sum_right_moving_fork_density_xt[:, x0:x1], sum_left_moving_fork_density_xt[:, x0:x1],
+                   out=sum_fork_density_xt[:, x0:x1])
             if verbose:
                 etaf(
                     it=j,
@@ -1700,6 +1809,7 @@ def rsim(
         avg_coalescence_events_xt = sum_coalescence_events_xt.T
         avg_right_moving_fork_density_xt = sum_right_moving_fork_density_xt.T
         avg_left_moving_fork_density_xt = sum_left_moving_fork_density_xt.T
+        avg_fork_density_xt = sum_fork_density_xt.T
         dt_grid_out = float(time_grid[1] - time_grid[0]) if time_grid is not None and time_grid.size >= 2 else 1.0
     else:
         avg_replicated_fraction_xt = None
@@ -1707,6 +1817,7 @@ def rsim(
         avg_coalescence_events_xt = None
         avg_right_moving_fork_density_xt = None
         avg_left_moving_fork_density_xt = None
+        avg_fork_density_xt = None
 
     nr_oris_list = nr_oris.tolist()
     return dict(
@@ -1723,6 +1834,12 @@ def rsim(
         inter_origin_distances_truncated=(
             all_iods_kb is not None and retained_iod_count < total_iod_count
         ),
+        replicon_lengths=(
+            (np.concatenate(all_replicons) if all_replicons else np.empty(0, dtype=float))
+            if time_statsQ else None
+        ),
+        replicon_length_count=total_replicon_count,
+        replicon_lengths_truncated=(time_statsQ and retained_replicon_count < total_replicon_count),
         efficiency=efficiencies,
         origin_efficiency=efficiencies,
         fork_directionality=fork_directionality,
@@ -1736,9 +1853,11 @@ def rsim(
         right_fork_density_xt=avg_right_moving_fork_density_xt,
         left_moving_fork_density_xt=avg_left_moving_fork_density_xt,
         left_fork_density_xt=avg_left_moving_fork_density_xt,
+        fork_density_xt=avg_fork_density_xt,
         total_forks=avg_total_forks,
         active_forks=avg_active_forks,
         stalled_forks=avg_stalled_forks,
+        origin_firing=avg_origin_firing,
         firing_factors=avg_firing_factors,
     )
 
@@ -1753,8 +1872,8 @@ _RSIM_INPUT_DESCRIPTIONS = {
         "time-only, or space-time forms."
     ),
     "fork_speed_std": (
-        "Standard deviation in kb/min of independent normal speeds around the local "
-        "input speed. Zero disables speed variation. Non-positive draws are resampled."
+        "Arithmetic SD in kb/min of positive lognormal speeds whose mean is the local "
+        "input speed. Temporal speeds are integrated during crossings. Zero keeps existing speed behavior."
     ),
     "sim_number": "Number of independent stochastic S phases to simulate and summarize.",
     "resolution_space": "Spatial bin size in kb.",
@@ -1769,13 +1888,17 @@ _RSIM_INPUT_DESCRIPTIONS = {
         "Physical stall density in stalls/kb. Converted to the per-bin probability "
         "1 - exp(-stall_rate_per_kb * resolution_space)."
     ),
+    "stall_shared_directions": (
+        "Share stall positions and recovery delays between both fork directions. "
+        "False retains independent directional stalls; this does not couple sister forks."
+    ),
     "tau": "Mean stall duration. np.inf represents non-recovering stalls.",
     "ffiring_nr": "Finite firing-factor pool size. None disables finite-factor limitation.",
     "ffiring_recycle": "Rate at which used firing factors recycle into the available pool.",
     "ffiring_forkQ": "Whether active forks also affect the finite firing-factor pool.",
     "time_statsQ": (
-        "Return one-dimensional time courses such as replicated fraction "
-        "and fork counts."
+        "Return one-dimensional time courses, including actual origin firing, "
+        "and the completed replicon-length distribution."
     ),
     "time_stats_xtQ": (
         "Return space-time fields. This is more memory intensive than "
@@ -1812,6 +1935,10 @@ _RSIM_INPUT_DESCRIPTIONS = {
         "Maximum number of pooled inter-origin distances to retain. None "
         "retains the complete distribution. The full event count is still "
         "reported when retention is bounded or disabled."
+    ),
+    "retain_replicon_lengths_limit": (
+        "Maximum number of pooled completed replicon lengths to retain with "
+        "time_statsQ=True. None retains all; zero keeps only the total count."
     ),
     "n_bins": "Number of genomic bins when no spatial kinetic input is supplied.",
     "genome_length": "Genome length in kb, used with the spatial resolution to infer n_bins.",
@@ -1927,6 +2054,24 @@ _RSIM_OUTPUT_RECORDS = [
         ),
     },
     {
+        "output": "replicon_lengths",
+        "shape/type": "1D array or None",
+        "returned when": "time_statsQ=True",
+        "description": "Pooled completed DNA-domain lengths per fired origin, in kb; unfinished domains are excluded.",
+    },
+    {
+        "output": "replicon_length_count",
+        "shape/type": "integer",
+        "returned when": "always",
+        "description": "Total completed replicons before the retention limit (zero without time_statsQ).",
+    },
+    {
+        "output": "replicon_lengths_truncated",
+        "shape/type": "boolean",
+        "returned when": "always",
+        "description": "Whether the retained replicon lengths are a bounded prefix of the full sample pool.",
+    },
+    {
         "output": "efficiency",
         "shape/type": "(n,) array",
         "returned when": "always",
@@ -2015,6 +2160,21 @@ _RSIM_OUTPUT_RECORDS = [
         "shape/type": "(n, m) array or None",
         "returned when": "time_stats_xtQ=True",
         "description": "Left-moving fork-density field.",
+    },
+    {
+        "output": "fork_density_xt",
+        "shape/type": "(n, m) array or None",
+        "returned when": "time_stats_xtQ=True",
+        "description": "Total fork-density field, equal to the right- plus left-moving fields.",
+    },
+    {
+        "output": "origin_firing",
+        "shape/type": "(m,) array or None",
+        "returned when": "time_statsQ=True",
+        "description": (
+            "Mean actual initiations per time-grid interval ending at each grid point; "
+            "the first bin includes events up to the first point. Excludes passive replication."
+        ),
     },
     {
         "output": "total_forks",

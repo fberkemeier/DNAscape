@@ -26,6 +26,7 @@ from app.data_conversion_service import (
     prepare_data,
 )
 from app.mapping_uploads import inspect_upload, materialize_upload
+from app.export_settings import preview_point_limit
 
 
 def _npz_values(data: bytes) -> np.ndarray:
@@ -713,7 +714,7 @@ def test_sns_preview_keeps_isolated_peaks_at_their_zero_based_bin_positions() ->
     assert result.preview is not None
     preview = result.preview
     assert preview.total_count == 2000
-    assert preview.values.size <= 500
+    assert preview.values.size <= preview_point_limit()
     assert preview.maximum == 20
     assert np.max(preview.values) == 20
     assert preview.x[np.argmax(preview.values)] == 137.0
@@ -727,7 +728,7 @@ def test_sns_preview_keeps_isolated_peaks_at_their_zero_based_bin_positions() ->
     # The continuous-track preview remains unchanged for Repli-seq BigWig.
     continuous = conversion_service._preview(values, preserve_peaks=False)
     assert continuous is not None
-    np.testing.assert_array_equal(continuous.values, values[np.linspace(0, 1999, 500, dtype=int)])
+    np.testing.assert_array_equal(continuous.values, values[np.linspace(0, 1999, preview_point_limit(), dtype=int)])
 
 
 def test_coordinate_tsv_round_trips_as_a_mapping_profile() -> None:
@@ -1591,7 +1592,7 @@ def test_extensionless_bigwig_magic_and_manual_bedgraph_hint_are_supported() -> 
         inspect_upload("download", b"not a bigwig", source_format="bigwig")
 
 
-def test_result_preview_is_evenly_bounded_to_five_hundred_points() -> None:
+def test_result_preview_is_evenly_bounded_to_configured_point_budget() -> None:
     values = np.arange(2_000, dtype=float)
     stream = io.BytesIO()
     np.save(stream, values, allow_pickle=False)
@@ -1606,7 +1607,7 @@ def test_result_preview_is_evenly_bounded_to_five_hundred_points() -> None:
     )
 
     assert result.preview is not None
-    assert result.preview.values.shape == (500,)
+    assert result.preview.values.shape == (preview_point_limit(),)
     assert result.preview.total_count == 2_000
     assert result.preview.finite_count == 2_000
     assert result.preview.missing_count == 0

@@ -17,6 +17,8 @@ from typing import Any
 
 import numpy as np
 
+from dnascape.workflows.export_settings import preview_point_limit
+
 PALETTES: dict[str, list[str]] = {
     "viridis": ["#440154", "#31688e", "#35b779", "#fde725"],
     "magma": ["#000004", "#721f81", "#f1605d", "#fcfdbf"],
@@ -85,7 +87,7 @@ def curve_dash_pattern(line_type: str) -> str | list[int]:
 
 @dataclass(frozen=True)
 class PreviewLine:
-    """One named line supplied to the shared preview renderer."""
+    """One named profile and its curve or distribution presentation."""
 
     name: str
     x: np.ndarray
@@ -96,6 +98,8 @@ class PreviewLine:
     show_in_legend: bool = True
     z: int = 3
     line_type: str | None = None
+    box_position: float | None = None
+    box_label: str | None = None
 
 
 @dataclass(frozen=True)
@@ -455,7 +459,7 @@ def _axis_tick_candidates(lower: float, upper: float, *, log_axis: bool) -> list
 def _aligned_axis_ticks(lower: float, upper: float, *, log_axis: bool) -> list[float]:
     """Return clean tick values inside a data domain, including aligned endpoints.
 
-    Plot limits include a small, scale-relative margin.  Letting ECharts derive
+    Some axes include a small, scale-relative margin. Letting ECharts derive
     ticks from those explicit limits anchors every tick to the padded minimum;
     a domain starting at ``17.16`` consequently produces ``22.16, 27.16, ...``.
     ECharts 6 supports explicit tick and label values, so keep the exact padded
@@ -735,26 +739,6 @@ def _hover_formatter(*, integer_only: bool) -> str:
     )
 
 
-def _visual_axis_endpoint(values: Any) -> float | None:
-    """Include a round zero-based bin boundary without extending arbitrary data."""
-    axis = np.unique(np.asarray(values, dtype=float).reshape(-1))
-    axis = axis[np.isfinite(axis)]
-    if axis.size < 2 or not math.isclose(float(axis[0]), 0, abs_tol=1e-9):
-        return None
-    if math.isclose(float(axis[-1]) / 100, round(float(axis[-1]) / 100), abs_tol=1e-9):
-        return None
-    steps = np.diff(axis)
-    if np.allclose(steps, steps[0], rtol=1e-8, atol=1e-9):
-        step = float(steps[0])
-    elif _whole_numbers(axis):
-        # Downsampled previews still retain a common underlying integer grid.
-        step = float(np.gcd.reduce(np.rint(steps).astype(np.int64)))
-    else:
-        return None
-    end = float(axis[-1]) + step
-    return end if end >= 100 and math.isclose(end / 100, round(end / 100), abs_tol=1e-9) else None
-
-
 def _tooltip_options(
     *, interactive: bool, trigger: str, x_values: Any = None, values: Any = None,
 ) -> dict[str, Any]:
@@ -771,7 +755,7 @@ def _tooltip_options(
             "params => { const rows=Array.isArray(params)?params:[params]; if(!rows.length)return ''; "
             f"const fy=({_hover_formatter(integer_only=_whole_numbers(values))}); "
             "return rows.map(p=>{const v=p.value; "
-            "if(p.seriesType==='boxplot'&&Array.isArray(v)){const values=v.slice(-5); "
+            "if(Array.isArray(v)&&(p.seriesType==='boxplot'||(p.seriesType==='custom'&&v.length===6))){const values=v.slice(-5); "
             "return (p.marker||'')+['Min','Q1','Median','Q3','Max'].map((name,i)=>name+': <b>'+fy(values[i])+'</b>').join('<br>');} "
             "const y=Array.isArray(v)?(p.seriesType==='custom'?v[2]:v[1]):v; "
             "return (p.marker||'')+'<b>'+fy(y)+'</b>';}).join('<br>'); }"
@@ -938,7 +922,7 @@ def _kde_data(
     domain = evaluation_limits if evaluation_limits is not None else x_limits
     if domain is not None:
         lower, upper = _plot_axis_limits(domain, None, label="X", log_axis=log_x)
-    grid = np.geomspace(lower, upper, 256) if log_x else np.linspace(lower, upper, 256)
+    grid = np.geomspace(lower, upper, preview_point_limit()) if log_x else np.linspace(lower, upper, preview_point_limit())
     if constant:
         curve = np.exp(-0.5 * ((grid - samples[0]) / bandwidth) ** 2) / (
             bandwidth * np.sqrt(2 * np.pi)
@@ -1050,15 +1034,35 @@ def _visible_slice(axis: np.ndarray, limits: tuple[float, float] | None) -> slic
 
 def _visible_indices(axis: np.ndarray, limits: tuple[float, float] | None, limit: int) -> np.ndarray:
     selection = _visible_slice(axis, limits)
-    return selection.start + _bounded_indices(selection.stop - selection.start, limit)
+    detail = selection.start + _bounded_indices(selection.stop - selection.start, limit)
+    if limits is None:
+        return detail
+    # Keep a bounded overview outside the detailed tile. Changing the browser
+    # viewport can then reveal existing data immediately, before refinement.
+    overview = _bounded_indices(axis.size, limit)
+    outside = overview[(overview < selection.start) | (overview >= selection.stop)]
+    return np.union1d(outside, detail)
 
 
-def _line_points(x: Any, y: Any, *, limit: int = 2_500, view: tuple[float, float] | None = None) -> list[list[float | None]]:
+def retain_curve_overview(overview: Sequence[Sequence[Any]], detail: Sequence[Sequence[Any]]) -> list:
+    """Join a streamed/KDE detail tile to its original coarse profile."""
+    if not detail:
+        return list(overview)
+    lower = min(row[0] for row in detail)
+    upper = max(row[0] for row in detail)
+    before = [row for row in overview if row[0] < lower]
+    after = [row for row in overview if row[0] > upper]
+    if len(overview) > 1 and overview[-1][0] < overview[0][0]:
+        return after + list(detail) + before
+    return before + list(detail) + after
+
+
+def _line_points(x: Any, y: Any, *, limit: int | None = None, view: tuple[float, float] | None = None) -> list[list[float | None]]:
     axis = np.asarray(x, dtype=float).reshape(-1)
     values = np.asarray(y, dtype=float).reshape(-1)
     if axis.size != values.size:
         raise ValueError("The selected output has no matching axis.")
-    indices = _visible_indices(axis, view, limit)
+    indices = _visible_indices(axis, view, preview_point_limit() if limit is None else limit)
     points = [
         [
             float(axis[index]),
@@ -1075,7 +1079,7 @@ def _band_segments(
     band: PreviewBand,
     *,
     log_y: bool,
-    limit: int = 2_500,
+    limit: int | None = None,
     view: tuple[float, float] | None = None,
 ) -> list[list[float]]:
     """Return bounded adjacent polygons for one variable-width filled band."""
@@ -1088,7 +1092,7 @@ def _band_segments(
     if axis.size < 2:
         return []
     full_axis, full_lower, full_upper = axis, lower, upper
-    indices = _visible_indices(axis, view, limit)
+    indices = _visible_indices(axis, view, preview_point_limit() if limit is None else limit)
     axis = axis[indices]
     lower = lower[indices]
     upper = upper[indices]
@@ -1311,6 +1315,25 @@ def _plot_axis_limits(
     return lower, upper
 
 
+def _centered_box_renderer(gap: float, width: float) -> str:
+    """Place each box on its own numeric coordinate, without series grouping offsets."""
+    return (
+        "(params,api)=>{const x=api.value(0);const p=[1,2,3,4,5].map(i=>api.coord([x,api.value(i)]));"
+        f"const next=api.coord([x+{float(gap) / 2!r},api.value(3)]);"
+        "const half=Math.min(24,Math.max(4,Math.abs(next[0]-p[2][0])*0.55));"
+        "const cx=p[2][0],color=api.visual('color');"
+        f"const style={{stroke:color,lineWidth:{width!r},fill:'none'}};"
+        "const line=(x1,y1,x2,y2)=>({type:'line',shape:{x1,y1,x2,y2},style});"
+        "return {type:'group',children:["
+        "{type:'rect',shape:{x:cx-half,y:Math.min(p[1][1],p[3][1]),width:2*half,height:Math.abs(p[1][1]-p[3][1])},"
+        "style:{...api.style(),stroke:color,lineWidth:style.lineWidth}},"
+        "line(cx,p[0][1],cx,p[1][1]),line(cx,p[3][1],cx,p[4][1]),"
+        "line(cx-half*.6,p[0][1],cx+half*.6,p[0][1]),"
+        "line(cx-half*.6,p[4][1],cx+half*.6,p[4][1]),"
+        "line(cx-half,p[2][1],cx+half,p[2][1])]};}"
+    )
+
+
 def _combined_preview_options(
     lines: Sequence[PreviewLine], arguments: dict[str, Any],
 ) -> dict[str, Any]:
@@ -1323,6 +1346,16 @@ def _combined_preview_options(
     plot_type = arguments["plot_type"]
     if plot_type not in {"Line", "Histogram", "Boxplot"}:
         raise ValueError("Separate axes require curves, histograms, or boxplots.")
+    box_positions = [float(line.box_position if line.box_position is not None else index + 1)
+                     for index, line in enumerate(lines)] if plot_type == "Boxplot" else []
+    if box_positions and (not np.all(np.isfinite(box_positions)) or len(set(box_positions)) != len(box_positions)):
+        raise ValueError("Choose a distinct, finite X position for each box.")
+    if box_positions and (arguments["log_x"] or arguments["secondary_log_x"]) and min(box_positions) <= 0:
+        raise ValueError("Log X requires positive box positions.")
+    box_gap = min(np.diff(sorted(box_positions))) if len(box_positions) > 1 else 1.0
+    box_bounds = [min(box_positions) - box_gap / 2, max(box_positions) + box_gap / 2] if box_positions else []
+    if box_positions and (arguments["log_x"] or arguments["secondary_log_x"]):
+        box_bounds[0] = max(box_bounds[0], min(box_positions) / 2)
     shared_range = arguments["histogram_x_limits"]
     if plot_type == "Histogram" and not independent_x and shared_range is None:
         domain = histogram_domain(
@@ -1363,28 +1396,40 @@ def _combined_preview_options(
             axis.pop("data", None)
             axis.update(
                 type="log" if settings["log_x"] else "value",
-                min=0.5, max=len(lines) + 0.5,
+                min=box_bounds[0], max=box_bounds[1],
                 position="bottom", inverse=bool(settings["invert_x"]),
             )
-            part["dnascapeDefaultAxes"]["x"] = [0.5, len(lines) + 0.5]
+            part["dnascapeDefaultAxes"]["x"] = list(box_bounds)
             if settings["x_limits"] is not None:
                 axis["min"], axis["max"] = _plot_axis_limits(
                     settings["x_limits"], None, label="X", log_axis=settings["log_x"],
                 )
-            axis["axisLabel"]["customValues"] = list(range(1, len(lines) + 1))
-            axis["axisTick"]["customValues"] = list(range(1, len(lines) + 1))
-            axis["splitLine"]["customValues"] = list(range(1, len(lines) + 1))
+            axis["axisLabel"]["customValues"] = box_positions
+            axis["dnascapeBoxPositions"] = box_positions
+            labels = [line.box_label if line.box_label is not None else _compact_tick(position)
+                      for line, position in zip(lines, box_positions)]
+            axis["axisLabel"][":formatter"] = (
+                f"value=>{{const positions={json.dumps(box_positions)},labels={json.dumps(labels)};"
+                "const i=positions.findIndex(p=>Math.abs(p-Number(value))<=1e-9*Math.max(1,Math.abs(p)));"
+                "return i<0?'':labels[i];}"
+            )
+            axis["axisTick"]["customValues"] = box_positions
+            axis["splitLine"]["customValues"] = box_positions
             series = part["series"][0]
-            series["data"] = [[index + 1, *series["data"][0]]]
+            series["data"] = [[box_positions[index], *series["data"][0]]]
             series["dimensions"] = ["position", "min", "Q1", "median", "Q3", "max"]
             series["encode"] = {"x": 0, "y": [1, 2, 3, 4, 5], "tooltip": [1, 2, 3, 4, 5]}
+            series.update(type="custom", coordinateSystem="cartesian2d", clip=True)
+            series[":renderItem"] = _centered_box_renderer(box_gap, float(line.width or arguments["line_width"]))
         parts.append(part)
     options = parts[0]
     options["series"] = [series for part in parts for series in part["series"]]
     for index, series in enumerate(options["series"]):
         series["z"] = 100 - index
-        if plot_type == "Histogram" and not arguments["density"]:
-            series["itemStyle"]["opacity"] = 0.6
+        if plot_type == "Histogram":
+            series["itemStyle"]["opacity"] = lines[index].opacity
+            if arguments["density"]:
+                series["lineStyle"]["opacity"] = lines[index].opacity
         if dual:
             series["yAxisIndex"] = index
             if independent_x:
@@ -1554,10 +1599,9 @@ def _build_preview_plot_options(
             invert_z=bool(invert_z),
         )
         x_data_minimum, x_data_maximum = _data_axis_bounds(x_values, log_axis=log_x)
-        visual_end = _visual_axis_endpoint(x_axis) if not log_x and x_limits is None else None
         y_data_minimum, y_data_maximum = _data_axis_bounds(y_values, log_axis=log_y)
         x_minimum, x_maximum = _plot_axis_limits(
-            x_limits, (x_data_minimum, visual_end or x_data_maximum), label="X", log_axis=log_x,
+            x_limits, (x_data_minimum, x_data_maximum), label="X", log_axis=log_x,
         )
         y_minimum, y_maximum = _plot_axis_limits(
             y_limits, (y_data_minimum, y_data_maximum), label="Y", log_axis=log_y,
@@ -1696,11 +1740,32 @@ def _build_preview_plot_options(
             ymin, ymax = _data_axis_bounds(crop_y, log_axis=log_y)
             image = _heatmap_data_uri(crop, palette=palette, z_minimum=z_minimum, z_maximum=z_maximum,
                                       invert_x=invert_x, invert_y=invert_y, invert_z=invert_z)
+            # The overview remains underneath the tile, clipped out of its
+            # rectangle so genuinely missing fine cells stay transparent.
+            layered_render_item = (
+                "(params, api) => { "
+                f"const base = ({render_item})(params, api); "
+                f"const a = api.coord([{xmin!r}, {ymin!r}]), b = api.coord([{xmax!r}, {ymax!r}]); "
+                "const tile = {x: Math.min(a[0],b[0]), y: Math.min(a[1],b[1]), "
+                "width: Math.abs(b[0]-a[0]), height: Math.abs(b[1]-a[1])}; "
+                "const s = base.style, right = tile.x+tile.width, bottom = tile.y+tile.height; "
+                "const pieces = ["
+                "{x:s.x,y:s.y,width:s.width,height:tile.y-s.y},"
+                "{x:s.x,y:bottom,width:s.width,height:s.y+s.height-bottom},"
+                "{x:s.x,y:tile.y,width:tile.x-s.x,height:tile.height},"
+                "{x:right,y:tile.y,width:s.x+s.width-right,height:tile.height}]; "
+                "return {type:'group',children:[...pieces.filter(r=>r.width>0&&r.height>0).map(r=>"
+                "({...base,clipPath:{type:'rect',shape:r}})),"
+                f"{{type:'image',silent:true,style:{{...tile,image:{json.dumps(image)},imageSmoothing:false}}}}]}}; }}"
+            )
+            detail_hover = _heatmap_tooltip_data(crop, x_limits=(xmin, xmax), y_limits=(ymin, ymax),
+                                               log_z=log_z, x_coordinates=crop_x, y_coordinates=crop_y)
+            overview_hover = [row for row in hover_data
+                              if row[5] < xmin or row[3] > xmax or row[6] < ymin or row[4] > ymax]
             return {
-                "data": DetailedPreviewData([[xmin, ymin, xmax, ymax]], refine_heatmap),
-                ":renderItem": render_item.replace(image_literal, json.dumps(image)),
-                "hoverData": _heatmap_tooltip_data(crop, x_limits=(xmin, xmax), y_limits=(ymin, ymax),
-                                                  log_z=log_z, x_coordinates=crop_x, y_coordinates=crop_y),
+                "data": DetailedPreviewData(initial_raster, refine_heatmap),
+                ":renderItem": layered_render_item,
+                "hoverData": overview_hover + detail_hover,
             }
         tooltip_series = (
             [
@@ -1776,7 +1841,7 @@ def _build_preview_plot_options(
             "dnascapeAspectRatio": aspect_ratio,
             "dnascapePlotType": "Heatmap",
             "dnascapeDefaultAxes": {
-                "x": [x_data_minimum, _visual_axis_endpoint(x_axis) or x_data_maximum],
+                "x": [x_data_minimum, x_data_maximum],
                 "y": [y_data_minimum, y_data_maximum],
             },
             "title": title_options,
@@ -1848,12 +1913,14 @@ def _build_preview_plot_options(
             )
             options["dnascapePlotType"] = "Histogram"
             kde_samples = finite if finite.size <= 20_000 else finite[np.linspace(0, finite.size - 1, 20_000, dtype=int)]
+            kde_overview = list(options["series"][0]["data"])
 
             def refine_kde(x_view: Any, _y_view: Any) -> dict[str, Any]:
                 detail_x, detail_y = _kde_data(kde_samples, log_x=log_x,
                                               x_limits=histogram_x_limits, bandwidth_scale=kde_bandwidth,
                                               evaluation_limits=x_view)
-                return {"data": DetailedPreviewData(_line_points(detail_x, detail_y), refine_kde)}
+                detail = _line_points(detail_x, detail_y)
+                return {"data": DetailedPreviewData(retain_curve_overview(kde_overview, detail), refine_kde)}
 
             options["series"][0]["data"] = DetailedPreviewData(options["series"][0]["data"], refine_kde)
             return options
@@ -2261,7 +2328,9 @@ def _build_preview_plot_options(
                 "symbolSize": 12 if scalar else 6,
                 "silent": not interactive,
                 "connectNulls": False,
-                "sampling": "lttb",
+                # The server already bounds both overview and detail. Another
+                # sampling pass could discard native peaks inside the tile.
+                "sampling": None,
                 "z": line.z,
                 "lineStyle": {
                     "width": line.width if line.width is not None else line_width,
@@ -2282,13 +2351,15 @@ def _build_preview_plot_options(
         _validate_log_axis(finite_x, "Log X")
     x_data_lower = float(np.min(finite_x[finite_x > 0])) if log_x else float(np.min(finite_x))
     x_data_upper = float(np.max(finite_x))
-    automatic_x_limits = (
-        _logarithmic_data_limits(x_data_lower, x_data_upper)
-        if log_x
-        else nice_linear_limits(x_data_lower, x_data_upper)
-    )
+    # Keep the horizontal extent at the native coordinates. Tick placement is
+    # independent, so a convenient tick must never extend the data domain.
+    automatic_x_limits = (x_data_lower, x_data_upper)
+    if x_data_lower == x_data_upper:
+        automatic_x_limits = (
+            _logarithmic_data_limits(x_data_lower, x_data_upper) if log_x
+            else nice_linear_limits(x_data_lower, x_data_upper)
+        )
     custom_x_limits = x_limits is not None
-    visual_end = _visual_axis_endpoint(finite_x) if not log_x and not custom_x_limits else None
     x_limits = _plot_axis_limits(x_limits, automatic_x_limits, label="X", log_axis=log_x)
     finite_y_parts = [part for part in all_y_values if part.size]
     finite_y = np.concatenate(finite_y_parts) if finite_y_parts else np.asarray([], dtype=float)
@@ -2420,7 +2491,7 @@ def _build_preview_plot_options(
         data_lower=x_data_lower,
         data_upper=x_data_upper,
         tick_lower=x_limits[0] if custom_x_limits else None,
-        tick_upper=x_limits[1] if custom_x_limits else visual_end,
+        tick_upper=x_limits[1] if custom_x_limits else None,
         log_axis=log_x,
     )
     return limit_curve_hover({
@@ -2455,7 +2526,15 @@ def histogram_guide_options(
     options: dict[str, Any], datasets: Sequence[tuple[str, str, Any]], *,
     legend: bool, statistics: bool, position: str = "Top right",
 ) -> None:
-    """One colour-keyed, selectable guide panel, also present in plot exports."""
+    """Use a full legend, or a selectable statistics panel when requested."""
+    if not statistics:
+        options["legend"] = build_legend_options(
+            [str(name) for name, _, _ in datasets], grid=options.get("grid", {}),
+            position=position, show=legend, interactive=bool(options.get("tooltip", {}).get("show")),
+        )
+        options["graphic"] = []
+        options["dnascapeHistogramGuides"] = dict(choices=[], selected=0, visible=False, selectable=False)
+        return
     options["legend"] = {**options.get("legend", {}), "show": False}
     choices = []
     grid = options.get("grid", {})
@@ -2493,7 +2572,7 @@ def histogram_guide_options(
     visible = bool(choices and (legend or statistics))
     options["graphic"] = [choices[0]["graphic"]] if visible else []
     options["dnascapeHistogramGuides"] = dict(
-        choices=choices, selected=0, visible=visible,
+        choices=choices, selected=0, visible=visible, selectable=len(datasets) > 1,
         width=panel_width,
         height=14 + 17 * ((1 if legend or len(datasets) > 1 else 0) + (3 if statistics else 0)),
         position=position,

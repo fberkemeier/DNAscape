@@ -10,6 +10,23 @@
   const changed = (first, second) => !first || first.some((value, index) =>
     Math.abs(value - second[index]) > Math.max(1, Math.abs(value), Math.abs(second[index])) * 1e-12);
 
+  function horizontalTicks(lower, upper) {
+    // Match the server's aligned 1/2/2.5/5 steps during live mouse gestures.
+    // Explicit viewport edges need not be ticks, especially after dragging.
+    const rough = (upper - lower) / 6, magnitude = 10 ** Math.floor(Math.log10(rough));
+    const fraction = rough / magnitude;
+    const step = [1, 2, 2.5, 5, 10].find(value => fraction <= value) * magnitude;
+    if (!(step > 0) || !Number.isFinite(step)) return [];
+    const tolerance = step * 1e-9, first = Math.ceil((lower - tolerance) / step) * step;
+    const ticks = [];
+    for (let index = 0; index < 128; index++) {
+      const tick = first + index * step;
+      if (tick > upper + tolerance) break;
+      if (tick >= lower - tolerance) ticks.push(Math.abs(tick) <= tolerance ? 0 : Number(tick.toPrecision(12)));
+    }
+    return ticks;
+  }
+
   function bounded(lower, upper, axis) {
     const floor = forward(axis.min, axis), ceiling = forward(axis.max, axis);
     const minimum = Math.max((ceiling - floor) * 1e-9, Math.max(1, Math.abs(floor)) * Number.EPSILON * 16);
@@ -58,7 +75,7 @@
 
   function chooseDataset(state, index) {
     const guide = state.component.options?.dnascapeHistogramGuides;
-    if (!guide?.choices[index]) return;
+    if (!guide?.selectable || !guide.choices[index]) return;
     guide.selected = index;
     const graphic = guide.choices[index].graphic;
     state.chart.setOption({graphic:guide.visible?[graphic]:[]},{replaceMerge:['graphic']});
@@ -70,7 +87,7 @@
     const root = event.event?.target?.closest?.('.dn-plot-navigation');
     const state = [...live].find(item => item.element === root);
     const guide = state?.component.options?.dnascapeHistogramGuides;
-    if (!guide || guide.choices.length < 2) return;
+    if (!guide?.selectable || guide.choices.length < 2) return;
     state.chart.dispatchAction({type: 'hideTip'});
     state.chart.dispatchAction({type: 'updateAxisPointer', currTrigger: 'leave'});
     datasetMenu?.remove();
@@ -139,11 +156,22 @@
       }
       const spec = patch[name][axis.index];
       Object.assign(spec, {min: values[0], max: values[1], interval: null});
-      const axisLine = state.chart.getModel().getComponent(name, axis.index).option.axisLine || {};
+      const sourceAxis = state.chart.getModel().getComponent(name, axis.index).option;
+      const axisLine = sourceAxis.axisLine || {};
       spec.axisLine = {...axisLine, show:true, onZero:false,
         lineStyle:{width:1.2, ...axisLine.lineStyle, type:'solid', opacity:1}};
       for (const part of ['axisLabel', 'axisTick', 'splitLine']) spec[part] = {...spec[part], customValues: null};
       Object.assign(spec.axisLabel, {showMinLabel: true, showMaxLabel: true});
+      if (axis.dimension === 'x' && sourceAxis.dnascapeBoxPositions) {
+        const ticks = sourceAxis.dnascapeBoxPositions.filter(value => value >= values[0] && value <= values[1]);
+        for (const part of ['axisLabel', 'axisTick', 'splitLine']) spec[part].customValues = ticks;
+      } else if (axis.dimension === 'x' && !axis.log) {
+        const ticks = horizontalTicks(...values);
+        if (ticks.length) {
+          for (const part of ['axisLabel', 'axisTick', 'splitLine']) spec[part].customValues = ticks;
+          Object.assign(spec.splitLine, {showMinLine: true, showMaxLine: true});
+        }
+      }
     }
     state.chart.setOption(patch, {lazyUpdate: false, silent: true});
     if (notify) {
@@ -298,7 +326,7 @@
       const state = {element, component, chart};
       const onClick = event => {
         if (state.suppressClickUntil > Date.now()) return;
-        if (component.options?.dnascapeHistogramGuides && event.componentType === 'series') {
+        if (component.options?.dnascapeHistogramGuides?.selectable && event.componentType === 'series') {
           const series=component.options.series?.[event.seriesIndex];
           chooseDataset(state,series?.dnascapeDataset ?? event.seriesIndex);
         }

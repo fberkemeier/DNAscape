@@ -185,13 +185,46 @@ Inputs
 Controls
    Target format, gzip, data form, column, NPZ key, rounding, chromosome,
    interval, bin size, aggregation, missing values, smoothing, normalization.
+   Each source retains its own Configure settings. With multiple sources, use
+   the numbered **Source** menu in Configure to select the one to edit; the same
+   numbers appear above uploaded files and in public-link field labels. An inspected
+   link shows a check mark in place of **Inspect**; editing it restores **Inspect**.
+   **Apply configuration**
+   is on by default. Turn it off to preserve values, missing samples and precision
+   while retaining the track region and binning required for conversion.
+   **Data transforms**, collapsed and off by default, runs after Configure and
+   before Filter. Enable **Apply transform** to edit one Python/NumPy formula per
+   source. With several sources, **Combine** replaces these fields with one
+   formula using **source1**, **source2**, etc., and produces one plot and file.
+   Array sizes and supplied coordinates must match. Formulas retain the source
+   grid; scalar results fill it. NumPy arithmetic, conditional expressions,
+   smoothing and convolution are available.
    The collapsed **Filter** section below Configure is off by default. Enable
-   it to select regions by signal thresholds, missing values, an uploaded mask
+   it to select regions by signal thresholds (including within or outside an
+   interval), missing values, an uploaded mask
    or genomic positions/intervals, or the whole region. Its default replaces
    converted values below zero with zero. Operations include region means,
    interpolation, replacement with a value or NaN, Gaussian noise, reference
    minimum/maximum, multiplication, and addition. Filtering follows Configure
-   and preserves bin positions; previews and downloads contain the edited data.
+   and Data transforms, preserving bin positions; previews and downloads contain the edited data.
+   Filter options remain editable with **Apply filter** off. In **Plot settings →
+   Guides**, **Filter** highlights the applied filter's selected regions in light
+   grey, using the selection before any filter edits. With **Legend** enabled,
+   name the signal and filter separately. Shading follows zoom detail and does
+   not change the exported data. Line previews refresh up to 1,000 native points by default
+   from the visible window after zooming or panning.
+   **Export filter**, next to **Filter** in Guides, adds a raw-data download of
+   the selected positions before edits, independently of preview sampling.
+   Text exports contain one integer per line with no header; NPZ contains one
+   integer array. Genomic coordinates use base pairs; plain arrays use zero-based
+   bin indices. Repeated positions form one selection across chromosomes or time slices.
+   **Modulate with profile** combines a prepared signal or annotation profile
+   through an editable Python/NumPy expression, defaulting to ``source * profile``.
+   Here **source** is the current transformed or combined signal and **profile**
+   is the uploaded modulation data. Both arrays must have matching dimensions.
+   Formulas may use the whole profile for context, while only selected regions
+   are replaced. Use **np.where** for conditional replacements and **np.nan_to_num**
+   to handle non-finite values explicitly.
 
 Outputs
    Converted file, inferred shape, track preview, download, cached artifact.

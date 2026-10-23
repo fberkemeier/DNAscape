@@ -14,6 +14,7 @@ import numpy as np
 from nicegui import run, ui
 
 from app.export_settings import get_export_settings
+from app.data_filter_controls import DataFilterControls
 from app.icons import PLOT_ICON_SVG
 from app.mapping_uploads import UploadInspection, inspect_upload_event, materialize_upload
 from app.notifications import notify
@@ -30,6 +31,7 @@ from app.pages.common import (
     plot_action_button,
     preview_plot,
     raw_data_open_menu,
+    raw_output_file_row,
 )
 from app.preview_plotting import (
     CURVE_TYPES,
@@ -57,8 +59,9 @@ from app.raw_data_transfer import RawInputTarget, open_raw_artifact
 from app.simulation_exports import ExportArtifact, build_chart_capture_export
 from dnascape.workflows.analysis import (
     CORRELATION_METHODS, AnalysisDataset, AnalysisReport, SmoothingSettings,
-    analyse_profiles, export_correlation_report, smooth_profile,
+    analyse_profiles, export_correlation_report, export_profile_data, smooth_profile,
 )
+from dnascape.workflows.filtering import DataFilterSettings, apply_data_filter, profile_coordinates, resolve_filter
 from dnascape.workflows.exports import safe_export_filename
 
 _PROFILE_ACCEPT = ".csv,.tsv,.txt,.npy,.npv,.npz,.gz"
@@ -96,6 +99,14 @@ class _PlotSeries:
     form: str
     values: np.ndarray
     full_identity: str = ""
+    transformed: bool = False
+
+
+@dataclass(frozen=True)
+class _TransformationSettings:
+    data_filter: DataFilterSettings
+    target: tuple[int, str] | None = None
+    keep_originals: bool = False
 
 
 @dataclass
@@ -142,6 +153,7 @@ _SEPARATE_SETTING_VALUE_FIELDS = (
     "invert_z",
     "line_width",
     "line_type",
+    "show_fill", "fill_side",
     "aspect_ratio",
     "histogram_bins",
     "histogram_bin_size",
@@ -411,15 +423,7 @@ def _unique_series_names(series: Sequence[_PlotSeries]) -> tuple[_PlotSeries, ..
     for item in series:
         occurrences[item.name] += 1
         name = f"{item.name} {occurrences[item.name]}" if counts[item.name] > 1 else item.name
-        normalized.append(
-            _PlotSeries(
-                series_id=item.series_id,
-                name=name,
-                form=item.form,
-                values=item.values,
-                full_identity=item.full_identity,
-            )
-        )
+        normalized.append(replace(item, name=name))
     return tuple(normalized)
 
 
@@ -441,14 +445,34 @@ def _prepare_analysis_profiles(
     smoothing: Mapping[tuple[int, str], SmoothingSettings],
     methods: Sequence[str] | None,
     cancel: Callable[[], None],
+    transformations: _TransformationSettings | None = None,
 ) -> tuple[tuple[_PlotSeries, ...], AnalysisReport | None]:
     cancel()
-    selected = _collect_plot_series(sources, missing_policy="ignore") if methods is not None else _collect_plot_series(sources)
+    transform_enabled = transformations is not None and transformations.data_filter.enabled
+    selected = _collect_plot_series(sources, missing_policy="ignore" if methods is not None or transform_enabled else "error")
+    data_filter = resolve_filter(transformations.data_filter) if transform_enabled else None
+    if transform_enabled and transformations.target is not None and not any(item.series_id == transformations.target for item in selected):
+        raise ValueError("Choose an available dataset to transform.")
     processed = []
     for item in selected:
         cancel()
         values = smooth_profile(item.values, smoothing.get(item.series_id, SmoothingSettings()), dependence=item.form)
-        processed.append(replace(item, values=values))
+        item = replace(item, values=values)
+        if data_filter is None or not data_filter.enabled or (transformations.target is not None and item.series_id != transformations.target):
+            processed.append(item)
+            continue
+        source = next(source for source in sources if source.source_id == item.series_id[0])
+        length = values.size if item.form != "xt" else values.shape[0]
+        coordinates, intervals = profile_coordinates(source.inspection, length)
+        transformed = apply_data_filter(values, data_filter, positions=coordinates, intervals=intervals, cancel=cancel)
+        if transformations.keep_originals:
+            processed.append(item)
+        processed.append(replace(
+            item, values=transformed, transformed=True,
+            series_id=(-item.series_id[0], item.series_id[1]) if transformations.keep_originals else item.series_id,
+            name=f"{item.name} (transformed)" if transformations.keep_originals else item.name,
+        ))
+    processed = _unique_series_names(processed)
     report = None
     if methods is not None:
         report = analyse_profiles(
@@ -543,6 +567,10 @@ def render(_navigate: Callable[[str], None]) -> None:
     separate_plot_contexts: list[_SeparatePlotContext] = []
     curve_styles: dict[tuple[int, str], _CurveStyle] = {}
     curve_names: dict[tuple[int, str], str] = {}
+    box_positions: dict[tuple[int, str], float] = {}
+    box_labels: dict[tuple[int, str], str] = {}
+    histogram_opacities: dict[tuple[int, str], float] = {}
+    dataset_settings_expanded: dict[str, bool] = {}
     secondary_y_limits_automatic = True
     separate_plot_settings: dict[tuple[int, str], _SeparatePlotSettingsSnapshot] = {}
     y_limits_automatic = True
@@ -554,11 +582,15 @@ def render(_navigate: Callable[[str], None]) -> None:
     smoothing_controls: list[Any] = []
     report_file_format = {"value": "csv"}
     report_name = {"value": "analysis-report"}
+    transformation_context: dict[str, Any] = {}
+    transformation_targets: dict[str, tuple[int, str]] = {}
+    transformations_locked = False
+    transformed_export_preferences: dict[tuple[int, str], dict[str, Any]] = {}
 
     page_intro(
         "Analysis",
         "Explore DNAscape data",
-        "Plot profiles, smooth individual datasets, and compare their correlations.",
+        "Transform and plot profiles, smooth individual datasets, and compare their correlations.",
     )
     with ui.element("div").classes("dn-workspace"):
         with ui.column().classes("dn-control-stack"):
@@ -849,6 +881,21 @@ def render(_navigate: Callable[[str], None]) -> None:
 
                         render_smoothing_controls()
 
+                def transformation_header() -> None:
+                    transformation_context["target"] = ui.select(
+                        {"all": "All selected profiles"}, value="all", label="Dataset",
+                    ).props("dense options-dense").classes("dn-field").mark("analysis-transform-target")
+                    transformation_context["keep_originals"] = ui.checkbox(
+                        "Keep original profiles", value=False,
+                    ).mark("analysis-transform-keep-originals")
+
+                transformation_controls = DataFilterControls(
+                    lambda: (invalidate_analysis_report(), sync_presentation_options()),
+                    title="Data transformations", marker_prefix="analysis-transform",
+                    toggle_label="Apply transformations", default_selection="nan", default_action="interpolate",
+                    header=transformation_header,
+                )
+
                 with action_dock():
                     plot_button = plot_action_button()
                     plot_button.mark("action-plot", "action-analyse")
@@ -895,33 +942,36 @@ def render(_navigate: Callable[[str], None]) -> None:
 
                 @ui.refreshable
                 def render_curve_settings() -> None:
+                    if str(presentation.value or "Combined") != "Combined":
+                        return
+                    view = str(plot_settings.view.value or "Default")
+                    prefix = {"Default": "curve", "Boxplot": "box", "Histogram": "histogram"}.get(view)
+                    if prefix is None:
+                        return
                     curve_series = [
                         item
                         for item in latest_series
                         if item.form in {"x", "t"}
-                        and str(plot_settings.view.value or "Default") == "Default"
                     ]
                     if len(curve_series) < 2:
                         return
-                    with expansion(
-                        "Curves",
-                        icon="palette",
-                        extra_classes=(
-                            "dn-preview-settings-section dn-plot-curve-settings"
-                        ),
-                    ):
-                        with ui.column().classes("dn-plot-curve-list"):
+                    with ui.expansion(
+                        {"Default": "Curves", "Boxplot": "Boxes", "Histogram": "Histograms"}[view],
+                        icon="palette", value=dataset_settings_expanded.get(prefix, False),
+                    ).props("dense").classes("dn-expansion dn-preview-settings-section dn-plot-curve-settings").mark(f"plotting-{prefix}-settings") as dataset_section:
+                        dataset_section.on_value_change(lambda event, key=prefix: dataset_settings_expanded.update({key: bool(event.value)}))
+                        with ui.column().classes("dn-expansion-content dn-plot-curve-list"):
                             for index, item in enumerate(curve_series):
                                 style = curve_styles.setdefault(
                                     item.series_id,
                                     _CurveStyle(_LINE_COLOURS[index % len(_LINE_COLOURS)]),
                                 )
-                                with ui.element("div").classes("dn-plot-curve-row"):
+                                with ui.element("div").classes("dn-plot-curve-row" + (" dn-plot-distribution-row" if view != "Default" else "")):
                                     name = (
                                         ui.input("Name", value=curve_names.get(item.series_id, item.name))
                                         .props("dense")
                                         .classes("dn-field dn-plot-curve-name")
-                                        .mark(f"plotting-curve-name-{index + 1}")
+                                        .mark(f"plotting-{prefix}-name-{index + 1}")
                                     )
 
                                     def name_changed(
@@ -942,9 +992,30 @@ def render(_navigate: Callable[[str], None]) -> None:
                                     color_surface, color = compact_color_input(
                                         "Color",
                                         style.color,
-                                        marker=f"plotting-curve-color-{index + 1}",
+                                        marker=f"plotting-{prefix}-color-{index + 1}",
                                     )
                                     color_surface.classes("dn-plot-curve-color")
+
+                                    def color_changed(_event=None, *, series_id=item.series_id, control=color) -> None:
+                                        curve_styles[series_id] = replace(curve_styles[series_id], color=str(control.value or _LINE_COLOURS[0]))
+                                        update_combined_plot()
+
+                                    color.on_value_change(color_changed)
+                                    if view == "Histogram":
+                                        opacity = ui.number("Opacity", value=histogram_opacities.get(item.series_id, .6), min=0, max=1, step=.05).props("dense").classes("dn-field dn-field-compact").mark(f"plotting-histogram-opacity-{index + 1}")
+
+                                        def opacity_changed(_event=None, *, series_id=item.series_id, control=opacity):
+                                            try:
+                                                value = _numeric_value(control, "Opacity")
+                                            except ValueError:
+                                                return
+                                            if 0 <= value <= 1:
+                                                histogram_opacities[series_id] = value
+                                                update_combined_plot()
+
+                                        opacity.on_value_change(opacity_changed)
+                                        if not plot_settings.density.value:
+                                            continue
                                     width = (
                                         ui.number(
                                             label="Thickness",
@@ -955,14 +1026,14 @@ def render(_navigate: Callable[[str], None]) -> None:
                                         )
                                         .props("dense")
                                         .classes("dn-field dn-field-compact")
-                                        .mark(f"plotting-curve-width-{index + 1}")
+                                        .mark(f"plotting-{prefix}-width-{index + 1}")
                                     )
-                                    curve_type = ui.select(
+                                    curve_type = None if view == "Boxplot" else ui.select(
                                         CURVE_TYPES,
                                         value=style.line_type or str(plot_settings.line_type.value or "solid"),
                                         label="Type",
                                     ).props("dense options-dense").classes("dn-field dn-field-compact").mark(
-                                        f"plotting-curve-type-{index + 1}"
+                                        f"plotting-{prefix}-type-{index + 1}"
                                     )
 
                                     def style_changed(
@@ -985,16 +1056,80 @@ def render(_navigate: Callable[[str], None]) -> None:
                                         curve_styles[series_id] = _CurveStyle(
                                             str(color_control.value or _LINE_COLOURS[0]),
                                             parsed_width,
-                                            str(type_control.value or "solid"),
+                                            str(type_control.value or "solid") if type_control is not None else curve_styles[series_id].line_type,
                                         )
                                         update_combined_plot()
 
-                                    color.on_value_change(style_changed)
                                     width.on_value_change(style_changed)
-                                    curve_type.on_value_change(style_changed)
+                                    if curve_type is not None:
+                                        curve_type.on_value_change(style_changed)
+                                    if view == "Boxplot":
+                                        if item.series_id not in box_positions:
+                                            available = float(index + 1)
+                                            while available in box_positions.values():
+                                                available += 1
+                                            box_positions[item.series_id] = available
+                                        position = ui.number("X position", value=box_positions[item.series_id]).props("dense").classes("dn-field").mark(f"plotting-box-position-{index + 1}")
+                                        label = ui.input("X label", value=box_labels.get(item.series_id, ""), placeholder="Automatic").props("dense clearable").classes("dn-field dn-plot-box-label").mark(f"plotting-box-label-{index + 1}")
+
+                                        def box_changed(_event=None, *, series_id=item.series_id, position_control=position, label_control=label):
+                                            try:
+                                                value = _numeric_value(position_control, "X position")
+                                            except ValueError:
+                                                return
+                                            if any(key != series_id and other == value for key, other in box_positions.items() if key in {entry.series_id for entry in latest_series}):
+                                                notify("Choose a different X position for each box.", type="warning")
+                                                return
+                                            box_positions[series_id] = value
+                                            box_labels[series_id] = str(label_control.value or "")
+                                            update_combined_plot()
+
+                                        position.on_value_change(box_changed)
+                                        label.on_value_change(box_changed)
 
                 with shared_settings_surface:
                     render_curve_settings()
+
+                @ui.refreshable
+                def render_transformed_data() -> None:
+                    transformed = [item for item in latest_series if item.transformed]
+                    if not transformed:
+                        return
+                    with expansion("Raw data", icon=DATA_ICON, expanded=True, extra_classes="dn-output-section"):
+                        for index, item in enumerate(transformed, start=1):
+                            default_name = compact_export_stem(item.name, fallback="profile") + "_transformed"
+                            preferences = transformed_export_preferences.setdefault(item.series_id, {
+                                "name": default_name, "type": "TSV", "compress": False,
+                            })
+
+                            async def download_transformed(controls, retained=item, *, open_in=None):
+                                try:
+                                    artifact = await run.io_bound(
+                                        export_profile_data, retained.values, dependence=retained.form,
+                                        file_format=str(controls.file_type.value), filename=str(controls.file_name.value or "transformed_profile"),
+                                        compress=bool(controls.compress.value),
+                                    )
+                                    if open_in is not None:
+                                        await open_raw_artifact(artifact, open_in, _navigate)
+                                        return
+                                    cache_artifact(artifact, source="Analysis", kind="raw", detail="Transformed profile", navigate_to="plotting")
+                                    ui.download(artifact.data, artifact.filename, artifact.media_type)
+                                except (OSError, RuntimeError, TypeError, ValueError) as exc:
+                                    notify(str(exc), type="negative")
+
+                            row = raw_output_file_row(
+                                file_name=preferences["name"], default_type=preferences["type"], default_compress=preferences["compress"],
+                                on_download=download_transformed,
+                                on_open=lambda controls, destination, handler=download_transformed: handler(controls, open_in=destination),
+                                reserve_remove_space=True,
+                                markers={"row": f"analysis-transform-result-{index}", "file_name": f"analysis-transform-name-{index}",
+                                         "file_type": f"analysis-transform-format-{index}", "compression": f"analysis-transform-compress-{index}",
+                                         "download": f"analysis-transform-download-{index}"},
+                            )
+                            for control, key in ((row.file_name, "name"), (row.file_type, "type"), (row.compress, "compress")):
+                                control.on_value_change(lambda event, key=key, prefs=preferences: prefs.update({key: event.value}))
+
+                render_transformed_data()
 
                 @ui.refreshable
                 def render_analysis_report() -> None:
@@ -1114,6 +1249,7 @@ def render(_navigate: Callable[[str], None]) -> None:
         render_analysis_report.refresh()
 
     def sync_analysis_action() -> None:
+        nonlocal transformations_locked
         stopping = running and active_cancel is not None and active_cancel.is_set()
         label = "Stopping…" if stopping else "Stop" if running else "Analyse" if analysis_enabled.value else "Plot"
         action_label.set_text(label)
@@ -1130,6 +1266,13 @@ def render(_navigate: Callable[[str], None]) -> None:
             control.set_enabled(bool(analysis_enabled.value) and not running)
         for control in smoothing_controls:
             control.set_enabled(not running)
+        if transformations_locked != running:
+            transformation_controls.set_locked(running)
+            transformations_locked = running
+        for control in transformation_context.values():
+            control.set_enabled(not running)
+        if not running and transformation_controls.loading:
+            plot_button.disable()
 
     def staged_forms() -> tuple[str, ...]:
         return tuple(
@@ -1298,6 +1441,20 @@ def render(_navigate: Callable[[str], None]) -> None:
         sync_presentation_options()
         sync_staged_controls(reset_axes=True)
         render_smoothing_controls.refresh()
+        sync_transformation_targets()
+
+    def sync_transformation_targets() -> None:
+        profiles = _unique_series_names([
+            item for source in sources for item in _materialize_source(source, missing_policy="ignore")
+        ])
+        transformation_targets.clear()
+        options = {"all": "All selected profiles"}
+        for item in profiles:
+            key = f"{item.series_id[0]}:{item.series_id[1]}"
+            transformation_targets[key] = item.series_id
+            options[key] = item.name
+        target = transformation_context["target"]
+        target.set_options(options, value=target.value if target.value in options else None)
 
     def dual_y_axes_active(group: Sequence[_PlotSeries], controls: Any = None) -> bool:
         active_controls = plot_settings if controls is None else controls
@@ -1471,6 +1628,9 @@ def render(_navigate: Callable[[str], None]) -> None:
                         else _numeric_value(active_controls.line_width, "Thickness")
                     ),
                     line_type=curve_styles[item.series_id].line_type if individual_styles else None,
+                    opacity=histogram_opacities.get(item.series_id, .6) if plot_type == "Histogram" else 1.0,
+                    box_position=box_positions.get(item.series_id),
+                    box_label=box_labels.get(item.series_id) or None,
                     z=3 + len(group) - index,
                 )
                 for index, item in enumerate(group)
@@ -1996,13 +2156,21 @@ def render(_navigate: Callable[[str], None]) -> None:
                 raise CancelledError
 
         try:
-            result = await run.io_bound(
-                _prepare_analysis_profiles,
+            preparation_arguments = (
                 tuple(replace(source, selection=tuple(source.selection), array_cache=dict(source.array_cache)) for source in sources),
                 dict(smoothing_settings) if analysis_enabled.value else {},
                 tuple(method for method, control in correlation_controls.items() if control.value) if analysis_enabled.value else None,
                 check_cancelled,
             )
+            if transformation_controls.controls["enabled"].value:
+                target = transformation_context["target"].value
+                if target != "all" and target not in transformation_targets:
+                    raise ValueError("Choose an available dataset to transform.")
+                preparation_arguments += (_TransformationSettings(
+                    transformation_controls.snapshot(), transformation_targets.get(target),
+                    bool(transformation_context["keep_originals"].value),
+                ),)
+            result = await run.io_bound(_prepare_analysis_profiles, *preparation_arguments)
             check_cancelled()
             if result is None:
                 raise RuntimeError("Profile preparation stopped before returning data.")
@@ -2047,6 +2215,7 @@ def render(_navigate: Callable[[str], None]) -> None:
             if y_limits_automatic:
                 populate_automatic_y_limits()
             render_latest_plot()
+            render_transformed_data.refresh()
             render_analysis_report.refresh()
             completed_successfully = True
         except CancelledError:
@@ -2073,6 +2242,7 @@ def render(_navigate: Callable[[str], None]) -> None:
         sync_staged_controls(reset_axes=True)
         if y_limits_automatic:
             populate_automatic_y_limits()
+        render_curve_settings.refresh()
         update_combined_plot()
 
     def range_basis_changed() -> None:
@@ -2133,6 +2303,7 @@ def render(_navigate: Callable[[str], None]) -> None:
         sync_staged_controls(reset_axes=True)
         if y_limits_automatic:
             populate_automatic_y_limits()
+        render_curve_settings.refresh()
         render_latest_plot()
 
     def histogram_values() -> Any | None:
@@ -2183,6 +2354,9 @@ def render(_navigate: Callable[[str], None]) -> None:
     show_p_values.on_value_change(lambda: render_analysis_report.refresh())
     for control in correlation_controls.values():
         control.on_value_change(invalidate_analysis_report)
+    for control in (*transformation_controls.controls.values(), *transformation_context.values()):
+        if hasattr(control, "on_value_change"):
+            control.on_value_change(invalidate_analysis_report)
     presentation.on_value_change(presentation_changed)
     plot_button.on_click(plot_profiles)
     sync_presentation_options()
@@ -2200,11 +2374,15 @@ def render(_navigate: Callable[[str], None]) -> None:
         separate_plot_contexts.clear()
         curve_styles.clear()
         curve_names.clear()
+        box_positions.clear()
+        box_labels.clear()
+        histogram_opacities.clear()
         separate_plot_settings.clear()
         shared_settings_surface.visible = True
         shared_settings_surface.update()
         render_curve_settings.refresh()
         render_analysis_report.refresh()
+        render_transformed_data.refresh()
         result_slot.clear()
         with result_slot:
             preview_plot("No plot yet", kind="plotting")

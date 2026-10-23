@@ -27,8 +27,9 @@ heatmaps they show only Z, with X and Y readouts on the axes. Axis readouts use
 the DNAscape theme colour. Axis-label crosses remove the corresponding titles.
 
 Histograms combine the legend and **Statistics** in one panel, positioned at
-the top right by default. For combined datasets, use its dropdown or click a
-bin to select the dataset whose statistics are shown. **Side by side** places
+the top right by default. With Statistics enabled and multiple combined
+datasets, use its dropdown or click a bin to select a dataset. With Statistics
+off, the legend lists every dataset and has no dataset selector. **Side by side** places
 datasets within each shared bin interval, keeping bin size unchanged. Enabling
 **KDE** replaces bars with density curves; the adjacent **Smoothness** multiplies
 Scott's bandwidth (1 by default, larger values give smoother curves).
@@ -38,9 +39,12 @@ example at 1 kb bins for all chromosomes needs about 322 MB; choosing 512 MB
 allows that conversion. Related track array and download limits scale with the
 budget. This setting does not reserve RAM, cap actual RAM use, or change upload
 limits. Settings uses grouped switches and draft preferences; Apply saves changes.
-Under Interface, **DNAscape theme** offers a colour picker and hex input for
+Under **Visualisation**, **DNAscape theme** offers a colour picker and hex input for
 the app accents, logo and browser-tab icon, with readable light and dark variants.
 Restore defaults brings back the original DNAscape red.
+This section also contains **Controls font size** and **Preview points**. The
+point limit defaults to 1,000 per curve in the visible range and can be set from
+100 to 10,000. Apply updates existing previews while keeping their zoom window.
 Restore defaults fills the draft without clearing any data or results. Application restart and
 Reset everything restore the 64 MB default.
 
@@ -58,6 +62,11 @@ restores the data-derived range. Plot titles are generated from the result.
 Time and space-time firing-rate fits use Weibull without a shape selector.
 Curve type supports Solid, Dashed, Dotted, and Dash-dot in Style and individual
 Curves controls. Individual curves can inherit the shared setting or override it.
+In Analysis, combined layouts offer **Curves**, **Histograms**, or **Boxes**
+controls for individual dataset names and colours. Histograms also expose
+opacity and, with KDE on, thickness and type. Boxes expose outline thickness,
+numeric X position, and an optional X label; each box is centered on its tick.
+These per-dataset sections are hidden in separate layouts.
 With exactly two combined curves, Analysis also offers **Two Y axes**, off by
 default. Y1 is on the left and Y2 on the right, each with independent limits and
 reset buttons; switching it off restores the shared Y scale.
@@ -76,6 +85,15 @@ Disabling analysis hides its controls and bypasses smoothing for plain plots.
 Pairs use matching array indices over the shared span
 and exclude nonfinite values; inputs should have matching regions and resolutions.
 
+**Data transformations**, below Analysis, works with or without correlations.
+Enable it to interpolate missing samples, edit selected regions, or combine an
+uploaded profile through a weighted sum, multiplication, division, powers, logs,
+or convolution. Select one dataset or all selected profiles; **Keep original
+profiles** adds the transformed curves alongside their sources. Transformations
+run after smoothing when enabled and before plotting and correlations. Each run
+starts from the uploads, and transformed profiles can be downloaded from
+**Raw data** as TSV, TXT, CSV, or NPZ.
+
 Data Manager offers the same missing-value options for every input type:
 Keep empty values, Fill with zero (default), Fill with a value, Fill with minimum,
 Fill with maximum, and Report error. Full tables apply the policy to numeric
@@ -85,10 +103,17 @@ requested fill is unchanged in the output.
 Below Configure, **Filter** is collapsed and off by default. Enable **Apply
 filter** to edit selected regions of the converted data, after binning, missing
 value handling, smoothing and scaling. The default replaces values below zero
-with zero. Select values above/below a threshold, between inclusive thresholds,
+with zero. Select values above/below a threshold, within or outside two thresholds,
 at a distance above the converted minimum or below its maximum, missing values,
 an uploaded mask/position list/interval table, or the whole region. With no
 uploaded filter profile, that selection leaves the data unchanged.
+The options remain visible with **Apply filter** off. In **Plot settings → Guides**,
+**Filter** shades the applied filter's selected regions in light grey, preserving
+the pre-edit selection and native-bin detail on zoom. Enable **Legend** to name
+the plotted signal and filter separately. Display settings do not change the data.
+**Export filter** adds a raw-data download of the selected native positions,
+including chromosome labels and time-slice indices when applicable. Preview
+sampling never reduces the exported positions.
 
 Filter operations replace with a value or NaN, average each contiguous region,
 interpolate from surrounding values, add zero-mean Gaussian noise, match a
@@ -103,6 +128,35 @@ converted bin (non-zero finite values select bins); position lists and half-open
 intervals can use bp, kb, or zero-based bin indices. Genomic intervals select
 overlapping bins. Chromosome-labelled BED filters stay within their chromosomes.
 
+Choose **Modulate with profile** to combine the converted signal with a separate
+prepared signal or annotation profile, such as gene locations, RNA-seq, ATAC-seq
+or ChIP-seq. Choose **Whole region** to
+affect every bin, or retain any existing region selection. The modulation profile
+must match the converted bin count and matrix dimensions; row/column vectors
+are equivalent, but matrices are not broadcast or resampled. Explicit
+coordinates are checked when both profiles supply them. Automatic selection
+matches chromosome columns or NPZ arrays by name; wide chromosome tables retain
+leading/internal missing bins and trim only trailing padding.
+
+**Combine using → Formula** offers weighted sums, multiplication and division.
+Each input has its own signed multiplier, exponent and function (natural,
+base-2 or base-10 logarithm, or exponential), with a live formula preview.
+Minimum, maximum and convolution remain separate methods. **Profile scaling** can preserve original
+values or normalize the modulation profile to mean 1, maximum magnitude 1,
+or a 0–1 interval before combining. A zero weight omits a term from a weighted
+sum. Logarithms require positive selected values. Division by zero reports an error by default, with
+options to keep the signal or set NaN. Missing modulation values can report an
+error, use zero, or remain NaN.
+
+Convolution uses the uploaded profile as a centred kernel along each ordered
+profile (spatially for space-time matrices), retaining the original size. Kernel
+normalization is on and boundaries reflect by default; periodic, nearest-value
+and zero-padding boundaries are also available. Convolution requires uniformly
+spaced bins and finite inputs, or explicit zero-filling of missing values.
+Only selected output bins change. Previews, raw exports and format changes use
+the same result. Provenance includes the operation and a hash of the uploaded
+modulation profile; auxiliary uploads are not duplicated into Cached Files.
+
 Fill with minimum and Fill with maximum use each profile or chromosome's finite values
 after thresholding and smoothing and fill empty bins before value scaling.
 These fills participate in the scaling calculation. If no finite values remain,
@@ -113,6 +167,11 @@ can be exported as tables or converted into chromosome-specific timing profiles
 using a cumulative sigmoid T50 fit or signal-weighted mean. Missing-value handling
 applies after timing extraction. See [Managing data](../README.md#managing-data)
 for a K562 BigWig conversion walkthrough.
+The ENCODE K562 example uses UCSC's current `hgdownload.gi.ucsc.edu` download
+host. Pasted HTTPS links using the older `hgdownload.soe.ucsc.edu` or
+`hgdownload.cse.ucsc.edu` aliases use the current host with the same file path
+and query. HTTPS certificate verification remains enabled. Connection timeouts
+and certificate failures are reported separately.
 Mapping preserves blank rows and leading bins and reports remaining missing
 values by default. Interpolation and explicit fills retain bin positions;
 dropping missing bins is unsupported in the interface and `rtrack`. Only trailing
@@ -122,7 +181,7 @@ The SNS-seq K562 BED example selects its declared enrichment-ratio column and
 prepares Firing rate with 1 kb bins, maximum peak aggregation, zero background,
 and no interpolation or smoothing. IGV display scores and coordinates are
 excluded from the signal picker. Peak previews retain local maxima and background
-at their original positions within the 500-point limit. Aggregation choices
+at their original positions within the configured preview point limit. Aggregation choices
 distinguish scored BED peaks, unit-valued BED3 calls, and continuous bedGraph or
 BigWig signals; peak-call gaps cannot be interpolated. Firing rate excludes centre
 and Z-score scaling. SNS enrichment is relative origin activity and needs a
@@ -148,8 +207,18 @@ the latest file is selected after conversion, and plot exports use that selectio
 Expand Plot settings below the preview to adjust its appearance and axes or
 switch to a histogram or KDE curve. These settings also apply to plot downloads.
 
-Simulation accepts up to 50,000 replicates. One-dimensional time courses and
-memory-intensive position-by-time matrices have separate off-by-default
+Simulation accepts up to 50,000 replicates. Stochastic fork movement is
+optional. Stochastic speeds use positive lognormal draws with the local input
+mean and the requested standard deviation; temporal
+speeds are integrated through time-slice boundaries while crossing bins. This
+avoids the near-zero speed artifacts of positive Gaussian draws. Turning
+stochastic movement off preserves the existing models and seeded results.
+In **Fork stalling**, **Shared between directions** uses the same genomic stall
+positions and recovery delays for both directions. Off by default, the two
+directions stall independently; this does not couple distant sister forks.
+
+One-dimensional time courses and memory-intensive position-by-time matrices have
+separate off-by-default
 switches; S-phase duration, absolute completion time, origins per replicate,
 inter-origin distances, and replication-timing standard deviation are standard
 outputs. A memory-bounded
@@ -163,6 +232,15 @@ TXT, CSV and NPZ also available). Compression stays on for this archive, whose
 name includes the actual replicate count. Individual profiles and their ZIPs
 are excluded from Cached Files; cached simulation results keep aggregate
 statistics only.
+**Track time courses** also records **Origin firing (time)** (mean actual
+initiations per sampling interval) and **Replicon length** (a pooled histogram
+of the completed DNA domains copied from individual fired origins, in kb).
+Periodic domains join across the region boundary; unfinished replicons are
+excluded. Replicon samples have a bounded retention limit with an explicit
+truncation warning. All time-only output names carry **(time)**.
+**Track space-time outputs** adds six matrices, including **Total fork density
+(space-time)** as the sum of the left- and right-moving densities. Initiation
+events count fired origins, excluding passively replicated firing proposals.
 
 Mapping aligns spatial inputs of different lengths automatically. Start and End
 refer to the longest profile's chromosome coordinates; shorter profiles begin
@@ -205,13 +283,19 @@ retains the constrained inverse because the earlier fitters support linear
 geometry only. All Mapping runs show a persistent ETA and elapsed time:
 "estimating" during preparation or quiet work, followed by an estimate when
 solver progress or completed batch cases provide enough information.
-Heatmap automatic axes end at the raster edges, without extra plot padding,
-except for the next round boundary on zero-based position profiles (for example,
-10,000 bins labelled 0 through 9,999 still show the 10,000 tick).
+Automatic X axes end at the first and last data coordinates, including heatmap
+raster edges. Tick labels use clean intervals independently of those limits;
+an endpoint receives a label only when it falls on that interval.
 X and Y limits are editable for every plot, with Z (colour) limits for heatmaps.
 Reset restores automatic ranges, including after an incomplete edit. Custom
-aspect ratios in Style keep the preview width and adjust its height, with a
-minimum height for the axes and colour scale. Reset restores the original size.
+aspect ratios in Style range from 0.2 to 8 and adjust the height to the preview
+width without a minimum-height clamp. The default and reset aspect ratio is 3.
+Line previews draw up to 1,000 native points from the visible window by default,
+with the budget set in Visualisation settings, refreshing this
+sample after zooming or panning. A bounded coarse overview remains outside that
+window so navigation never has to wait for detail to draw the rest of the
+profile. Heatmaps retain their full-region raster around the detailed tile;
+missing fine cells stay transparent.
 Hover coordinates use integers for whole-number axes, two decimals for fractional
 axes, and scientific notation for tiny values. Simulation raw exports default to
 uncompressed TSV, and origin efficiency uses an automatic upper Y limit with a
@@ -285,8 +369,15 @@ python -m app
 DNAscape does not launch a browser automatically. Set `DNASCAPE_APP_SHOW=true`
 only when an automatic browser window is wanted.
 
-Workflow pages load their modules when first opened. Starting the server does
-not import every mapping, simulation, plotting, and conversion dependency.
+Startup warms the Mapping and Data Manager modules; other workflow modules and
+all page controls load when first opened. DNAscape keeps its own Python bytecode
+in the per-user local cache, avoiding repeated reads from synced source folders
+such as Dropbox. Source changes still invalidate the cache automatically.
+The first launch populates it; subsequent launches reuse it. An explicit
+`PYTHONPYCACHEPREFIX` takes precedence, and `DNASCAPE_BYTECODE_CACHE=off` restores
+Python's default cache location.
+Styles, scripts and logos also use local copies that refresh when the shipped
+files change, avoiding slow synced-file reads on the first page request.
 
 The logos are served directly from `docs/source/_static/`; they are not copied
 or duplicated in this folder.

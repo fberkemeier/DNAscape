@@ -59,9 +59,10 @@ _TIME_OUTPUTS = {
     "active_forks",
     "stalled_forks",
     "firing_factors",
+    "origin_firing",
 }
 _REPLICATE_OUTPUTS = {"completion_time", "s_phase_duration", "num_origins"}
-_SAMPLE_OUTPUTS = {"inter_origin_distances"}
+_SAMPLE_OUTPUTS = {"inter_origin_distances", "replicon_lengths"}
 _DISTRIBUTION_OUTPUTS = _REPLICATE_OUTPUTS | _SAMPLE_OUTPUTS
 _XT_OUTPUTS = {
     "replicated_fraction_xt",
@@ -69,6 +70,7 @@ _XT_OUTPUTS = {
     "coalescence_events_xt",
     "right_moving_fork_density_xt",
     "left_moving_fork_density_xt",
+    "fork_density_xt",
 }
 _OUTPUT_LABELS = {
     "replication_timing": "Replication timing",
@@ -76,18 +78,21 @@ _OUTPUT_LABELS = {
     "s_phase_duration": "S-phase duration",
     "num_origins": "Origins per replicate",
     "inter_origin_distances": "Inter-origin distance",
+    "replicon_lengths": "Replicon length",
     "origin_efficiency": "Origin efficiency",
     "fork_directionality": "Fork directionality",
-    "replicated_fraction": "Replicated fraction",
-    "total_forks": "Total forks",
-    "active_forks": "Active forks",
-    "stalled_forks": "Stalled forks",
-    "firing_factors": "Firing factors",
+    "replicated_fraction": "Replicated fraction (time)",
+    "total_forks": "Total forks (time)",
+    "active_forks": "Active forks (time)",
+    "stalled_forks": "Stalled forks (time)",
+    "firing_factors": "Firing factors (time)",
+    "origin_firing": "Origin firing (time)",
     "replicated_fraction_xt": "Replicated fraction",
     "initiation_events_xt": "Initiation events",
     "coalescence_events_xt": "Coalescence events",
     "right_moving_fork_density_xt": "Right-moving fork density",
     "left_moving_fork_density_xt": "Left-moving fork density",
+    "fork_density_xt": "Total fork density",
 }
 _Y_LABELS = {
     "replication_timing": "Time (min)",
@@ -95,6 +100,7 @@ _Y_LABELS = {
     "s_phase_duration": "Duration (min)",
     "num_origins": "Origins",
     "inter_origin_distances": "Distance (kb)",
+    "replicon_lengths": "Length (kb)",
     "origin_efficiency": "Probability",
     "fork_directionality": "Right - left fraction",
     "replicated_fraction": "Fraction",
@@ -102,6 +108,7 @@ _Y_LABELS = {
     "active_forks": "Forks",
     "stalled_forks": "Forks",
     "firing_factors": "Available factors",
+    "origin_firing": "Origins per interval",
 }
 _WINDOWS_RESERVED_STEMS = {
     "CON",
@@ -400,11 +407,11 @@ def select_result_output(
         axis = np.arange(1, int(result.replicates) + 1, dtype=float)
         x_label = "Replicate"
     elif inferred_kind == "sample":
-        # Inter-origin distances are pooled over realizations, so their count
+        # Lengths are pooled over realizations, so their count
         # generally differs from the ensemble size. Give each measured interval
         # a stable one-based index for line views and self-describing exports.
         axis = np.arange(1, values.size + 1, dtype=float)
-        x_label = "Interval"
+        x_label = "Replicon" if key == "replicon_lengths" else "Interval"
     else:  # defensive guard for future AxisKind extensions
         raise ValueError(f"Unsupported axis kind: {inferred_kind!r}.")
     if values.size != axis.size:

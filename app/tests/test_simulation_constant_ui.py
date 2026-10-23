@@ -81,7 +81,8 @@ def test_movement_and_factor_controls_are_conditional_and_reach_the_worker(monke
             assert list(control("simulation-missing-values").options.values()) == ["Error", "Interpolate", "Zero"]
             await user.should_see("Fix seed")
             for marker in ("simulation-stall-rate-per-kb", "simulation-stall-recovery", "simulation-stall-duration",
-                           "simulation-fork-speed-std", "simulation-fork-coupling", "simulation-pool-fields"):
+                           "simulation-stall-shared-directions", "simulation-fork-speed-std",
+                           "simulation-fork-coupling", "simulation-pool-fields"):
                 await user.should_not_see(marker=marker)
             user.find(marker="simulation-finite-pool").click()
             await user.should_see(marker="simulation-fork-coupling")
@@ -90,6 +91,9 @@ def test_movement_and_factor_controls_are_conditional_and_reach_the_worker(monke
             assert control("simulation-finite-pool").id < control("simulation-fork-coupling").id < control("simulation-pool-size").id < control("simulation-recycle-rate").id
             user.find(marker="simulation-fork-stalling").click()
             await user.should_see(marker="simulation-stall-recovery")
+            await user.should_see(marker="simulation-stall-shared-directions")
+            assert control("simulation-stall-shared-directions").value is False
+            user.find(marker="simulation-stall-shared-directions").click()
             assert control("simulation-stall-recovery").value is False
             await user.should_not_see(marker="simulation-stall-duration")
             user.find(marker="simulation-stall-recovery").click()
@@ -109,6 +113,7 @@ def test_movement_and_factor_controls_are_conditional_and_reach_the_worker(monke
             request = requests[0]
             assert request.stall_rate_per_kb == 0.17 and request.stall_duration == 2.5
             assert request.fork_speed_std == 0.3
+            assert request.stall_shared_directions is True
             assert request.firing_factors == 80 and request.firing_factor_recycle == 0.04
             assert request.firing_factor_fork_coupling is True
             user.find(marker="simulation-stall-recovery").click()
@@ -118,6 +123,7 @@ def test_movement_and_factor_controls_are_conditional_and_reach_the_worker(monke
             await _wait_for(lambda: control("simulation-fork-stalling").enabled)
             assert requests[1].stall_rate_per_kb == 0.17
             assert requests[1].stall_duration == float("inf")
+            assert requests[1].stall_shared_directions is True
             rate_control = control("simulation-stall-rate-per-kb")
             user.find(marker="simulation-fork-stalling").click()
             user.find(marker="simulation-stochastic-movement").click()
@@ -127,6 +133,7 @@ def test_movement_and_factor_controls_are_conditional_and_reach_the_worker(monke
             await _wait_for(lambda: len(requests) == 3)
             request = requests[2]
             assert request.stall_rate_per_kb == request.fork_speed_std == 0
+            assert request.stall_shared_directions is False
             assert request.stall_duration == float("inf")
             assert request.firing_factors is None and request.firing_factor_fork_coupling is False
             assert request.firing_factor_recycle == 0

@@ -646,7 +646,7 @@ class SimulationOptimizationTests(unittest.TestCase):
                 seed=7,
                 verbose=False,
             )
-            self.assertEqual(len(list(Path(tmpdir).glob("*.dat"))), 5)
+            self.assertEqual(len(list(Path(tmpdir).glob("*.dat"))), 6)
             self.assertIsInstance(result["replicated_fraction_xt"], np.memmap)
             del result
             gc.collect()

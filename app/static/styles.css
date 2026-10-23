@@ -1236,6 +1236,20 @@ body.body--dark .dn-nav-active {
   position: relative;
 }
 
+.dn-formula-input .q-field__native {
+  font-family: ui-monospace, Consolas, monospace;
+  line-height: 1.55;
+}
+
+.dn-transform-source-name {
+  color: var(--dn-muted);
+  font-size: 0.75rem;
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
 /* Optional field help is mounted outside Quasar's layout calculations, so
    enabling it never changes grid widths, label wrapping, or control height. */
 .dn-field-help-icon {
@@ -1568,6 +1582,21 @@ body.body--dark .dn-nav-active {
   width: 100%;
 }
 
+.dn-preview-view-grid,
+.dn-preview-fill-controls {
+  align-items: center;
+  display: grid;
+  gap: 0.5rem;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  min-width: 0;
+  width: 100%;
+}
+
+.dn-preview-view-grid > *,
+.dn-preview-fill-controls > * {
+  min-width: 0;
+}
+
 .dn-preview-secondary-color {
   grid-column: 1 / -1;
   justify-self: start;
@@ -1841,6 +1870,14 @@ body.body--dark .dn-nav-active {
   max-width: none;
 }
 
+.dn-plot-distribution-row {
+  grid-template-columns: minmax(6rem, 1fr) repeat(2, minmax(5rem, 0.6fr));
+}
+
+.dn-plot-box-label {
+  grid-column: span 2;
+}
+
 .dn-plot-compatibility-note {
   color: var(--dn-accent);
   margin: 0.2rem 0 0.35rem;
@@ -1868,6 +1905,9 @@ body.body--dark .dn-nav-active {
   .dn-plot-curve-name {
     grid-column: 1 / -1;
   }
+  .dn-plot-distribution-row .dn-plot-curve-name {
+    grid-column: auto;
+  }
 }
 
 @container dn-preview (max-width: 440px) {
@@ -1877,6 +1917,12 @@ body.body--dark .dn-nav-active {
 
   .dn-plot-curve-name {
     grid-column: 1 / -1;
+  }
+  .dn-plot-distribution-row .dn-plot-curve-name {
+    grid-column: 1 / -1;
+  }
+  .dn-plot-box-label {
+    grid-column: auto;
   }
 }
 
@@ -1912,8 +1958,31 @@ body.body--dark .dn-nav-active {
   grid-template-columns: minmax(0, 1fr);
 }
 
+.dn-data-filter-between {
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+}
+
 .dn-data-filter-operation-heading {
   margin-top: 0.65rem;
+}
+
+.dn-data-filter-modulation {
+  background: color-mix(in srgb, var(--dn-panel) 90%, var(--dn-accent) 10%);
+  border: 1px solid color-mix(in srgb, var(--dn-line) 85%, var(--dn-accent) 15%);
+  border-radius: 7px;
+  gap: 0.65rem;
+  min-width: 0;
+  padding: 0.85rem;
+  width: 100%;
+}
+
+.dn-data-filter-formula {
+  background: var(--dn-panel);
+  border-radius: 4px;
+  color: var(--dn-text);
+  font-size: 0.8rem;
+  padding: 0.5rem 0.65rem;
+  width: 100%;
 }
 
 @media (max-width: 520px) {
@@ -1986,6 +2055,7 @@ body.body--dark .dn-nav-active {
   min-height: 2.1rem !important;
   min-width: 4.75rem !important;
   padding-inline: 0.65rem !important;
+  width: max(4.75rem, calc(6ch + 1.3rem));
 }
 
 .dn-data-manager-link-remove {
@@ -2117,7 +2187,7 @@ body.body--dark .dn-nav-active {
 }
 
 .dn-data-manager-threshold-grid {
-  grid-template-columns: minmax(0, 1fr);
+  grid-template-columns: repeat(2, minmax(0, 1fr));
   margin-top: 0.08rem;
 }
 
@@ -2423,6 +2493,10 @@ body.body--dark .dn-nav-active {
 .dn-data-manager-output-card .dn-data-manager-file,
 .dn-data-manager-file .dn-download-file-row {
   border-bottom: 0;
+}
+
+.dn-filter-export-row > .dn-setting-group-title {
+  margin: 0;
 }
 
 .dn-data-manager-progress {
@@ -3386,6 +3460,27 @@ body.body--dark .dn-nav-active {
   font-size: var(--dn-control-font-size);
 }
 
+/* Floating labels sit above the value/actions row. Measure their available
+   width against the whole control, rather than the input container which
+   shrinks for clear, reset, dropdown, and validation icons. Quasar scales
+   floating labels to 75%, so undo that scale for the untransformed limit. */
+.dn-body .q-field--labeled.q-field--float .q-field__control {
+  container-type: inline-size;
+}
+
+.dn-body .q-field--labeled.q-field--float .q-field__label {
+  max-width: calc(100cqi / 0.75);
+}
+
+/* Keep trailing actions on the value line, below the full-width label. */
+.dn-body .q-field--labeled.q-field--float .q-field__append {
+  padding-block-start: 24px;
+}
+
+.dn-body .q-field--labeled.q-field--float.q-field--dense .q-field__append {
+  padding-block-start: 14px;
+}
+
 .dn-body .q-field__bottom {
   font-size: calc(12px * var(--dn-control-font-scale));
 }
@@ -3425,6 +3520,12 @@ body.body--dark .dn-nav-active {
   font-size: 0.67rem;
   line-height: 1.3;
   margin: 0 0.1rem;
+}
+
+.dn-upload-source-label {
+  line-height: 1.15;
+  margin-top: 0.12rem;
+  margin-bottom: -0.12rem;
 }
 
 .dn-upload-compact {
@@ -3746,6 +3847,13 @@ body.body--dark .dn-nav-active {
   flex-wrap: wrap;
   gap: 0.25rem 1rem;
   width: 100%;
+}
+
+.dn-guide-pair {
+  align-items: center;
+  display: inline-flex;
+  flex: 0 0 auto;
+  gap: 1rem;
 }
 
 .dn-control-card .dn-inline-actions {
@@ -4767,7 +4875,6 @@ body.body--dark .dn-main-logo-frame .dn-main-logo {
   .dn-data-manager-preprocessing-grid,
   .dn-data-manager-polishing-grid,
   .dn-data-manager-multiplier-grid,
-  .dn-data-manager-threshold-grid,
   .dn-data-manager-metadata-grid,
   .dn-data-manager-detected {
     grid-template-columns: 1fr;

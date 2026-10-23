@@ -41,13 +41,14 @@ Fork movement
 -------------
 
 Fork speeds follow the supplied field by default. Set ``fork_speed_std`` to a
-non-negative standard deviation in kb/min to draw normally distributed speeds
-around the local input value, independently for each spatial bin, direction,
-and replicate. Time-dependent fields also use independent draws for each
-encountered time slice. Draws are reused when a propagation step is revisited;
-non-positive speeds are resampled. With zero deviation the original simulation
-and seeded results are unchanged. The input speed is the centre of the normal
-distribution before its non-positive tail is excluded.
+non-negative arithmetic standard deviation in kb/min to draw positive lognormal
+speeds with the local input value as their arithmetic mean, independently for
+each spatial bin, direction, and replicate. Time-dependent fields use draws
+per encountered time slice and integrate distance through clock boundaries
+while crossing a bin. Draws are reused when propagation revisits a cell.
+This avoids the divergent mean crossing time caused by normally distributed
+speeds conditioned on being positive, without imposing a speed floor. With
+zero deviation the original simulation and seeded results are unchanged.
 
 For example, ``assumptions={"fork_speed_std": 0.2, "seed": 42}`` adds speed
 variation to any supported fork-speed dependence. Stalling and finite
@@ -86,6 +87,13 @@ With ``time_statsQ=True``:
 * ``total_forks``
 * ``active_forks``
 * ``stalled_forks``
+* ``origin_firing``: mean actual initiations per sampling interval ending at
+  each time-grid point, excluding passively replicated firing proposals.
+* ``replicon_lengths``: pooled completed DNA-domain lengths per fired origin
+  in kb. Periodic domains are joined across the seam; unfinished domains are
+  excluded. ``retain_replicon_lengths_limit`` bounds retained samples, while
+  ``replicon_length_count`` and ``replicon_lengths_truncated`` report the full
+  count and any truncation.
 * ``firing_factors`` when finite factors are enabled.
 
 With ``time_stats_xtQ=True`` (the memory-intensive, detailed outputs):
@@ -96,6 +104,10 @@ With ``time_stats_xtQ=True`` (the memory-intensive, detailed outputs):
 * ``coalescence_events_xt``
 * ``right_fork_density_xt``
 * ``left_fork_density_xt``
+* ``fork_density_xt``: the sum of the right- and left-moving densities.
+
+Initiation-event fields record only origins that fired before passive
+replication, within the requested time grid and simulation stopping time.
 
 .. figure:: _static/img/simulation_outputs_placeholder.svg
    :width: 760
@@ -136,6 +148,10 @@ converts it at the selected spatial resolution using
 ``p_bin = 1 - exp(-stall_rate_per_kb * resolution_x)``. The older
 ``stall_rate`` keyword remains available as a probability per spatial bin for
 backward compatibility.
+By default, directions have independent stall positions and recovery delays.
+Set ``stall_shared_directions=True`` to use the same positions and delays for
+forks arriving from either direction. This represents shared genomic barriers;
+it does not pause a distant sister fork when its partner stalls.
 
 Finite factors:
 

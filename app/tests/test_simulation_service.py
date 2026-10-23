@@ -26,6 +26,7 @@ from app.simulation_service import (
     POOLED_DISTRIBUTION_OUTPUT_KEYS,
     REPLICATE_OUTPUT_KEYS,
     TIME_OUTPUT_KEYS,
+    TIME_DISTRIBUTION_OUTPUT_KEYS,
     XT_OUTPUT_KEYS,
     ConstantSimulationRequest,
     run_constant_simulation,
@@ -111,7 +112,7 @@ def test_tiny_constant_ensemble_runs_real_dnascape_and_reports_progress() -> Non
     assert result.replication_timing_std is not None
     assert result.replication_timing_std.shape == (4,)
     assert result.time_grid.size == 0
-    assert set(result.outputs) == set(CORE_OUTPUT_KEYS) | set(DISTRIBUTION_OUTPUT_KEYS)
+    assert set(result.outputs) == set(CORE_OUTPUT_KEYS) | (set(DISTRIBUTION_OUTPUT_KEYS) - set(TIME_DISTRIBUTION_OUTPUT_KEYS))
     assert result.outputs["s_phase_duration"].shape == (2,)
     assert result.outputs["completion_time"].shape == (2,)
     assert np.all(
