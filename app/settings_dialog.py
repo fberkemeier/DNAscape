@@ -20,6 +20,7 @@ from app.export_settings import (
     ExportSettings,
     get_export_settings,
 )
+from app.field_hints import field_hint
 from app.icons import RESET_ICON
 from app.notifications import notify
 from app.result_naming import NAME_STYLE_OPTIONS
@@ -103,6 +104,7 @@ def settings_dialog(*, on_apply: Callable[[], None]) -> SettingsDialog:
             ui.label("Interface").classes("dn-setting-group-title")
             switch("preserve_page_state", "Page controls and outputs", "settings-preserve-page-state")
             switch("show_examples", "Example links", "settings-show-examples")
+            switch("show_field_hints", "Field hover hints", "settings-show-field-hints")
             switch("show_help", "Field help", "settings-show-help")
             switch("dev_mode", "Developer mode", "settings-dev-mode")
         with ui.column().classes("dn-settings-section"):
@@ -133,10 +135,7 @@ def settings_dialog(*, on_apply: Callable[[], None]) -> SettingsDialog:
                         },
                     ).props("dense").classes("dn-field").mark("settings-conversion-memory-limit")
                 )
-                controls["conversion_memory_limit_mb"].tooltip(
-                    "Estimated working-memory budget for genomic tracks; does not reserve RAM. "
-                    "All K562 chromosomes at 1 kb need 512 MB."
-                )
+                field_hint(controls["conversion_memory_limit_mb"], "Working-memory budget for converting genomic tracks.")
         with ui.column().classes("dn-settings-section"):
             ui.label("Visualisation").classes("dn-setting-group-title")
             with ui.element("div").classes("dn-settings-grid"):
@@ -176,7 +175,7 @@ def settings_dialog(*, on_apply: Callable[[], None]) -> SettingsDialog:
                         ),
                     },
                 ).props("dense").classes("dn-field").style("grid-column: 1 / -1").mark("settings-preview-points")
-                controls["preview_points"].tooltip("Maximum displayed points per curve in the visible range. Zoom uses the original data.")
+                field_hint(controls["preview_points"], "Maximum points shown per curve in the visible range.")
         editor = SettingsDialog(dialog, controls)
 
         def apply() -> None:

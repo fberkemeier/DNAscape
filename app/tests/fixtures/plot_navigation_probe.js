@@ -2,6 +2,12 @@
   const results = [], errors = [];
   window.addEventListener('error', event => errors.push(event.message));
   const pause = ms => new Promise(resolve => setTimeout(resolve, ms));
+  // Chrome's dump-dom virtual clock does not advance native compositor
+  // frames. Use a deterministic frame queue for gestures in this fixture;
+  // the live-app stress test exercises the browser's native scheduler.
+  window.requestAnimationFrame = callback => setTimeout(() => callback(performance.now()), 16);
+  window.cancelAnimationFrame = clearTimeout;
+  const frame = () => new Promise(resolve => requestAnimationFrame(resolve));
   const check = (condition, label) => { if (!condition) throw new Error(label); };
   const close = (a, b) => Math.abs(a - b) <= Math.max(1, Math.abs(a), Math.abs(b)) * 1e-8;
   const convert = value => {
@@ -70,6 +76,43 @@
       check(found, name + ' must have a solid visible line along the plot boundary after zooming');
     }
   }
+  function axisTitles() {
+    chart.getZr().refreshImmediately();
+    const result = {};
+    for (const [key, axis] of Object.entries(component.options.dnascapeNavigation.axes)) {
+      const model = chart.getModel().getComponent(axis.dimension + 'Axis', axis.index);
+      if (!model.get('name')) continue;
+      chart.getViewOfComponentModel(model).group.traverse(item => {
+        if (item.type !== 'text' || item.style?.text !== model.get('name')) return;
+        const box = item.getBoundingRect();
+        result[key] = {
+          point: item.transformCoordToGlobal(box.x + box.width / 2, box.y + box.height / 2),
+          gap: Number(model.get('nameGap')), font: model.getModel('nameTextStyle').getFont(),
+          side: model.axis.position,
+        };
+      });
+      check(result[key], key + ' title disappeared');
+    }
+    const rect = chart.getModel().getComponent('grid', 0).coordinateSystem.getRect();
+    return {titles: result, rect: {x:rect.x, y:rect.y, width:rect.width, height:rect.height}};
+  }
+  function stableTitles(original) {
+    const current = axisTitles();
+    const moved = Object.entries(original.titles).filter(([key, before]) => {
+      const after = current.titles[key], expected = [...before.point], axis = component.options.dnascapeNavigation.axes[key];
+      check(before.font === after.font, key + ' title font changed during navigation');
+      if (axis.dimension === 'x') {
+        expected[0] += current.rect.x + current.rect.width / 2 - original.rect.x - original.rect.width / 2;
+      } else {
+        check(after.gap >= before.gap, key + ' title spacing shrank during navigation');
+        const direction = before.side === 'right' ? 1 : -1;
+        const boundary = r => r.x + (direction > 0 ? r.width : 0);
+        expected[0] += boundary(current.rect) - boundary(original.rect) + direction * (after.gap - before.gap);
+      }
+      return !after.point.every((value, index) => close(value, expected[index]));
+    });
+    check(!moved.length, 'Titles moved during navigation: ' + JSON.stringify({before:original, after:current}));
+  }
   async function pixelsAround(position) {
     chart.getZr().refreshImmediately();
     const image = new Image();
@@ -80,6 +123,9 @@
   }
   for (const item of window.navigationCases) {
     try {
+      const previousCanvas = element.querySelector('canvas');
+      previousCanvas?.dispatchEvent(new PointerEvent('pointerout', {pointerType:'mouse', relatedTarget:document.body, bubbles:true}));
+      previousCanvas?.dispatchEvent(new MouseEvent('mouseout', {relatedTarget:document.body, bubbles:true}));
       component.options = structuredClone(item.options);
       convert(component.options);
       chart.setOption(component.options, {notMerge: !['line hover off','line hover again'].includes(item.name)});
@@ -89,6 +135,7 @@
       const rect = chart.getModel().getComponent('grid', 0).coordinateSystem.getRect();
       const cx = rect.x + rect.width / 2, cy = rect.y + rect.height / 2;
       const original = bounds();
+      const originalTitles = axisTitles();
       if (item.name.includes('retained') && item.name.includes('heatmap')) {
         const pixel = chart.convertToPixel({xAxisIndex:0,yAxisIndex:0},[600,300]);
         const rgba=await pixelsAround(pixel), alpha=[...rgba].filter((_value,index)=>index%4===3);
@@ -100,6 +147,51 @@
         check(close(chart.convertToPixel({seriesIndex:0}, last)[0], rect.x + rect.width), 'Last point must meet the right plot edge');
         const labels = chart.getOption().xAxis[0].axisLabel.customValues;
         check(labels.at(-1) === 200000 && !labels.includes(last[0]), 'Irregular data endpoint must not become a forced tick');
+      }
+      if (component.options.dnascapePlotType === 'Histogram' && !item.name.includes('KDE')) {
+        const bars = [];
+        chart.getModel().eachSeries(series => {
+          if (series.subType !== 'custom') return;
+          const data = series.getData();
+          data.each(index => {
+            const bar = data.getItemGraphicEl(index);
+            if (bar?.shape?.width > 1 && bar.shape.height > 1) bars.push({series:series.seriesIndex, index, bar});
+          });
+        });
+        const highlights = () => bars.filter(({bar}) => bar.hoverState === 2)
+          .map(({series,index}) => [series,index]);
+        const canvas = element.querySelector('canvas'), box = element.getBoundingClientRect();
+        const hoverBar = pixel => {
+          canvas.dispatchEvent(new PointerEvent('pointermove', {pointerType:'mouse', isPrimary:true, pointerId:1,
+            clientX:box.left+pixel[0], clientY:box.top+pixel[1], bubbles:true}));
+          canvas.dispatchEvent(new MouseEvent('mousemove', {
+            clientX:box.left+pixel[0], clientY:box.top+pixel[1], bubbles:true,
+          }));
+        };
+        // Clear ZRender's cached target before entering a newly drawn view.
+        hoverBar([1, 1]);
+        const samples = [...new Set(bars.map(bar => bar.series))]
+          .flatMap(series => bars.filter(bar => bar.series === series).slice(1, 4));
+        for (const target of samples) {
+          for (const fraction of [0.15, 0.49, 0.51, 0.85]) {
+            const shape = target.bar.shape;
+            const pixel = target.bar.transformCoordToGlobal(shape.x + shape.width * fraction, shape.y + shape.height * 0.75);
+            const hit = chart.getZr().handler.findHover(...pixel).target;
+            const hovered = bars.find(({bar}) => bar === hit);
+            check(hovered, 'Probe point must land on a visible histogram bar');
+            hoverBar(pixel);
+            await pause(25);
+            chart.getZr().refreshImmediately();
+            const expected = item.name.endsWith('hover off') ? [] : [[hovered.series,hovered.index]];
+            check(JSON.stringify(highlights()) === JSON.stringify(expected),
+              'Only the hovered histogram bar may highlight: ' + JSON.stringify({expected,actual:highlights(),fraction}));
+          }
+        }
+        canvas.dispatchEvent(new PointerEvent('pointerout', {pointerType:'mouse', relatedTarget:document.body, bubbles:true}));
+        canvas.dispatchEvent(new MouseEvent('mouseout', {relatedTarget:document.body, bubbles:true}));
+        await pause(25);
+        chart.getZr().refreshImmediately();
+        check(!highlights().length, 'Histogram highlight remained after leaving the plot');
       }
       if (['line', 'line hover again', 'hovered curves', 'heatmap', 'line hover off', 'heatmap hover off'].includes(item.name)) {
         const disabled = item.name.endsWith('off'), heatmap = item.name.startsWith('heatmap');
@@ -143,7 +235,16 @@
       check(JSON.stringify(bounds()) === JSON.stringify(original), 'Wheel without left Ctrl changed the plot');
       key('ControlLeft', true);
       check(wheel(cx, cy, -300, true), 'Left Ctrl wheel must prevent browser zoom');
+      await frame();
       const zoomed = bounds();
+      if (['line', 'heatmap', 'histogram'].includes(item.name)) {
+        const response = JSON.parse(JSON.stringify(item.options));
+        convert(response);
+        component.options = response;
+        component.update_chart();
+        check(JSON.stringify(bounds()) === JSON.stringify(zoomed), 'A delayed backend response reset a newer viewport');
+      }
+      stableTitles(originalTitles);
       if (item.name === 'unrounded endpoint') {
         const labels = chart.getOption().xAxis[0].axisLabel.customValues;
         check(labels?.length && labels[0] > zoomed.x[0] && labels.at(-1) < zoomed.x[1], 'Zoomed endpoints must not become forced ticks');
@@ -151,10 +252,40 @@
       for (const [name, range] of Object.entries(zoomed)) check(span(range, axes[name]) < span(original[name], axes[name]), name + ' did not zoom');
       visibleAxes();
       key('ControlLeft', false);
+      const beforeClick = bounds();
       mouse('mousedown', cx, cy);
+      mouse('mousemove', cx + 1, cy + 1);
+      mouse('mouseup', cx + 1, cy + 1);
+      check(JSON.stringify(bounds()) === JSON.stringify(beforeClick), 'A click with tiny mouse jitter panned the chart');
+      mouse('mousedown', cx, cy);
+      mouse('mousemove', cx + 30, cy + 10);
+      await frame();
+      mouse('mouseup', cx, cy);
+      check(JSON.stringify(bounds()) === JSON.stringify(beforeClick), 'A drag returned to its start but retained the old displacement');
+      mouse('mousedown', cx, cy);
+      mouse('mousemove', cx + 35, cy + 15);
+      await frame();
+      const moving = bounds();
+      component.update_chart();
+      check(JSON.stringify(bounds()) === JSON.stringify(moving), 'A redraw interrupted an active drag');
       mouse('mousemove', cx + 10000, cy + 10000);
       mouse('mouseup', cx + 10000, cy + 10000);
       const panned = bounds();
+      if (item.name === 'line') {
+        let navigated = 0;
+        const link = document.createElement('button');
+        link.textContent = 'Overview';
+        link.addEventListener('click', () => navigated++);
+        document.body.appendChild(link);
+        const ghost = new MouseEvent('click', {bubbles:true,cancelable:true});
+        link.dispatchEvent(ghost);
+        check(ghost.defaultPrevented && navigated === 0, 'A completed drag leaked a navigation click');
+        link.dispatchEvent(new PointerEvent('pointerdown', {bubbles:true}));
+        link.click();
+        check(navigated === 1, 'A deliberate subsequent navigation click was blocked');
+        link.remove();
+      }
+      stableTitles(originalTitles);
       if (item.name.startsWith('retained')) {
         // There is deliberately no backend response in this probe. Pan from
         // the loaded tile to an unrendered end and inspect existing pixels.
@@ -192,6 +323,7 @@
         }
       }
       for (let repeat = 0; repeat < 8; repeat++) wheel(cx, cy, 1000, true);
+      await frame();
       for (const [name, range] of Object.entries(bounds())) check(close(range[0], axes[name].min) && close(range[1], axes[name].max), name + ' zoom out exceeded or missed defaults');
       bounded();
       key('ControlLeft', false);
@@ -223,6 +355,7 @@
         const gy = graphic.top ?? chart.getHeight() - graphic.bottom - guide.height;
         const clickCanvas = (x, y) => {
           const box = element.getBoundingClientRect(), canvas = element.querySelector('canvas');
+          canvas.dispatchEvent(new PointerEvent('pointerdown', {bubbles:true}));
           for (const type of ['mousemove', 'mousedown', 'mouseup', 'click']) canvas.dispatchEvent(new MouseEvent(type, {
             clientX:box.left+x, clientY:box.top+y, button:0, buttons:type==='mousedown'?1:0, bubbles:true, cancelable:true,
           }));
@@ -247,6 +380,34 @@
       key('Escape', true);
       check(JSON.stringify(bounds()) === JSON.stringify(beforeCancel), 'Escape did not cancel dragging');
       check(originalData === JSON.stringify(chart.getOption().series.map(series => series.data)), 'Navigation modified series data');
+      if (item.name === 'line') {
+        key('ControlLeft', true);
+        const setOption = chart.setOption;
+        let paints = 0;
+        chart.setOption = (options, ...args) => {
+          if (options.xAxis && !options.series) paints++;
+          return setOption(options, ...args);
+        };
+        for (let index = 0; index < 100; index++) wheel(cx, cy, -2, true);
+        await frame();
+        chart.setOption = setOption;
+        check(paints <= 2, 'A wheel burst performed a full redraw for each event');
+        key('ControlLeft', false);
+      }
+      if (item.name === 'wide zoomed ticks') {
+        key('ControlLeft', true);
+        const beforeWide = axisTitles();
+        for (let index = 0; index < 8; index++) wheel(cx, rect.y + rect.height - .1, -500, true);
+        await frame();
+        const wide = axisTitles();
+        check(wide.titles.y.gap > beforeWide.titles.y.gap, 'Wide Y ticks must reserve title clearance');
+        stableTitles(beforeWide);
+        for (let index = 0; index < 8; index++) wheel(cx, rect.y + rect.height - .1, 500, true);
+        await frame();
+        stableTitles(wide);
+        check(axisTitles().titles.y.gap === wide.titles.y.gap, 'Zooming out must retain the collision gutter');
+        key('ControlLeft', false);
+      }
       check(chart.getDataURL({type: 'png'}).startsWith('data:image/png'), 'Navigated plot export failed');
       await pause(150);
       check(events.some(event => event.payload?.context === component.options.dnascapeNavigation.context), 'No viewport event was emitted');

@@ -7,6 +7,7 @@ import json
 import re
 import shutil
 import subprocess
+import threading
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -76,6 +77,42 @@ def test_navigation_preserves_exact_viewport_edges_without_forcing_endpoint_labe
     assert (options["xAxis"]["min"], options["xAxis"]["max"]) == (2.13, 7.91)
     for section in ("axisLabel", "axisTick", "splitLine"):
         assert options["xAxis"][section]["customValues"] == [3, 4, 5, 6, 7]
+
+
+def test_collision_spacing_survives_backend_redraws_without_accumulating_or_leaking():
+    options = navigation_options()
+    handle = PreviewChartHandle(CaptureChart(options), CaptureChart({}))
+    handle._apply_navigation()
+    gap, left = options["yAxis"]["nameGap"], options["grid"]["left"]
+    handle.accept_navigation(dict(
+        context=handle._navigation.context, ranges={"x": (2, 4), "y": (3, 6)},
+        titleGaps={"y": 60, "x": 100},
+    ))
+    assert options["yAxis"]["nameGap"] == 60
+    assert options["grid"]["left"] == left + 60 - gap
+    assert options["xAxis"]["nameGap"] == 28
+    enlarged = dict(options["grid"])
+    handle.accept_navigation(dict(
+        context=handle._navigation.context, ranges={"y": (0, 10)}, titleGaps={"y": 28},
+    ))
+    assert options["grid"] == enlarged
+    assert options["yAxis"]["nameGap"] == 60
+    replacement = navigation_options(y_limits=(3, 6))
+    expected_left = replacement["grid"]["left"] + 60 - replacement["yAxis"]["nameGap"]
+    options.clear()
+    options.update(replacement)
+    handle.update()
+    assert options["yAxis"]["nameGap"] == 60
+    assert options["grid"]["left"] == expected_left
+    handle.update()
+    assert options["grid"]["left"] == expected_left
+    replacement = navigation_options(values=np.arange(100., 110.))
+    expected_grid = dict(replacement["grid"])
+    options.clear()
+    options.update(replacement)
+    handle.update()
+    assert options["grid"] == expected_grid
+    assert options["yAxis"]["nameGap"] < 60
 
 
 @pytest.mark.parametrize("plot_type", ("Line", "Heatmap", "Histogram", "Boxplot"))
@@ -273,13 +310,158 @@ def test_real_nicegui_chart_retains_native_resolution_across_zoom_pan_styles_and
             broad = navigate(1000, 6000)
             assert len(broad[(broad[:, 0] >= 999) & (broad[:, 0] <= 6001)]) == 1000
             assert broad[0, 0] == 0 and broad[-1, 0] == 10_000
-            assert len(broad) <= 2000
+            assert len(broad) <= 4000
             panned = navigate(7000, 7020)
             np.testing.assert_equal(panned[(panned[:, 0] >= 6999) & (panned[:, 0] <= 7021), 0], np.arange(6999, 7022))
             user.find(marker=f"{prefix}-{'plot-' if data_manager else ''}reset-x-limits").click()
             reset = np.asarray(handle.canvas.options["series"][0]["data"])
             assert len(reset) == 1000 and reset[0, 0] == 0 and reset[-1, 0] == 10_000
 
+    asyncio.run(scenario())
+
+
+@pytest.mark.parametrize("logarithmic,descending", [(False, False), (False, True), (True, False), (True, True)])
+def test_buffered_detail_keeps_the_visible_budget_and_refines_on_zoom(logarithmic, descending):
+    axis = np.geomspace(1, 1e6, 100_001) if logarithmic else np.arange(100_001.)
+    if descending:
+        axis = axis[::-1]
+    options = navigation_options(x_axis=axis, values=np.sin(np.arange(axis.size) / 10), log_x=logarithmic)
+    handle = PreviewChartHandle(CaptureChart(options), CaptureChart({}))
+    handle._apply_navigation()
+    window = (1000, 2000) if logarithmic else (40_000, 41_000)
+    handle.accept_navigation(dict(context=handle._navigation.context, ranges={"x": window}))
+    data = options["series"][0]["data"]
+    assert data.coverage["x"][0] < window[0] < window[1] < data.coverage["x"][1]
+    coordinates = np.asarray(data)[:, 0]
+    inside = coordinates[(coordinates >= window[0]) & (coordinates <= window[1])]
+    assert 995 <= inside.size <= 1000
+    assert len(data) <= 4000
+    assert coordinates.min() == axis.min() and coordinates.max() == axis.max()
+    small_pan = (1050, 2050) if logarithmic else (40_100, 41_100)
+    handle.accept_navigation(dict(context=handle._navigation.context, ranges={"x": small_pan}))
+    assert options["series"][0]["data"] is data
+    close = (1200, 1210) if logarithmic else (40_400, 40_410)
+    handle.accept_navigation(dict(context=handle._navigation.context, ranges={"x": close}))
+    assert options["series"][0]["data"] is not data
+    coordinates = np.asarray(options["series"][0]["data"])[:, 0]
+    expected = axis[(axis >= close[0]) & (axis <= close[1])]
+    np.testing.assert_equal(coordinates[(coordinates >= close[0]) & (coordinates <= close[1])], expected)
+
+
+def test_navigation_sequences_and_reset_tokens_reject_obsolete_events():
+    options = navigation_options()
+    handle = PreviewChartHandle(CaptureChart(options), CaptureChart({}))
+    handle._apply_navigation()
+    payload = dict(context=handle._navigation.context, token=handle._navigation.token)
+    handle.accept_navigation(dict(**payload, sequence=3, ranges={"x": (4, 6)}))
+    for sequence in (1, 2, 3, -1, True, float("nan"), "4"):
+        handle.accept_navigation(dict(**payload, sequence=sequence, ranges={"x": (1, 2)}))
+        assert options["xAxis"]["min"] == 4
+    handle._navigation.clear()
+    options["xAxis"]["min"], options["xAxis"]["max"] = options["dnascapeDefaultAxes"]["x"]
+    handle.update()
+    handle.accept_navigation(dict(**payload, sequence=4, ranges={"x": (1, 2)}))
+    assert options["xAxis"]["min"] == options["dnascapeDefaultAxes"]["x"][0]
+
+
+@pytest.mark.parametrize("reset_during_read", (False, True))
+def test_async_detail_reads_coalesce_without_blocking_and_only_install_the_latest(monkeypatch, reset_during_read):
+    from app import preview_plotting
+
+    monkeypatch.setattr(preview_plotting.run, "io_bound", asyncio.to_thread)
+    options = navigation_options(x_axis=np.arange(20_001.), values=np.arange(20_001.) % 17)
+    handle = PreviewChartHandle(CaptureChart(options), CaptureChart({}))
+    handle._apply_navigation()
+    source = options["series"][0]["data"]
+    original = source.refine
+    entered, release = threading.Event(), threading.Event()
+    calls = []
+    def read(x, y):
+        calls.append(x)
+        if len(calls) == 1:
+            entered.set()
+            assert release.wait(3), "The UI did not stay responsive while reading detail."
+        return original(x, y)
+    source.refine = read
+
+    async def scenario():
+        metadata = dict(context=handle._navigation.context, token=handle._navigation.token)
+        first = asyncio.create_task(handle.accept_navigation_async(dict(**metadata, sequence=1, ranges={"x": (100, 200)})))
+        for _ in range(100):
+            if entered.is_set():
+                break
+            await asyncio.sleep(.005)
+        assert entered.is_set()
+        await handle.accept_navigation_async(dict(**metadata, sequence=2, ranges={"x": (1000, 1100)}))
+        if reset_during_read:
+            handle._navigation.clear()
+            metadata["token"] = handle._navigation.token
+        await handle.accept_navigation_async(dict(**metadata, sequence=3, ranges={"x": (9000, 9100)}))
+        assert not first.done()
+        assert options["xAxis"]["min"] == 9000
+        release.set()
+        await first
+        assert calls == [(100., 200.), (9000., 9100.)]
+        assert options["dnascapeNavigation"]["sequence"] == 3
+        assert options["series"][0]["data"].window[0] == (9000., 9100.)
+        coordinates = np.asarray(options["series"][0]["data"])[:, 0]
+        np.testing.assert_equal(coordinates[(coordinates >= 9000) & (coordinates <= 9100)], np.arange(9000, 9101))
+        assert handle.canvas.updates == 1
+        await handle.accept_navigation_async(dict(**metadata, sequence=4, ranges={"x": (9010, 9110)}))
+        assert len(calls) == 2 and handle.canvas.updates == 1
+    try:
+        asyncio.run(scenario())
+    finally:
+        release.set()
+
+
+@pytest.mark.parametrize("file_type", ("tsv", "txt", "csv", "npz"))
+@pytest.mark.parametrize("compressed", (False, True))
+def test_converted_detail_formats_keep_native_positions_missing_values_and_buffer(file_type, compressed):
+    from app.data_conversion_service import DataConversionRequest, convert_data
+    from app.mapping_uploads import inspect_upload
+    from app.pages.data_management import _converted_preview_data
+
+    values = np.arange(10_001, dtype=float)
+    values[3334] = np.nan
+    inspection = inspect_upload("source.tsv", ("signal\n" + "\n".join(map(str, values))).encode())
+    result = convert_data(DataConversionRequest(
+        inspection=inspection, input_form="x", value_column="signal",
+        missing_policy="ignore", target_format=file_type, gzip_output=compressed,
+    ))
+    original_bytes = result.artifact.data
+    data = _converted_preview_data(result)
+    refined = data.refine((3320, 3340), None)["data"]
+    native = {row[0]: row[1] for row in refined}
+    for x in range(3319, 3342):
+        assert native[x] == (None if x == 3334 else x)
+    assert refined.coverage["x"] == (3300, 3360)
+    assert min(native) == 0 and max(native) == 10_000
+    assert len(refined) <= 4000
+    assert result.artifact.data == original_bytes
+
+
+def test_vector_export_uses_latest_cached_pan_without_requiring_a_canvas_redraw(monkeypatch):
+    from app import preview_plotting
+    monkeypatch.setattr(preview_plotting.run, "io_bound", asyncio.to_thread)
+    class ExportChart(CaptureChart):
+        async def run_chart_method(self, *_args, **_kwargs):
+            return "svg"
+    options = navigation_options(x_axis=np.arange(10_001.), values=np.sin(np.arange(10_001.) / 20))
+    canvas, vector = ExportChart(copy.deepcopy(options)), ExportChart({})
+    handle = PreviewChartHandle(canvas, vector, source_options=options)
+    handle._apply_navigation()
+    async def scenario():
+        metadata = dict(context=handle._navigation.context, token=handle._navigation.token)
+        await handle.accept_navigation_async(dict(**metadata, sequence=1, ranges={"x": (4000, 4200)}))
+        updates = canvas.updates
+        await handle.accept_navigation_async(dict(**metadata, sequence=2, ranges={"x": (4050, 4250)}))
+        assert canvas.updates == updates
+        assert canvas.options["xAxis"]["min"] == 4000
+        assert handle.options["xAxis"]["min"] == 4050
+        await handle.run_chart_method("getDataURL", {"type": "svg"})
+        assert vector.options["xAxis"]["min"] == 4050
+        assert vector.options["xAxis"]["max"] == 4250
     asyncio.run(scenario())
 
 
@@ -305,6 +487,7 @@ def test_mouse_gestures_in_real_echarts_previews(tmp_path):
         cases.append(dict(name=name, options=options))
 
     add("line")
+    add("wide zoomed ticks")
     add("unrounded endpoint", x_axis=np.linspace(0, 249003.1415926, 1001), values=np.linspace(1, 10, 1001))
     add("line hover off", hover=False)
     add("line hover again")
@@ -316,6 +499,11 @@ def test_mouse_gestures_in_real_echarts_previews(tmp_path):
     add("inverted log heatmap", plot_type="Heatmap", x_axis=np.arange(1.0, 11.0),
         y_axis=np.arange(1.0, 11.0), log_x=True, log_y=True, invert_x=True, invert_y=True)
     add("histogram", plot_type="Histogram")
+    add("histogram hover off", plot_type="Histogram", hover=False)
+    add("separated histogram", plot_type="Histogram", histogram_touching=False)
+    add("inverted histogram", plot_type="Histogram", invert_x=True, invert_y=True)
+    add("fine histogram", plot_type="Histogram", histogram_bins=30,
+        values=np.random.default_rng(42).normal(6, .8, 1000), histogram_x_limits=(3, 9))
     add("log histogram", plot_type="Histogram", log_x=True, log_y=True)
     add("KDE", plot_type="Histogram", density=True)
     add("boxplot", plot_type="Boxplot")
@@ -343,6 +531,8 @@ def test_mouse_gestures_in_real_echarts_previews(tmp_path):
     add("grouped histogram guides", plot_type="Histogram", lines=(lines[0],
         PreviewLine("Second", np.arange(1.0, 11.0), np.arange(2.0, 12.0), "#2596be")),
         show_legend=True, show_histogram_statistics=True, histogram_grouped=True)
+    add("overlaid histogram", plot_type="Histogram", lines=(lines[0],
+        PreviewLine("Second", np.arange(1.0, 11.0), np.arange(2.0, 12.0), "#2596be")))
     for plot_type in ("Line", "Histogram", "Boxplot"):
         add(f"independent {plot_type}", plot_type=plot_type, lines=lines,
             secondary_y_label="Second", secondary_x_label="Second X",
@@ -364,7 +554,7 @@ def test_mouse_gestures_in_real_echarts_previews(tmp_path):
     )
     completed = subprocess.run([
         chrome, "--headless", "--disable-gpu", "--no-first-run", "--no-default-browser-check",
-        "--allow-file-access-from-files", "--window-size=1000,600", "--virtual-time-budget=12000",
+        "--allow-file-access-from-files", "--window-size=1000,600", "--virtual-time-budget=18000",
         f"--user-data-dir={tmp_path / 'browser'}", "--dump-dom", document.as_uri(),
     ], capture_output=True, text=True, encoding="utf-8", timeout=30, check=True)
     match = re.search(r'<pre id="result">([^<]+)</pre>', completed.stdout)

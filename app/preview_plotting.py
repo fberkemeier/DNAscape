@@ -8,12 +8,14 @@ import math
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass, field
 from typing import Any
+from uuid import uuid4
 
 import numpy as np
-from nicegui import ui
+from nicegui import run, ui
 
 from app.export_settings import get_export_settings
 from app.icons import RESET_ICON
+from app.notifications import notify
 
 from dnascape.workflows.preview import (
     CURVE_TYPES,
@@ -158,9 +160,10 @@ class PreviewSettingsControls:
     fill_options: Any = None
     legend_name: Any = None
     show_filter: Any = None
-    export_filter: Any = None
     filter_guide_options: Any = None
     filter_name: Any = None
+    export_histogram_statistics: Any = None
+    histogram_statistics_options: Any = None
     dual_y_axes: Any = None
     secondary_y_axis_label: Any = None
     secondary_y_limit_editor: Any = None
@@ -182,8 +185,10 @@ class PreviewSettingsControls:
     secondary_invert_y: Any = None
     _resetting_limits: bool = field(default=False, init=False, repr=False)
     _automatic_axes: set[str] = field(default_factory=lambda: {"x", "z"}, init=False, repr=False)
+    _log_limit_error: tuple | None = field(default=None, init=False, repr=False)
     _navigation: _PreviewNavigation = field(default_factory=lambda: _PreviewNavigation(), init=False, repr=False)
     _histogram_dataset: int = field(default=0, init=False, repr=False)
+    _statistics_export: Any = field(default=None, init=False, repr=False)
 
 
 @dataclass
@@ -194,14 +199,25 @@ class _PreviewNavigation:
     ranges: dict[str, tuple[float, float]] = field(default_factory=dict)
     source_limits: dict[str, tuple[float, float] | None] = field(default_factory=dict)
     axes: dict[str, dict[str, Any]] = field(default_factory=dict)
+    title_gaps: dict[str, tuple[str, float]] = field(default_factory=dict)
+    token: str = field(default_factory=lambda: uuid4().hex)
+    sequence: int = 0
 
     def clear(self, axis: str | None = None) -> None:
+        self.token = uuid4().hex
+        self.sequence = 0
         if axis is None:
             self.ranges.clear()
             self.source_limits.clear()
         else:
             self.ranges.pop(axis, None)
             self.source_limits.pop(axis, None)
+
+
+def refresh_statistics_exports(controls: PreviewSettingsControls) -> None:
+    exporter = getattr(controls, "_statistics_export", None)
+    if exporter is not None:
+        exporter.refresh()
 
 
 def _navigation_axes(options: Mapping[str, Any]) -> dict[str, dict[str, Any]]:
@@ -299,6 +315,9 @@ class PreviewChartHandle:
     _vector_capture_revision: int = field(default=-1, init=False, repr=False)
     _vector_capture_key: str | None = field(default=None, init=False, repr=False)
     _vector_capture: str | None = field(default=None, init=False, repr=False)
+    _refining: bool = field(default=False, init=False, repr=False)
+    _refinement_request: int = field(default=0, init=False, repr=False)
+    _refinement_idle: asyncio.Event = field(default_factory=asyncio.Event, init=False, repr=False)
     _vector_capture_lock: asyncio.Lock = field(
         default_factory=asyncio.Lock,
         init=False,
@@ -331,6 +350,8 @@ class PreviewChartHandle:
             self._apply_aspect_ratio()
         self._sync_canvas_options()
         self.canvas.update()
+        if self.settings is not None:
+            refresh_statistics_exports(self.settings)
         if self.zoom is not None and self.zoom_dialog is not None and self.zoom_dialog.value:
             self._sync_zoom()
         self.invalidate_export()
@@ -354,6 +375,7 @@ class PreviewChartHandle:
         sync_preview_axis_limits(controls, self.options)
         self._apply_aspect_ratio()
         self._sync_canvas_options()
+        refresh_statistics_exports(controls)
 
     def _apply_curve_fill(self) -> None:
         """Fill each curve to the displayed edge, including inverted/log axes.
@@ -451,7 +473,8 @@ class PreviewChartHandle:
             object.__setattr__(self.settings, "_histogram_dataset", selected)
         self.update()
 
-    def _refine_data(self, *, force: bool = False) -> None:
+    def _refinement_plan(self, *, force: bool = False) -> list:
+        jobs = []
         def visible_window(key: str) -> tuple[float, float] | None:
             if key in self._navigation.ranges:
                 return self._navigation.ranges[key]
@@ -475,7 +498,7 @@ class PreviewChartHandle:
             if callable(getattr(areas, "refine", None)):
                 area_window = visible_window(x_key)
                 if areas.window != area_window:
-                    series["markArea"]["data"] = areas.refine(area_window)
+                    jobs.append((index, "areas", areas, (area_window,)))
             data = series.get("data")
             if not callable(getattr(data, "refine", None)):
                 continue
@@ -485,13 +508,63 @@ class PreviewChartHandle:
                 continue
             if not force and getattr(data, "window", None) == window:
                 continue
-            refined = data.refine(*window)
+            if not force and self._reusable_detail(data, window, (x_key, y_key)):
+                continue
+            jobs.append((index, "data", data, window))
+        return jobs
+
+    def _reusable_detail(self, data: Any, window: tuple, keys: tuple) -> bool:
+        previous, coverage = getattr(data, "window", None), getattr(data, "coverage", None)
+        if not previous or not coverage:
+            return False
+        for view, old_view, key, dimension in zip(window, previous, keys, ("x", "y"), strict=True):
+            if view == old_view or dimension not in coverage:
+                continue
+            bounds = coverage[dimension]
+            if view is None or old_view is None or bounds is None:
+                return False
+            axis = self._navigation.axes[key]
+            transform = math.log if axis["log"] else float
+            lower, upper = map(transform, view)
+            span = upper - lower
+            # Refine on a meaningful zoom-in, or before the prefetched tile
+            # runs out. Small pans and wheel steps reuse the existing data.
+            if span < (transform(old_view[1]) - transform(old_view[0])) * .85:
+                return False
+            if lower - span * .25 < transform(bounds[0]) and bounds[0] > axis["min"]:
+                return False
+            if upper + span * .25 > transform(bounds[1]) and bounds[1] < axis["max"]:
+                return False
+        return True
+
+    @staticmethod
+    def _compute_refinements(jobs: list) -> list:
+        return [(job, job[2].refine(*job[3])) for job in jobs]
+
+    def _install_refinements(self, results: list) -> bool:
+        changed = False
+        for (index, kind, source, window), result in results:
+            if index >= len(self.options.get("series", [])):
+                continue
+            series = self.options["series"][index]
+            current = series.get("markArea", {}).get("data") if kind == "areas" else series.get("data")
+            if current is not source:
+                continue
+            changed = True
+            if kind == "areas":
+                series["markArea"]["data"] = result
+                continue
+            refined = dict(result)
             hover = refined.pop("hoverData", None)
             series.update(refined)
             if hasattr(series["data"], "refine"):
                 series["data"].window = window if any(value is not None for value in window) else None
             if hover is not None and index + 1 < len(self.options["series"]):
                 self.options["series"][index + 1]["data"] = hover
+        return changed
+
+    def _refine_data(self, *, force: bool = False) -> None:
+        self._install_refinements(self._compute_refinements(self._refinement_plan(force=force)))
 
     def _apply_navigation(self) -> None:
         axes = _navigation_axes(self.options)
@@ -503,6 +576,7 @@ class PreviewChartHandle:
         ], sort_keys=True)
         if self._navigation.context != context:
             self._navigation.clear()
+            self._navigation.title_gaps.clear()
             self._navigation.context = context
             self._navigation.axes = {key: dict(axis) for key, axis in axes.items()}
             # Workflows supply zero floors and fixed scientific ranges, such
@@ -525,11 +599,35 @@ class PreviewChartHandle:
         for key, axis in axes.items():
             self._navigation.axes[key]["inverse"] = axis["inverse"]
         axes = self._navigation.axes
-        self.options["dnascapeNavigation"] = dict(context=context, axes=axes)
+        self.options["dnascapeNavigation"] = dict(
+            context=context, axes=axes, token=self._navigation.token, sequence=self._navigation.sequence,
+        )
         for key, values in tuple(self._navigation.ranges.items()):
             if key in axes and (limits := _clamp_navigation_range(values, axes[key])) is not None:
                 _set_navigation_axis(self.options, key, limits)
+        self._stabilize_title_spacing()
         self._sync_navigation_fields()
+
+    def _stabilize_title_spacing(self) -> None:
+        """Retain collision-driven spacing through redraws and vector exports."""
+        grid = self.options.get("grid", {})
+        grid = grid[0] if isinstance(grid, list) and grid else grid
+        specifications = self.options.get("yAxis", [])
+        specifications = specifications if isinstance(specifications, list) else [specifications]
+        for index, spec in enumerate(specifications):
+            key = "secondary_y" if index else "y"
+            name = spec.get("name", "")
+            gap = _finite_number(spec.get("nameGap"))
+            if not name or gap is None:
+                self._navigation.title_gaps.pop(key, None)
+                continue
+            previous = self._navigation.title_gaps.get(key)
+            retained = max(gap, previous[1]) if previous and previous[0] == name else gap
+            self._navigation.title_gaps[key] = (name, retained)
+            if retained > gap:
+                side = "right" if spec.get("position") == "right" else "left"
+                grid[side] = float(grid.get(side, 24)) + retained - gap
+                spec["nameGap"] = retained
 
     def _sync_navigation_fields(self) -> None:
         controls = self.settings
@@ -546,14 +644,23 @@ class PreviewChartHandle:
         finally:
             object.__setattr__(controls, "_resetting_limits", False)
 
-    def accept_navigation(self, payload: Any) -> None:
+    def _commit_navigation(self, payload: Any) -> bool:
         """Commit a small browser viewport event, keeping all profile data intact."""
         if not isinstance(payload, Mapping) or payload.get("context") != self._navigation.context:
-            return
+            return False
+        if payload.get("token", self._navigation.token) != self._navigation.token:
+            return False
+        sequence = payload.get("sequence")
+        if sequence is not None and (
+            not isinstance(sequence, int) or isinstance(sequence, bool) or sequence <= self._navigation.sequence
+        ):
+            return False
         axes = self._navigation.axes
         requested = payload.get("ranges")
         if not isinstance(requested, Mapping):
-            return
+            return False
+        if sequence is not None:
+            self._navigation.sequence = sequence
         for key, values in requested.items():
             if key not in axes or (limits := _clamp_navigation_range(values, axes[key])) is None:
                 continue
@@ -564,7 +671,59 @@ class PreviewChartHandle:
                     axis_limits_from_controls(self.settings, key)
                 )
             self._navigation.ranges[key] = limits
-        self.update()
+        title_gaps = payload.get("titleGaps", {})
+        if isinstance(title_gaps, Mapping):
+            specifications = self.options.get("yAxis", [])
+            specifications = specifications if isinstance(specifications, list) else [specifications]
+            for key, raw_gap in title_gaps.items():
+                axis = axes.get(key)
+                gap = _finite_number(raw_gap)
+                if axis is None or axis["dimension"] != "y" or gap is None or not 0 <= gap <= 128:
+                    continue
+                name = specifications[axis["index"]].get("name", "")
+                previous = self._navigation.title_gaps.get(key)
+                self._navigation.title_gaps[key] = (
+                    name, max(gap, previous[1]) if previous and previous[0] == name else gap,
+                )
+        return True
+
+    def accept_navigation(self, payload: Any) -> None:
+        """Commit synchronously for callers already running outside a UI gesture."""
+        if self._commit_navigation(payload):
+            self.update()
+
+    async def accept_navigation_async(self, payload: Any) -> None:
+        """Coalesce native-data reads in one worker without blocking the UI."""
+        if not self._commit_navigation(payload):
+            return
+        self._apply_navigation()
+        if self.settings is not None:
+            sync_preview_axis_limits(self.settings, self.options)
+        self.invalidate_export()
+        self._refinement_request += 1
+        if self._refining:
+            return
+        self._refining = True
+        self._refinement_idle.clear()
+        try:
+            while not getattr(self.canvas, "is_deleted", False):
+                request, token = self._refinement_request, self._navigation.token
+                jobs = self._refinement_plan()
+                if not jobs:
+                    break
+                results = await run.io_bound(self._compute_refinements, jobs)
+                if getattr(self.canvas, "is_deleted", False):
+                    break
+                if request != self._refinement_request:
+                    continue
+                if token != self._navigation.token:
+                    break
+                if results is not None and self._install_refinements(results):
+                    self.update()
+                break
+        finally:
+            self._refining = False
+            self._refinement_idle.set()
 
     def _sync_zoom(self) -> None:
         if self.zoom.options is not self.options:
@@ -606,6 +765,8 @@ class PreviewChartHandle:
         timeout: float = 1,
     ) -> Any:
         arguments = args[0] if args and isinstance(args[0], Mapping) else {}
+        if name.lstrip(":") == "getDataURL" and self._refining:
+            await self._refinement_idle.wait()
         vector_capture = (
             name.lstrip(":") == "getDataURL" and str(arguments.get("type", "")).casefold() == "svg"
         )
@@ -636,7 +797,7 @@ class PreviewChartHandle:
                 # shallow top-level copy keeps the two component dictionaries
                 # independent without copying immutable nested plot data.
                 self.vector.options.clear()
-                self.vector.options.update(self.canvas.options)
+                self.vector.options.update(self.options)
                 self.vector.update()
                 self._vector_revision = self._revision
             result = await self.vector.run_chart_method(name, *args, timeout=timeout)
@@ -745,6 +906,13 @@ def _clear_preview_navigation(controls: PreviewSettingsControls) -> None:
         object.__setattr__(controls, "_resetting_limits", False)
 
 
+def _report_log_minimum(controls: PreviewSettingsControls, axis: str, minimum: float) -> None:
+    error = (axis, minimum)
+    if controls._log_limit_error != error:
+        notify(f"Log {axis.upper()} minimum must be greater than zero.", type="negative")
+    object.__setattr__(controls, "_log_limit_error", error)
+
+
 def plotting_settings_ready(
     controls: PreviewSettingsControls,
     *,
@@ -758,6 +926,21 @@ def plotting_settings_ready(
     remains visible and no transient error notification is emitted.
     """
 
+    error = None
+    for axis in ("x", "y", *(("z",) if plot_type == "Heatmap" else ())):
+        if not getattr(controls, f"log_{axis}").value:
+            continue
+        if axis in controls._automatic_axes and not (axis == "x" and plot_type == "Histogram"):
+            continue
+        prefix = "histogram_x" if axis == "x" and plot_type == "Histogram" else axis
+        minimum = _finite_number(getattr(controls, f"{prefix}_minimum").value)
+        if minimum is not None and minimum <= 0:
+            error = (axis, minimum)
+            break
+    if error is not None:
+        _report_log_minimum(controls, *error)
+        return False
+    object.__setattr__(controls, "_log_limit_error", None)
     if plot_type == "Histogram" and controls.density.value and _positive_finite(controls.kde_bandwidth.value) is None:
         return False
     if plot_type == "Histogram" and (
@@ -842,6 +1025,9 @@ class HistogramBinSynchronizer:
 
     def _sync_automatic_x_limits(self, values: Any) -> bool:
         if not self._x_limits_automatic:
+            minimum = _finite_number(self.controls.histogram_x_minimum.value)
+            if self.controls.view.value == "Histogram" and self._log_x() and minimum is not None and minimum <= 0:
+                _report_log_minimum(self.controls, "x", minimum)
             return self._x_limits() is not None
         domain = histogram_domain(values, log_x=bool(self._log_x()))
         if domain is None:
@@ -1047,11 +1233,12 @@ _PREVIEW_SETTING_MARKER_SUFFIXES: dict[str, str] = {
     "histogram_x_maximum": "histogram-x-maximum",
     "reset_histogram_x_limits": "reset-histogram-x-limits",
     "show_histogram_statistics": "show-histogram-statistics",
+    "export_histogram_statistics": "export-histogram-statistics",
+    "histogram_statistics_options": "histogram-statistics-options",
     "histogram_statistics_position": "histogram-statistics-position",
     "show_legend": "show-legend",
     "legend_name": "legend-name",
     "show_filter": "show-filter",
-    "export_filter": "export-filter",
     "filter_guide_options": "filter-guide-options",
     "filter_name": "filter-name",
     "legend_position": "legend-position",
@@ -1156,7 +1343,7 @@ def preview_settings_controls(
     from app.pages.common import expansion
 
     markers = {} if markers is None else markers
-    legend_name = show_filter = export_filter = filter_name = filter_guide_options = None
+    legend_name = show_filter = filter_name = filter_guide_options = None
     with expansion(
         "Plot settings",
         icon="palette",
@@ -1186,9 +1373,6 @@ def preview_settings_controls(
                             ui.number(label="Aspect ratio", value=3.0, min=0.2, max=8, step=0.1)
                             .props('dense placeholder="Default"').classes("dn-field dn-field-compact"),
                             markers, "aspect_ratio",
-                        )
-                        aspect_ratio.tooltip(
-                            "Width divided by height (0.2–8). Default: 3."
                         )
                         with aspect_ratio.add_slot("append"):
                             reset_aspect_ratio = _mark(
@@ -1223,9 +1407,6 @@ def preview_settings_controls(
                         markers,
                         "histogram_bin_size",
                     )
-                    histogram_bin_size.tooltip(
-                        "Any positive width is accepted; at most 2,000 bins are drawn."
-                    )
                 histogram_boundary = _mark(
                     ui.select(
                         {
@@ -1239,10 +1420,6 @@ def preview_settings_controls(
                     .classes("dn-field"),
                     markers,
                     "histogram_boundary",
-                )
-                histogram_boundary.tooltip(
-                    "Choose which adjacent bin owns an exact internal edge; "
-                    "the outer range endpoints are always included."
                 )
                 with _mark(
                     ui.column().classes("dn-preview-ensemble-options"),
@@ -1275,10 +1452,6 @@ def preview_settings_controls(
                         markers,
                         "individual_profile_count",
                     )
-                    individual_profile_count.tooltip(
-                        "Retain up to this many profiles per run, subject to the memory limit. "
-                        "Run again to retain more after increasing the count."
-                    )
 
                 with ui.element("div").classes("dn-preview-colour-grid"):
                     primary_color_surface, primary_color = compact_color_input(
@@ -1303,7 +1476,6 @@ def preview_settings_controls(
                         ui.select(CURVE_TYPES, value="solid", label="Type")
                         .props("dense options-dense").classes("dn-field"), markers, "line_type",
                     )
-                    line_type.tooltip("Default pattern; each curve can use its own.")
                     secondary_color_surface, secondary_color = compact_color_input(
                         "Second color",
                         "#2596be",
@@ -1332,7 +1504,7 @@ def preview_settings_controls(
                     )
                 with ui.element("div").classes("dn-kde-controls"):
                     density = _mark(
-                        ui.checkbox("KDE", value=False).tooltip("Gaussian kernel density with Scott's automatic bandwidth"),
+                        ui.checkbox("KDE", value=False),
                         markers,
                         "density",
                     )
@@ -1341,7 +1513,6 @@ def preview_settings_controls(
                         .props("dense inputmode=decimal").classes("dn-field dn-field-compact"),
                         markers, "kde_bandwidth",
                     )
-                    kde_bandwidth.tooltip("Multiplier of Scott's bandwidth: higher values give a smoother curve.")
                 with ui.element("div").classes("dn-inline-actions"):
                     histogram_touching = _mark(
                         ui.checkbox("Touching bins", value=True),
@@ -1351,7 +1522,6 @@ def preview_settings_controls(
                     histogram_grouped = _mark(
                         ui.checkbox("Side by side", value=False), markers, "histogram_grouped",
                     )
-                    histogram_grouped.tooltip("Place datasets beside each other within each shared bin interval.")
 
             with ui.column().classes("dn-preview-setting-group"):
                 ui.label("Axes").classes("dn-setting-group-title")
@@ -1428,7 +1598,6 @@ def preview_settings_controls(
                 secondary_log_x = secondary_invert_x = secondary_log_y = secondary_invert_y = None
                 if allow_dual_y_axes:
                     dual_y_axes = _mark(ui.switch("Two Y axes", value=False), markers, "dual_y_axes")
-                    dual_y_axes.tooltip("Independent X and Y axes for each of the two datasets.")
                     dual_y_axes.visible = False
                     secondary_y_axis_label = _mark(
                         ui.input(label="Y2 label", value="Value").props("dense clearable").classes("dn-field"),
@@ -1460,25 +1629,23 @@ def preview_settings_controls(
                         markers,
                         "show_legend",
                     )
-                    show_histogram_statistics = _mark(
-                        ui.checkbox("Statistics", value=True),
-                        markers,
-                        "show_histogram_statistics",
-                    )
-                    show_histogram_statistics.tooltip(
-                        "Show the mean, median, and standard deviation on the histogram."
-                    )
                     with ui.element("div").classes("dn-guide-pair"):
                         show_grid = _mark(ui.checkbox("Grid", value=True), markers, "show_grid")
                         show_hover = _mark(ui.checkbox("Hover", value=True), markers, "show_hover")
                     colorbar = _mark(
                         ui.checkbox("Colorbar", value=True), markers, "colorbar",
                     )
+                with _mark(ui.element("div"), markers, "histogram_statistics_options").classes("dn-inline-actions") as histogram_statistics_options:
+                    show_histogram_statistics = _mark(
+                        ui.checkbox("Statistics", value=True), markers, "show_histogram_statistics",
+                    )
+                    export_histogram_statistics = _mark(
+                        ui.checkbox("Export statistics", value=False), markers, "export_histogram_statistics",
+                    )
                 if allow_filter:
                     with ui.element("div").classes("dn-inline-actions") as filter_guide_options:
                         _mark(filter_guide_options, markers, "filter_guide_options")
                         show_filter = _mark(ui.checkbox("Filter", value=False), markers, "show_filter")
-                        export_filter = _mark(ui.checkbox("Export filter", value=False), markers, "export_filter")
                 if allow_legend_name:
                     legend_name = _mark(
                         ui.input("Legend name", value="").props('dense placeholder="Automatic"').classes("dn-field"),
@@ -1546,6 +1713,8 @@ def preview_settings_controls(
         histogram_x_maximum=histogram_x_maximum,
         reset_histogram_x_limits=reset_histogram_x_limits,
         show_histogram_statistics=show_histogram_statistics,
+        export_histogram_statistics=export_histogram_statistics,
+        histogram_statistics_options=histogram_statistics_options,
         histogram_statistics_position=histogram_statistics_position,
         show_legend=show_legend,
         legend_position=legend_position,
@@ -1573,7 +1742,6 @@ def preview_settings_controls(
         fill_options=fill_options,
         legend_name=legend_name,
         show_filter=show_filter,
-        export_filter=export_filter,
         filter_guide_options=filter_guide_options,
         filter_name=filter_name,
         dual_y_axes=dual_y_axes,
@@ -1665,6 +1833,7 @@ def bind_preview_settings_updates(
         on_redraw()
 
     controls.show_histogram_statistics.on_value_change(refresh_visibility_and_plot)
+    controls.export_histogram_statistics.on_value_change(lambda: refresh_statistics_exports(controls))
     controls.show_legend.on_value_change(refresh_visibility_and_plot)
     controls.show_fill.on_value_change(refresh_visibility_and_plot)
     if controls.show_filter is not None:
@@ -1752,6 +1921,8 @@ def sync_preview_settings_visibility(
     controls.z_limit_editor.visible = heatmap
     controls.density.visible = histogram
     controls.show_histogram_statistics.visible = histogram
+    controls.export_histogram_statistics.visible = histogram
+    controls.histogram_statistics_options.visible = histogram
     controls.histogram_statistics_position.visible = False
     individual_profiles = line and allow_individual_profiles
     standard_deviation = line and allow_standard_deviation
@@ -1775,8 +1946,6 @@ def sync_preview_settings_visibility(
     if controls.show_filter is not None:
         controls.show_filter.visible = line and filter_available
         controls.show_filter.set_enabled(filter_available)
-        controls.export_filter.visible = line and filter_available
-        controls.export_filter.set_enabled(filter_available)
         if getattr(controls, "filter_guide_options", None) is not None:
             controls.filter_guide_options.visible = line and filter_available
         controls.filter_name.visible = (
@@ -1786,6 +1955,7 @@ def sync_preview_settings_visibility(
         controls.show_legend.value or (histogram and controls.show_histogram_statistics.value)
     )
     controls.legend_position.props(f'label="{"Panel position" if histogram and controls.show_histogram_statistics.value else "Legend position"}"')
+    refresh_statistics_exports(controls)
 
 
 def render_preview_chart(
@@ -1831,7 +2001,7 @@ def render_preview_chart(
     handle._sync_canvas_options()
     zoom_chart.options.update(chart.options)
     for surface in (chart, zoom_chart):
-        surface.on("plotViewport", lambda event: handle.accept_navigation(event.args))
+        surface.on("plotViewport", lambda event: handle.accept_navigation_async(event.args))
         surface.on("plotDataset", lambda event: handle.select_histogram_dataset(event.args))
     chart.on("brandTheme", handle.invalidate_export)
     return handle

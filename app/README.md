@@ -39,6 +39,9 @@ example at 1 kb bins for all chromosomes needs about 322 MB; choosing 512 MB
 allows that conversion. Related track array and download limits scale with the
 budget. This setting does not reserve RAM, cap actual RAM use, or change upload
 limits. Settings uses grouped switches and draft preferences; Apply saves changes.
+**Field hover hints** under **Interface** enables brief field descriptions and is
+on by default. Turn it off without affecting plot hover readouts or the separate
+**Field help** option, which stays off by default.
 Under **Visualisation**, **DNAscape theme** offers a colour picker and hex input for
 the app accents, logo and browser-tab icon, with readable light and dark variants.
 Restore defaults brings back the original DNAscape red.
@@ -111,8 +114,8 @@ The options remain visible with **Apply filter** off. In **Plot settings → Gui
 **Filter** shades the applied filter's selected regions in light grey, preserving
 the pre-edit selection and native-bin detail on zoom. Enable **Legend** to name
 the plotted signal and filter separately. Display settings do not change the data.
-**Export filter** adds a raw-data download of the selected native positions,
-including chromosome labels and time-slice indices when applicable. Preview
+**Export filter**, beside **Apply filter** in Controls, adds a headerless raw-data
+download of selected positions or genomic intervals as whole numbers. Preview
 sampling never reduces the exported positions.
 
 Filter operations replace with a value or NaN, average each contiguous region,
@@ -291,10 +294,14 @@ Reset restores automatic ranges, including after an incomplete edit. Custom
 aspect ratios in Style range from 0.2 to 8 and adjust the height to the preview
 width without a minimum-height clamp. The default and reset aspect ratio is 3.
 Line previews draw up to 1,000 native points from the visible window by default,
-with the budget set in Visualisation settings, refreshing this
-sample after zooming or panning. A bounded coarse overview remains outside that
-window so navigation never has to wait for detail to draw the rest of the
-profile. Heatmaps retain their full-region raster around the detailed tile;
+with the budget set in Visualisation settings. Detail is prefetched for one
+visible window on either side, with a bounded coarse overview elsewhere.
+Small pans reuse that detail; deeper zooms load more native samples. Browser
+gestures are drawn once per frame, and delayed server responses preserve the
+latest viewport. Native-data reads run in one background worker that coalesces
+requests, keeping the interface responsive. Plain single-column text outputs
+use a compact row index to avoid rescanning the entire file for each view.
+Heatmaps retain their full-region raster around the detailed tile;
 missing fine cells stay transparent.
 Hover coordinates use integers for whole-number axes, two decimals for fractional
 axes, and scientific notation for tiny values. Simulation raw exports default to
@@ -406,7 +413,7 @@ or duplicated in this folder.
   header, while an all-chromosome text file is a labelled wide table and an
   all-chromosome NPZ stores one native-length array per chromosome key. Plain
   TSV is the default. Selected profiles can be smoothed, multiplied by a factor,
-  rescaled into an explicit target interval (with optional inversion), or
+  rescaled into an explicit target interval, independently inverted, or
   threshold-filtered without deleting or shifting samples; each value-scaling
   operation is mutually exclusive, and filtered values are represented as
   missing. Result plotting is an off-by-default, 500-point visual check.

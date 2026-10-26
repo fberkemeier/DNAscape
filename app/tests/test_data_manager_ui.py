@@ -106,7 +106,7 @@ def test_generated_file_selector_switches_preview_and_export_and_preserves_prefe
                 Upload.SmallFileUpload("first.csv", "text/csv", b"position,signal\n0,1\n1,3\n2,2\n"),
                 Upload.SmallFileUpload("second.csv", "text/csv", b"position,signal\n0,5\n1,7\n2,6\n"),
             ])
-            await user.should_see("Datasets: 2", retries=60)
+            await user.should_see(marker="data-manager-upload-source-label-2", retries=60)
             user.find(marker="action-convert").click()
             await user.should_see(marker="data-manager-select-result-2", retries=80)
             assert control("data-manager-select-result-2")._props["aria-pressed"] == "true"
@@ -134,7 +134,7 @@ def test_generated_file_selector_switches_preview_and_export_and_preserves_prefe
             await control("data-manager-upload").handle_uploads([
                 Upload.SmallFileUpload("third.csv", "text/csv", b"position,signal\n0,9\n1,11\n2,10\n"),
             ])
-            await user.should_see("Datasets: 3", retries=60)
+            await user.should_see(marker="data-manager-upload-source-label-3", retries=60)
             user.find(marker="action-convert").click()
             await user.should_see(marker="data-manager-select-result-3", retries=80)
             assert control("data-manager-select-result-3")._props["aria-pressed"] == "true"
@@ -183,7 +183,7 @@ def test_generated_plot_settings_update_preview_and_export_without_changing_data
                 Upload.SmallFileUpload("first.csv", "text/csv", b"position,signal\n0,1\n1,3\n2,2\n"),
                 Upload.SmallFileUpload("second.csv", "text/csv", b"position,signal\n0,5\n1,7\n2,6\n"),
             ])
-            await user.should_see("Datasets: 2", retries=60)
+            await user.should_see(marker="data-manager-upload-source-label-2", retries=60)
             user.find(marker="action-convert").click()
             await user.should_see(marker="data-manager-preview-chart", retries=80)
             await user.should_see("Plot settings")
@@ -389,7 +389,8 @@ def test_sns_firing_preset_and_switch_back_to_repliseq_bigwig(
             await asyncio.sleep(0.1)
             user.find(marker="action-inspect-data-link-1").click()
             await asyncio.sleep(0)
-            await _wait_for(lambda: control("action-inspect-data-link-1").enabled)
+            await _wait_for(lambda: control("action-inspect-data-link-1").text == "✓")
+            assert not control("action-inspect-data-link-1").enabled
             await user.should_see("The source is ready.", retries=80)
             assert control("data-manager-feature").value == "firing_rate"
             assert control("data-manager-aggregation").value == "max"
@@ -423,12 +424,14 @@ def test_sns_firing_preset_and_switch_back_to_repliseq_bigwig(
             assert requests[0].smooth_window == 1
             assert requests[0].interpolation == "none"
             assert requests[0].biological_role == "firing_rate"
+            assert not control("action-inspect-data-link-1").enabled
 
             user.find(marker="use-encode-data-example").click()
             await asyncio.sleep(0.1)
             user.find(marker="action-inspect-data-link-1").click()
             await asyncio.sleep(0)
-            await _wait_for(lambda: control("action-inspect-data-link-1").enabled)
+            await _wait_for(lambda: control("action-inspect-data-link-1").text == "✓")
+            assert not control("action-inspect-data-link-1").enabled
             await user.should_see("The source is ready.", retries=80)
             assert control("data-manager-feature").value == "replication_timing"
             aggregation = control("data-manager-aggregation")
@@ -453,7 +456,8 @@ def test_sns_firing_preset_and_switch_back_to_repliseq_bigwig(
             )
             user.find(marker="action-inspect-data-link-1").click()
             await asyncio.sleep(0)
-            await _wait_for(lambda: control("action-inspect-data-link-1").enabled)
+            await _wait_for(lambda: control("action-inspect-data-link-1").text == "✓")
+            assert not control("action-inspect-data-link-1").enabled
             await user.should_see("The source is ready.", retries=80)
             assert control("data-manager-feature").value == "fork_directionality"
             assert control("data-manager-aggregation").value == "mean"
@@ -803,8 +807,8 @@ def test_bedgraph_reveals_track_polishing_controls_and_defaults_to_plain_tsv() -
 
             assert tuple(value_scaling.options) == (
                 "none",
-                "multiplier",
                 "interval",
+                "multiplier",
                 "center",
                 "zscore",
                 "maxabs",
@@ -813,6 +817,9 @@ def test_bedgraph_reveals_track_polishing_controls_and_defaults_to_plain_tsv() -
             await user.should_see(marker="data-manager-multiplier-fields")
             await user.should_see(marker="data-manager-scale-multiplier")
             await user.should_not_see(marker="data-manager-target-interval")
+            await user.should_see(marker="data-manager-interval-invert")
+            invert = next(iter(user.find(marker="data-manager-interval-invert").elements))
+            assert invert.parent_slot.parent is scaling_column
             multiplier_fields = next(
                 iter(user.find(marker="data-manager-multiplier-fields").elements)
             )
@@ -1030,6 +1037,50 @@ def test_plain_profile_reveals_the_same_polishing_controls() -> None:
             user.find(marker="action-convert").click()
             await user.should_see(marker="data-manager-result-1", retries=60)
 
+    asyncio.run(scenario())
+
+
+def test_invert_without_scaling_is_applied_and_configuration_bypass_disables_it(monkeypatch) -> None:
+    from app.pages import data_management as page
+
+    results = []
+    original = page.convert_data
+    def capture(request, *args, **kwargs):
+        result = original(request, *args, **kwargs)
+        results.append((request, result))
+        return result
+    monkeypatch.setattr(page, "convert_data", capture)
+
+    async def scenario():
+        async with user_simulation(index) as user:
+            await user.open("/")
+            user.find(marker="nav-data-management").click()
+            def control(name):
+                return next(item for item in user.client.elements.values()
+                            if f"data-manager-{name}" in item._markers and not item.is_deleted)
+            await control("upload").handle_uploads([
+                Upload.SmallFileUpload("signal.tsv", "text/plain", b"signal\n2\n3\n8\n")
+            ])
+            await user.should_see("Array size: 3", retries=60)
+            assert control("value-scaling").value == "none"
+            assert control("interval-invert").visible
+            with user.client:
+                control("interval-invert").set_value(True)
+            async def convert(count):
+                user.find(marker="action-convert").click()
+                for _ in range(120):
+                    await asyncio.sleep(.02)
+                    if len(results) == count and control("apply-configuration").enabled:
+                        break
+                assert len(results) == count
+            await convert(1)
+            assert results[-1][0].rescale_invert
+            np.testing.assert_equal(results[-1][1].preview.values, [8, 7, 2])
+            with user.client:
+                control("apply-configuration").set_value(False)
+            await convert(2)
+            assert not results[-1][0].rescale_invert
+            np.testing.assert_equal(results[-1][1].preview.values, [2, 3, 8])
     asyncio.run(scenario())
 
 
@@ -1283,8 +1334,9 @@ def test_data_manager_retains_multiple_uploads_converts_the_batch_and_deletes_al
 
             await user.should_see("first.csv", retries=30)
             await user.should_see("second.csv", retries=30)
-            await user.should_see("Datasets: 2", retries=30)
-            await user.should_see(marker="data-manager-source-dataset")
+            await user.should_see(marker="data-manager-upload-source-label-2", retries=30)
+            await user.should_see(marker="data-manager-apply-configuration-to-all")
+            await user.should_not_see(marker="data-manager-source-dataset")
             await user.should_see(marker="data-manager-upload-delete-all")
             assert uploader.visible is True
             assert len(user.find(marker="data-manager-upload-file").elements) == 2
@@ -1390,8 +1442,9 @@ def test_data_manager_adds_and_inspects_multiple_public_link_rows(
             assert convert.enabled is False
             user.find(marker="action-inspect-data-link-2").click()
             await user.should_see("The source is ready.", retries=80)
-            await user.should_see("Datasets: 2", retries=80)
-            await user.should_see(marker="data-manager-source-dataset")
+            await user.should_see(marker="data-manager-source-details-url:2", retries=80)
+            await user.should_see(marker="data-manager-apply-configuration-to-all")
+            await user.should_not_see(marker="data-manager-source-dataset")
             assert len(user.find(marker="data-manager-source-url").elements) == 2
             assert convert.enabled is True
 
@@ -1549,7 +1602,7 @@ def test_generated_files_use_raw_output_rows_and_keep_export_preferences(
                     ),
                 ]
             )
-            await user.should_see("Datasets: 2", retries=40)
+            await user.should_see(marker="data-manager-upload-source-label-2", retries=40)
             user.find(marker="action-convert").click()
             await user.should_see(marker="data-manager-result-2", retries=60)
 
@@ -1719,7 +1772,7 @@ def test_data_manager_stop_cancels_batch_without_publishing_staged_files(
                     ),
                 ]
             )
-            await user.should_see("Datasets: 2", retries=40)
+            await user.should_see(marker="data-manager-upload-source-label-2", retries=40)
             button = cast(
                 Button,
                 next(iter(user.find(marker="action-convert").elements)),

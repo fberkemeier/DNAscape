@@ -51,6 +51,9 @@ def test_filter_defaults_visibility_uploaded_mask_and_post_configure_results(mon
             assert control("filter").value is False
             user.find(marker="data-manager-filter").click()
             assert control("filter-enabled").value is False
+            from nicegui.elements.switch import Switch
+            assert isinstance(control("filter-export"), Switch)
+            assert control("filter-profile-units").value == "bp"
             await user.should_see(marker="data-manager-filter-selection")
             assert control("filter-enabled").__class__.__name__ == "Switch"
             await user.should_see(marker="data-manager-filter-replace-value")
@@ -113,9 +116,14 @@ def test_filter_defaults_visibility_uploaded_mask_and_post_configure_results(mon
             with user.client:
                 before = current_session_cache().count()
             await control("filter-upload").handle_uploads([
-                Upload.SmallFileUpload("mask.tsv", "text/tab-separated-values", b"mask\n0\n1\n0\n"),
+                Upload.SmallFileUpload("mask.tsv", "text/tab-separated-values", b"position_kb\n1\n"),
             ])
             await user.should_see("mask.tsv", retries=60)
+            assert control("filter-profile-units").value == "kb"
+            assert list(control("filter-profile-units").options) == ["kb", "bp"]
+            await user.should_not_see(marker="data-manager-filter-profile-layout")
+            await user.should_not_see(marker="data-manager-filter-profile-column")
+            await user.should_not_see(marker="data-manager-filter-profile-array-key")
             with user.client:
                 assert current_session_cache().count() == before
             await converted([4, 7, -6])
@@ -126,9 +134,19 @@ def test_filter_defaults_visibility_uploaded_mask_and_post_configure_results(mon
                 Upload.SmallFileUpload("positions.tsv", "text/tab-separated-values", b"position_bp\n1000\n"),
             ])
             await user.should_see("positions.tsv", retries=60)
-            assert control("filter-profile-layout").value == "positions"
+            assert control("filter-profile-units").value == "bp"
             await user.should_see(marker="data-manager-filter-profile-units")
             await converted([4, 7, -6])
+            assert requests[-1].data_filter.profile.layout == "positions"
+            user.find(marker="data-manager-filter-upload-remove").click()
+            await user.should_not_see("positions.tsv")
+            await control("filter-upload").handle_uploads([
+                Upload.SmallFileUpload("regions.tsv", "text/tab-separated-values", b"start_kb\tend_kb\n0\t2\n"),
+            ])
+            await user.should_see("regions.tsv", retries=60)
+            assert control("filter-profile-units").value == "kb"
+            await converted([7, 7, -6])
+            assert requests[-1].data_filter.profile.layout == "intervals"
             with user.client:
                 control("filter-selection").set_value("all")
                 control("filter-action").set_value("nan")
@@ -157,11 +175,12 @@ def test_filter_shading_follows_selected_generated_file_and_guide_visibility():
                 Upload.SmallFileUpload("first.tsv", "text/plain", b"value\n1\n-2\n3\n"),
                 Upload.SmallFileUpload("second.tsv", "text/plain", b"value\n1\n2\n-3\n"),
             ])
-            await user.should_see("Datasets: 2", retries=80)
+            await user.should_see(marker="data-manager-upload-source-label-2", retries=80)
             user.find(marker="data-manager-filter").click()
             user.find(marker="data-manager-filter-enabled").click()
             user.find(marker="action-convert").click()
             await user.should_see(marker="data-manager-select-result-2", retries=80)
+            await user.should_see(marker="data-manager-preview-chart", retries=80)
             with user.client:
                 control("plot-show-filter").set_value(True)
                 control("plot-show-legend").set_value(True)

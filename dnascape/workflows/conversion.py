@@ -168,6 +168,9 @@ class DataConversionRequest:
     start: int | None = None
     end: int | None = None
     bin_size: int = 1_000
+    profile_binning: bool = False
+    source_bin_size: int = 1_000
+    source_start: int = 0
     aggregation: str = "mean"
     track_missing: str = "zero"
     fill_value: float = 0.0
@@ -259,6 +262,7 @@ class DataPreview:
     minimum: float | None
     maximum: float | None
     filter_selection: FilterSelection | None = field(default=None, repr=False, compare=False)
+    minimum_positive: float | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -274,6 +278,7 @@ class DataConversionResult:
     metadata: tuple[tuple[str, str], ...] = ()
     preview: DataPreview | None = field(default=None, repr=False, compare=False)
     filter_positions: tuple[FilterPositionGroup, ...] = field(default=(), repr=False, compare=False)
+    warnings: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True, slots=True)
@@ -284,33 +289,61 @@ class FilterPositionGroup:
     coordinate: str = "bin_index"
     chromosome: str | None = None
     time_index: int | None = None
+    interval_data: bytes | None = field(default=None, repr=False, compare=False)
 
 
-def filter_positions_artifact(result: DataConversionResult, *, output_name: str, target_format="tsv", gzip_output=False) -> ExportArtifact:
-    """Export a headerless integer position list, independent of preview sampling.
+def filter_positions_artifact(
+    result: DataConversionResult, *, output_name: str, target_format="tsv",
+    gzip_output=False, layout="positions",
+) -> ExportArtifact:
+    """Export integer positions or merged half-open intervals at native resolution.
 
     Genomic coordinates are stored internally in kb and exported in bp to
     retain sub-kb bins as whole numbers. Repeated positions across chromosomes
     or time slices form one selection; bin-index sources remain zero-based.
+    Interval endpoints retain the source extents, including partial final regions.
     """
     if not result.filter_positions:
         raise ValueError("This result has no applied filter to export.")
+    if layout not in {"positions", "intervals"}:
+        raise ValueError("Choose a position list or genomic intervals for the filter.")
     groups = result.filter_positions
     arrays = []
     for group in groups:
         values = np.frombuffer(gzip.decompress(group.data), dtype="<f8")
         # Choose a base inside a half-open genomic bin, even for 1-bp bins
         # whose centres fall halfway between integer base coordinates.
-        integers = np.floor(values * 1000 + 1e-9) if group.coordinate == "position_kb" else np.rint(values)
+        factor = 1000 if group.coordinate == "position_kb" else 1
+        if layout == "intervals":
+            bounds = (
+                np.frombuffer(gzip.decompress(group.interval_data), dtype="<f8").reshape(-1, 2)
+                if group.interval_data is not None else np.column_stack((values, values + 1 / factor))
+            )
+            integers = np.rint(bounds * factor).astype(np.int64)
+            integers[:, 1] = np.maximum(integers[:, 1], integers[:, 0] + 1)
+        else:
+            integers = np.floor(values * 1000 + 1e-9) if factor == 1000 else np.rint(values)
         arrays.append(integers.astype(np.int64))
-    positions = np.unique(np.concatenate(arrays))
+    positions = np.concatenate(arrays)
+    if layout == "intervals":
+        if len(positions):
+            positions = positions[np.lexsort((positions[:, 1], positions[:, 0]))]
+            boundaries = np.r_[True, positions[1:, 0] > np.maximum.accumulate(positions[:, 1])[:-1]]
+            indices = np.flatnonzero(boundaries)
+            positions = np.column_stack((positions[indices, 0], np.maximum.reduceat(positions[:, 1], indices)))
+    else:
+        positions = np.unique(positions)
     target_format = target_format.lower()
     if target_format == "npz":
         stream = io.BytesIO()
-        np.savez_compressed(stream, positions=positions)
+        np.savez_compressed(stream, **{layout: positions})
         payload = stream.getvalue()
     elif target_format in {"tsv", "csv", "txt"}:
-        payload = "".join(f"{position}\n" for position in positions).encode()
+        separator = "," if target_format == "csv" else "\t"
+        payload = (
+            "".join(f"{start}{separator}{end}\n" for start, end in positions)
+            if layout == "intervals" else "".join(f"{position}\n" for position in positions)
+        ).encode()
     else:
         raise ValueError("Choose TSV, TXT, CSV or NPZ for filter positions.")
     if gzip_output:
@@ -528,6 +561,7 @@ def _polishing_active(
     signal_transform: str,
     scale: float,
     offset: float,
+    rescale_invert: bool = False,
 ) -> bool:
     return (
         smooth_window != 1
@@ -536,6 +570,7 @@ def _polishing_active(
         or signal_transform != "keep"
         or scale != 1.0
         or offset != 0.0
+        or rescale_invert
     )
 
 
@@ -624,9 +659,8 @@ def _normalized_request(request: DataConversionRequest) -> DataConversionRequest
             "maxabs": "maxabs",
         }[legacy_normalize]
     else:
-        # Explicit value scaling is intentionally self-contained. Legacy signal
-        # inversion is inert; target-interval inversion is the sole current UI
-        # mechanism for reversing a scale.
+        # Explicit value scaling ignores the legacy signal transform. The
+        # independent inversion control is applied with value scaling below.
         signal_transform = "keep"
         scaling_mode = _choice(request.scaling_mode, "value scaling", _SCALING_MODES)
         if legacy_normalize != "none":
@@ -634,6 +668,7 @@ def _normalized_request(request: DataConversionRequest) -> DataConversionRequest
                 "Choose value scaling with scaling_mode; it cannot be combined with normalize."
             )
 
+    rescale_invert = _boolean(request.rescale_invert, "Value inversion")
     if legacy_scaling and legacy_normalize == "minmax":
         # Preserve the historical fixed 0..1 min-max operation; target-range
         # fields were inactive for this legacy mode.
@@ -641,7 +676,6 @@ def _normalized_request(request: DataConversionRequest) -> DataConversionRequest
         rescale_max = 1.0
         rescale_invert = False
     elif scaling_mode == "interval":
-        rescale_invert = _boolean(request.rescale_invert, "Range inversion")
         rescale_min = _optional_finite_number(request.rescale_min, "Target minimum")
         rescale_max = _optional_finite_number(request.rescale_max, "Target maximum")
         if rescale_min is None or rescale_max is None:
@@ -649,10 +683,9 @@ def _normalized_request(request: DataConversionRequest) -> DataConversionRequest
         if rescale_max <= rescale_min:
             raise ValueError("Target maximum must be greater than target minimum.")
     else:
-        # Hidden controls are inert when target-interval scaling is not selected.
+        # Target limits are inactive outside target-interval scaling.
         rescale_min = 0.0
         rescale_max = 1.0
-        rescale_invert = False
     fill_value = float(request.fill_value)
     if not np.isfinite(fill_value):
         raise ValueError("Missing-value fill must be finite.")
@@ -684,6 +717,7 @@ def _normalized_request(request: DataConversionRequest) -> DataConversionRequest
         signal_transform=signal_transform,
         scale=scale,
         offset=offset,
+        rescale_invert=rescale_invert,
     ):
         raise ValueError(
             "Data polishing is available for space, time, space-time, and genomic-track "
@@ -895,6 +929,21 @@ def _preview(
         _peak_preview_indices(series, sample_count)
         if preserve_peaks else np.linspace(0, series.size - 1, sample_count, dtype=np.int64)
     )
+    # Keep logarithmic lower bounds tied to native samples, even when the
+    # overview skips the first positive coordinate or smallest positive value.
+    positive_x = np.flatnonzero(x_values > 0)
+    positive_y = np.flatnonzero(series > 0)
+    anchors = [0, series.size - 1]
+    if positive_x.size:
+        anchors.append(int(positive_x[np.argmin(x_values[positive_x])]))
+    if positive_y.size:
+        anchors.append(int(positive_y[np.argmin(series[positive_y])]))
+    if sample_count >= len(set(anchors)):
+        remaining = np.setdiff1d(indices, anchors)
+        available = sample_count - len(set(anchors))
+        if remaining.size > available:
+            remaining = remaining[np.linspace(0, remaining.size - 1, available, dtype=int)] if available else remaining[:0]
+        indices = np.unique(np.r_[remaining, anchors])
     sampled_x = np.array(x_values[indices], dtype=float, copy=True)
     sampled_values = np.array(series[indices], dtype=float, copy=True)
     sampled_x.setflags(write=False)
@@ -910,6 +959,7 @@ def _preview(
         missing_count=int(series.size - finite.size),
         minimum=float(finite.min()) if finite.size else None,
         maximum=float(finite.max()) if finite.size else None,
+        minimum_positive=float(series[positive_y].min()) if positive_y.size else None,
     )
 
 
@@ -1101,7 +1151,7 @@ def _prepare_repliseq_timing(
     values = _transform_values(values, request, cancel)
     coordinates = np.arange(length, dtype=float) * (bin_size / 1000)
     intervals = (np.column_stack((coordinates, np.minimum(coordinates + bin_size / 1000, end / 1000)))
-                 if request.data_filter.selection == "profile" else None)
+                 if request.data_filter.selection == "profile" or request.data_filter.enabled else None)
     if filter_preview is not None:
         filter_preview.append(capture_filter_selection(
             values, request.data_filter, positions=coordinates, intervals=intervals,
@@ -1374,7 +1424,13 @@ def _scale_series(series: pd.Series, request: DataConversionRequest) -> pd.Serie
 
     numeric = series.to_numpy(dtype=float)
     finite_values = numeric[np.isfinite(numeric)]
-    if request.scaling_mode == "none" or not finite_values.size:
+    if not finite_values.size:
+        return series
+    if request.rescale_invert:
+        minimum, maximum = float(finite_values.min()), float(finite_values.max())
+        series = minimum + (maximum - series)
+        finite_values = minimum + (maximum - finite_values)
+    if request.scaling_mode == "none":
         return series
     if request.scaling_mode == "multiplier":
         return series * request.scale + request.offset
@@ -1395,8 +1451,6 @@ def _scale_series(series: pd.Series, request: DataConversionRequest) -> pd.Serie
         if source_span == 0:
             return series * 0.0 + (target_minimum + target_maximum) / 2.0
         fraction = (series - source_minimum) / source_span
-        if request.rescale_invert:
-            fraction = 1.0 - fraction
         return target_minimum + fraction * (target_maximum - target_minimum)
     raise AssertionError(f"Unhandled value scaling {request.scaling_mode!r}.")
 
@@ -1416,6 +1470,7 @@ def _postprocess_profile_values(
         signal_transform=request.signal_transform,
         scale=request.scale,
         offset=request.offset,
+        rescale_invert=request.rescale_invert,
     ):
         _check_cancelled(cancel)
         return _readonly(values)
@@ -1492,6 +1547,8 @@ def _polishing_metadata(request: DataConversionRequest) -> tuple[tuple[str, str]
     ]
     if request.scaling_mode == "multiplier":
         metadata.append(("scale_multiplier", str(request.scale)))
+    if request.rescale_invert:
+        metadata.append(("values_inverted", "true"))
     if request.signal_transform != "keep":
         metadata.append(("legacy_signal_transform", request.signal_transform))
     if request.scaling_mode != "multiplier" and request.scale != 1.0:
@@ -1524,6 +1581,9 @@ def _profile_metadata(request: DataConversionRequest) -> tuple[tuple[str, str], 
             ("source_format", request.inspection.source_format),
             ("missing", request.missing_policy),
         )
+        + ((("start", str(request.start)), ("end", str(request.end)),
+            ("bin_size", str(request.bin_size)), ("source_bin_size", str(request.source_bin_size)))
+           if request.profile_binning else ())
         + _polishing_metadata(request)
         + _provenance_metadata(request)
         + filter_metadata(request.data_filter)
@@ -1600,7 +1660,7 @@ def _processed_profile(
     _check_cancelled(cancel)
     coordinates = _slice_coordinates(item, request.bin_size)
     intervals = None
-    if request.data_filter.selection == "profile":
+    if request.data_filter.selection == "profile" or request.data_filter.enabled:
         starts = np.arange(item.start, item.end, request.bin_size, dtype=np.int64)
         intervals = np.column_stack((starts, np.minimum(starts + request.bin_size, item.end))) / 1000.
     values = _transform_values(np.asarray(table[request.value_name], dtype=float), request, cancel)
@@ -1783,7 +1843,8 @@ def _prepare_track(
     )
 
 
-def prepare_data(request: DataConversionRequest, cancel: _CancelChecker | None = None) -> PreparedData:
+def prepare_data(request: DataConversionRequest, cancel: _CancelChecker | None = None,
+                 *, filter_preview: list[FilterSelection | None] | None = None) -> PreparedData:
     """Prepare values for preview/mapping without writing a download file."""
 
     request = _normalized_request(request)
@@ -1801,24 +1862,37 @@ def prepare_data(request: DataConversionRequest, cancel: _CancelChecker | None =
         value_column=request.value_column,
         array_key=request.array_key,
         missing_policy="interpolate" if request.missing_policy == "interpolate" else "ignore",
+        cancel=cancel,
     )
+    length = values.shape[0] if request.input_form == "xt" else values.size
+    positions, intervals = profile_coordinates(request.inspection, length)
+    if request.profile_binning:
+        from dnascape.workflows.profile_grid import spatial_profile_grid, spatial_profile_rows, rebin_spatial_profile
+        if request.input_form not in {"x", "xt"}:
+            raise ValueError("Region and binning require a spatial profile.")
+        if request.source_bin_size <= 0 or request.source_start < 0:
+            raise ValueError("Source resolution must be positive and its start non-negative.")
+        positions, intervals, _supplied = spatial_profile_grid(
+            request.inspection, length, source_bin_size=request.source_bin_size, source_start=request.source_start,
+            chromosome=request.chromosome,
+        )
+        rows, _chromosomes = spatial_profile_rows(request.inspection, request.chromosome)
+        if rows is not None:
+            values = values[rows] if request.input_form == "xt" else values.reshape(-1)[rows]
+        values, positions, intervals = rebin_spatial_profile(
+            values, positions, intervals, start=request.start, end=request.end,
+            bin_size=request.bin_size, aggregation=request.aggregation, space_time=request.input_form == "xt",
+            max_values=_track_limits(request).max_values, cancel=cancel,
+        )
     values = _postprocess_profile_values(values, request, cancel)
-    values = _filter_plain_values(values, request, cancel)
-    labels: tuple[str, ...] = ()
-    if request.value_column:
-        labels = (request.value_column,)
-    elif request.array_key:
-        labels = (request.array_key,)
-    elif request.input_form == "xt" and len(request.inspection.numeric_columns) == values.shape[1]:
-        labels = tuple(request.inspection.numeric_columns)
-    length = values.size if values.ndim < 2 or values.shape[0] == 1 else values.shape[0]
-    positions, _intervals = profile_coordinates(request.inspection, length)
+    values = _filter_plain_values(values, request, cancel, filter_preview, coordinates=(positions, intervals))
+    labels = tuple(_source_labels(request, values) or ())
     return PreparedData(
         values=values,
         source_format=request.inspection.source_format,
         data_form=_FORM_TO_RDATA[request.input_form],
         labels=labels,
-        coordinates=_readonly_coordinates({"position_kb": positions}) if positions is not None else MappingProxyType({}),
+        coordinates=_readonly_coordinates({"position_kb": positions, **({"intervals_kb": intervals} if intervals is not None else {})}) if positions is not None else MappingProxyType({}),
         metadata=(
             _profile_metadata(request)
             if request.input_form in {"x", "t", "xt"}
@@ -1849,27 +1923,6 @@ def _source_labels(request: DataConversionRequest, values: np.ndarray) -> list[s
     return None
 
 
-def _plain_source(
-    request: DataConversionRequest,
-    cancel: _CancelChecker | None = None,
-    filter_preview: list[FilterSelection | None] | None = None,
-) -> tuple[Any, list[str] | None]:
-    _check_cancelled(cancel)
-    values = extract_values(
-        request.inspection,
-        data_form=request.input_form,
-        value_column=request.value_column,
-        array_key=request.array_key,
-        missing_policy="interpolate" if request.missing_policy == "interpolate" else "ignore",
-        cancel=cancel,
-    )
-    labels = _source_labels(request, values)
-    result = _postprocess_profile_values(values, request, cancel)
-    result = _filter_plain_values(result, request, cancel, filter_preview)
-    _check_cancelled(cancel)
-    return result, labels
-
-
 def _transform_values(values, request, cancel=None):
     if request.transform_formula is None:
         return values
@@ -1883,16 +1936,21 @@ def _transform_values(values, request, cancel=None):
 def _filter_plain_values(
     values: np.ndarray, request: DataConversionRequest, cancel: _CancelChecker | None = None,
     filter_preview: list[FilterSelection | None] | None = None,
+    *, coordinates: tuple | None = None,
 ) -> np.ndarray:
     values = _transform_values(values, request, cancel)
     if not request.data_filter.enabled and filter_preview is None:
         return values
     length = values.size if values.ndim < 2 or values.shape[0] == 1 else values.shape[0]
     try:
-        positions, intervals = (profile_coordinates(request.inspection, length)
+        positions, intervals = coordinates if coordinates is not None else (profile_coordinates(request.inspection, length)
                                 if request.data_filter.selection == "profile" or (
                                     request.data_filter.enabled and (request.data_filter.action in {"interpolate", "modulate"} or request.data_filter._position_sink is not None))
                                 else (None, None))
+        if positions is None and request.data_filter.selection == "profile" and request.input_form in {"x", "xt"}:
+            starts = (request.start or 0) / 1000 + np.arange(length) * (request.bin_size / 1000)
+            positions = starts
+            intervals = np.column_stack((starts, starts + request.bin_size / 1000))
         chromosome = request.chromosome
         if chromosome is None and request.data_filter.profile is not None and request.data_filter.profile.chromosomes is not None:
             chromosome = profile_chromosome(request.inspection)
@@ -1909,7 +1967,7 @@ def _filter_plain_values(
         return values
     if filter_preview is not None:
         filter_preview.append(capture_filter_selection(
-            values, request.data_filter, positions=positions, intervals=intervals, chromosome=chromosome,
+            values, request.data_filter, positions=positions, intervals=intervals, chromosome=chromosome, display_positions=positions,
         ))
     return _readonly(apply_data_filter(
         values, request.data_filter, positions=positions, intervals=intervals,
@@ -2238,13 +2296,20 @@ def convert_data(
     if len(request.inspection.content) > MAX_DECOMPRESSED_BYTES:
         raise ValueError("The uploaded source exceeds the local conversion limit.")
     filter_positions = []
-    def retain_positions(mask, positions, chromosome, time_index):
+    def retain_positions(mask, positions, chromosome, time_index, *, intervals=None):
         selected = np.flatnonzero(mask).astype(float) if positions is None else np.asarray(positions)[mask]
+        if intervals is None:
+            axis = np.arange(mask.size, dtype=float) if positions is None else np.asarray(positions)
+            step = float(axis[-1] - axis[-2]) if axis.size > 1 else (request.bin_size / 1000 if positions is not None else 1.)
+            intervals = np.column_stack((axis, np.r_[axis[1:], axis[-1:] + step]))
+        bounds = np.asarray(intervals)[mask]
         filter_positions.append(FilterPositionGroup(
             gzip.compress(np.asarray(selected, dtype="<f8").tobytes(), compresslevel=1, mtime=0),
             "bin_index" if positions is None else "time_min" if request.input_form == "t" else "position_kb", chromosome, time_index,
+            gzip.compress(np.asarray(bounds, dtype="<f8").tobytes(), compresslevel=1, mtime=0),
         ))
-    request = replace(request, data_filter=replace(request.data_filter, _position_sink=retain_positions))
+    warnings = []
+    request = replace(request, data_filter=replace(request.data_filter, _position_sink=retain_positions, _warning_sink=warnings.append))
     track_summary: TrackInspection | None = None
     track_slices: tuple[_TrackSlice, ...] = ()
     filter_preview: list[FilterSelection | None] = []
@@ -2295,9 +2360,11 @@ def convert_data(
             _check_cancelled(cancel)
         else:
             repliseq_prepared = None
+            prepared_plain = None
             if request._prepared_data is not None:
                 provided = request._prepared_data
-                source = _filter_plain_values(provided.values, request, cancel, filter_preview)
+                source = _filter_plain_values(provided.values, request, cancel, filter_preview,
+                    coordinates=(provided.coordinates.get("position_kb"), provided.coordinates.get("intervals_kb")))
                 repliseq_prepared = replace(provided, values=source, metadata=provided.metadata + filter_metadata(request.data_filter))
                 labels = list(provided.labels) or None
                 source_format = "auto"
@@ -2316,7 +2383,9 @@ def convert_data(
             elif request.input_form == "table":
                 source, source_format = _table_source(directory, request, cancel)
             else:
-                source, labels = _plain_source(request, cancel, filter_preview)
+                prepared_plain = prepare_data(request, cancel, filter_preview=filter_preview)
+                source = prepared_plain.values
+                labels = list(prepared_plain.labels) or None
                 source_format = "auto"
             _check_cancelled(cancel)
 
@@ -2347,7 +2416,7 @@ def convert_data(
             result_labels = tuple(str(value) for value in (raw_result.get("labels") or ()))
             source_format = str(raw_result.get("source_format") or request.inspection.source_format)
             result_metadata = (
-                repliseq_prepared.metadata if repliseq_prepared is not None else _profile_metadata(request)
+                repliseq_prepared.metadata if repliseq_prepared is not None else prepared_plain.metadata if prepared_plain is not None else _profile_metadata(request)
                 if request.input_form in {"x", "t", "xt"}
                 else _provenance_metadata(request)
             )
@@ -2355,7 +2424,7 @@ def convert_data(
                 raw_result["values"],
                 labels=(request.value_name,) if repliseq_prepared is not None else result_labels,
                 table=None if repliseq_prepared is not None else raw_result.get("table"),
-                coordinates=repliseq_prepared.coordinates if repliseq_prepared is not None else None,
+                coordinates=repliseq_prepared.coordinates if repliseq_prepared is not None else prepared_plain.coordinates if prepared_plain is not None else None,
             )
             _check_cancelled(cancel)
 
@@ -2374,6 +2443,7 @@ def convert_data(
         metadata=result_metadata,
         preview=preview,
         filter_positions=tuple(filter_positions),
+        warnings=tuple(dict.fromkeys(warnings)),
     )
     _check_cancelled(cancel)
     return result

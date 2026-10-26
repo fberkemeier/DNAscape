@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import re
 import weakref
 from collections.abc import Callable, Iterator, Mapping, Sequence
 from contextlib import contextmanager
@@ -25,6 +26,16 @@ from app.simulation_exports import ExportArtifact
 
 # Keep every data-export selector in the same user-facing order.
 RAW_DATA_FORMATS = tuple(DATA_FILE_FORMAT_OPTIONS.values())
+
+
+def progress_message(message: str, *, include_eta: bool = True) -> str:
+    """Use one compact separator for human-readable worker progress."""
+    text = " ".join(str(message).split())
+    if not include_eta:
+        # Mapping renders its continuously updated ETA beside this message.
+        text = re.sub(r"\bETA\s*:?\s*\d+:\d{2}:\d{2}\b", "", text)
+    parts = (part.strip(" -·") for part in re.split(r"\s+(?:-|·)\s+", text))
+    return " · ".join(part for part in parts if part)
 
 
 @dataclass(frozen=True)
@@ -457,6 +468,10 @@ def data_upload(
                 "event.currentTarget.querySelector('input[type=file]')?.click(); }"
             ),
         )
+        if show_accepted_formats:
+            formats_label = ui.label(f"Accepted: {accepted_formats}").classes("dn-upload-formats")
+            if marker:
+                formats_label.mark(f"{marker}-accepted-formats")
         with ui.element("div").classes("dn-upload-files"):
 
             @ui.refreshable
@@ -639,8 +654,6 @@ def data_upload(
 
         upload_state.receive = handle_upload
         uploader.on_upload(handle_upload)
-        if show_accepted_formats:
-            ui.label(f"Accepted: {accepted_formats}").classes("dn-upload-formats")
     return uploader
 
 

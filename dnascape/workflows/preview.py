@@ -165,7 +165,7 @@ def histogram_domain(
     if upper == lower:
         if log_x:
             factor = math.sqrt(10.0)
-            lower, upper = lower / factor, upper * factor
+            upper *= factor
         else:
             # This is NumPy's native constant-data expansion.
             lower, upper = lower - 0.5, upper + 0.5
@@ -333,7 +333,7 @@ def nice_linear_limits(
 
 
 def _logarithmic_data_limits(lower: float, upper: float) -> tuple[float, float]:
-    """Pad a positive domain symmetrically in log space."""
+    """Start at the smallest positive sample and pad the upper log bound."""
 
     if not math.isfinite(lower) or not math.isfinite(upper) or lower <= 0 or upper <= 0:
         raise ValueError("Log axes require positive finite limits.")
@@ -347,7 +347,7 @@ def _logarithmic_data_limits(lower: float, upper: float) -> tuple[float, float]:
         if log_span > 0
         else max(abs(log_lower), 1.0) * _AXIS_MARGIN_FRACTION
     )
-    return 10.0 ** (log_lower - padding), 10.0 ** (log_upper + padding)
+    return lower, 10.0 ** (log_upper + padding)
 
 
 def _nice_tick_step(span: float, intervals: int = 6) -> float:
@@ -670,6 +670,8 @@ def _data_axis_bounds(
 
     finite = np.asarray(values, dtype=float).reshape(-1)
     finite = finite[np.isfinite(finite)]
+    if log_axis:
+        finite = finite[finite > 0]
     if finite.size == 0:
         raise ValueError("Plot axes require at least one finite coordinate.")
     lower = float(np.min(finite))
@@ -682,7 +684,7 @@ def _data_axis_bounds(
             if lower <= 0:
                 raise ValueError("Log axes require positive finite coordinates.")
             factor = 10.0**0.1
-            return lower / factor, upper * factor
+            return lower, upper * factor
         padding = max(abs(lower) * 0.05, 0.5)
         return lower - padding, upper + padding
     return lower, upper
@@ -893,6 +895,7 @@ def _kde_data(
     values: Any, *, log_x: bool = False, x_limits: tuple[float, float] | None = None,
     bandwidth_scale: float = 1.0,
     evaluation_limits: tuple[float, float] | None = None,
+    point_limit: int | None = None,
 ) -> tuple[np.ndarray, np.ndarray]:
     """Bounded Gaussian KDE with Scott bandwidth and a constant-data fallback."""
 
@@ -922,7 +925,8 @@ def _kde_data(
     domain = evaluation_limits if evaluation_limits is not None else x_limits
     if domain is not None:
         lower, upper = _plot_axis_limits(domain, None, label="X", log_axis=log_x)
-    grid = np.geomspace(lower, upper, preview_point_limit()) if log_x else np.linspace(lower, upper, preview_point_limit())
+    count = preview_point_limit() if point_limit is None else point_limit
+    grid = np.geomspace(lower, upper, count) if log_x else np.linspace(lower, upper, count)
     if constant:
         curve = np.exp(-0.5 * ((grid - samples[0]) / bandwidth) ** 2) / (
             bandwidth * np.sqrt(2 * np.pi)
@@ -1004,9 +1008,25 @@ def _bounded_indices(size: int, limit: int) -> np.ndarray:
 class DetailedPreviewData(list):
     """JSON-safe display data with a server-only, bounded refinement callback."""
 
-    def __init__(self, values: Any, refine: Any) -> None:
+    def __init__(self, values: Any, refine: Any, *, coverage: Any = None) -> None:
         super().__init__(values)
         self.refine = refine
+        self.coverage = coverage
+
+
+def buffered_preview_limits(
+    limits: tuple[float, float] | None, bounds: tuple[float, float], *, log: bool = False,
+) -> tuple[float, float] | None:
+    """Prefetch one visible width on either side, within the native domain."""
+    if limits is None:
+        return None
+    lower, upper = limits
+    if log and lower > 0:
+        span = math.log(upper) - math.log(lower)
+        return (math.exp(max(math.log(bounds[0]) if bounds[0] > 0 else -math.inf, math.log(lower) - span)),
+                math.exp(min(math.log(bounds[1]), math.log(upper) + span)))
+    span = upper - lower
+    return max(bounds[0], lower - span), min(bounds[1], upper + span)
 
 
 def _visible_slice(axis: np.ndarray, limits: tuple[float, float] | None) -> slice:
@@ -1032,15 +1052,22 @@ def _visible_slice(axis: np.ndarray, limits: tuple[float, float] | None) -> slic
     return slice(max(0, first - 1), min(axis.size, last + 2)) if last >= 0 else slice(0, min(axis.size, 2))
 
 
-def _visible_indices(axis: np.ndarray, limits: tuple[float, float] | None, limit: int) -> np.ndarray:
+def _visible_indices(axis: np.ndarray, limits: tuple[float, float] | None, limit: int, *, log: bool = False) -> np.ndarray:
     selection = _visible_slice(axis, limits)
     detail = selection.start + _bounded_indices(selection.stop - selection.start, limit)
     if limits is None:
         return detail
+    bounds = (float(np.nanmin(axis)), float(np.nanmax(axis)))
+    buffer = _visible_slice(axis, buffered_preview_limits(limits, bounds, log=log))
+    # Each neighbouring window gets its own bounded budget. The visible
+    # window retains the full configured point count, including narrow peaks.
+    before = buffer.start + _bounded_indices(max(0, selection.start - buffer.start), limit)
+    after = selection.stop + _bounded_indices(max(0, buffer.stop - selection.stop), limit)
+    detail = np.union1d(detail, np.union1d(before, after))
     # Keep a bounded overview outside the detailed tile. Changing the browser
     # viewport can then reveal existing data immediately, before refinement.
     overview = _bounded_indices(axis.size, limit)
-    outside = overview[(overview < selection.start) | (overview >= selection.stop)]
+    outside = overview[(overview < buffer.start) | (overview >= buffer.stop)]
     return np.union1d(outside, detail)
 
 
@@ -1057,12 +1084,12 @@ def retain_curve_overview(overview: Sequence[Sequence[Any]], detail: Sequence[Se
     return before + list(detail) + after
 
 
-def _line_points(x: Any, y: Any, *, limit: int | None = None, view: tuple[float, float] | None = None) -> list[list[float | None]]:
+def _line_points(x: Any, y: Any, *, limit: int | None = None, view: tuple[float, float] | None = None, log_x: bool = False) -> list[list[float | None]]:
     axis = np.asarray(x, dtype=float).reshape(-1)
     values = np.asarray(y, dtype=float).reshape(-1)
     if axis.size != values.size:
         raise ValueError("The selected output has no matching axis.")
-    indices = _visible_indices(axis, view, preview_point_limit() if limit is None else limit)
+    indices = _visible_indices(axis, view, preview_point_limit() if limit is None else limit, log=log_x)
     points = [
         [
             float(axis[index]),
@@ -1071,14 +1098,15 @@ def _line_points(x: Any, y: Any, *, limit: int | None = None, view: tuple[float,
         for index in indices
     ]
     return DetailedPreviewData(points, lambda x_limits, _y_limits: {
-        "data": _line_points(axis, values, limit=limit, view=x_limits),
-    })
+        "data": _line_points(axis, values, limit=limit, view=x_limits, log_x=log_x),
+    }, coverage={"x": buffered_preview_limits(view, (float(np.nanmin(axis)), float(np.nanmax(axis))), log=log_x)})
 
 
 def _band_segments(
     band: PreviewBand,
     *,
     log_y: bool,
+    log_x: bool = False,
     limit: int | None = None,
     view: tuple[float, float] | None = None,
 ) -> list[list[float]]:
@@ -1092,7 +1120,7 @@ def _band_segments(
     if axis.size < 2:
         return []
     full_axis, full_lower, full_upper = axis, lower, upper
-    indices = _visible_indices(axis, view, preview_point_limit() if limit is None else limit)
+    indices = _visible_indices(axis, view, preview_point_limit() if limit is None else limit, log=log_x)
     axis = axis[indices]
     lower = lower[indices]
     upper = upper[indices]
@@ -1115,8 +1143,8 @@ def _band_segments(
             continue
         segments.append(values.tolist())
     return DetailedPreviewData(segments, lambda x_limits, _y_limits: {
-        "data": _band_segments(PreviewBand(band.name, full_axis, full_lower, full_upper, band.color, opacity=band.opacity), log_y=log_y, limit=limit, view=x_limits),
-    })
+        "data": _band_segments(PreviewBand(band.name, full_axis, full_lower, full_upper, band.color, opacity=band.opacity), log_y=log_y, log_x=log_x, limit=limit, view=x_limits),
+    }, coverage={"x": buffered_preview_limits(view, (float(np.nanmin(full_axis)), float(np.nanmax(full_axis))), log=log_x)})
 
 
 def _sample_heatmap(
@@ -1215,7 +1243,7 @@ def _sample_heatmap(
             if log_z else "The selected output contains no finite values."
         )
     if log_z:
-        z_minimum, z_maximum = float(math.floor(data_minimum)), float(math.ceil(data_maximum))
+        z_minimum, z_maximum = float(data_minimum), float(math.ceil(data_maximum))
         if z_minimum == z_maximum:
             z_maximum += 1.0
     else:
@@ -1730,11 +1758,14 @@ def _build_preview_plot_options(
             def selection(axis: np.ndarray, view: Any) -> slice:
                 return _visible_slice(axis, view)
 
-            xs, ys = selection(source_x, x_view), selection(source_y, y_view)
+            x_buffer = buffered_preview_limits(x_view, (float(np.min(source_x)), float(np.max(source_x))), log=log_x)
+            y_buffer = buffered_preview_limits(y_view, (float(np.min(source_y)), float(np.max(source_y))), log=log_y)
+            xs, ys = selection(source_x, x_buffer), selection(source_y, y_buffer)
             if xs.start == 0 and xs.stop == source_x.size and ys.start == 0 and ys.stop == source_y.size:
                 return {"data": DetailedPreviewData(initial_raster, refine_heatmap), ":renderItem": render_item, "hoverData": hover_data}
             crop_x, crop_y, crop, _, _ = _sample_heatmap(
-                source_matrix[ys, xs], source_x[xs], source_y[ys], log_x=log_x, log_y=log_y, log_z=log_z,
+                source_matrix[ys, xs], source_x[xs], source_y[ys], limit=MAX_HEATMAP_CELLS * 9,
+                log_x=log_x, log_y=log_y, log_z=log_z,
             )
             xmin, xmax = _data_axis_bounds(crop_x, log_axis=log_x)
             ymin, ymax = _data_axis_bounds(crop_y, log_axis=log_y)
@@ -1763,7 +1794,7 @@ def _build_preview_plot_options(
             overview_hover = [row for row in hover_data
                               if row[5] < xmin or row[3] > xmax or row[6] < ymin or row[4] > ymax]
             return {
-                "data": DetailedPreviewData(initial_raster, refine_heatmap),
+                "data": DetailedPreviewData(initial_raster, refine_heatmap, coverage={"x": x_buffer, "y": y_buffer}),
                 ":renderItem": layered_render_item,
                 "hoverData": overview_hover + detail_hover,
             }
@@ -1805,6 +1836,7 @@ def _build_preview_plot_options(
             "name": x_label,
             "nameLocation": "middle",
             "nameGap": _X_AXIS_NAME_GAP,
+            "nameMoveOverlap": False,
             "nameTextStyle": _axis_name_options(),
             "axisLine": {"onZero": False, **axis_line},
             "axisTick": axis_tick,
@@ -1916,11 +1948,13 @@ def _build_preview_plot_options(
             kde_overview = list(options["series"][0]["data"])
 
             def refine_kde(x_view: Any, _y_view: Any) -> dict[str, Any]:
+                buffer = buffered_preview_limits(x_view, tuple(options["dnascapeDefaultAxes"]["x"]), log=log_x)
+                count = preview_point_limit() * (3 if x_view is not None else 1)
                 detail_x, detail_y = _kde_data(kde_samples, log_x=log_x,
                                               x_limits=histogram_x_limits, bandwidth_scale=kde_bandwidth,
-                                              evaluation_limits=x_view)
-                detail = _line_points(detail_x, detail_y)
-                return {"data": DetailedPreviewData(retain_curve_overview(kde_overview, detail), refine_kde)}
+                                              evaluation_limits=buffer, point_limit=count)
+                detail = [[float(x), float(y)] for x, y in zip(detail_x, detail_y, strict=True)]
+                return {"data": DetailedPreviewData(retain_curve_overview(kde_overview, detail), refine_kde, coverage={"x": buffer})}
 
             options["series"][0]["data"] = DetailedPreviewData(options["series"][0]["data"], refine_kde)
             return options
@@ -2035,6 +2069,7 @@ def _build_preview_plot_options(
             "name": x_label,
             "nameLocation": "middle",
             "nameGap": _X_AXIS_NAME_GAP,
+            "nameMoveOverlap": False,
             "nameTextStyle": _axis_name_options(),
             "axisLine": {"onZero": False, **axis_line},
             "axisTick": axis_tick,
@@ -2245,6 +2280,7 @@ def _build_preview_plot_options(
                 "name": x_label,
                 "nameLocation": "middle",
                 "nameGap": _X_AXIS_NAME_GAP,
+                "nameMoveOverlap": False,
                 "nameTextStyle": _axis_name_options(),
                 "axisLabel": _axis_label_options(),
                 "axisLine": axis_line,
@@ -2295,7 +2331,7 @@ def _build_preview_plot_options(
     for band in bands:
         all_x_values.append(finite_values(band.x))
         all_y_values.extend((finite_values(band.lower), finite_values(band.upper)))
-        segments = _band_segments(band, log_y=log_y)
+        segments = _band_segments(band, log_y=log_y, log_x=log_x)
         if not segments:
             continue
         line_options.append(
@@ -2340,7 +2376,7 @@ def _build_preview_plot_options(
                 },
                 "itemStyle": {"color": line.color, "opacity": line.opacity},
                 "emphasis": {"disabled": not interactive, "scale": False},
-                "data": _line_points(line.x, flattened),
+                "data": _line_points(line.x, flattened, log_x=log_x),
             }
         )
     finite_x_parts = [part for part in all_x_values if part.size]
@@ -2477,6 +2513,7 @@ def _build_preview_plot_options(
         "name": x_label,
         "nameLocation": "middle",
         "nameGap": _X_AXIS_NAME_GAP,
+        "nameMoveOverlap": False,
         "nameTextStyle": _axis_name_options(),
         "axisLine": {"onZero": False, **axis_line},
         "axisTick": axis_tick,
@@ -2527,6 +2564,17 @@ def histogram_guide_options(
     legend: bool, statistics: bool, position: str = "Top right",
 ) -> None:
     """Use a full legend, or a selectable statistics panel when requested."""
+    summaries = []
+    for name, _color, values in datasets:
+        finite = finite_values(values)
+        summaries.append(dict(
+            dataset=str(name),
+            mean=float(np.mean(finite)) if finite.size else None,
+            median=float(np.median(finite)) if finite.size else None,
+            standard_deviation=float(np.std(finite)) if finite.size else None,
+        ))
+    # Keep full precision independently of the rounded, optional guide panel.
+    options["dnascapeHistogramStatistics"] = summaries
     if not statistics:
         options["legend"] = build_legend_options(
             [str(name) for name, _, _ in datasets], grid=options.get("grid", {}),
@@ -2539,17 +2587,16 @@ def histogram_guide_options(
     choices = []
     grid = options.get("grid", {})
     panel_width = min(240, max(160, max((len(str(name)[:28]) for name, _, _ in datasets), default=0) * 6 + 50))
-    for name, color, values in datasets:
-        finite = finite_values(values)
+    for (name, color, _values), summary in zip(datasets, summaries):
         heading = legend or len(datasets) > 1
         title = str(name).replace("{", "(").replace("}", ")").replace("|", " ")
         title = title[:27] + "…" if len(title) > 28 else title
         lines = ([f"{{dot|●}} {{name|{title}}}" + ("  ▾" if len(datasets) > 1 else "")] if heading else [])
         if statistics:
             lines.extend([
-                f"Mean       {_compact_tick(float(np.mean(finite)))}" if finite.size else "No finite values",
-                f"Median    {_compact_tick(float(np.median(finite)))}" if finite.size else "",
-                f"Std dev   {_compact_tick(float(np.std(finite)))}" if finite.size else "",
+                f"Mean       {_compact_tick(summary['mean'])}" if summary["mean"] is not None else "No finite values",
+                f"Median    {_compact_tick(summary['median'])}" if summary["median"] is not None else "",
+                f"Std dev   {_compact_tick(summary['standard_deviation'])}" if summary["standard_deviation"] is not None else "",
             ])
         placement = {
             "top" if position.startswith("Top") else "bottom": grid.get("top" if position.startswith("Top") else "bottom", 24) + 8,
@@ -2593,6 +2640,11 @@ def arrange_histogram_bins(options: dict[str, Any], dataset_count: int) -> None:
 def build_preview_plot_options(**kwargs: Any) -> dict[str, Any]:
     options = _build_preview_plot_options(**kwargs)
     if kwargs.get("plot_type") == "Histogram":
+        if not kwargs.get("density"):
+            # Keep the axis guide, but let the bar under the pointer alone
+            # control emphasis. Nearest-axis samples can be an adjacent bin
+            # or several datasets sharing the same slot.
+            options["axisPointer"] = {"triggerEmphasis": False}
         lines = kwargs.get("lines", ())
         datasets = (
             [(line.name, line.color, line.y) for line in lines]

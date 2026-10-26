@@ -3,6 +3,7 @@
 import asyncio
 
 import numpy as np
+from nicegui.elements.switch import Switch
 from nicegui.elements.upload import Upload
 from nicegui.testing import user_simulation
 
@@ -39,14 +40,21 @@ def test_data_transforms_per_source_combined_output_and_filter_context(monkeypat
                     if len(results) >= count and control("transform-enabled").enabled:
                         break
                 assert len(results) == count, messages
-            await control("upload").handle_uploads([Upload.SmallFileUpload("first.tsv", "text/plain", b"signal\n1\n2\n3\n")])
-            await user.should_see("Array size: 3", retries=60)
-            assert not control("transform").value
-            assert not control("transform-enabled").value
+            assert control("transform-formula-1").label == "Source transform formula"
+            assert control("transform-formula-1").value == "source"
             assert not control("transform-combine").visible
+            assert not control("transform").value
             user.find(marker="data-manager-transform").click()
             with user.client:
                 control("transform-formula-1").set_value("source * 2")
+            await control("upload").handle_uploads([Upload.SmallFileUpload("first.tsv", "text/plain", b"signal\n1\n2\n3\n")])
+            await user.should_see("Array size: 3", retries=60)
+            await user.should_see(marker="data-manager-transform-formula-1", retries=60)
+            assert control("transform-formula-1").label == "Source transform formula"
+            assert isinstance(control("transform-combine"), Switch)
+            assert not control("transform-enabled").value
+            assert not control("transform-combine").visible
+            assert control("transform-formula-1").value == "source * 2"
             await convert(1)
             np.testing.assert_equal(results[-1].preview.values, [1, 2, 3])
             user.find(marker="data-manager-transform-enabled").click()
@@ -54,6 +62,8 @@ def test_data_transforms_per_source_combined_output_and_filter_context(monkeypat
             np.testing.assert_equal(results[-1].preview.values, [2, 4, 6])
             await control("upload").handle_uploads([Upload.SmallFileUpload("second.tsv", "text/plain", b"signal\n3\n1\n2\n")])
             await user.should_see(marker="data-manager-transform-formula-2", retries=60)
+            assert control("transform-formula-1").label == "Source 1 transform formula"
+            assert control("transform-formula-2").label == "Source 2 transform formula"
             assert control("transform-combine").visible
             assert control("transform-formula-1").value == "source * 2"
             with user.client:
@@ -63,6 +73,11 @@ def test_data_transforms_per_source_combined_output_and_filter_context(monkeypat
             np.testing.assert_equal(results[-1].preview.values, [4, 2, 3])
             user.find(marker="data-manager-transform-combine").click()
             await user.should_see(marker="data-manager-transform-combined-formula")
+            assert control("transform-combined-formula").label == "Combined transform formula"
+            assert not any(
+                "dn-transform-source-name" in item._classes and not item.is_deleted
+                for item in user.client.elements.values()
+            )
             with user.client:
                 control("transform-combined-formula").set_value("source1 - source2")
             user.find(marker="data-manager-filter").click()

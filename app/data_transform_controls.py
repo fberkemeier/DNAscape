@@ -14,7 +14,7 @@ class DataTransformControls:
             with ui.column().classes("dn-expansion-content w-full"):
                 with ui.row().classes("dn-inline-actions"):
                     self.enabled = ui.switch("Apply transform", value=False).mark("data-manager-transform-enabled")
-                    self.combine = ui.checkbox("Combine", value=False).mark("data-manager-transform-combine")
+                    self.combine = ui.switch("Combine", value=False).mark("data-manager-transform-combine")
                 self.hint = ui.label().classes("dn-upload-formats")
                 self._render = ui.refreshable(self._render_fields)
                 self._render()
@@ -40,27 +40,28 @@ class DataTransformControls:
         sources = self.sources()
         combine = bool(self.combine.value and len(sources) > 1)
         self.hint.set_text(
-            "Python / NumPy syntax. Use source1, source2, … for the sources below; keep their array shape."
+            "Python / NumPy syntax. Use source1, source2, … for the loaded signals; keep their array shape."
             if combine else
             "Python / NumPy syntax. Use source for each signal, e.g. source / np.mean(source). Runs after Configure."
         )
-        if not sources:
-            return
+        if sources and None in self.formulas:
+            self.formulas.setdefault(sources[0][0], self.formulas.pop(None))
         if combine:
-            for index, (_source_id, name) in enumerate(sources, 1):
-                ui.label(f"source{index} · {name}").classes("dn-transform-source-name").tooltip(name)
             formula = self.combined_formula
             if formula is None:
                 formula = " + ".join(f"source{i}" for i in range(1, len(sources) + 1))
-            field = ui.textarea("Formula", value=formula).props(
+            field = ui.textarea("Combined transform formula", value=formula).props(
                 "dense autogrow rows=2 spellcheck=false"
             ).classes("dn-field dn-formula-input").mark("data-manager-transform-combined-formula")
             field.on_value_change(lambda event: setattr(self, "combined_formula", event.value))
             self.fields.append(field)
         else:
-            for index, (source_id, name) in enumerate(sources, 1):
-                ui.label(name).classes("dn-transform-source-name").tooltip(name)
-                field = ui.textarea("Formula", value=self.formulas.get(source_id, "source")).props(
+            for index, (source_id, _name) in enumerate(sources or [(None, "")], 1):
+                label = (
+                    "Source transform formula" if len(sources) <= 1
+                    else f"Source {index} transform formula"
+                )
+                field = ui.textarea(label, value=self.formulas.get(source_id, "source")).props(
                     "dense autogrow rows=2 spellcheck=false"
                 ).classes("dn-field dn-formula-input").mark(f"data-manager-transform-formula-{index}")
                 field.on_value_change(lambda event, key=source_id: self.formulas.__setitem__(key, event.value))

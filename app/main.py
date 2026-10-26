@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import os
 from pathlib import Path
 
@@ -17,6 +18,7 @@ from app.export_settings import (
     get_export_settings,
     reset_export_settings,
 )
+from app.field_hints import FIELD_HINTS
 from app.icons import GITHUB_ICON_SVG, OUTLINE_ICON_SVGS, PLOT_ICON_SVG, RESET_ICON
 from app.notifications import notify
 from app.page_activity import current_page_activity
@@ -71,6 +73,10 @@ def index() -> None:
     )
     ui.add_body_html(
         "<script>" + read_asset_text(STYLE_PATH.parent / "plot_navigation.js") + "</script>"
+    )
+    ui.add_body_html(
+        "<script>window.dnascapeFieldHintLabels=" + json.dumps(FIELD_HINTS) + ";"
+        + read_asset_text(STYLE_PATH.parent / "field_hints.js") + "</script>"
     )
     ui.add_body_html(
         """
@@ -226,6 +232,8 @@ def index() -> None:
     sync_theme()
     if export_settings.show_help:
         body.classes("dn-field-help-enabled")
+    if not export_settings.show_field_hints:
+        body.classes("dn-field-hints-disabled")
 
     def discard_page(slug: str) -> None:
         if page_activity.retain_page(slug):
@@ -456,6 +464,10 @@ def index() -> None:
             add="dn-field-help-enabled" if export_settings.show_help else None,
             remove=None if export_settings.show_help else "dn-field-help-enabled",
         )
+        body.classes(
+            add=None if export_settings.show_field_hints else "dn-field-hints-disabled",
+            remove="dn-field-hints-disabled" if export_settings.show_field_hints else None,
+        )
         for slug in tuple(built_pages):
             if not export_settings.preserve_page_state and slug != page_state["active"]:
                 discard_page(slug)
@@ -540,6 +552,10 @@ def index() -> None:
         body.classes(
             add="dn-field-help-enabled" if defaults.show_help else None,
             remove=None if defaults.show_help else "dn-field-help-enabled",
+        )
+        body.classes(
+            add=None if defaults.show_field_hints else "dn-field-hints-disabled",
+            remove="dn-field-hints-disabled" if defaults.show_field_hints else None,
         )
 
         dark_mode.auto()

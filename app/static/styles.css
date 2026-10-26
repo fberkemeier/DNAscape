@@ -1241,14 +1241,28 @@ body.body--dark .dn-nav-active {
   line-height: 1.55;
 }
 
-.dn-transform-source-name {
-  color: var(--dn-muted);
-  font-size: 0.75rem;
-  max-width: 100%;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
+.dn-field-hover-hint {
+  /* Match the footer-link tooltips rendered by Quasar. */
+  background: #757575;
+  border-radius: 4px;
+  color: #fafafa;
+  font-size: 10px;
+  font-weight: normal;
+  line-height: 1.5;
+  max-width: min(18rem, calc(100vw - 16px));
+  opacity: 0;
+  padding: 6px 10px;
+  pointer-events: none;
+  position: fixed;
+  text-transform: none;
+  transition: opacity 300ms cubic-bezier(0.215, 0.61, 0.355, 1);
+  white-space: normal;
+  z-index: 100000;
 }
+
+.dn-field-hover-hint-visible { opacity: 1; }
+.dn-field-hover-hint[hidden],
+.dn-field-hints-disabled .dn-field-hover-hint { display: none; }
 
 /* Optional field help is mounted outside Quasar's layout calculations, so
    enabling it never changes grid widths, label wrapping, or control height. */
@@ -1595,6 +1609,11 @@ body.body--dark .dn-nav-active {
 .dn-preview-view-grid > *,
 .dn-preview-fill-controls > * {
   min-width: 0;
+}
+
+.dn-preview-fill-controls {
+  grid-template-columns: max-content minmax(0, 7rem);
+  justify-content: start;
 }
 
 .dn-preview-secondary-color {
@@ -1954,8 +1973,16 @@ body.body--dark .dn-nav-active {
   width: 100%;
 }
 
-.dn-data-filter-grid.dn-data-filter-single-column {
-  grid-template-columns: minmax(0, 1fr);
+.dn-data-filter-profile-input {
+  align-items: start;
+  display: grid;
+  gap: 0.65rem;
+  grid-template-columns: minmax(0, 1fr) 5.25rem;
+  width: 100%;
+}
+
+.dn-data-filter-profile-input > .q-field {
+  margin-top: 0.45rem;
 }
 
 .dn-data-filter-between {
@@ -2123,8 +2150,9 @@ body.body--dark .dn-nav-active {
   display: grid;
   gap: 0.08rem 0.55rem;
   grid-template-columns: repeat(2, minmax(0, 1fr));
-  margin-top: 0.5rem;
-  padding-top: 0.5rem;
+  margin-top: 0.05rem;
+  padding: 0.05rem 0.1rem 0.3rem;
+  width: 100%;
 }
 
 .dn-data-manager-preprocessing-grid {
@@ -2180,10 +2208,6 @@ body.body--dark .dn-nav-active {
   align-self: flex-start;
   color: var(--dn-muted);
   min-height: 2rem;
-}
-
-.dn-data-manager-range-grid > .dn-data-manager-inline-toggle {
-  grid-column: 1 / -1;
 }
 
 .dn-data-manager-threshold-grid {
@@ -2477,6 +2501,20 @@ body.body--dark .dn-nav-active {
   grid-template-columns: minmax(0, 1fr) 5.5rem;
 }
 
+.dn-data-manager-output-card .dn-filter-export-fields {
+  grid-template-columns: minmax(0, 1fr) 6.75rem 5.5rem;
+}
+
+@container dn-preview (max-width: 520px) {
+  .dn-data-manager-output-card .dn-filter-export-fields {
+    grid-template-columns: minmax(0, 1fr) 5.5rem;
+  }
+
+  .dn-filter-export-fields > .dn-raw-output-name {
+    grid-column: 1 / -1;
+  }
+}
+
 .dn-raw-output-select {
   align-self: center;
   min-width: 2rem !important;
@@ -2495,8 +2533,13 @@ body.body--dark .dn-nav-active {
   border-bottom: 0;
 }
 
-.dn-filter-export-row > .dn-setting-group-title {
+.dn-filter-export-row > .dn-setting-group-title,
+.dn-statistics-export-row > .dn-setting-group-title {
   margin: 0;
+}
+
+.dn-statistics-export-row.dn-mapping-batch-raw-item {
+  border-bottom: 0;
 }
 
 .dn-data-manager-progress {
@@ -3208,6 +3251,22 @@ body.body--dark .dn-nav-active {
 .dn-mapping-settings-advanced .dn-mapping-settings-grid {
   column-gap: 0.65rem;
   row-gap: 0.5rem;
+}
+
+.dn-mapping-settings-advanced .dn-mapping-setting-error,
+.dn-mapping-settings-advanced .dn-mapping-setting-neighbourhood-range,
+.dn-mapping-settings-advanced .dn-mapping-setting-err-threshold {
+  grid-column: 1;
+}
+
+.dn-mapping-settings-advanced .dn-mapping-missing-paired,
+.dn-mapping-settings-advanced .dn-mapping-setting-refine-edge-kb,
+.dn-mapping-settings-advanced .dn-mapping-setting-deviation-threshold {
+  grid-column: 2;
+}
+
+.dn-mapping-show-plot {
+  grid-column: 1 / -1;
 }
 
 .dn-mapping-window-grid {
@@ -4310,6 +4369,27 @@ body.body--dark .dn-nav-active {
   line-height: 1.25;
 }
 
+.dn-run-status-line {
+  align-items: baseline;
+  display: flex;
+  gap: 0.35em;
+  max-width: 100%;
+  min-width: 0;
+  overflow-x: auto;
+  white-space: nowrap;
+  width: 100%;
+}
+
+.dn-run-status-line > * {
+  flex: 0 0 auto;
+  white-space: nowrap;
+}
+
+.dn-run-status-detail::before {
+  content: '·';
+  margin-right: 0.35em;
+}
+
 .dn-simulation-progress {
   color: var(--dn-accent) !important;
   height: 0.32rem !important;
@@ -5014,6 +5094,10 @@ body.body--dark .dn-main-logo-frame .dn-main-logo {
     grid-template-columns: 1fr;
   }
 
+  .dn-mapping-settings-advanced .dn-mapping-settings-grid > * {
+    grid-column: 1 / -1;
+  }
+
   .dn-mapping-detected-summary,
   .dn-mapping-detected-warning,
   .dn-mapping-upload-error {
@@ -5140,7 +5224,8 @@ body.body--dark .dn-main-logo-frame .dn-main-logo {
 
 @container dn-preview (max-width: 20rem) {
   .dn-raw-output-fields,
-  .dn-data-manager-output-card .dn-raw-output-fields {
+  .dn-data-manager-output-card .dn-raw-output-fields,
+  .dn-data-manager-output-card .dn-filter-export-fields {
     grid-template-columns: 1fr;
   }
 

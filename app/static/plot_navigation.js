@@ -2,7 +2,7 @@
   if (window.__dnascapePlotNavigation) return;
   window.__dnascapePlotNavigation = true;
   const attached = new WeakMap(), live = new Set();
-  let leftControl = false, drag = null;
+  let leftControl = false, drag = null, sequence = 0, suppressNavigationClickUntil = 0;
   let datasetMenu = null;
   const clamp = (value, lower, upper) => Math.max(lower, Math.min(value, upper));
   const forward = (value, axis) => axis.log ? Math.log(value) : value;
@@ -125,7 +125,7 @@
     return result;
   }
 
-  function valueAt(state, axis, pixel) {
+  function valueAt(state, axis, pixel, limits) {
     // Derive each scale independently. ECharts' Cartesian conversion can
     // choose a different axis pair when multiple boxplot axes share a grid.
     const rect = rectangle(state), horizontal = axis.dimension === 'x';
@@ -133,34 +133,70 @@
     let fraction = (pixel - (horizontal ? rect.x : rect.y)) / (horizontal ? rect.width : rect.height);
     if (!horizontal) fraction = 1 - fraction;
     if (axis.inverse) fraction = 1 - fraction;
-    return backward(forward(spec.min, axis) + fraction * (forward(spec.max, axis) - forward(spec.min, axis)), axis);
+    const [lower, upper] = limits || [spec.min, spec.max];
+    return backward(forward(lower, axis) + fraction * (forward(upper, axis) - forward(lower, axis)), axis);
   }
 
   function flush(state) {
+    flushFrame(state);
     clearTimeout(state.timer);
+    state.timer = null;
     if (!state.pending) return;
     const payload = state.pending;
     state.pending = null;
-    if (payload.context === metadata(state)?.context && state.element.isConnected) state.component.$emit('plotViewport', payload);
+    if (payload.context !== metadata(state)?.context || !state.element.isConnected) return;
+    payload.titleGaps = Object.fromEntries(Object.entries(metadata(state)?.axes || {})
+      .filter(([, axis]) => axis.dimension === 'y')
+      .map(([key, axis]) => [key, state.chart.getModel().getComponent('yAxis', axis.index).get('nameGap')]));
+    state.component.$emit('plotViewport', payload);
   }
 
-  function apply(state, next, notify = true) {
-    const current = ranges(state), patch = {};
-    const updates = Object.fromEntries(Object.entries(next).filter(([key, values]) => changed(current[key], values)));
-    if (!Object.keys(updates).length) return;
+  function reserveTitleSpace(state) {
+    const grid = state.chart.getModel().getComponent('grid', 0), axes = [], margins = {};
+    state.textMeasure ||= document.createElement('canvas').getContext('2d');
+    for (const axis of Object.values(metadata(state)?.axes || {})) {
+      if (axis.dimension !== 'y') continue;
+      const model = state.chart.getModel().getComponent('yAxis', axis.index);
+      if (!model.get('name') || model.get('nameLocation') !== 'middle') continue;
+      const style = model.getModel('axisLabel');
+      state.textMeasure.font = style.getFont();
+      const width = Math.max(0, ...model.axis.getViewLabels().map(label =>
+        state.textMeasure.measureText(label.formattedLabel).width));
+      const current = Number(model.get('nameGap')) || 0;
+      const required = Math.ceil(width + (Number(style.get('margin')) || 0) + 5);
+      if (required <= current) continue;
+      const side = model.axis.position === 'right' ? 'right' : 'left';
+      margins[side] = (margins[side] ?? (Number(grid.get(side)) || 0)) + required - current;
+      axes[axis.index] = {nameGap: required};
+      const source = state.component.options.yAxis;
+      (Array.isArray(source) ? source[axis.index] : source).nameGap = required;
+    }
+    if (!axes.length) return;
+    const sourceGrid = state.component.options.grid;
+    Object.assign(Array.isArray(sourceGrid) ? sourceGrid[0] : sourceGrid, margins);
+    // Both updates finish in the same browser task. Keep the larger gutter
+    // on zoom-out so shorter ticks cannot make the titles oscillate.
+    state.chart.setOption({grid: margins, yAxis: Array.from({length: axes.length}, (_, i) => axes[i] || {})},
+      {lazyUpdate: false, silent: true});
+  }
+
+  function axisPatch(state, updates, source) {
+    const patch = {};
     for (const [key, values] of Object.entries(updates)) {
       const axis = metadata(state).axes[key], name = axis.dimension + 'Axis';
       if (!patch[name]) {
         const count = Math.max(...Object.values(metadata(state).axes).filter(item => item.dimension === axis.dimension).map(item => item.index)) + 1;
-        patch[name] = Array.from({length: count}, () => ({}));
+        const existing = source?.[name];
+        patch[name] = Array.from({length: count}, (_, index) =>
+          ({...(Array.isArray(existing) ? existing[index] : index === 0 ? existing : {})}));
       }
       const spec = patch[name][axis.index];
       Object.assign(spec, {min: values[0], max: values[1], interval: null});
-      const sourceAxis = state.chart.getModel().getComponent(name, axis.index).option;
+      const sourceAxis = source ? spec : state.chart.getModel().getComponent(name, axis.index).option;
       const axisLine = sourceAxis.axisLine || {};
       spec.axisLine = {...axisLine, show:true, onZero:false,
         lineStyle:{width:1.2, ...axisLine.lineStyle, type:'solid', opacity:1}};
-      for (const part of ['axisLabel', 'axisTick', 'splitLine']) spec[part] = {...spec[part], customValues: null};
+      for (const part of ['axisLabel', 'axisTick', 'splitLine']) spec[part] = {...sourceAxis[part], customValues: null};
       Object.assign(spec.axisLabel, {showMinLabel: true, showMaxLabel: true});
       if (axis.dimension === 'x' && sourceAxis.dnascapeBoxPositions) {
         const ticks = sourceAxis.dnascapeBoxPositions.filter(value => value >= values[0] && value <= values[1]);
@@ -173,11 +209,28 @@
         }
       }
     }
+    return patch;
+  }
+
+  function queueViewport(state) {
+    state.pending = {context: metadata(state).context, token: metadata(state).token,
+      sequence: state.sequence, ranges: state.latestRanges};
+    // A fixed trailing window also sends updates during a long drag. Do not
+    // restart it for every mouse event and starve the detail prefetch.
+    if (!state.timer) state.timer = setTimeout(() => flush(state), 120);
+  }
+
+  function apply(state, next, notify = true) {
+    const current = ranges(state);
+    const updates = Object.fromEntries(Object.entries(next).filter(([key, values]) => changed(current[key], values)));
+    if (!Object.keys(updates).length) return;
+    const patch = axisPatch(state, updates);
     state.chart.setOption(patch, {lazyUpdate: false, silent: true});
+    reserveTitleSpace(state);
+    state.sequence = ++sequence;
+    state.latestRanges = {...current, ...updates};
     if (notify) {
-      state.pending = {context: metadata(state).context, ranges: {...state.pending?.ranges, ...updates}};
-      clearTimeout(state.timer);
-      state.timer = setTimeout(() => flush(state), 120);
+      queueViewport(state);
     }
   }
 
@@ -185,7 +238,9 @@
     if (state.frame === undefined) return;
     cancelAnimationFrame(state.frame);
     state.frame = undefined;
-    apply(state, state.next, false);
+    const next = state.next;
+    state.next = null;
+    apply(state, next);
   }
 
   function paint(state, next) {
@@ -201,13 +256,15 @@
 
   function down(state, event) {
     if (event.button !== 0) return;
+    flush(state);
     const rect = rectangle(state), start = point(state, event), initial = ranges(state);
     if (!inside(rect, start) || inLegend(state, start) || inside(guideBox(state),start) || !Object.keys(initial).length) return;
-    flush(state);
     const mode = leftControl && event.ctrlKey ? 'select' : 'pan';
     if (mode === 'select' && !Object.keys(initial).some(key => key.endsWith('x'))) return;
     event.preventDefault();
     state.suppressClickUntil = 0;
+    state.chart.dispatchAction({type: 'hideTip'});
+    state.chart.dispatchAction({type: 'updateAxisPointer', currTrigger: 'leave'});
     if (mode === 'select') event.stopImmediatePropagation();
     drag = {state, mode, start, end: start, rect, initial, context: metadata(state).context};
     if (mode === 'select') {
@@ -228,11 +285,13 @@
     event.preventDefault();
     event.stopImmediatePropagation();
     drag.end = point(state, event);
+    if (Math.hypot(drag.end[0] - start[0], drag.end[1] - start[1]) >= 3) drag.moved = true;
     if (drag.mode === 'select') {
       const end = clamp(drag.end[0], rect.x, rect.x + rect.width);
       drag.overlay.style.left = Math.min(start[0], end) + 'px';
       drag.overlay.style.width = Math.abs(end - start[0]) + 'px';
     } else {
+      if (!drag.moved) return;
       const next = {};
       for (const [key, values] of Object.entries(initial)) {
         const axis = metadata(state).axes[key], horizontal = axis.dimension === 'x';
@@ -250,13 +309,14 @@
   function up(event) {
     if (!drag || event.button !== 0) return;
     const pointAtUp = point(drag.state,event);
-    if (drag.mode === 'pan' && Math.hypot(pointAtUp[0]-drag.start[0],pointAtUp[1]-drag.start[1]) < 3) {
+    if (drag.mode === 'pan' && !drag.moved && Math.hypot(pointAtUp[0]-drag.start[0],pointAtUp[1]-drag.start[1]) < 3) {
       const state=drag.state; drag=null; flushFrame(state); cursor(state,pointAtUp); return;
     }
     move(event);
     if (!drag) return;
     const {state, initial, mode, start, end, rect} = drag;
     state.suppressClickUntil = Date.now() + 250;
+    suppressNavigationClickUntil = state.suppressClickUntil;
     flushFrame(state);
     if (mode === 'select' && Math.abs(end[0] - start[0]) >= 3) {
       const next = {};
@@ -270,7 +330,7 @@
     } else if (mode === 'pan') {
       const current = ranges(state);
       const moved = Object.fromEntries(Object.entries(current).filter(([key, values]) => changed(initial[key], values)));
-      if (Object.keys(moved).length) state.pending = {context: metadata(state).context, ranges: moved};
+      if (Object.keys(moved).length) queueViewport(state);
     }
     drag.overlay?.remove();
     drag = null;
@@ -281,9 +341,14 @@
   function cancel() {
     if (!drag) return;
     const {state, initial} = drag;
+    if (drag.moved) suppressNavigationClickUntil = state.suppressClickUntil = Date.now() + 250;
     if (state.frame !== undefined) cancelAnimationFrame(state.frame);
     state.frame = undefined;
-    if (state.element.isConnected && !state.chart.isDisposed() && drag.context === metadata(state)?.context) apply(state, initial, false);
+    state.next = null;
+    if (state.element.isConnected && !state.chart.isDisposed() && drag.context === metadata(state)?.context) {
+      apply(state, initial);
+      flush(state);
+    }
     drag.overlay?.remove();
     drag = null;
     if (!state.chart.isDisposed()) state.chart.getZr().setCursorStyle('default');
@@ -299,14 +364,14 @@
     event.stopImmediatePropagation();
     const pixels = event.deltaY * (event.deltaMode === 1 ? 16 : event.deltaMode === 2 ? rect.height : 1);
     const factor = Math.exp(clamp(pixels * 0.002, -1, 1)), next = {};
-    for (const [key, values] of Object.entries(ranges(state))) {
+    for (const [key, values] of Object.entries(state.next || ranges(state))) {
       const axis = axes[key], lower = forward(values[0], axis), upper = forward(values[1], axis);
-      const value = valueAt(state, axis, position[axis.dimension === 'x' ? 0 : 1]);
+      const value = valueAt(state, axis, position[axis.dimension === 'x' ? 0 : 1], values);
       const anchor = clamp(forward(value, axis), lower, upper);
       if (!Number.isFinite(anchor)) continue;
       next[key] = bounded(anchor - (anchor - lower) * factor, anchor + (upper - anchor) * factor, axis);
     }
-    apply(state, next);
+    paint(state, next);
   }
 
   let scheduled = false;
@@ -324,6 +389,37 @@
       if (!chart) { pending = true; return; }
       if (attached.has(chart)) return;
       const state = {element, component, chart};
+      const identity = value => JSON.stringify([value?.context, value?.token]);
+      state.identity = identity(metadata(state));
+      state.sequence = Number(metadata(state)?.sequence) || 0;
+      sequence = Math.max(sequence, state.sequence);
+      const setOption = chart.setOption.bind(chart);
+      chart.setOption = (options, ...args) => {
+        const incoming = options.dnascapeNavigation;
+        if (incoming) {
+          const acknowledged = Number(incoming.sequence) || 0;
+          if (identity(incoming) !== state.identity) {
+            if (drag?.state === state) cancel();
+            clearTimeout(state.timer);
+            if (state.frame !== undefined) cancelAnimationFrame(state.frame);
+            state.frame = undefined;
+            state.timer = state.pending = state.next = state.latestRanges = null;
+            state.identity = identity(incoming);
+            state.sequence = acknowledged;
+          } else if ((state.latestRanges || state.next) &&
+                     (acknowledged < state.sequence || state.next || drag?.state === state)) {
+            // A server response can arrive after another gesture has begun.
+            // Install its detail and styles in the current viewport, without
+            // ever painting the older axis ranges, even for a single frame.
+            options = {...options, ...axisPatch(state, state.next || state.latestRanges, options)};
+          } else {
+            state.sequence = acknowledged;
+            state.latestRanges = null;
+          }
+          sequence = Math.max(sequence, acknowledged);
+        }
+        return setOption(options, ...args);
+      };
       const onClick = event => {
         if (state.suppressClickUntil > Date.now()) return;
         if (component.options?.dnascapeHistogramGuides?.selectable && event.componentType === 'series') {
@@ -354,7 +450,9 @@
     if (!scheduled) { scheduled = true; setTimeout(refresh, 0); }
   }
   function key(event, pressed) {
+    if (pressed && event.code !== 'Escape') suppressNavigationClickUntil = 0;
     if (event.code === 'ControlLeft') leftControl = pressed;
+    if (event.code === 'ControlLeft' && !pressed) for (const state of live) flush(state);
     if (event.code === 'Escape' && pressed) cancel();
     if (event.code === 'Escape' && pressed) { datasetMenu?.remove(); datasetMenu=null; }
     for (const state of live) if (state.lastPoint) cursor(state, state.lastPoint);
@@ -367,8 +465,15 @@
   window.addEventListener('mouseup', up, true);
   // Flush before toolbar clicks so SVG/PDF downloads use the displayed window.
   document.addEventListener('pointerdown', event => {
+    suppressNavigationClickUntil = 0;
     for (const state of live) flush(state);
     if (datasetMenu && !datasetMenu.contains(event.target)) { datasetMenu.remove(); datasetMenu=null; }
+  }, true);
+  document.addEventListener('click', event => {
+    if (Date.now() < suppressNavigationClickUntil) {
+      event.preventDefault();
+      event.stopImmediatePropagation();
+    }
   }, true);
   new MutationObserver(schedule).observe(document.body, {childList: true, subtree: true});
   schedule();

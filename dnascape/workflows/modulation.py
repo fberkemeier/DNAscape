@@ -1,4 +1,4 @@
-"""Combine aligned assay profiles without resampling or changing their grid."""
+"""Combine assay profiles on a strict grid or their common extent from the start."""
 
 from __future__ import annotations
 
@@ -56,6 +56,7 @@ class ProfileModulationSettings:
     signal_function: str = "identity"
     profile_function: str = "identity"
     expression: str = "source * profile"
+    align_from_start: bool = False
 
 
 def _require_choice(value, choices, name):
@@ -69,6 +70,8 @@ def _is_chromosome(name: str) -> bool:
 
 def resolve_modulation(settings: ProfileModulationSettings) -> ProfileModulationSettings:
     # Keep older Python requests valid while presenting one formula editor in the UI.
+    if not isinstance(settings.align_from_start, (bool, np.bool_)):
+        raise ValueError("Modulation alignment must be on or off.")
     _require_choice(settings.operation, {*MODULATION_OPERATIONS, "expression", "multiply", "add", "subtract", "divide", "blend"}, "operation")
     _require_choice(settings.missing_policy, {"error", "zero"} if settings.operation == "convolve" else {"error", "zero", "nan"}, "missing-value policy")
     changes = {}
@@ -176,23 +179,47 @@ def read_modulation_profiles(inspection: UploadInspection, *, column=None, array
     return {label: ModulationProfile(values, coordinates)}
 
 
-def aligned_modulation(source, settings: ProfileModulationSettings, *, coordinates=None, chromosome=None):
-    """Check the complete shape before selecting bins; no implicit broadcasting."""
+def aligned_modulation(source, settings: ProfileModulationSettings, *, coordinates=None, chromosome=None, warning=None):
+    """Match grids or align leading samples without broadcasting or resampling."""
     profile = settings.profiles.get(chromosome, settings.profiles.get(None))
-    if profile is None and chromosome is None and len(settings.profiles) == 1:
+    chromosome_mismatch = False
+    if profile is None and len(settings.profiles) == 1 and (chromosome is None or settings.align_from_start):
         profile = next(iter(settings.profiles.values()))
+        chromosome_mismatch = chromosome is not None
     if profile is None:
         raise ValueError("The modulation profile must contain every converted chromosome. Use matching chromosome columns or NPZ arrays.")
     values = np.asarray(profile.values, dtype=float)
     vector = source.ndim < 2 or 1 in source.shape
-    if vector and (values.ndim < 2 or 1 in values.shape) and source.size == values.size:
+    profile_vector = values.ndim < 2 or 1 in values.shape
+    if settings.align_from_start and profile_vector:
+        values = values.reshape(-1, 1)
+    if vector and profile_vector:
+        values = values.reshape(-1, 1)
+        source_shape = (source.size, 1)
+    else:
+        source_shape = source.shape
+    mismatch = values.shape != source_shape
+    coordinate_mismatch = False
+    if profile.coordinates is not None and coordinates is not None:
+        left, right = np.asarray(profile.coordinates, dtype=float), np.asarray(coordinates, dtype=float)
+        coordinate_mismatch = left.shape != right.shape or not np.allclose(left, right, rtol=1e-10, atol=1e-9, equal_nan=False)
+    if settings.align_from_start:
+        if values.ndim != len(source_shape):
+            raise ValueError("Modulation requires two profiles or two space-time arrays.")
+        if mismatch or coordinate_mismatch or chromosome_mismatch:
+            if warning is not None:
+                warning("The modulation profile differs in size or coordinates. Arrays were aligned from the first sample; only overlapping samples were combined. Unmatched source values were kept.")
+            overlap = tuple(slice(0, min(a, b)) for a, b in zip(source_shape, values.shape))
+            aligned = np.ma.masked_all(source_shape, dtype=float)
+            aligned[overlap] = values[overlap]
+            return aligned
+        return values.reshape(-1, 1) if vector else values
+    if vector and profile_vector and source.size == values.size:
         values = values.reshape(source.shape)
     if values.shape != source.shape:
         raise ValueError(f"The modulation profile shape {values.shape} does not match the post-Configure data shape {source.shape}. Use the same bin count and matrix dimensions.")
-    if profile.coordinates is not None and coordinates is not None:
-        left, right = np.asarray(profile.coordinates, dtype=float), np.asarray(coordinates, dtype=float)
-        if left.shape != right.shape or not np.allclose(left, right, rtol=1e-10, atol=1e-9, equal_nan=False):
-            raise ValueError("The modulation profile coordinates do not match the converted region. Use the same region, resolution and bin order.")
+    if coordinate_mismatch:
+        raise ValueError("The modulation profile coordinates do not match the converted region. Use the same region, resolution and bin order.")
     return values.reshape(-1, 1) if vector else values
 
 
@@ -328,6 +355,8 @@ def _formula_operand(values, settings, operand):
 
 def modulation_metadata(settings: ProfileModulationSettings):
     metadata = {"modulation_operation": settings.operation, "modulation_missing": settings.missing_policy}
+    if settings.align_from_start:
+        metadata["modulation_alignment"] = "start_overlap"
     if settings.operation == "expression":
         metadata["modulation_formula"] = settings.expression
     if settings.operation == "convolve":

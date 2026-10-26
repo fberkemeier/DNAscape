@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from collections.abc import Callable
+from dataclasses import replace
 from typing import Any
 
 from nicegui import ui
@@ -11,8 +12,8 @@ from app.mapping_uploads import inspect_upload_event
 from app.notifications import notify
 from app.pages.common import data_upload, set_data_upload_locked
 from dnascape.workflows.filtering import (
-    FILTER_ACTIONS, FILTER_INTERPOLATIONS, FILTER_PROFILE_LAYOUTS, FILTER_SELECTIONS,
-    DataFilterSettings,
+    FILTER_ACTIONS, FILTER_INTERPOLATIONS, FILTER_SELECTIONS,
+    DataFilterSettings, detect_filter_profile,
 )
 from dnascape.workflows.modulation import ProfileModulationSettings
 
@@ -22,10 +23,14 @@ class DataFilterControls:
         self, on_loading_change: Callable[[], None], *, title="Filter",
         marker_prefix="data-manager-filter", toggle_label="Apply filter",
         default_selection="threshold", default_action="replace", header: Callable[[], None] | None = None,
+        allow_export: bool = False,
+        profile_units: str = "kb", align_modulation_from_start: bool = False,
     ) -> None:
         self.controls: dict[str, Any] = {}
         self.marker_prefix = marker_prefix
+        self.align_modulation_from_start = align_modulation_from_start
         self.upload = None
+        self.profile = None
         self.modulation_upload = None
         self.loading = False
         self._loading_count = 0
@@ -35,6 +40,9 @@ class DataFilterControls:
             with ui.column().classes("dn-expansion-content dn-data-filter"):
                 with ui.row().classes("dn-inline-actions"):
                     self._mark("enabled", ui.switch(toggle_label, value=False))
+                    if allow_export:
+                        self._mark("export", ui.switch("Export filter", value=False))
+                        self.controls["export"].bind_enabled_from(self.controls["enabled"], "value")
                 with ui.column().classes("dn-data-filter-options"):
                     if header is not None:
                         header()
@@ -48,17 +56,14 @@ class DataFilterControls:
                         self._number("lower", "Minimum", 0.)
                         self._number("upper", "Maximum", 1.)
                     with ui.column().classes("dn-data-filter-profile") as profile:
-                        with ui.element("div").classes("dn-data-filter-grid") as profile_grid:
-                            self._select("profile_layout", "Profile contents", FILTER_PROFILE_LAYOUTS, "mask")
-                            self._select("profile_units", "Coordinates", {"bp": "Base pairs (bp)", "kb": "Kilobases (kb)", "index": "Bin index (from 0)"}, "bp")
-                        self.controls["uploader"] = data_upload(
-                            accept=".tsv,.csv,.txt,.npz,.npy,.bed,.bedgraph,.gz",
-                            accepted_formats="TSV, CSV, TXT, NPZ",
-                            marker=f"{marker_prefix}-upload", on_upload=self._uploaded,
-                            on_clear=self._clear_upload, hide_when_loaded=True,
-                        )
-                        self._select("profile_column", "Mask values", {}, None)
-                        self._select("profile_array_key", "Array", {}, None)
+                        with ui.element("div").classes("dn-data-filter-profile-input"):
+                            self.controls["uploader"] = data_upload(
+                                accept=".tsv,.csv,.txt,.npz,.gz",
+                                accepted_formats="TSV, TXT, CSV, NPZ",
+                                marker=f"{marker_prefix}-upload", on_upload=self._uploaded,
+                                on_clear=self._clear_upload, hide_when_loaded=True,
+                            )
+                            self._select("profile_units", "Coordinates", {"kb": "kb", "bp": "bp"}, profile_units)
                     ui.label("Transform").classes("dn-setting-group-title dn-data-filter-operation-heading")
                     self._select("action", "Operation", FILTER_ACTIONS, default_action)
                     self._number("replace_value", "Replacement value", 0.)
@@ -77,7 +82,10 @@ class DataFilterControls:
                             marker=f"{marker_prefix}-modulation-upload", on_upload=self._modulation_uploaded,
                             on_clear=self._clear_modulation, hide_when_loaded=True,
                         )
-                        ui.label("Array sizes must match the source data.").classes("dn-upload-formats")
+                        ui.label(
+                            "Arrays align from the first sample; only their overlap is combined."
+                            if align_modulation_from_start else "Array sizes must match the source data."
+                        ).classes("dn-upload-formats")
                         self.modulation_summary = ui.label().classes("dn-data-manager-section-guidance")
                         self._select("modulation_column", "Data", {"__auto__": "Automatic"}, "__auto__")
                         self._select("modulation_array", "Array", {"__auto__": "Automatic"}, "__auto__")
@@ -90,9 +98,8 @@ class DataFilterControls:
                         ).classes("dn-upload-formats")
         self._threshold_group, self._between_group = threshold, between
         self._profile_group, self._noise_group = profile, noise
-        self._profile_grid = profile_grid
         self._modulation_group = modulation
-        for key in ("selection", "action", "profile_layout", "modulation_column", "modulation_array"):
+        for key in ("selection", "action", "modulation_column", "modulation_array"):
             self.controls[key].on_value_change(self._sync)
         self._sync()
 
@@ -112,13 +119,6 @@ class DataFilterControls:
         self._between_group.set_visibility(selection == "between")
         self._profile_group.set_visibility(selection == "profile")
         self.controls["threshold"].props(f'label="{"Distance" if selection in {"minimum", "maximum"} else "Threshold"}"')
-        self.controls["profile_units"].set_visibility(self.controls["profile_layout"].value != "mask")
-        self._profile_grid.classes(
-            add="dn-data-filter-single-column" if self.controls["profile_layout"].value == "mask" else None,
-            remove=None if self.controls["profile_layout"].value == "mask" else "dn-data-filter-single-column",
-        )
-        self.controls["profile_column"].set_visibility(bool(self.upload and len(self.upload.numeric_columns) > 1 and self.controls["profile_layout"].value == "mask"))
-        self.controls["profile_array_key"].set_visibility(bool(self.upload and len(self.upload.array_keys) > 1))
         for name, operation in (("replace_value", "replace"), ("factor", "multiply"), ("offset", "add"), ("interpolation", "interpolate")):
             self.controls[name].set_visibility(action == operation)
         self._noise_group.set_visibility(action == "noise")
@@ -153,26 +153,14 @@ class DataFilterControls:
         self._set_loading(1)
         try:
             candidate = await inspect_upload_event(event, expected_form="regions")
-            if candidate.source_format not in {"csv", "tsv", "txt", "npz", "npy", "bedgraph"}:
-                raise ValueError("Choose a mask profile, numeric position list, or interval table.")
+            detected = detect_filter_profile(candidate, units=self.controls["profile_units"].value)
             self.upload = candidate
-            self.controls["profile_column"].set_options(list(candidate.numeric_columns), value=candidate.default_column)
-            self.controls["profile_array_key"].set_options(list(candidate.array_keys), value=candidate.default_array_key)
-            if candidate.source_format == "bedgraph":
-                self.controls["profile_layout"].set_value("intervals")
+            self.profile = detected
+            names = {name.lower().replace(" ", "_") for name in candidate.columns}
+            if names & {"position_bp", "start_bp", "end_bp"}:
                 self.controls["profile_units"].set_value("bp")
-            else:
-                names = {name.lower().replace(" ", "_") for name in candidate.columns}
-                if any(bounds <= names for bounds in ({"start", "end"}, {"start_bp", "end_bp"}, {"start_kb", "end_kb"})):
-                    self.controls["profile_layout"].set_value("intervals")
-                    self.controls["profile_units"].set_value("kb" if "start_kb" in names else "bp")
-                elif names & {"position", "position_bp", "position_kb", "pos", "bin_index"} and len(candidate.numeric_columns) == 1:
-                    self.controls["profile_layout"].set_value("positions")
-                    self.controls["profile_units"].set_value("index" if "bin_index" in names else "kb" if "position_kb" in names else "bp")
-                elif candidate.array_keys == ("positions",):
-                    self.controls["profile_layout"].set_value("positions")
-                elif names & {"mask", "filter", "selected"}:
-                    self.controls["profile_layout"].set_value("mask")
+            elif names & {"position_kb", "start_kb", "end_kb"}:
+                self.controls["profile_units"].set_value("kb")
             self._sync()
             return True
         except (OSError, RuntimeError, ValueError, TypeError) as exc:
@@ -208,6 +196,7 @@ class DataFilterControls:
 
     def _clear_upload(self):
         self.upload = None
+        self.profile = None
         self._sync()
 
     def set_locked(self, locked: bool):
@@ -230,11 +219,15 @@ class DataFilterControls:
             between_mode=value("between_mode"),
             value=value({"multiply": "factor", "add": "offset"}.get(action, "replace_value")),
             standard_deviation=value("standard_deviation"), seed=value("seed"),
-            interpolation=value("interpolation"), reference=value("reference"), upload=self.upload,
-            profile_layout=value("profile_layout"), profile_units=value("profile_units"),
-            profile_column=value("profile_column"), profile_array_key=value("profile_array_key"),
+            interpolation=value("interpolation"), reference=value("reference"),
+            profile=(
+                replace(self.profile, units=value("profile_units")) if self.profile is not None else None
+            ),
+            profile_layout=self.profile.layout if self.profile is not None else "positions",
+            profile_units=value("profile_units"),
             modulation=ProfileModulationSettings(
                 operation="expression", expression=str(value("modulation_expression") or ""),
+                align_from_start=self.align_modulation_from_start,
                 upload=self.modulation_upload,
                 column=None if value("modulation_column") == "__auto__" else value("modulation_column"),
                 array_key=None if value("modulation_array") == "__auto__" else value("modulation_array"),

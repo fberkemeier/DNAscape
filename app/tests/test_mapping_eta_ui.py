@@ -103,6 +103,8 @@ def test_eta_lifecycle_through_real_mapping_action(monkeypatch, mode):
             user.find(marker="action-map").click()
             await _until(lambda: _element(user, "mapping-eta").visible)
             label = _element(user, "mapping-eta")
+            line = _element(user, "mapping-status-line")
+            assert line.default_slot.children == [_element(user, "mapping-status"), label]
             timer = _element(user, "mapping-eta-heartbeat")
             assert "ETA estimating" in label.text
             clock[0] = 10
@@ -115,11 +117,12 @@ def test_eta_lifecycle_through_real_mapping_action(monkeypatch, mode):
                 clock[0] = 15
                 await _until(lambda: "00:00:15" in label.text)
             elif mode == "mse":
-                await _until(lambda: "iteration 1/2 - MSE 1.234e-02" in _element(user, "mapping-status").text)
+                await _until(lambda: "iteration 1/2 · MSE 1.234e-02" in _element(user, "mapping-status").text)
             else:
                 clock[0] = 20
                 await _until(lambda: "Elapsed 00:00:20" in label.text)
                 assert "ETA estimating" in label.text
+            assert "ETA" not in _element(user, "mapping-status").text
             if mode == "stop":
                 user.find(marker="action-map").click()
             elif mode == "disconnect":

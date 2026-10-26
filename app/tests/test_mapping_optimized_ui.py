@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import math
 from typing import Any
 
 import numpy as np
@@ -57,6 +58,25 @@ def test_static_firing_step_adapts_to_stalling_and_preserves_user_choice(
             await _set(user, "mapping-target-form", "space")
             await _set(user, "mapping-route", "firing_rate--space--replication_timing-and-fork_speed")
             controls = latest["settings"]
+            floor = controls["err_threshold"]
+            assert controls["error"].control.label == "MSE threshold"
+            assert floor.control.label == "Firing rate floor"
+            assert floor.control.value == "1e-15"
+            assert mapping_page._read_setting(floor) == 15.
+            advanced_grid = controls["error"].holder.parent_slot.parent
+            assert advanced_grid.default_slot.children == [
+                controls["error"].holder, _element(user, "mapping-region-missing"),
+                controls["neighbourhood_range"].holder, controls["refine_edge_kb"].holder,
+                floor.holder, controls["deviation_threshold"].holder,
+                _element(user, "mapping-show-plot"),
+            ]
+            await _set(user, "mapping-setting-err-threshold", "2.5e-12")
+            assert mapping_page._read_setting(floor) == pytest.approx(-math.log10(2.5e-12))
+            for invalid in ("0", "-1e-15", "1.1", "inf", "infinite", "nan", "1e-999", "oops", ""):
+                await _set(user, "mapping-setting-err-threshold", invalid)
+                with pytest.raises(ValueError, match="Firing rate floor"):
+                    mapping_page._read_setting(floor)
+            await _set(user, "mapping-setting-err-threshold", "1e-15")
             assert mapping_page._read_setting(controls["fit_step"]) == 2.
             assert not {"space_fit_step", "space_maxiter"} & controls.keys()
             for key in ("error", "deviation_threshold"):
@@ -99,6 +119,8 @@ def test_static_firing_step_adapts_to_stalling_and_preserves_user_choice(
             await _set(user, "mapping-target-form", "time")
             assert _element(user, "mapping-region-missing").value == "zero"
             assert _element(user, "mapping-show-plot").value is False
+            assert _element(user, "mapping-region-missing").parent_slot.parent is advanced_grid
+            assert _element(user, "mapping-show-plot").parent_slot.parent is advanced_grid
 
     asyncio.run(scenario())
 

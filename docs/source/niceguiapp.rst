@@ -33,10 +33,19 @@ Data Manager
    one chromosome and an optional half-open interval, or prepare every
    chromosome, then configure binning, aggregation, missing bins, interpolation,
    centred smoothing, threshold masking, and one mutually exclusive value-scaling
-   operation: multiplier, target interval (including optional inversion), centre,
+   operation: target interval, multiplier, centre,
    Z-score, or maximum absolute. A target interval is defined explicitly by its
-   target minimum and target maximum. Thresholds are evaluated before smoothing
+   target minimum and target maximum. **Invert** reverses high and low signal
+   values independently of the selected scaling. Thresholds are evaluated before smoothing
    and value scaling.
+   Reusable TSV, TXT, CSV and NPZ spatial profiles also expose **Region & binning**.
+   Choose a chromosome header or NPZ array with **Profile**, or use **Chromosome**
+   for tables containing several chromosomes in rows. Supplied coordinates are
+   retained. Otherwise, **Source start (bp)** and **Source resolution (bp)** define
+   the original grid, initially 0 bp and 1,000 bp. Start, End, output bin size and
+   aggregation apply before value processing, data transforms and filtering.
+   **Apply configuration** bypasses these steps when off. With multiple sources,
+   untouched region limits use each source's full extent.
    The ENCODE K562 Repli-seq example uses ``hgdownload.gi.ucsc.edu``.
    Older HTTPS links to ``hgdownload.soe.ucsc.edu`` or
    ``hgdownload.cse.ucsc.edu`` use this current host with their file paths and
@@ -99,18 +108,24 @@ Data Manager
    values below zero, replaced with zero. Other selections include values
    above/below a threshold, within or outside an inclusive interval, a threshold at a distance
    above the converted minimum or below its maximum, NaN regions, an uploaded
-   mask or genomic positions/intervals, and the whole region. An absent filter
-   profile leaves the data unchanged. Masks require one value per converted
-   bin; non-zero finite entries select bins. Position lists and half-open
-   intervals use bp, kb, or zero-based bin indices; intervals select overlapping
-   bins and optional chromosome labels restrict the selection.
+   genomic positions/intervals, and the whole region. An absent filter upload
+   leaves the data unchanged. Upload one column of positions or two columns of
+   half-open interval starts and ends; the layout is detected automatically.
+   **Coordinates**, beside the upload, chooses kb (default) or bp. Intervals
+   select overlapping source regions; optional chromosome labels restrict the
+   selection. **Export filter**, beside **Apply filter** in Controls, adds one export row beneath the
+   selected raw-data file, with a position-list or genomic-interval choice
+   beside its file type.
 
    Filter controls remain editable while **Apply filter** is unchecked. In
    **Plot settings → Guides**, enable **Filter** to shade the applied selection
    in grey. With **Legend** enabled, name both the signal and filter. Plot
    previews refresh up to 1,000 native curve points within the visible window by default
-   after zooming or panning. A coarse full-region overview remains available
-   while finer curve or heatmap detail loads, keeping navigation continuous.
+   after zooming or panning. Detail is prefetched beyond the visible area, and
+   small pans reuse the buffered samples. A coarse full-region overview remains
+   available while finer curve or heatmap detail loads in the background.
+   Gestures draw once per animation frame; delayed updates cannot reset a newer
+   viewport. Completed drags cannot trigger an accidental navigation click.
    Aspect ratios from 0.2 to 8 set the preview's
    width-to-height ratio directly.
 
@@ -125,23 +140,16 @@ Data Manager
    are processed independently, retaining their grid. Previews and every raw
    export format use the filtered result, including any new NaNs.
 
-   **Modulate with profile** accepts aligned gene annotations or signals such as
-   RNA-seq, ATAC-seq and ChIP-seq. It checks the full post-Configure bin count and
-   matrix shape before editing selected regions, with no implicit broadcasting
-   or resampling. Explicit coordinates must match when supplied by both inputs.
-   Chromosome columns and NPZ arrays can be matched by name. **Combine using**
-   offers a live **Formula** editor for weighted sums, multiplication and division,
-   with separate multipliers, powers and log/exp functions for each input.
-   Minimum, maximum and convolution are separate methods. Pointwise profile scaling offers original values, mean 1,
-   maximum magnitude 1, or a 0–1 interval. Missing-value and division-by-zero
-   choices are explicit; errors preserve the previous generated result.
-
-   Convolution uses the modulation profile as a centred kernel and preserves
-   output size. Kernel normalization is on by default, with reflected
-   boundaries; periodic, nearest-value and zero-padding boundaries are also
-   available. Inputs must be finite on a uniform grid, or missing values can be
-   filled with zero. Space-time columns are convolved independently along
-   space. All previews and raw downloads use the same modulated result.
+   **Modulate with profile** accepts gene annotations or signals such as RNA-seq,
+   ATAC-seq and ChIP-seq. Its editable Python/NumPy formula defaults to
+   ``source * profile``: **source** is the configured and transformed signal,
+   and **profile** is the uploaded modulation array. Arrays align from their
+   beginning without resampling or broadcasting. Different sizes, coordinates
+   or chromosomes produce a yellow warning; only the overlapping samples are
+   combined and unmatched source values remain unchanged. Formula reductions
+   use that overlap, while only selected filter regions are replaced.
+   Errors preserve the previous generated result. Previews and raw downloads
+   use the same modulated result.
 
    A curated UCSC ENCODE DCC K562 Repli-seq BigWig link is available as a test
    source. Its wavelet signal is a relative timing score (larger values are
@@ -172,13 +180,16 @@ Mapping
    the resolved route in a cancellable background worker.
 
    Mapping settings put fit iterations before step size and start simulation
-   ensembles at 100 runs. **Advanced** groups thresholds, edge context, numerical
-   controls, missing values and preview visibility in two columns. Optional
+   ensembles at 100 runs. **Advanced** pairs **MSE threshold** with **Missing values**,
+   neighbourhood range with maximum edge context, and **Firing rate floor** with
+   deviation threshold, followed by a full-width **Show plot** row. Route-specific
+   controls appear only when needed. The firing rate floor accepts the rate
+   directly (for example, ``1e-15``), preserving the solver's numerical limit. Optional
    numerical fields use automatic values when blank; spatial overrides follow
    the main fit controls until edited. A zero MSE or deviation threshold disables
    that threshold. **Stall recovery** enables the recovery-time control.
 
-   **Show Plot** under Advanced is enabled by default. Turn it off to skip
+   **Show plot** under Advanced is enabled by default. Turn it off to skip
    rendering the preview while still computing and retaining all results and
    raw downloads. Turning it back on displays the result without rerunning.
 
@@ -292,6 +303,10 @@ Simulation
    budget. It does not reserve RAM, cap actual process RAM use, or change upload
    limits. Settings uses grouped switches and draft preferences; **Apply** saves
    changes. **Restore defaults** fills the draft without clearing data or results.
+   Under **Interface**, **Field hover hints** controls short descriptions shown
+   when pointing at fields. It is on by default and can be disabled independently
+   of plot hover readouts. **Field help** remains a separate, more detailed option
+   beside fields and is off by default.
    Under **Visualisation**, **DNAscape theme** changes the accent colour across the
    interface, default plot curves, logos, and browser-tab icon. Choose a colour
    with the picker or enter a hex value; light and dark variants keep labels
@@ -315,7 +330,12 @@ Simulation
    top right and can be positioned in any corner. For combined histograms,
    choose a dataset from the panel dropdown or click its bins when Statistics
    is enabled. Turning Statistics off replaces the panel with a legend listing
-   every dataset, without a selector. **Side by side**
+   every dataset, without a selector. **Statistics** sits below Legend, Grid and
+   Hover in Guides. **Export statistics**, beside it, independently adds a file
+   to Raw data with each plotted dataset's mean, median and population standard
+   deviation at full precision. Filename, TSV/TXT/CSV/NPZ format and compression
+   remain editable, including for separate Analysis plots. Bulk raw-data downloads
+   include the enabled statistics file. **Side by side**
    places datasets within each shared bin interval, so bin size still refers
    to the whole interval. **KDE** replaces bars with Gaussian density curves;
    **Smoothness** scales Scott's bandwidth, with 1 as the default and larger
@@ -333,6 +353,9 @@ Simulation
    on curves. Floating boxes contain only Y values, or Z for heatmaps; axis
    readouts use the DNAscape theme colour. Heatmaps show both X and Y guides.
    Clear an axis-label field to remove its plot title.
+   Logarithmic axes omit zero and negative samples and start at the smallest
+   positive native value. Explicit zero or negative axis minima produce an
+   error instead of silently changing the selected bounds.
 
 Analysis
    Upload one or more profiles and create profile, heatmap, histogram, or

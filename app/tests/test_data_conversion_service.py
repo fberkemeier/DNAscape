@@ -258,7 +258,6 @@ def test_explicit_scaling_mode_makes_inactive_legacy_fields_inert() -> None:
             signal_transform="invert",
             rescale_min=5,
             rescale_max=1,
-            rescale_invert=True,
         )
     )
 
@@ -269,6 +268,57 @@ def test_explicit_scaling_mode_makes_inactive_legacy_fields_inert() -> None:
     assert "target_minimum" not in metadata
     assert "legacy_offset" not in metadata
     assert "legacy_signal_transform" not in metadata
+
+
+@pytest.mark.parametrize("form", ("x", "t", "xt", "track"))
+@pytest.mark.parametrize("mode", ("none", "interval", "multiplier", "center", "zscore", "maxabs"))
+def test_invert_is_independent_of_scaling_and_preserves_missing_positions(form, mode) -> None:
+    values = np.array([2., np.nan, 3., 8.])
+    extra = {}
+    if form == "track":
+        inspection = inspect_upload(
+            "signal.bedgraph", b"chr1\t0\t10\t2\nchr1\t20\t30\t3\nchr1\t30\t40\t8\n",
+        )
+        extra = dict(bin_size=10, interpolation="none", track_missing="nan")
+    else:
+        if form == "t":
+            values = values[None, :]
+        elif form == "xt":
+            values = np.column_stack((values, [12., np.nan, 18., 40.]))
+        stream = io.BytesIO()
+        np.save(stream, values, allow_pickle=False)
+        inspection = inspect_upload("signal.npy", stream.getvalue())
+    request = DataConversionRequest(
+        inspection=inspection, input_form=form, missing_policy="ignore",
+        scaling_mode=mode, rescale_invert=True, scale=2.5,
+        rescale_min=-2, rescale_max=4, **extra,
+    )
+    expected = values.copy()
+    columns = range(values.shape[1]) if form == "xt" else (None,)
+    for column in columns:
+        original = values[:, column] if column is not None else values
+        inverted = np.nanmin(original) + (np.nanmax(original) - original)
+        if mode == "interval":
+            inverted = -2 + (inverted - np.nanmin(inverted)) / np.ptp(inverted[np.isfinite(inverted)]) * 6
+        elif mode == "multiplier":
+            inverted *= 2.5
+        elif mode == "center":
+            inverted -= np.nanmean(inverted)
+        elif mode == "zscore":
+            inverted = (inverted - np.nanmean(inverted)) / np.nanstd(inverted)
+        elif mode == "maxabs":
+            inverted /= np.nanmax(np.abs(inverted))
+        if column is None:
+            expected = inverted
+        else:
+            expected[:, column] = inverted
+    prepared = prepare_data(request)
+    np.testing.assert_allclose(prepared.values, expected, equal_nan=True)
+    assert dict(prepared.metadata)["values_inverted"] == "true"
+    original_coordinates = prepare_data(replace(request, rescale_invert=False)).coordinates
+    assert prepared.coordinates.keys() == original_coordinates.keys()
+    for key, coordinates in prepared.coordinates.items():
+        np.testing.assert_equal(coordinates, original_coordinates[key])
 
 
 def test_new_scaling_mode_cannot_overlap_legacy_normalization() -> None:

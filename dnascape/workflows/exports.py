@@ -21,6 +21,7 @@ import subprocess
 import tempfile
 import unicodedata
 import zipfile
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Literal
@@ -613,6 +614,39 @@ def build_raw_export(
             "npz": "application/octet-stream",
         }[normalized_format],
         compression=_raw_compression(compression, gzip_output),
+    )
+
+
+def build_histogram_statistics_export(
+    statistics: Sequence[Mapping[str, object]], file_format: str, *,
+    filename: str | None = None, compression: str = "none",
+) -> ExportArtifact:
+    """Export the histogram's native mean, median and population standard deviation."""
+    normalized = normalize_export_format(file_format, allowed=RAW_FORMATS)
+    if not statistics:
+        raise ValueError("No histogram statistics are available to export.")
+    columns = ("dataset", "mean", "median", "standard_deviation")
+    if normalized == "npz":
+        stream = io.BytesIO()
+        arrays = {"dataset": np.asarray([str(row["dataset"]) for row in statistics], dtype=str)}
+        arrays.update({
+            key: np.asarray([row[key] if row[key] is not None else np.nan for row in statistics], dtype=float)
+            for key in columns[1:]
+        })
+        np.savez_compressed(stream, **arrays)
+        payload = stream.getvalue()
+    else:
+        text = io.StringIO()
+        writer = csv.writer(text, delimiter="," if normalized == "csv" else "\t", lineterminator="\n")
+        writer.writerow(columns)
+        writer.writerows(tuple(row[key] if row[key] is not None else "nan" for key in columns) for row in statistics)
+        payload = text.getvalue().encode("utf-8")
+    return compressed_export_artifact(
+        payload, filename=safe_export_filename(filename, normalized, default_stem="histogram_statistics"),
+        media_type={
+            "csv": "text/csv; charset=utf-8", "tsv": "text/tab-separated-values; charset=utf-8",
+            "txt": "text/plain; charset=utf-8", "npz": "application/octet-stream",
+        }[normalized], compression=compression,
     )
 
 

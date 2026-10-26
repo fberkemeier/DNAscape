@@ -10,6 +10,7 @@ from typing import Any, Literal, cast
 from nicegui import run, ui
 
 from app.export_settings import get_export_settings
+from app.field_hints import field_hint
 from app.mapping_exports import build_mapping_raw_export
 from app.mapping_service import MappingResult
 from app.notifications import notify
@@ -131,7 +132,7 @@ def _entry_row(
             .classes("dn-cache-keep")
             .mark(f"cache-keep-{entry.id}")
         )
-        keep_control.tooltip("Keep in cache")
+        field_hint(keep_control, "Keep this file in cache.")
         keep_control.on_value_change(
             lambda event, entry_id=entry.id: set_keep(entry_id, bool(event.value))
         )
@@ -502,6 +503,7 @@ def render(navigate: Callable[[str], None]) -> None:
                             .classes("dn-cache-tracking-option")
                             .mark(f"cache-track-{category}")
                         )
+                        field_hint(control, f"Automatically cache {label.lower()}.")
                         control.on_value_change(
                             lambda event, category=category: cache.set_tracking(
                                 category, bool(event.value)

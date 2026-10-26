@@ -44,6 +44,7 @@ class ExportSettings:
     result_name_style: str = "short"
     preserve_page_state: bool = True
     show_examples: bool = True
+    show_field_hints: bool = True
     show_help: bool = False
     dev_mode: bool = False
     conversion_memory_limit_mb: int = DEFAULT_CONVERSION_MEMORY_LIMIT_MB
@@ -72,6 +73,7 @@ def reset_export_settings() -> ExportSettings:
     _EXPORT_SETTINGS.result_name_style = defaults.result_name_style
     _EXPORT_SETTINGS.preserve_page_state = defaults.preserve_page_state
     _EXPORT_SETTINGS.show_examples = defaults.show_examples
+    _EXPORT_SETTINGS.show_field_hints = defaults.show_field_hints
     _EXPORT_SETTINGS.show_help = defaults.show_help
     _EXPORT_SETTINGS.dev_mode = defaults.dev_mode
     _EXPORT_SETTINGS.conversion_memory_limit_mb = defaults.conversion_memory_limit_mb

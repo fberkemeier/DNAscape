@@ -48,6 +48,8 @@ async def _open_simulation(user: Any) -> None:
     await user.open("/")
     user.find(marker="nav-simulation").click()
     await user.should_see(marker="source-firing-rate-mode", retries=60)
+    line = next(iter(user.find(marker="simulation-status-line").elements))
+    assert line.default_slot.children == [next(iter(user.find(marker="simulation-status").elements))]
 
 
 def test_movement_and_factor_controls_are_conditional_and_reach_the_worker(monkeypatch) -> None:

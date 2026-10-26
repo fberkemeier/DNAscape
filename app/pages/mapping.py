@@ -15,6 +15,8 @@ import numpy as np
 from nicegui import run, ui
 
 from app.notifications import notify
+from app.field_hints import FIELD_HINTS, MAPPING_SETTING_HINTS, field_hint
+from app.statistics_exports import HistogramStatisticsExport
 from app.raw_data_transfer import RawInputTarget, open_raw_artifact
 
 from dnascape.workflows.plotting import (
@@ -80,6 +82,7 @@ from app.mapping_uploads import (
 )
 from app.page_activity import current_page_activity
 from app.pages.common import (
+    progress_message,
     DATA_ICON,
     RawOutputControls,
     action_dock,
@@ -233,12 +236,12 @@ class _ProgressState:
     def report(self, value: float, message: str) -> None:
         with self._lock:
             self._value = max(0.0, min(1.0, float(value)))
-            self._message = str(message)
+            self._message = progress_message(message, include_eta=False)
             metric = re.search(r"\bMSE\s+([+\-]?[\d.]+(?:[eE][+\-]?\d+)?)", self._message)
             if metric is not None:
                 self._mse = metric.group(0)
             elif self._mse:
-                self._message += f" - {self._mse}"
+                self._message += f" · {self._mse}"
 
     def snapshot(self) -> tuple[float, str]:
         with self._lock:
@@ -791,6 +794,13 @@ def _render_setting_field(setting: Any, *, automatic: bool = False, initial: Any
     marker = f"mapping-setting-{_slug(setting.key)}"
     value = initial if automatic else _setting_value(setting)
     label = _setting_label(setting)
+    if setting.key == "err_threshold":
+        return (
+            ui.input(label=label, value=f"{10.0 ** -float(value):g}")
+            .props('dense inputmode="decimal"')
+            .classes("dn-field")
+            .mark(marker)
+        )
     if setting.kind == "boolean":
         return (
             ui.checkbox(label, value=bool(value))
@@ -842,7 +852,9 @@ def _render_setting(
 ) -> _SettingControl:
     """Render a setting, progressively disclosing nullable opt-in values."""
 
-    with ui.element("div").classes("dn-mapping-setting") as holder:
+    with ui.element("div").classes(
+        f"dn-mapping-setting dn-mapping-setting-{_slug(setting.key)}"
+    ) as holder:
         needs_override = (not setting.required) and (
             not setting.has_default or (setting.nullable and setting.default is None)
         )
@@ -869,12 +881,9 @@ def _render_setting(
             control = _render_setting_field(
                 setting, automatic=automatic, initial=automatic_value,
             )
-        description = setting.description
-        if automatic:
-            description += " Leave blank to use the automatic value."
-            if setting.key in {"error", "deviation_threshold"}:
-                description += " Zero disables this threshold."
-        control.tooltip(description)
+        field_hint(control, MAPPING_SETTING_HINTS.get(
+            setting.key, f"Adjust {_setting_label(setting).lower()}.",
+        ))
         if on_change is not None:
             control.on_value_change(on_change)
             if override is not None:
@@ -931,8 +940,8 @@ _MAPPING_SETTING_ORDER = (
 )
 
 _MAPPING_ADVANCED_ORDER = (
+    "error", "neighbourhood_range", "refine_edge_kb",
     "err_threshold", "deviation_threshold", "space_maxiter", "space_fit_step",
-    "refine_edge_kb", "neighbourhood_range", "error",
 )
 
 
@@ -1242,6 +1251,11 @@ def _read_setting(live: _SettingControl) -> Any:
         # Preserve None's backend semantics (automatic bounds, inherited steps,
         # disabled tolerances) without an extra opt-in checkbox.
         raise KeyError(setting.key)
+    if setting.key == "err_threshold":
+        floor = _read_number(live.control, setting.label)
+        if not math.isfinite(floor) or not 0 < floor <= 1:
+            raise ValueError(f"{setting.label} must be greater than zero and at most 1.")
+        return -math.log10(floor)
     if setting.kind == "boolean":
         return bool(value)
     if setting.kind == "integer":
@@ -1899,8 +1913,7 @@ def _render_multiple_constant_input(
                     control._props["aria-label"] = (
                         row_label if manual else f"{input_spec.label} for {row_label}"
                     )
-                    if units:
-                        control.tooltip(units)
+                    field_hint(control, f"Constant {input_spec.label.lower()} for this dataset.")
 
                     def value_changed(
                         value_control: Any = control,
@@ -2007,7 +2020,7 @@ def _render_mapping_input(
     with ui.element("section").classes("dn-mapping-input-card").mark(f"mapping-input-{marker}"):
         with ui.element("div").classes("dn-mapping-input-head"):
             heading = ui.label(input_spec.label).classes("dn-setting-subgroup-title")
-            heading.tooltip(input_spec.description)
+            field_hint(heading, FIELD_HINTS.get(input_spec.label, f"Supply {input_spec.label.lower()}."))
             if defaulted_override:
                 ui.label("Uses package default").classes("dn-mapping-input-status")
         override = None
@@ -3461,7 +3474,6 @@ def render(_navigate: Callable[[str], None]) -> None:
                             ui.checkbox("Whole region", value=False)
                             .classes("dn-mapping-whole-region")
                             .mark("mapping-whole-region")
-                            .tooltip("Use the first points of every profile, from 0 to the shortest profile's length.")
                         )
                         periodic_slot = (
                             ui.element("div")
@@ -3478,7 +3490,6 @@ def render(_navigate: Callable[[str], None]) -> None:
                             .props("dense")
                             .classes("dn-field")
                             .mark("mapping-region-start")
-                            .tooltip("Chromosome position in the longest profile; shorter profiles begin at their first point.")
                         )
                         region_end = (
                             ui.number(
@@ -3570,8 +3581,7 @@ def render(_navigate: Callable[[str], None]) -> None:
                         .mark("mapping-settings-advanced")
                     ):
                         ui.label("Advanced").classes("dn-setting-group-title")
-                        advanced_fields = ui.element("div").classes("dn-mapping-settings-grid")
-                        with ui.element("div").classes("dn-mapping-settings-grid"):
+                        with ui.element("div").classes("dn-mapping-settings-grid") as advanced_fields:
                             _region_missing = (
                                 ui.select(
                                     {
@@ -3587,8 +3597,8 @@ def render(_navigate: Callable[[str], None]) -> None:
                                 .mark("mapping-region-missing")
                             )
                             show_plot = (
-                                ui.checkbox("Show Plot", value=True)
-                                .classes("dn-mapping-setting-checkbox")
+                                ui.checkbox("Show plot", value=True)
+                                .classes("dn-mapping-setting-checkbox dn-mapping-show-plot")
                                 .mark("mapping-show-plot")
                             )
                             show_plot.on_value_change(lambda: render_latest_result())
@@ -3597,7 +3607,9 @@ def render(_navigate: Callable[[str], None]) -> None:
                     def render_mapping_settings() -> None:
                         route = selected_route_state["route"]
                         mapping_setting_controls.clear()
-                        advanced_fields.clear()
+                        for child in tuple(advanced_fields.default_slot.children):
+                            if child not in (_region_missing, show_plot):
+                                child.delete()
                         with (
                             ui.element("div")
                             .classes("dn-mapping-settings")
@@ -3617,6 +3629,15 @@ def render(_navigate: Callable[[str], None]) -> None:
                                     advanced_container=advanced_fields,
                                 )
                             )
+                        show_plot.move(advanced_fields)
+                        _region_missing.move(
+                            advanced_fields,
+                            target_index=1 if "error" in mapping_setting_controls else 0,
+                        )
+                        if "error" in mapping_setting_controls:
+                            _region_missing.classes(add="dn-mapping-missing-paired")
+                        else:
+                            _region_missing.classes(remove="dn-mapping-missing-paired")
                         _sync_contextual_mapping_settings(
                             route, {**region_setting_controls, **mapping_setting_controls}, selected_forms,
                         )
@@ -3794,8 +3815,6 @@ def render(_navigate: Callable[[str], None]) -> None:
                             .classes("dn-field dn-dataset-select")
                             .mark("mapping-dataset-select")
                         )
-                        active_item = latest_results[active_index]
-                        dataset_select.tooltip(active_item.name)
                         dataset_select.on_value_change(
                             lambda event: select_dataset(str(event.value))
                         )
@@ -3809,9 +3828,10 @@ def render(_navigate: Callable[[str], None]) -> None:
                     .mark("mapping-progress")
                 )
                 progress.visible = False
-                status = ui.label("Ready").classes("dn-muted").mark("mapping-status")
-                eta_label = ui.label("").classes("dn-muted").mark("mapping-eta")
-                eta_label.visible = False
+                with ui.element("div").classes("dn-run-status-line").mark("mapping-status-line"):
+                    status = ui.label("Ready").classes("dn-muted").mark("mapping-status")
+                    eta_label = ui.label("").classes("dn-muted dn-run-status-detail").mark("mapping-eta")
+                    eta_label.visible = False
                 eta_timer: ui.timer | None = None
 
                 def stop_disconnected_eta() -> None:
@@ -3945,9 +3965,6 @@ def render(_navigate: Callable[[str], None]) -> None:
                                                 f"{curve_index + 1}"
                                             ),
                                         )
-                                        color_surface.tooltip(
-                                            item.name if not role else f"{item.name} · {role}"
-                                        )
                                         curve_type = ui.select(
                                             CURVE_TYPES,
                                             value=mapping_batch_line_types.get(
@@ -4015,6 +4032,12 @@ def render(_navigate: Callable[[str], None]) -> None:
                 raw_controls.file_name.mark("mapping-raw-filename")
                 raw_controls.file_type.mark("mapping-raw-file-type")
                 assert raw_controls.extra_slot is not None
+
+                with raw_controls.extra_slot:
+                    statistics_export = HistogramStatisticsExport(
+                        plot_settings, get_chart=lambda: result_chart if latest_result is not None else None,
+                        filename="mapping_statistics", marker="mapping-statistics", navigate=_navigate,
+                    )
 
                 with raw_controls.extra_slot:
 
@@ -4749,6 +4772,7 @@ def render(_navigate: Callable[[str], None]) -> None:
                         notify("Run Mapping before downloading data.", type="warning")
                         return
                     try:
+                        statistics_snapshot = statistics_export.snapshot() if statistics_export.surface.visible else None
                         named_results = tuple(latest_results)
                         output_key = str(
                             preview_output.value
@@ -4785,6 +4809,8 @@ def render(_navigate: Callable[[str], None]) -> None:
                                 )
                             prepared.append(built)
                         artifacts = tuple(item[0] for item in prepared)
+                        if statistics_snapshot is not None:
+                            artifacts += (await run.io_bound(statistics_export.artifact, statistics_snapshot),)
                         archive = await run.io_bound(
                             build_artifact_archive,
                             artifacts,
@@ -4961,6 +4987,7 @@ def render(_navigate: Callable[[str], None]) -> None:
 
                 def render_latest_result() -> None:
                     nonlocal result_chart
+                    statistics_export.refresh()
                     result_slot.visible = bool(show_plot.value)
                     if not show_plot.value:
                         result_chart = None

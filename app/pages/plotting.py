@@ -18,6 +18,7 @@ from app.data_filter_controls import DataFilterControls
 from app.icons import PLOT_ICON_SVG
 from app.mapping_uploads import UploadInspection, inspect_upload_event, materialize_upload
 from app.notifications import notify
+from app.statistics_exports import HistogramStatisticsExport, StatisticsExportPreference
 from app.page_activity import current_page_activity
 from app.pages.common import (
     DATA_ICON,
@@ -166,6 +167,7 @@ _SEPARATE_SETTING_VALUE_FIELDS = (
     "histogram_x_minimum",
     "histogram_x_maximum",
     "show_histogram_statistics",
+    "export_histogram_statistics",
     "histogram_statistics_position",
     "show_legend",
     "legend_position",
@@ -586,6 +588,7 @@ def render(_navigate: Callable[[str], None]) -> None:
     transformation_targets: dict[str, tuple[int, str]] = {}
     transformations_locked = False
     transformed_export_preferences: dict[tuple[int, str], dict[str, Any]] = {}
+    statistics_export_preferences: dict[Any, StatisticsExportPreference] = {}
 
     page_intro(
         "Analysis",
@@ -825,7 +828,6 @@ def render(_navigate: Callable[[str], None]) -> None:
                         for control in correlation_controls.values():
                             control.disable()
                         show_p_values = ui.checkbox("Show p-values", value=False).mark("analysis-show-p-values")
-                        show_p_values.tooltip("Two-sided, unadjusted p-values for dataset pairs; self-correlations have no p-value.")
 
                         @ui.refreshable
                         def render_smoothing_controls() -> None:
@@ -1093,9 +1095,7 @@ def render(_navigate: Callable[[str], None]) -> None:
                 @ui.refreshable
                 def render_transformed_data() -> None:
                     transformed = [item for item in latest_series if item.transformed]
-                    if not transformed:
-                        return
-                    with expansion("Raw data", icon=DATA_ICON, expanded=True, extra_classes="dn-output-section"):
+                    with expansion("Raw data", icon=DATA_ICON, expanded=True, extra_classes="dn-output-section") as raw_section:
                         for index, item in enumerate(transformed, start=1):
                             default_name = compact_export_stem(item.name, fallback="profile") + "_transformed"
                             preferences = transformed_export_preferences.setdefault(item.series_id, {
@@ -1128,6 +1128,15 @@ def render(_navigate: Callable[[str], None]) -> None:
                             )
                             for control, key in ((row.file_name, "name"), (row.file_type, "type"), (row.compress, "compress")):
                                 control.on_value_change(lambda event, key=key, prefs=preferences: prefs.update({key: event.value}))
+                        HistogramStatisticsExport(
+                            plot_settings,
+                            get_chart=lambda: result_charts[0] if latest_series and result_charts and presentation.value == "Combined" else None,
+                            filename="analysis_statistics", marker="analysis-statistics", navigate=_navigate,
+                            preference=statistics_export_preferences.setdefault(
+                                "combined", StatisticsExportPreference("analysis_statistics"),
+                            ),
+                            section=raw_section, has_other_rows=lambda: bool(transformed),
+                        )
 
                 render_transformed_data()
 
@@ -1964,6 +1973,18 @@ def render(_navigate: Callable[[str], None]) -> None:
         if context.y_limits_automatic:
             populate_separate_y_limits(context)
         update_separate_chart(context)
+        with expansion("Raw data", icon=DATA_ICON, expanded=True, extra_classes="dn-output-section") as raw_section:
+            HistogramStatisticsExport(
+                controls, get_chart=lambda: chart,
+                filename=compact_export_stem(first.name, fallback="profile") + "_statistics",
+                marker=f"analysis-statistics-{index}", navigate=_navigate,
+                preference=statistics_export_preferences.setdefault(
+                    first.series_id, StatisticsExportPreference(
+                        compact_export_stem(first.name, fallback="profile") + "_statistics",
+                    ),
+                ),
+                section=raw_section,
+            )
         return context
 
     async def download_plot(
@@ -2009,6 +2030,8 @@ def render(_navigate: Callable[[str], None]) -> None:
         ui.download(artifact.data, artifact.filename, artifact.media_type)
 
     def render_latest_plot() -> None:
+        if plot_settings._statistics_export is not None:
+            plot_settings._statistics_export.refresh()
         if not latest_series:
             return
         try:

@@ -14,14 +14,17 @@ from app.session_cache import current_session_cache
 
 
 def test_profile_modulation_formulas_shape_errors_and_existing_output(monkeypatch):
-    results, messages = [], []
+    results, messages, kinds = [], [], []
     original = page.convert_data
     def capture(*args, **kwargs):
         result = original(*args, **kwargs)
         results.append(result)
         return result
     monkeypatch.setattr(page, "convert_data", capture)
-    monkeypatch.setattr(page, "notify", lambda message, **_kwargs: messages.append(message))
+    def notice(message, **kwargs):
+        messages.append(message)
+        kinds.append(kwargs.get("type"))
+    monkeypatch.setattr(page, "notify", notice)
 
     async def scenario():
         async with user_simulation(index) as user:
@@ -69,7 +72,7 @@ def test_profile_modulation_formulas_shape_errors_and_existing_output(monkeypatc
                 control("filter-selection").set_value("all")
                 control("filter-action").set_value("modulate")
             await user.should_see(marker="data-manager-filter-modulation-upload")
-            await user.should_see("Array sizes must match the source data.")
+            await user.should_see("Arrays align from the first sample; only their overlap is combined.")
             assert control("filter-modulation-expression").value == "source * profile"
             await user.should_not_see("Operator")
             await convert(error="Upload a modulation profile")
@@ -98,8 +101,9 @@ def test_profile_modulation_formulas_shape_errors_and_existing_output(monkeypatc
                 control("filter-modulation-expression").set_value("np.log2(source) * profile**2")
             await convert([1, 0, np.log2(6) * 4])
             await assay(b"atac\n1\n2\n", "short.tsv")
-            await convert(error="post-Configure data shape")
-            np.testing.assert_allclose(results[-1].preview.values, [1, 0, np.log2(6) * 4])
+            await convert([1, 8, 6])
+            assert any("first sample" in message for message in messages)
+            assert kinds[-1] == "warning"
             user.find(marker="data-manager-filter-modulation-upload-remove").click()
             await convert(error="Upload a modulation profile")
             with user.client:

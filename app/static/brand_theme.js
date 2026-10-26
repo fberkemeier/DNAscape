@@ -36,17 +36,27 @@
         lineStyle: themedStyle(series.lineStyle, accent),
         itemStyle: themedStyle(series.itemStyle, accent),
         areaStyle: themedStyle(series.areaStyle, accent),
+        // Custom bars need the element-level flag too; the series setting
+        // alone does not disable their native mouse emphasis.
+        ...(series.type === 'custom' && series.emphasis?.disabled && typeof series.renderItem === 'function' && {
+          renderItem: (...args) => {
+            const item = series.renderItem(...args);
+            return item ? {...item, emphasisDisabled: true} : item;
+          },
+        }),
       }));
     }
     for (const key of ['xAxis', 'yAxis']) {
       if (!options[key]) continue;
       const axis = value => ({
         ...value,
-        nameTextStyle: themedStyle(value.nameTextStyle, accent),
-        axisLabel: themedStyle(value.axisLabel, accent),
-        axisLine: value.axisLine && {
-          ...value.axisLine, lineStyle: themedStyle(value.axisLine.lineStyle, accent),
-        },
+        ...(value.nameTextStyle && {nameTextStyle: themedStyle(value.nameTextStyle, accent)}),
+        ...(value.axisLabel && {axisLabel: themedStyle(value.axisLabel, accent)}),
+        ...(value.axisLine && {axisLine: {
+          ...value.axisLine, ...(value.axisLine.lineStyle && {
+            lineStyle: themedStyle(value.axisLine.lineStyle, accent),
+          }),
+        }}),
         ...(value.axisPointer && {axisPointer: pointer(value.axisPointer)}),
       });
       result[key] = Array.isArray(options[key]) ? options[key].map(axis) : axis(options[key]);

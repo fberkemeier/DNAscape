@@ -185,10 +185,17 @@ Inputs
 Controls
    Target format, gzip, data form, column, NPZ key, rounding, chromosome,
    interval, bin size, aggregation, missing values, smoothing, normalization.
-   Each source retains its own Configure settings. With multiple sources, use
-   the numbered **Source** menu in Configure to select the one to edit; the same
-   numbers appear above uploaded files and in public-link field labels. An inspected
+   **Apply configuration** appears at the top of Configure. With multiple sources,
+   **Apply to all** appears beside it and is on by default, sharing the current
+   Configure settings across the source list. Turn it off to reveal the numbered
+   **Source** menu and edit sources individually. Turning it back on applies the
+   current settings to every source. Source numbers also appear above uploaded
+   files and in public-link field labels. An inspected
    link shows a check mark in place of **Inspect**; editing it restores **Inspect**.
+   Each source's format, size and dependence appear directly below its file or link.
+   Accepted formats stay immediately below the upload box. Data transforms label
+   each source's formula directly, with numbered sources when several are loaded.
+   The **Combine** switch replaces these fields with one **Combined transform formula**.
    **Apply configuration**
    is on by default. Turn it off to preserve values, missing samples and precision
    while retaining the track region and binning required for conversion.
@@ -201,8 +208,10 @@ Controls
    smoothing and convolution are available.
    The collapsed **Filter** section below Configure is off by default. Enable
    it to select regions by signal thresholds (including within or outside an
-   interval), missing values, an uploaded mask
-   or genomic positions/intervals, or the whole region. Its default replaces
+   interval), missing values, uploaded genomic positions/intervals, or the whole
+   region. Coordinate uploads detect one position column or two start/end columns
+   automatically. The compact **Coordinates** field beside the upload chooses kb
+   (default) or bp. Its default selection replaces
    converted values below zero with zero. Operations include region means,
    interpolation, replacement with a value or NaN, Gaussian noise, reference
    minimum/maximum, multiplication, and addition. Filtering follows Configure
@@ -213,15 +222,26 @@ Controls
    name the signal and filter separately. Shading follows zoom detail and does
    not change the exported data. Line previews refresh up to 1,000 native points by default
    from the visible window after zooming or panning.
-   **Export filter**, next to **Filter** in Guides, adds a raw-data download of
-   the selected positions before edits, independently of preview sampling.
-   Text exports contain one integer per line with no header; NPZ contains one
-   integer array. Genomic coordinates use base pairs; plain arrays use zero-based
-   bin indices. Repeated positions form one selection across chromosomes or time slices.
+   In Histogram view, **Export statistics** in Guides adds the selected file's
+   mean, median and population standard deviation to Raw data, independently of
+   displaying Statistics. The file supports TSV, TXT, CSV, NPZ and compression,
+   retains its settings per generated file, and is included in Download all.
+   **Export filter**, next to **Apply filter** in Controls, adds a raw-data download of
+   the selected positions before edits, independently of preview sampling. One
+   filter export row appears beneath the currently selected raw-data file.
+   **Export as**, beside **File type**, chooses a position list or merged genomic
+   intervals. Text exports are headerless; NPZ stores a positions or intervals
+   array. Genomic coordinates use integer base pairs and intervals include the
+   start but exclude the end. Spatial arrays use the source start and resolution
+   configured in **Region & binning**; position uploads default to **bp**.
+   Repeated positions form one selection across chromosomes or time slices.
    **Modulate with profile** combines a prepared signal or annotation profile
    through an editable Python/NumPy expression, defaulting to ``source * profile``.
    Here **source** is the current transformed or combined signal and **profile**
-   is the uploaded modulation data. Both arrays must have matching dimensions.
+   is the uploaded modulation data. Arrays align from their first samples without
+   resampling or broadcasting. Size or coordinate mismatches produce a yellow
+   warning; only the overlapping extent is combined and unmatched source values
+   remain unchanged.
    Formulas may use the whole profile for context, while only selected regions
    are replaced. Use **np.where** for conditional replacements and **np.nan_to_num**
    to handle non-finite values explicitly.

@@ -51,16 +51,46 @@ def test_each_upload_keeps_its_configuration_and_bypass_preserves_values(monkeyp
             await user.should_see(marker="data-manager-upload-source-label-1", retries=60)
             await user.should_see(marker="data-manager-apply-configuration", retries=60)
             assert control("upload-source-label-1").text == "Source"
+            formats = control("upload-accepted-formats")
+            upload_container = upload.parent_slot.parent
+            assert upload_container.default_slot.children[:2] == [upload, formats]
+            first_details = control("source-details-upload:first.tsv")
+            assert first_details.parent_slot is control("upload-source-label-1").parent_slot
+            assert [item.text for item in first_details.default_slot.children] == [
+                "Size: 13 B", "Format: TSV", "Array size: 3", "Dependence: Space",
+            ]
             assert control("apply-configuration").value is True
             await user.should_not_see(marker="data-manager-source-selection")
             await user.should_not_see(marker="data-manager-configuration-source")
+            await user.should_not_see(marker="data-manager-apply-configuration-to-all")
             await upload.handle_uploads([Upload.SmallFileUpload("second.tsv", "text/plain", b"signal\n4\nNaN\n6\n")])
+            await user.should_see(marker="data-manager-apply-configuration-to-all", retries=60)
+            assert control("apply-configuration-to-all").value is True
+            await user.should_not_see(marker="data-manager-configuration-source")
+            user.find(marker="data-manager-apply-configuration-to-all").click()
             await user.should_see(marker="data-manager-configuration-source", retries=60)
             await user.should_see(marker="data-manager-upload-source-label-2", retries=60)
             assert control("upload-source-label-1").text == "Source 1"
             assert control("upload-source-label-2").text == "Source 2"
+            assert upload_container.default_slot.children[:2] == [upload, formats]
+            first_details = control("source-details-upload:first.tsv")
+            second_details = control("source-details-upload:second.tsv")
+            assert first_details.parent_slot.children.index(first_details) < first_details.parent_slot.children.index(
+                control("upload-source-label-2")
+            )
+            assert [item.text for item in second_details.default_slot.children] == [
+                "Size: 15 B", "Format: TSV", "Array size: 3", "Dependence: Space",
+            ]
+            await user.should_not_see("Datasets:")
             keys = list(control("configuration-source").options)
-            assert list(control("configuration-source").options.values()) == ["Source 1 · first", "Source 2 · second"]
+            assert list(control("configuration-source").options.values()) == ["Source 1", "Source 2"]
+            actions = control("configuration-actions")
+            assert actions.default_slot.children == [
+                control("apply-configuration"), control("apply-configuration-to-all"),
+            ]
+            assert actions.parent_slot.children.index(actions) < actions.parent_slot.children.index(
+                control("configuration-source")
+            )
             await select_source(keys[0])
             with user.client:
                 control("value-scaling").set_value("multiplier")
@@ -91,12 +121,36 @@ def test_each_upload_keeps_its_configuration_and_bypass_preserves_values(monkeyp
             await select_source(keys[1])
             assert control("apply-configuration").value is False
             assert control("scale-multiplier").value == 3
+            user.find(marker="data-manager-apply-configuration-to-all").click()
+            await user.should_not_see(marker="data-manager-configuration-source", retries=60)
+            assert control("apply-configuration-to-all").value is True
+            with user.client:
+                control("apply-configuration").set_value(True)
+                control("scale-multiplier").set_value(4)
+            await convert(6)
+            np.testing.assert_equal(results[-2].preview.values, [4, 8, 12])
+            np.testing.assert_equal(results[-1].preview.values, [16, 0, 24])
+            with user.client:
+                control("apply-configuration").set_value(False)
+            await convert(8)
+            np.testing.assert_equal(results[-2].preview.values, [1, 2, 3])
+            np.testing.assert_equal(results[-1].preview.values, [4, np.nan, 6])
+            user.find(marker="data-manager-apply-configuration-to-all").click()
+            await user.should_see(marker="data-manager-configuration-source", retries=60)
+            await select_source(keys[0])
+            assert control("scale-multiplier").value == 4
+            assert control("apply-configuration").value is False
+            await select_source(keys[1])
+            assert control("scale-multiplier").value == 4
             remove = next(item for item in user.find(marker="data-manager-upload-remove").elements
                           if item._props.get("data-upload-name") == "first.tsv")
             UserInteraction(user, {remove}, None).click()
             await user.should_not_see("first.tsv", retries=60)
             assert control("upload-source-label-1").text == "Source"
             await user.should_not_see(marker="data-manager-configuration-source")
+            await user.should_not_see(marker="data-manager-apply-configuration-to-all")
+            await user.should_not_see(marker="data-manager-source-details-upload:first.tsv")
+            await user.should_see(marker="data-manager-source-details-upload:second.tsv")
             assert control("apply-configuration").value is False
     asyncio.run(scenario())
 
@@ -119,10 +173,11 @@ def test_link_field_labels_follow_visible_rows_and_keep_configuration(monkeypatc
                 user.find(marker=f"action-inspect-data-link-{row_id}").click()
                 for _ in range(100):
                     await asyncio.sleep(.01)
-                    if action.text == "✓" and action.enabled:
+                    if action.text == "✓" and not action.enabled:
                         break
                 assert action.text == "✓"
-                assert action.enabled
+                assert not action.enabled
+                assert action._props["aria-label"] == "Source inspected"
                 assert action.icon is None
             with user.client:
                 control("source-tabs").set_value("url")
@@ -133,6 +188,10 @@ def test_link_field_labels_follow_visible_rows_and_keep_configuration(monkeypatc
             with user.client:
                 control("source-url-1").set_value("https://example.org/one.tsv")
             await inspect(1)
+            assert control("source-details-url:1").parent_slot.parent is control("url-item-1")
+            assert [item.text for item in control("source-details-url:1").default_slot.children] == [
+                "Size: 13 B", "Format: TSV", "Array size: 3", "Dependence: Space",
+            ]
             with user.client:
                 control("apply-configuration").set_value(False)
             user.find(marker="data-manager-add-link").click()
@@ -140,11 +199,19 @@ def test_link_field_labels_follow_visible_rows_and_keep_configuration(monkeypatc
             assert control("source-url-1").label == "Source 1 (public file link)"
             assert control("source-url-2").label == "Source 2 (public file link)"
             assert next(iter(user.find(marker="action-inspect-data-link-1").elements)).text == "✓"
+            assert not next(iter(user.find(marker="action-inspect-data-link-1").elements)).enabled
             assert next(iter(user.find(marker="action-inspect-data-link-2").elements)).text == "Inspect"
             with user.client:
                 control("source-url-2").set_value("https://example.org/two.tsv")
             await inspect(2)
-            assert control("apply-configuration").value is True
+            assert control("source-details-url:1").visible
+            assert control("source-details-url:2").visible
+            await user.should_not_see("Datasets:")
+            assert control("apply-configuration").value is False
+            assert control("apply-configuration-to-all").value is True
+            await user.should_not_see(marker="data-manager-configuration-source")
+            user.find(marker="data-manager-apply-configuration-to-all").click()
+            await user.should_see(marker="data-manager-configuration-source", retries=60)
             keys = list(control("configuration-source").options)
             with user.client:
                 control("apply-configuration").set_value(True)
@@ -182,10 +249,10 @@ def test_link_numbers_follow_row_order_when_inspected_in_reverse(monkeypatch):
                 user.find(marker=f"action-inspect-data-link-{row_id}").click()
                 for _ in range(100):
                     await asyncio.sleep(.01)
-                    if action(row_id).text == "✓" and action(row_id).enabled:
+                    if action(row_id).text == "✓" and not action(row_id).enabled:
                         break
                 assert action(row_id).text == "✓"
-                assert action(row_id).enabled
+                assert not action(row_id).enabled
             with user.client:
                 control("source-tabs").set_value("url")
             await user.should_see(marker="data-manager-source-url-1")
@@ -197,6 +264,10 @@ def test_link_numbers_follow_row_order_when_inspected_in_reverse(monkeypatch):
             await inspect(2)
             assert control("source-url-2").label == "Source 2 (public file link)"
             await inspect(1)
+            assert control("apply-configuration-to-all").value is True
+            await user.should_not_see(marker="data-manager-configuration-source")
+            user.find(marker="data-manager-apply-configuration-to-all").click()
+            await user.should_see(marker="data-manager-configuration-source", retries=60)
             assert list(control("configuration-source").options) == ["url:1", "url:2"]
             assert control("source-url-1").label == "Source 1 (public file link)"
             assert control("source-url-2").label == "Source 2 (public file link)"
@@ -204,8 +275,12 @@ def test_link_numbers_follow_row_order_when_inspected_in_reverse(monkeypatch):
                 control("source-url-1").set_value("https://example.org/one.tsv ")
             await user.should_not_see(marker="data-manager-configuration-source", retries=60)
             assert action(1).text == "Inspect"
+            assert action(1).enabled
+            assert control("source-details-url:1").visible is False
+            assert control("source-details-url:2").visible is True
             assert action(1)._props["aria-label"] == "Inspect public link"
             assert action(2).text == "✓"
+            assert not action(2).enabled
             await inspect(1)
             with user.client:
                 control("source-url-1").set_value("https://example.org/bad.tsv")
@@ -213,6 +288,7 @@ def test_link_numbers_follow_row_order_when_inspected_in_reverse(monkeypatch):
             user.find(marker="action-inspect-data-link-1").click()
             await user.should_see("The remote file could not be inspected.", retries=60)
             assert action(1).text == "Inspect"
+            assert action(1).enabled
             with user.client:
                 control("source-url-2").set_value("")
             await user.should_see("Add a source to reveal only the controls that apply to it.", retries=60)

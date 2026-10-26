@@ -95,7 +95,7 @@ def test_overview_detail_samples_remain_bounded_and_preserve_native_nan_gaps(des
         handle.accept_navigation(dict(context=handle._navigation.context, ranges={"x": (lower, upper)}))
         data = options["series"][0]["data"]
         visible = [row for row in data if lower <= row[0] <= upper]
-        assert len(visible) <= 1000 and len(data) <= 2000
+        assert len(visible) <= 1000 and len(data) <= 4000
         assert data[0][0] == axis[0] and data[-1][0] == axis[-1]
         if lower == 12330:
             assert [row[0] for row in visible if row[1] is None] == list(np.arange(12340, 12350)[::-1 if descending else 1])
@@ -145,7 +145,8 @@ def test_heatmap_zoom_reveals_native_cells_without_changing_colour_scale():
         return Image.open(io.BytesIO(base64.b64decode(encoded)))
     assert pixels(original).width == 720
     assert pixels(renderer).width == 720  # The full-region overview is retained.
-    assert pixels(renderer, -1).width == 7
+    assert pixels(renderer, -1).width == 15  # Native detail is prefetched around the viewport.
+    assert options["series"][0]["data"].coverage == {"x": (594, 606), "y": (294, 306)}
     assert options["series"][0]["data"] == [[0, 0, 1200, 600]]
     assert options["visualMap"] == color_scale
     assert any(row[:3] == [600, 300, 1] for row in options["series"][1]["data"])

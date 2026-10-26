@@ -184,7 +184,7 @@ def test_constant_histogram_domains_match_numpy_and_stay_positive_on_log_x() -> 
     logarithmic = histogram_domain([-2.0, 0.0, 0.1, 0.1], log_x=True)
     assert logarithmic is not None
     assert logarithmic[0].tolist() == [0.1, 0.1]
-    assert 0.0 < logarithmic[1][0] < 0.1 < logarithmic[1][1]
+    assert logarithmic[1][0] == 0.1 < logarithmic[1][1]
 
 
 def test_log_histogram_synchronization_uses_only_positive_values() -> None:
@@ -511,6 +511,26 @@ def test_heatmap_log_z_limits_are_entered_as_original_values() -> None:
     assert (options["visualMap"]["min"], options["visualMap"]["max"]) == (-2.0, 2.0)
     with pytest.raises(ValueError, match="Log Z"):
         _heatmap_options(log_z=True, z_limits=(0.0, 100.0))
+
+
+def test_log_axes_skip_zero_samples_and_start_at_the_native_smallest_positive_value():
+    line = _histogram_options([0, .03, 2, .2], plot_type="Line", x_axis=[0, .4, 2, 3], log_x=True, log_y=True)
+    assert line["xAxis"]["min"] == .4
+    assert line["yAxis"]["min"] == .03
+    box = _histogram_options([0, .03, 2, .2], plot_type="Boxplot", log_y=True)
+    assert box["yAxis"]["min"] == .03
+    heatmap = _heatmap_options(values=[[0, 0, 2], [0, .05, 10]], x_axis=[0, 2, 8], y_axis=[0, 3],
+                               log_x=True, log_y=True, log_z=True)
+    assert heatmap["xAxis"]["min"] == 2
+    assert heatmap["yAxis"]["min"] == 3
+    assert heatmap["visualMap"]["min"] == pytest.approx(np.log10(.05))
+
+
+@pytest.mark.parametrize("axis", ["x", "y", "z"])
+@pytest.mark.parametrize("minimum", [0, -1])
+def test_log_axes_reject_explicit_nonpositive_minima(axis, minimum):
+    with pytest.raises(ValueError, match=f"Log {axis.upper()}"):
+        _heatmap_options(**{f"log_{axis}": True, f"{axis}_limits": (minimum, 100)})
 
 
 def test_heatmap_narrow_nonzero_domains_are_not_expanded_as_singletons() -> None:

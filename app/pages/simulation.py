@@ -7,6 +7,7 @@ import math
 from collections.abc import Callable, Mapping, Sequence
 from concurrent.futures import CancelledError
 from dataclasses import dataclass, replace
+from itertools import chain
 from threading import Event, Lock
 from typing import Any
 
@@ -26,7 +27,9 @@ from app.batch_workflows import (
     unique_dataset_names,
 )
 from app.export_settings import get_export_settings
+from app.field_hints import field_hint
 from app.notifications import notify
+from app.statistics_exports import HistogramStatisticsExport
 from app.raw_data_transfer import RawInputTarget, open_raw_artifact
 from app.mapping_uploads import (
     UploadInspection,
@@ -38,6 +41,7 @@ from dnascape.workflows.preview_inputs import (
     INPUT_PREFIX, add_simulation_input_previews, input_preview_result,
 )
 from app.pages.common import (
+    progress_message,
     DATA_ICON,
     RawOutputControls,
     action_dock,
@@ -609,8 +613,7 @@ def _render_simulation_multiple_constants(
                         .mark(f"source-{marker}-constant-{index}")
                     )
                     control._props["aria-label"] = f"{label} for {row_label}"
-                    if units:
-                        control.tooltip(units)
+                    field_hint(control, f"Constant {label.lower()} for this dataset.")
 
                     def value_changed(
                         value_control: Any = control,
@@ -1389,7 +1392,7 @@ class _ProgressState:
     def report(self, value: float, message: str) -> None:
         with self._lock:
             self._value = max(0.0, min(1.0, float(value)))
-            self._message = str(message)
+            self._message = progress_message(message)
 
     def snapshot(self) -> tuple[float, str]:
         with self._lock:
@@ -2251,19 +2254,12 @@ def render(_navigate: Callable[[str], None]) -> None:
                                     and getattr(latest_result, "time_outputs", False)
                                 ),
                             ).mark("simulation-track-time-outputs")
-                            track_time_outputs.tooltip(
-                                "Retain replicated fraction, fork counts, origin firing and firing-factor "
-                                "availability over time, plus completed replicon lengths."
-                            )
                             track_detailed_outputs = ui.checkbox(
                                 "Track space-time outputs",
                                 value=bool(
                                     latest_result is not None and latest_result.detailed_outputs
                                 ),
                             ).mark("simulation-track-detailed-outputs")
-                            track_detailed_outputs.tooltip(
-                                "Retain position-by-time heatmaps; these require more memory."
-                            )
 
                         with ui.column().classes("dn-setting-group dn-fork-behaviour-group"):
                             ui.label("Origin & fork behaviour").classes("dn-setting-group-title")
@@ -2325,10 +2321,6 @@ def render(_navigate: Callable[[str], None]) -> None:
                                                 shared_stalls = ui.checkbox(
                                                     "Shared between directions", value=False,
                                                 ).mark("simulation-stall-shared-directions")
-                                                shared_stalls.tooltip(
-                                                    "Use the same stall positions and recovery delays for forks arriving from either direction. "
-                                                    "Off: each direction stalls independently."
-                                                )
                                                 stall_recovery = ui.checkbox("Stall recovery", value=False).mark("simulation-stall-recovery")
                                                 stall_duration = (
                                                     ui.number(label="Recovery time (min)", value=10.0, min=0.000001, step=1.0)
@@ -2345,10 +2337,6 @@ def render(_navigate: Callable[[str], None]) -> None:
                                                 .mark("simulation-fork-speed-std")
                                             )
                                             fork_speed_std.bind_visibility_from(stochastic_movement, "value")
-                                            fork_speed_std.tooltip(
-                                                "Positive lognormal speeds with the local input mean and this standard deviation. "
-                                                "Time-dependent speeds are integrated during crossings; zero keeps the input speed."
-                                            )
 
                 def combined_preview_compatible() -> bool:
                     if not 2 <= len(latest_items) <= _MAX_COMBINED_PREVIEW_DATASETS:
@@ -2750,6 +2738,7 @@ def render(_navigate: Callable[[str], None]) -> None:
                         )
                     )
                     try:
+                        statistics_snapshot = statistics_export.snapshot() if statistics_export.surface.visible else None
                         def prepare_archive() -> Any:
                             artifacts = (
                                 batch_raw_artifact(
@@ -2761,6 +2750,8 @@ def render(_navigate: Callable[[str], None]) -> None:
                                 )
                                 for item, file_name, file_type, compression in settings_snapshot
                             )
+                            if statistics_snapshot is not None:
+                                artifacts = chain(artifacts, (statistics_export.artifact(statistics_snapshot),))
                             return build_artifact_archive(
                                 artifacts,
                                 filename=(
@@ -2786,6 +2777,8 @@ def render(_navigate: Callable[[str], None]) -> None:
 
                 def render_latest_result() -> None:
                     nonlocal result_chart
+                    if plot_settings._statistics_export is not None:
+                        plot_settings._statistics_export.refresh()
                     if latest_result is None:
                         return
                     if not plotting_settings_ready(
@@ -3623,9 +3616,6 @@ def render(_navigate: Callable[[str], None]) -> None:
                                     .classes("dn-field dn-dataset-select")
                                     .mark("simulation-dataset-select")
                                 )
-                                dataset_select.tooltip(
-                                    latest_items[selected_index].identity.full
-                                )
                                 dataset_select.on_value_change(
                                     lambda event: select_dataset(str(event.value))
                                 )
@@ -3642,7 +3632,8 @@ def render(_navigate: Callable[[str], None]) -> None:
                     .mark("simulation-progress")
                 )
                 progress.visible = False
-                status = ui.label("Ready").classes("dn-muted").mark("simulation-status")
+                with ui.element("div").classes("dn-run-status-line").mark("simulation-status-line"):
+                    status = ui.label("Ready").classes("dn-muted").mark("simulation-status")
                 with (
                     ui.element("div")
                     .classes("w-full")
@@ -3738,7 +3729,6 @@ def render(_navigate: Callable[[str], None]) -> None:
                                             f"simulation-dataset-color-{index + 1}"
                                         ),
                                     )
-                                    color_surface.tooltip(item.identity.full)
                                     curve_type = ui.select(
                                         CURVE_TYPES,
                                         value=batch_line_types.get(
@@ -3830,6 +3820,10 @@ def render(_navigate: Callable[[str], None]) -> None:
                 raw_controls.file_name.on_value_change(store_single_raw_filename)
                 assert raw_controls.extra_slot is not None
                 with raw_controls.extra_slot:
+                    statistics_export = HistogramStatisticsExport(
+                        plot_settings, get_chart=lambda: result_chart if latest_result is not None else None,
+                        filename="simulation_statistics", marker="simulation-statistics", navigate=_navigate,
+                    )
                     with (
                         ui.element("div")
                         .classes("w-full")
@@ -4066,7 +4060,7 @@ def render(_navigate: Callable[[str], None]) -> None:
                                     if kind == "profiles":
                                         row_controls.compress.set_value(True)
                                         row_controls.compress.disable()
-                                        row_controls.compress.tooltip("Individual profiles download together as a ZIP.")
+                                        field_hint(row_controls.compress, "Individual profiles always download as a ZIP.")
 
                                     def remember_export(
                                         _event: Any = None, *, controls=row_controls, retained=preference,

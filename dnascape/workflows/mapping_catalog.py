@@ -909,6 +909,8 @@ _SETTING_DESCRIPTIONS = {
 }
 
 _SETTING_LABELS = {
+    "error": "MSE threshold",
+    "err_threshold": "Firing rate floor",
     "spatial_knots": "Spatial control points",
     "temporal_knots": "Temporal control points",
     "regularization": "Smoothness penalty",

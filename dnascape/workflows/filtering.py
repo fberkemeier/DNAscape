@@ -80,6 +80,7 @@ class DataFilterSettings:
     modulation: ProfileModulationSettings = field(default_factory=ProfileModulationSettings)
     between_mode: str = "within"
     _position_sink: Callable | None = field(default=None, repr=False, compare=False)
+    _warning_sink: Callable | None = field(default=None, repr=False, compare=False)
 
 
 @dataclass(frozen=True, slots=True)
@@ -283,6 +284,41 @@ def _upload_table(inspection: UploadInspection, columns=None) -> pd.DataFrame:
                        usecols=columns, comment="#")
 
 
+def detect_filter_profile(inspection: UploadInspection, *, units="kb") -> FilterProfile:
+    """Read one position column or two half-open interval columns automatically."""
+    chromosomes = None
+    if inspection.source_format == "npz":
+        if len(inspection.array_keys) != 1:
+            raise ValueError("Upload one array containing positions or start/end pairs.")
+        values = np.asarray(materialize_upload(
+            replace(inspection, expected_form="auto"),
+            array_key=inspection.array_keys[0], missing_policy="ignore",
+        ), dtype=float)
+    elif inspection.source_format in {"csv", "tsv", "txt"}:
+        table = _upload_table(inspection)
+        chrom = next(
+            (name for name in table.columns if str(name).strip().lower() in {"chrom", "chromosome", "chr"}),
+            None,
+        )
+        if chrom is not None:
+            chromosomes = table[chrom].astype(str).to_numpy()
+            table = table.drop(columns=[chrom])
+        values = table.to_numpy(dtype=float)
+    else:
+        raise ValueError("Upload positions or start/end pairs as TSV, TXT, CSV or NPZ.")
+    if values.ndim == 1 or (values.ndim == 2 and values.shape[1] == 1):
+        layout, values = "positions", values.reshape(-1)
+    elif values.ndim == 2 and values.shape[1] == 2:
+        layout = "intervals"
+    elif values.ndim == 2 and values.shape[0] == 1 and chromosomes is None:
+        layout, values = "positions", values.reshape(-1)
+    else:
+        raise ValueError("Use one column of positions or two columns of interval starts and ends.")
+    profile = FilterProfile(values, layout, units, chromosomes)
+    _validate_profile(profile)
+    return profile
+
+
 def profile_coordinates(inspection: UploadInspection, length: int):
     """Coordinate metadata retained by the upload inspector, in kilobases."""
     names = {str(key).lower().replace(" ", "_"): value for key, value in inspection._table_data.items()}
@@ -414,7 +450,7 @@ def apply_data_filter(
     source = np.asarray(values, dtype=float)
     result = source.copy()
     columns = result.reshape(-1, 1) if result.ndim < 2 or result.shape[0] == 1 else result
-    modulation = (aligned_modulation(source, settings.modulation, coordinates=positions, chromosome=chromosome)
+    modulation = (aligned_modulation(source, settings.modulation, coordinates=positions, chromosome=chromosome, warning=settings._warning_sink)
                   if settings.action == "modulate" else None)
     # Reproducible, distinct noise across chromosome outputs and time slices.
     seed = settings.seed
@@ -425,7 +461,10 @@ def apply_data_filter(
         original = columns[:, column].copy()
         selected = _selected(original, settings, positions, intervals, chromosome)
         if settings._position_sink is not None:
-            settings._position_sink(selected, positions, chromosome, column if columns.shape[1] > 1 else None)
+            settings._position_sink(
+                selected, positions, chromosome, column if columns.shape[1] > 1 else None,
+                intervals=intervals,
+            )
         if not selected.any():
             continue
         output = columns[:, column]
@@ -470,8 +509,14 @@ def apply_data_filter(
                     indices = np.where(target - x[known[left]] <= x[known[right]] - target, left, right)
                 output[selected] = original[known[indices]]
         elif action == "modulate":
+            available = ~np.ma.getmaskarray(modulation)[:, column]
+            selected &= available
+            if not selected.any():
+                continue
+            length = int(np.count_nonzero(available))
             output[selected] = modulate_region(
-                original, modulation[:, column], selected, settings.modulation, coordinates=positions, cancel=cancel,
+                original[:length], np.asarray(modulation[:length, column]), selected[:length], settings.modulation,
+                coordinates=None if positions is None else np.asarray(positions)[:length], cancel=cancel,
             )
         else:
             with np.errstate(over="ignore", invalid="ignore"):
