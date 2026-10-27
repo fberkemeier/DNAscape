@@ -82,6 +82,8 @@ def test_npz_exports_round_trip_through_rdata_with_canonical_forms(
 ) -> None:
     result = _result(values, form, x_axis=x_axis, time_axis=time_axis)
     artifact = build_mapping_raw_export(result, "mapped_output", "npz")
+    suffix = "c" if form == "scalar" else form
+    assert artifact.filename == f"rmap_mapped-output_{suffix}.npz"
     path = tmp_path / artifact.filename
     path.write_bytes(artifact.data)
 
@@ -252,7 +254,7 @@ def test_bundle_member_selection_and_dynamic_filename() -> None:
     selected = select_mapping_output(result, "left_fork_density_xt")
     np.testing.assert_array_equal(selected.values, left)
     artifact = build_mapping_raw_export(result, "left_fork_density_xt", "npz")
-    assert artifact.filename == "rmap_lfd-xt.npz"
+    assert artifact.filename == "rmap_lfd_xt.npz"
     with np.load(io.BytesIO(artifact.data), allow_pickle=False) as archive:
         np.testing.assert_array_equal(archive["values"], left)
 
@@ -338,7 +340,7 @@ def test_observed_and_fitted_profiles_export_with_one_shared_axis() -> None:
         "replication_timing_fit",
         "csv",
     )
-    assert artifact.filename == "rmap_rt-cmp.csv"
+    assert artifact.filename == "rmap_rt-cmp_x.csv"
     assert artifact.data.decode().splitlines() == [
         "position_kb,observed,fitted",
         "10,8,8.2",

@@ -25,7 +25,7 @@ def test_public_spatial_speed_route_recovers_local_model_with_correct_rate_units
         firing * resolution, truth, resolution=resolution, perQ=periodic,
     )
     result = rmap(
-        source={"replication_timing": timing, "firing_rate": firing},
+        source={"replication_timing": timing, "initiation_rate": firing},
         target="fork_speed", target_form="space", resolution=resolution,
         perQ=periodic, maxiter=40, smoothw=None, refine_edge_kb=0., verbose=False,
     )
@@ -42,7 +42,7 @@ def test_one_update_moves_both_early_and_late_sites_and_evaluates_final_profile(
     timing = map_firing_timing(.004, truth)
     initial_prediction = map_firing_timing(.004, np.full(40, 1.4))
     fit = map_timing_firing_spatial_speed(
-        {"replication_timing": timing, "firing_rate": .004},
+        {"replication_timing": timing, "initiation_rate": .004},
         maxiter=1, smoothw=None, refine_edge_kb=0., verbose=False,
     )
     assert np.all(fit[:20] < 1.4)
@@ -58,10 +58,10 @@ def test_timing_offset_preserves_speed_and_diagnostic_coordinates():
     timing = np.linspace(20., 35., 48)
     settings = dict(maxiter=3, smoothw=None, verbose=False)
     base = map_timing_firing_spatial_speed(
-        {"replication_timing": timing, "firing_rate": .001}, **settings,
+        {"replication_timing": timing, "initiation_rate": .001}, **settings,
     )
     shifted = map_timing_firing_spatial_speed(
-        {"replication_timing": timing + 37., "firing_rate": .001}, T0=37., **settings,
+        {"replication_timing": timing + 37., "initiation_rate": .001}, T0=37., **settings,
     )
     np.testing.assert_allclose(shifted, base)
     np.testing.assert_allclose(
@@ -77,7 +77,7 @@ def test_selected_region_edges_are_fitted_instead_of_overwritten():
     truth = np.r_[np.full(10, .7), np.full(20, 1.4), np.full(10, 2.8)]
     timing = map_firing_timing(.01, truth, resolution=100.)
     result = map_timing_firing_spatial_speed(
-        {"replication_timing": timing, "firing_rate": .01},
+        {"replication_timing": timing, "initiation_rate": .01},
         resolution=100., maxiter=1, smoothw=None, refine_edge_kb=0., verbose=False,
     )
     assert result[0] < result[15] < result[-1]
@@ -86,7 +86,7 @@ def test_selected_region_edges_are_fitted_instead_of_overwritten():
 def test_smoothing_preserves_a_uniform_periodic_update():
     timing = map_firing_timing(.004, np.full(48, 2.8), perQ=True)
     result = map_timing_firing_spatial_speed(
-        {"replication_timing": timing, "firing_rate": .004},
+        {"replication_timing": timing, "initiation_rate": .004},
         perQ=True, maxiter=1, smoothw=20, verbose=False,
     )
     assert result[0] > 1.4
@@ -104,7 +104,7 @@ def test_reflected_edge_context_prevents_missing_flanks_from_becoming_speed_spik
         extended_firing, np.full(extended_firing.size, 1.8),
         resolution=10., neighbourhood_range=200.,
     )[100:-100]
-    source = {"replication_timing": timing, "firing_rate": firing / 10. if spatial_firing else .0001}
+    source = {"replication_timing": timing, "initiation_rate": firing / 10. if spatial_firing else .0001}
     common = dict(
         source=source, target="fork_speed", target_form="space",
         resolution=10., neighbourhood_range=200., maxiter=30, verbose=False,
@@ -129,13 +129,13 @@ def test_reflected_edge_context_prevents_missing_flanks_from_becoming_speed_spik
     )
     np.testing.assert_array_equal(source["replication_timing"], timing)
     if spatial_firing:
-        np.testing.assert_array_equal(source["firing_rate"], firing / 10.)
+        np.testing.assert_array_equal(source["initiation_rate"], firing / 10.)
 
 
 @pytest.mark.parametrize("resolution,expected_bins", [(10., 2), (4., 5)])
 def test_speed_edge_context_is_a_physical_upper_bound_with_a_local_taper(resolution, expected_bins):
     result = map_timing_firing_spatial_speed(
-        {"replication_timing": np.full(200, 30.), "firing_rate": .001},
+        {"replication_timing": np.full(200, 30.), "initiation_rate": .001},
         resolution=resolution, refine_edge_kb=20., maxiter=1, verbose=False,
     )
     assert result._rmap_info["fit_edge_bins"] == expected_bins
@@ -144,7 +144,7 @@ def test_speed_edge_context_is_a_physical_upper_bound_with_a_local_taper(resolut
 
 @pytest.mark.parametrize("periodic", [False, True])
 def test_disabled_context_preserves_the_finite_model_and_periodic_context_is_inert(periodic):
-    source = {"replication_timing": np.linspace(20., 50., 48), "firing_rate": .001}
+    source = {"replication_timing": np.linspace(20., 50., 48), "initiation_rate": .001}
     common = dict(source=source, perQ=periodic, maxiter=3, smoothw=None, verbose=False)
     unprotected = map_timing_firing_spatial_speed(refine_edge_kb=0., **common)
     disabled = map_timing_firing_spatial_speed(refine_edge_kb=None, **common)
@@ -164,7 +164,7 @@ def test_disabled_context_preserves_the_finite_model_and_periodic_context_is_ine
 def test_invalid_speed_edge_context_is_rejected(edge_context):
     with pytest.raises(ValueError, match="refine_edge_kb"):
         map_timing_firing_spatial_speed(
-            {"replication_timing": np.full(20, 30.), "firing_rate": .001},
+            {"replication_timing": np.full(20, 30.), "initiation_rate": .001},
             refine_edge_kb=edge_context, maxiter=0, verbose=False,
         )
 
@@ -188,7 +188,7 @@ def test_spatial_firing_profile_fit_improves_with_default_smoothing(
         firing * resolution, truth, resolution=resolution, perQ=periodic,
     )
     result = rmap(
-        source={"replication_timing": timing, "firing_rate": firing},
+        source={"replication_timing": timing, "initiation_rate": firing},
         target="fork_speed", target_form="space", resolution=resolution,
         perQ=periodic, maxiter=40, refine_edge_kb=0., verbose=False,
     )
@@ -212,7 +212,7 @@ def test_large_step_is_damped_without_accepting_a_worse_fit():
     truth = 1.6 + .35 * np.cos(phase)
     timing = map_firing_timing(firing, truth)
     result = map_timing_firing_spatial_speed(
-        {"replication_timing": timing, "firing_rate": firing},
+        {"replication_timing": timing, "initiation_rate": firing},
         fit_step=8., maxiter=10, smoothw=None, verbose=False,
     )
     info = result._rmap_info
@@ -241,7 +241,7 @@ def test_cancel_is_checked_inside_the_deterministic_forward_evaluation():
 
 def test_supplied_bounds_and_best_iterate_are_retained():
     result = map_timing_firing_spatial_speed(
-        {"replication_timing": np.linspace(10., 600., 48), "firing_rate": .001},
+        {"replication_timing": np.linspace(10., 600., 48), "initiation_rate": .001},
         maxiter=4, fit_step=8., smoothw=None, speed_bounds=(.2, 3.), verbose=False,
     )
     assert np.all((result >= .2) & (result <= 3.))
@@ -257,7 +257,7 @@ def test_spatial_speed_progress_counts_initial_evaluation_as_iteration_zero():
         metric_report=lambda *metric: metrics.append(metric), suppress_output=True,
     ):
         result = map_timing_firing_spatial_speed(
-            {"replication_timing": timing, "firing_rate": .004},
+            {"replication_timing": timing, "initiation_rate": .004},
             maxiter=10, error=None, smoothw=None, refine_edge_kb=0., verbose=False,
         )
     assert len(result._rmap_info["fit_history"]) == 11
@@ -268,12 +268,12 @@ def test_spatial_speed_progress_counts_initial_evaluation_as_iteration_zero():
 
 
 @pytest.mark.parametrize("timing,firing,kwargs,match", [
-    ([1., 2.], 0., {}, "positive firing rate"),
+    ([1., 2.], 0., {}, "positive initiation rate"),
     ([1., 2.], .001, {"T0": 3.}, "greater than T0"),
     ([1., 2.], .001, {"fit_step": 0.}, "fit_step"),
 ])
 def test_invalid_iteration_inputs_fail_before_fitting(timing, firing, kwargs, match):
     with pytest.raises(ValueError, match=match):
         map_timing_firing_spatial_speed(
-            {"replication_timing": timing, "firing_rate": firing}, **kwargs,
+            {"replication_timing": timing, "initiation_rate": firing}, **kwargs,
         )

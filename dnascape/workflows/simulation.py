@@ -16,6 +16,10 @@ from typing import Any, cast
 
 import numpy as np
 
+from .spatial_grid import resample_spatial
+from .filtering import DataFilterSettings
+from .simulation_filters import SimulationFilterState, apply_simulation_filters
+
 ProgressReporter = Callable[[float, str], None]
 CancelChecker = Callable[[], None]
 
@@ -27,10 +31,10 @@ MAX_REPLICATES = 50_000
 
 # ``rsim`` allocates six float32 (time, position) accumulators when detailed
 # space-time statistics are requested. Keep their combined preallocation below
-# 64 MiB; ensemble size itself is independently capped and cancellable.
+# 1 GiB; ensemble size itself is independently capped and cancellable.
 DETAILED_XT_ARRAY_COUNT = 6
 DETAILED_XT_ITEM_BYTES = np.dtype(np.float32).itemsize
-MAX_DETAILED_XT_BYTES = 64 * 1024 * 1024
+MAX_DETAILED_XT_BYTES = 1024 * 1024 * 1024
 MAX_DETAILED_XT_CELLS = MAX_DETAILED_XT_BYTES // (DETAILED_XT_ARRAY_COUNT * DETAILED_XT_ITEM_BYTES)
 MAX_RETAINED_REPLICATION_PROFILES = 50
 MAX_RETAINED_REPLICATION_PROFILE_BYTES = 64 * 1024 * 1024
@@ -80,7 +84,7 @@ class ConstantSimulationRequest:
     though uploaded arrays are now supported.
     """
 
-    firing_rate: float | np.ndarray
+    initiation_rate: float | np.ndarray
     fork_speed: float | np.ndarray
     resolution_x: float
     resolution_t: float
@@ -103,6 +107,13 @@ class ConstantSimulationRequest:
     fork_speed_std: float = 0.0
     retained_profile_count: int = 10
     stall_shared_directions: bool = False
+    # Uploaded arrays retain this native spacing when resolution_x changes.
+    # None keeps the existing already-binned Python workflow contract.
+    source_resolution_x: float | None = None
+    whole_region: bool = False
+    data_filters: Mapping[str, DataFilterSettings] = field(default_factory=dict)
+    export_filters: frozenset[str] = frozenset()
+    _filter_state: SimulationFilterState | None = field(default=None, repr=False, compare=False)
 
 
 @dataclass(frozen=True)
@@ -126,6 +137,7 @@ class ConstantSimulationResult:
     input_axes: Mapping[str, tuple[np.ndarray, np.ndarray]] = field(default_factory=dict)
     replicon_length_count: int = 0
     replicon_lengths_truncated: bool = False
+    filter_state: SimulationFilterState | None = None
 
 
 @dataclass(frozen=True)
@@ -203,8 +215,23 @@ def _kinetic_field(
     return normalized
 
 
-def validate_constant_simulation(request: ConstantSimulationRequest) -> _ValidatedRequest:
+def validate_constant_simulation(request: ConstantSimulationRequest, cancel: CancelChecker | None = None) -> _ValidatedRequest:
     """Validate user-controlled values before allocating arrays or starting work."""
+    if cancel is not None:
+        cancel()
+    if not isinstance(request.whole_region, bool):
+        raise ValueError('Whole region must be true or false.')
+    if request.whole_region:
+        sizes = set()
+        for value in (request.initiation_rate, request.fork_speed):
+            array = np.asarray(value)
+            if array.size and (array.ndim == 1 or array.ndim == 2 and (array.shape[0] > 1 or array.shape == (1, 1))):
+                sizes.add(array.shape[0])
+        if not sizes:
+            raise ValueError('Whole region requires an initiation-rate or fork-speed profile with genomic positions.')
+        if len(sizes) != 1:
+            raise ValueError('Initiation-rate and fork-speed profiles must cover the same whole region.')
+        request = replace(request, region_start_kb=0., region_end_kb=sizes.pop() * (request.source_resolution_x or request.resolution_x))
 
     if not isinstance(request.track_time_outputs, bool):
         raise ValueError("Time-output tracking must be true or false.")
@@ -241,22 +268,46 @@ def validate_constant_simulation(request: ConstantSimulationRequest) -> _Validat
             f"{MAX_SPATIAL_BINS:,}. Increase the resolution or narrow the region."
         )
 
-    firing_rate = _kinetic_field(
-        request.firing_rate,
-        "Firing rate",
+    def spatial_upload(value: float | np.ndarray) -> float | np.ndarray:
+        if request.source_resolution_x is None:
+            return value
+        array = np.asarray(value)
+        if array.size <= 1 or array.ndim == 0 or (array.ndim == 2 and array.shape[0] == 1):
+            return value
+        return resample_spatial(
+            array, source_resolution=float(request.source_resolution_x),
+            start=start, end=end, resolution=resolution_x,
+            max_points=MAX_SPATIAL_BINS,
+        )
+
+    sampled = {'initiation_rate': spatial_upload(request.initiation_rate), 'fork_speed': spatial_upload(request.fork_speed)}
+    filter_state = request._filter_state
+    if request.data_filters:
+        sampled, filter_state = apply_simulation_filters(
+            sampled, request.data_filters, start=start, end=end, resolution_x=resolution_x,
+            resolution_t=resolution_t, n_bins=n_bins, exports=request.export_filters,
+            missing_policy=request.missing_values, cancel=cancel, seed=request.seed,
+        )
+    initiation_rate = _kinetic_field(
+        sampled['initiation_rate'],
+        "Initiation rate",
         n_bins=n_bins,
         positive=False,
     )
     fork_speed = _kinetic_field(
-        request.fork_speed,
+        sampled['fork_speed'],
         "Fork speed",
         n_bins=n_bins,
         positive=True,
     )
     request = replace(
         request,
-        firing_rate=firing_rate,
+        initiation_rate=initiation_rate,
         fork_speed=fork_speed,
+        source_resolution_x=None,
+        whole_region=False,
+        data_filters={},
+        _filter_state=filter_state,
     )
 
     replicates = _positive_integer(request.replicates, "Simulations (replicates)")
@@ -527,7 +578,7 @@ def run_constant_simulation(
         started = time.perf_counter()
         cancel()
         report(0.02, "Preparing simulation...")
-        validated = validate_constant_simulation(request)
+        validated = validate_constant_simulation(request, cancel)
         request = validated.request
         cancel()
         time_outputs = bool(request.track_time_outputs)
@@ -571,7 +622,7 @@ def run_constant_simulation(
         with progress_context(report=report, cancel=cancel, suppress_output=True):
             raw = simulate(
                 source={
-                    "firing_rate": request.firing_rate,
+                    "initiation_rate": request.initiation_rate,
                     "fork_speed": request.fork_speed,
                 },
                 assumptions=assumptions,
@@ -633,6 +684,7 @@ def run_constant_simulation(
             inter_origin_distances_truncated=inter_origin_distances_truncated,
             replicon_length_count=replicon_length_count,
             replicon_lengths_truncated=replicon_lengths_truncated,
+            filter_state=request._filter_state,
         )
         from .preview_inputs import add_simulation_input_previews
 

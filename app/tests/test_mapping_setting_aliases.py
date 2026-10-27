@@ -22,8 +22,8 @@ def test_all_route_form_and_shape_combinations_avoid_redundant_fit_controls():
 
 
 @pytest.mark.parametrize("method", [
-    "timing_and_speed_to_firing_rate", "timing_to_firing_constant_fork_speed",
-    "timing_and_variable_speed_to_spatial_firing_rate", "timing_to_spatial_firing_rate_variable_fork_speed",
+    "timing_and_speed_to_initiation_rate", "timing_to_firing_constant_fork_speed",
+    "timing_and_variable_speed_to_spatial_initiation_rate", "timing_to_spatial_initiation_rate_variable_fork_speed",
 ])
 def test_existing_single_phase_aliases_keep_their_original_effective_precedence(method):
     variable = "variable" in method
@@ -38,7 +38,7 @@ def test_existing_single_phase_aliases_keep_their_original_effective_precedence(
     legacy = run_mapping(MappingRequest(**common, settings={
         **options, "maxiter": 7, "fit_step": 1., "space_maxiter": 2, "space_fit_step": .3,
     }))
-    np.testing.assert_array_equal(legacy.outputs["firing_rate"], canonical.outputs["firing_rate"])
+    np.testing.assert_array_equal(legacy.outputs["initiation_rate"], canonical.outputs["initiation_rate"])
     assert legacy.assumptions["maxiter"] == 2
     assert legacy.assumptions["fit_step"] == .3
     assert not {"space_maxiter", "space_fit_step"} & legacy.assumptions.keys()

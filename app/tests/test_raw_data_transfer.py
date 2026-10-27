@@ -48,7 +48,7 @@ def test_zip_transfer_expands_numeric_members_and_keeps_npz_intact():
 @pytest.mark.parametrize("destination,input_key,upload_marker,preserve", [
     ("data-management", None, "data-manager-upload", True),
     ("mapping", "replication_timing", "source-replication-timing-upload", True),
-    ("simulation", "firing_rate", "source-firing-rate-upload", True),
+    ("simulation", "initiation_rate", "source-initiation-rate-upload", True),
     ("plotting", None, "plotting-data-upload", True),
     ("plotting", None, "plotting-data-upload", False),
 ])
@@ -66,7 +66,7 @@ def test_converted_raw_file_opens_in_each_page_and_preserves_existing_uploads(mo
                 user.find(marker=f"nav-{destination}").click()
                 if destination == "simulation":
                     with user.client:
-                        element(user, "source-firing-rate-mode").set_value("profile")
+                        element(user, "source-initiation-rate-mode").set_value("profile")
                     await settle()
                 await user.should_see(marker=upload_marker, retries=60)
                 await element(user, upload_marker).handle_uploads([
@@ -155,10 +155,10 @@ def test_mapping_raw_actions_use_the_chosen_row_and_match_or_choose_an_input(mon
     def mapped(request, *_args):
         timing = np.asarray(request.inputs["replication_timing"], dtype=float)
         return MappingResult(
-            target=request.route.target, target_key=request.route.target_key, target_label="Firing rate",
-            method=request.route.method, output_form="x", output_dependence="space", primary_output="firing_rate",
-            outputs={"firing_rate": timing / 10, "replication_timing_fit": timing},
-            output_forms={"firing_rate": "x", "replication_timing_fit": "x"},
+            target=request.route.target, target_key=request.route.target_key, target_label="Initiation rate",
+            method=request.route.method, output_form="x", output_dependence="space", primary_output="initiation_rate",
+            outputs={"initiation_rate": timing / 10, "replication_timing_fit": timing},
+            output_forms={"initiation_rate": "x", "replication_timing_fit": "x"},
             x_axis=np.arange(timing.size, dtype=float), time_axis=np.asarray([]), region_labels=(),
             elapsed_seconds=.01, assumptions={},
         )
@@ -212,8 +212,8 @@ def test_mapping_raw_actions_use_the_chosen_row_and_match_or_choose_an_input(mon
             values = materialize_upload(replace(received[0], expected_form="x"), missing_policy="error")
             np.testing.assert_array_equal(values, np.asarray([10, 20, 30]) / 10 + (datasets - 1) / 10)
             if destination == "simulation":
-                assert element(user, "source-firing-rate-mode").value == "profile"
-                assert not any("raw-open-input-firing_rate" in item._markers for item in user.client.elements.values())
+                assert element(user, "source-initiation-rate-mode").value == "profile"
+                assert not any("raw-open-input-initiation_rate" in item._markers for item in user.client.elements.values())
             assert cache.count() == before
     asyncio.run(scenario())
 

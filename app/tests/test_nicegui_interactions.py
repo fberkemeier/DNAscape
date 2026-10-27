@@ -258,14 +258,14 @@ def test_constant_simulation_is_added_to_the_default_cache_inventory() -> None:
                 Number,
                 next(iter(user.find(marker="simulation-replicates").elements)),
             )
-            firing_rate = cast(
+            initiation_rate = cast(
                 Number,
-                next(iter(user.find(marker="source-firing-rate-constant").elements)),
+                next(iter(user.find(marker="source-initiation-rate-constant").elements)),
             )
             with user.client:
                 region_end.set_value(20.0)
                 replicates.set_value(1)
-                firing_rate.set_value(0.1)
+                initiation_rate.set_value(0.1)
 
             user.find(marker="action-simulate").click()
             await user.should_see(marker="simulation-result-plot", retries=120)
@@ -289,15 +289,15 @@ def test_cached_mapping_result_reopens_in_the_mapping_preview() -> None:
             assert user.client is not None
             user.find(marker="nav-mapping").click()
             result = MappingResult(
-                target="firing_rate",
-                target_key="firing_rate",
-                target_label="Firing rate",
+                target="initiation_rate",
+                target_key="initiation_rate",
+                target_label="Initiation rate",
                 method="cached_test",
                 output_form="x",
                 output_dependence="space",
-                primary_output="firing_rate",
-                outputs={"firing_rate": np.asarray([0.1, 0.3, 0.2])},
-                output_forms={"firing_rate": "x"},
+                primary_output="initiation_rate",
+                outputs={"initiation_rate": np.asarray([0.1, 0.3, 0.2])},
+                output_forms={"initiation_rate": "x"},
                 x_axis=np.asarray([10.0, 11.0, 12.0]),
                 time_axis=np.asarray([], dtype=float),
                 region_labels=(),
@@ -307,7 +307,7 @@ def test_cached_mapping_result_reopens_in_the_mapping_preview() -> None:
             with user.client:
                 cache = current_session_cache()
                 workflow = cache.add_reference(
-                    name="Mapping: Firing rate",
+                    name="Mapping: Initiation rate",
                     source="Mapping",
                     detail="Space | 3 points | Cached Test",
                     payload=result,
@@ -322,7 +322,7 @@ def test_cached_mapping_result_reopens_in_the_mapping_preview() -> None:
                 activity.finish("mapping", completed_run, success=True)
             await user.should_see(marker="nav-mapping-complete", retries=30)
             user.find("Workflow results").click()
-            await user.should_see("Mapping: Firing rate")
+            await user.should_see("Mapping: Initiation rate")
             user.find(marker=f"cache-open-{workflow.id}").click()
             await user.should_see("Map replication kinetic landscapes")
             await user.should_see("Restored from Cached Files")
@@ -1669,9 +1669,9 @@ def test_scientific_controls_use_compact_mode_selects_and_keep_primary_actions_d
                 next(iter(user.find(marker="mapping-input-fork-speed-type").elements)),
             )
             speed_form = _select_by_marker(user, "mapping-input-fork-speed-form")
-            assert target.value == "firing_rate"
+            assert target.value == "initiation_rate"
             assert dependence.value == "space"
-            assert route.value == mapping_route_families("firing_rate", "space")[0].key
+            assert route.value == mapping_route_families("initiation_rate", "space")[0].key
             assert timing_type.options == {"profile": "Profile"}
             assert timing_type.value == "profile"
             assert timing_type._props["disable"] is True
@@ -1702,12 +1702,12 @@ def test_scientific_controls_use_compact_mode_selects_and_keep_primary_actions_d
         async with user_simulation(index) as user:
             await user.open("/")
             user.find(marker="nav-simulation").click()
-            await user.should_see(kind=Select, marker="source-firing-rate-mode")
+            await user.should_see(kind=Select, marker="source-initiation-rate-mode")
             simulation_mode = cast(
                 Select,
-                next(iter(user.find(marker="source-firing-rate-mode").elements)),
+                next(iter(user.find(marker="source-initiation-rate-mode").elements)),
             )
-            simulation_form = _select_by_marker(user, "source-firing-rate-form")
+            simulation_form = _select_by_marker(user, "source-initiation-rate-form")
             assert simulation_mode.options == {
                 "scalar": "Constant",
                 "constants": "Multiple constants",
@@ -1722,15 +1722,15 @@ def test_scientific_controls_use_compact_mode_selects_and_keep_primary_actions_d
                 "xt": "Space-time",
             }
             assert not simulation_form.visible
-            await user.should_not_see(marker="source-firing-rate-profile")
-            await user.should_see(marker="source-firing-rate-constant")
-            user.find(marker="source-firing-rate-mode").click()
+            await user.should_not_see(marker="source-initiation-rate-profile")
+            await user.should_see(marker="source-initiation-rate-constant")
+            user.find(marker="source-initiation-rate-mode").click()
             user.find("Profile").click()
-            await user.should_see(marker="source-firing-rate-profile")
-            await user.should_not_see(marker="source-firing-rate-constant")
-            user.find(marker="source-firing-rate-mode").click()
+            await user.should_see(marker="source-initiation-rate-profile")
+            await user.should_not_see(marker="source-initiation-rate-constant")
+            user.find(marker="source-initiation-rate-mode").click()
             user.find("Constant").click()
-            await user.should_see(marker="source-firing-rate-constant")
+            await user.should_see(marker="source-initiation-rate-constant")
             for section in ("Region", "Simulation settings"):
                 user.find(section).click()
             replicates = cast(
@@ -2065,7 +2065,7 @@ def test_constant_simulation_reports_progress_and_renders_worker_result(
             assert status.text == "Running test ensemble..."
             assert requests
             request = requests[0]
-            assert request.firing_rate == pytest.approx(0.01)
+            assert request.initiation_rate == pytest.approx(0.01)
             assert request.fork_speed == pytest.approx(1.4)
             assert request.region_start_kb == pytest.approx(0.0)
             assert request.region_end_kb == pytest.approx(1_000.0)
@@ -2721,7 +2721,7 @@ def test_real_constant_simulation_replaces_placeholder_with_result_plot() -> Non
     asyncio.run(scenario())
 
 
-def test_uploaded_firing_rate_and_fork_speed_reach_simulation_worker(
+def test_uploaded_initiation_rate_and_fork_speed_reach_simulation_worker(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     from app.pages import simulation as simulation_page
@@ -2753,7 +2753,7 @@ def test_uploaded_firing_rate_and_fork_speed_reach_simulation_worker(
             await user.should_see("Simulate DNA replication", retries=60)
             firing_mode = cast(
                 Select,
-                next(iter(user.find(marker="source-firing-rate-mode").elements)),
+                next(iter(user.find(marker="source-initiation-rate-mode").elements)),
             )
             speed_mode = cast(
                 Select,
@@ -2761,12 +2761,12 @@ def test_uploaded_firing_rate_and_fork_speed_reach_simulation_worker(
             )
             firing_mode.set_value("profile")
             speed_mode.set_value("profile")
-            await user.should_see(marker="source-firing-rate-profile")
+            await user.should_see(marker="source-initiation-rate-profile")
             await user.should_see(marker="source-fork-speed-profile")
 
             firing_upload = cast(
                 Upload,
-                next(iter(user.find(marker="source-firing-rate-upload").elements)),
+                next(iter(user.find(marker="source-initiation-rate-upload").elements)),
             )
             speed_upload = cast(
                 Upload,
@@ -2777,7 +2777,7 @@ def test_uploaded_firing_rate_and_fork_speed_reach_simulation_worker(
                     Upload.SmallFileUpload(
                         "firing.csv",
                         "text/csv",
-                        b"position,firing_rate\n0,0.1\n1,0.2\n2,0.3\n",
+                        b"position,initiation_rate\n0,0.1\n1,0.2\n2,0.3\n",
                     )
                 ]
             )
@@ -2790,11 +2790,11 @@ def test_uploaded_firing_rate_and_fork_speed_reach_simulation_worker(
                     )
                 ]
             )
-            await user.should_see(marker="source-firing-rate-detected-data", retries=30)
+            await user.should_see(marker="source-initiation-rate-detected-data", retries=30)
             await user.should_see(marker="source-fork-speed-detected-data")
-            await user.should_see(marker="source-firing-rate-upload-file")
+            await user.should_see(marker="source-initiation-rate-upload-file")
             await user.should_see(marker="source-fork-speed-upload-file")
-            firing_form = _select_by_marker(user, "source-firing-rate-form")
+            firing_form = _select_by_marker(user, "source-initiation-rate-form")
             speed_form = _select_by_marker(user, "source-fork-speed-form")
             assert firing_form.value == "x"
             assert speed_form.value == "t"
@@ -2819,16 +2819,16 @@ def test_uploaded_firing_rate_and_fork_speed_reach_simulation_worker(
             await user.should_not_see(marker="simulation-error")
             assert requests
             assert requests[0].region_end_kb == pytest.approx(3.0)
-            np.testing.assert_array_equal(requests[0].firing_rate, [0.1, 0.2, 0.3])
+            np.testing.assert_array_equal(requests[0].initiation_rate, [0.1, 0.2, 0.3])
             np.testing.assert_array_equal(requests[0].fork_speed, [[1.1, 1.2, 1.3]])
-            assert np.asarray(requests[0].firing_rate).shape == (3,)
+            assert np.asarray(requests[0].initiation_rate).shape == (3,)
             assert np.asarray(requests[0].fork_speed).shape == (1, 3)
 
             output = _select_by_marker(user, "simulation-output")
-            assert "Firing rate (input)" in output.options
+            assert "Initiation rate (input)" in output.options
             assert "Fork speed (input)" in output.options
             for label, expected in (
-                ("Firing rate (input)", [0.1, 0.2, 0.3]),
+                ("Initiation rate (input)", [0.1, 0.2, 0.3]),
                 ("Fork speed (input)", [1.1, 1.2, 1.3]),
             ):
                 with user.client:
@@ -2859,7 +2859,7 @@ def test_simulation_batch_runs_all_profiles_and_keeps_atomic_preview(
     ) -> ConstantSimulationResult:
         requests.append(request)
         report(0.6, "Simulating batch dataset...")
-        timing = np.asarray(request.firing_rate, dtype=float).reshape(-1) * 10.0
+        timing = np.asarray(request.initiation_rate, dtype=float).reshape(-1) * 10.0
         position = np.arange(timing.size, dtype=float)
         return ConstantSimulationResult(
             position_kb=position,
@@ -2886,14 +2886,14 @@ def test_simulation_batch_runs_all_profiles_and_keeps_atomic_preview(
             await user.should_see("Simulate DNA replication", retries=60)
             firing_mode = cast(
                 Select,
-                next(iter(user.find(marker="source-firing-rate-mode").elements)),
+                next(iter(user.find(marker="source-initiation-rate-mode").elements)),
             )
             assert user.client is not None
             with user.client:
                 firing_mode.set_value("profile")
             uploader = cast(
                 Upload,
-                next(iter(user.find(marker="source-firing-rate-upload").elements)),
+                next(iter(user.find(marker="source-initiation-rate-upload").elements)),
             )
             assert uploader._props["multiple"] is True
             await uploader.handle_uploads(
@@ -2901,12 +2901,12 @@ def test_simulation_batch_runs_all_profiles_and_keeps_atomic_preview(
                     Upload.SmallFileUpload(
                         "sample_a.csv",
                         "text/csv",
-                        b"firing_rate\n0.1\n0.2\n0.3\n",
+                        b"initiation_rate\n0.1\n0.2\n0.3\n",
                     ),
                     Upload.SmallFileUpload(
                         "sample_b.csv",
                         "text/csv",
-                        b"firing_rate\n0.4\n0.5\n0.6\n",
+                        b"initiation_rate\n0.4\n0.5\n0.6\n",
                     ),
                 ]
             )
@@ -2915,8 +2915,8 @@ def test_simulation_batch_runs_all_profiles_and_keeps_atomic_preview(
             user.find(marker="action-simulate").click()
             await user.should_see("2 datasets complete", retries=60)
             assert len(requests) == 2
-            np.testing.assert_array_equal(requests[0].firing_rate, [0.1, 0.2, 0.3])
-            np.testing.assert_array_equal(requests[1].firing_rate, [0.4, 0.5, 0.6])
+            np.testing.assert_array_equal(requests[0].initiation_rate, [0.1, 0.2, 0.3])
+            np.testing.assert_array_equal(requests[1].initiation_rate, [0.4, 0.5, 0.6])
             assert requests[0].fork_speed == pytest.approx(1.4)
             assert requests[1].fork_speed == pytest.approx(1.4)
 
@@ -2979,7 +2979,7 @@ def test_simulation_batch_runs_all_profiles_and_keeps_atomic_preview(
                     Upload.SmallFileUpload(
                         "sample_a.csv",
                         "text/csv",
-                        b"firing_rate\n0.7\n0.8\n0.9\n",
+                        b"initiation_rate\n0.7\n0.8\n0.9\n",
                     )
                 ]
             )
@@ -2990,8 +2990,8 @@ def test_simulation_batch_runs_all_profiles_and_keeps_atomic_preview(
                     break
                 await asyncio.sleep(0.02)
             assert len(requests) == 4
-            np.testing.assert_array_equal(requests[2].firing_rate, [0.7, 0.8, 0.9])
-            np.testing.assert_array_equal(requests[3].firing_rate, [0.4, 0.5, 0.6])
+            np.testing.assert_array_equal(requests[2].initiation_rate, [0.7, 0.8, 0.9])
+            np.testing.assert_array_equal(requests[3].initiation_rate, [0.4, 0.5, 0.6])
 
             # Replacing one same-name upload must retain the other dataset. The
             # ambiguous, differently named signals are rejected before any
@@ -3024,12 +3024,12 @@ def test_simulation_profile_headers_select_arrays_and_resize_region() -> None:
             await user.should_see("Simulate DNA replication")
             mode = cast(
                 Select,
-                next(iter(user.find(marker="source-firing-rate-mode").elements)),
+                next(iter(user.find(marker="source-initiation-rate-mode").elements)),
             )
             mode.set_value("profile")
             uploader = cast(
                 Upload,
-                next(iter(user.find(marker="source-firing-rate-upload").elements)),
+                next(iter(user.find(marker="source-initiation-rate-upload").elements)),
             )
             await uploader.handle_uploads(
                 [
@@ -3040,10 +3040,10 @@ def test_simulation_profile_headers_select_arrays_and_resize_region() -> None:
                     )
                 ]
             )
-            await user.should_see(marker="source-firing-rate-detected-data", retries=30)
+            await user.should_see(marker="source-initiation-rate-detected-data", retries=30)
             column = cast(
                 Select,
-                next(iter(user.find(marker="source-firing-rate-value-column").elements)),
+                next(iter(user.find(marker="source-initiation-rate-value-column").elements)),
             )
             region_end = cast(
                 Number,
@@ -3060,9 +3060,9 @@ def test_simulation_profile_headers_select_arrays_and_resize_region() -> None:
                 await asyncio.sleep(0.1)
             assert region_end.value == pytest.approx(2.0)
 
-            user.find(marker="source-firing-rate-upload-remove").click()
+            user.find(marker="source-initiation-rate-upload-remove").click()
             await user.should_not_see(
-                marker="source-firing-rate-upload-file",
+                marker="source-initiation-rate-upload-file",
                 retries=20,
             )
             await uploader.handle_uploads(
@@ -3074,10 +3074,10 @@ def test_simulation_profile_headers_select_arrays_and_resize_region() -> None:
                     )
                 ]
             )
-            await user.should_see(marker="source-firing-rate-detected-data", retries=30)
+            await user.should_see(marker="source-initiation-rate-detected-data", retries=30)
             column = cast(
                 Select,
-                next(iter(user.find(marker="source-firing-rate-value-column").elements)),
+                next(iter(user.find(marker="source-initiation-rate-value-column").elements)),
             )
             assert column.options == {
                 "__all_columns__": "All columns (space-time)",

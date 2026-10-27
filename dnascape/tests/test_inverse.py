@@ -17,7 +17,7 @@ from dnascape.mapping import map_fork_densities_xt
 def test_mean_field_prediction_and_analytic_gradient_match_independent_forward(periodic):
     n = 9
     t = np.arange(0.0, 36.0, 3.0)
-    firing = _make_field("spacetime", None, 0.009, (1e-6, 0.1), n, t, 3, 3, 2, 0, "firing_rate")
+    firing = _make_field("spacetime", None, 0.009, (1e-6, 0.1), n, t, 3, 3, 2, 0, "initiation_rate")
     speed = _make_field("space", None, 1.4, (0.2, 5), n, t, 3, 3, 2, firing.count, "fork_speed")
     params = np.concatenate([firing.initial, speed.initial]) + np.linspace(
         -0.07, 0.11, firing.count + speed.count
@@ -49,7 +49,7 @@ def test_periodic_speed_inverse_fits_all_output_forms_against_independent_model(
     observed = np.trapezoid(1 - forward["replicated_fraction_xt"], x=t, axis=1)
     result = fit_timing_fork_speed(
         observed,
-        firing_rate=0.008,
+        initiation_rate=0.008,
         speed_form=speed_form,
         resolution=4,
         time_grid=t,
@@ -66,10 +66,10 @@ def test_periodic_speed_inverse_fits_all_output_forms_against_independent_model(
 
 def test_inverse_validates_positive_bounds_and_reports_truncated_time_horizon():
     with pytest.raises(ValueError, match="positive increasing"):
-        fit_timing_fork_speed(np.full(8, 10.0), firing_rate=0.008, speed_bounds=(-1, 4))
+        fit_timing_fork_speed(np.full(8, 10.0), initiation_rate=0.008, speed_bounds=(-1, 4))
     result = fit_timing_fork_speed(
         np.full(8, 10.0),
-        firing_rate=1e-5,
+        initiation_rate=1e-5,
         time_grid=np.arange(4.0),
         maxiter=2,
     )
@@ -95,7 +95,7 @@ def test_existing_speed_entry_points_execute_periodic_inverse(function, expected
     forward = map_fork_densities_xt(0.008, 1.8, n_bins=12, resolution=4, time_grid=t, perQ=True)
     observed = np.trapezoid(1 - forward["replicated_fraction_xt"], x=t, axis=1)
     result = getattr(fitting, function)(
-        {"replication_timing": observed, "firing_rate": 0.008},
+        {"replication_timing": observed, "initiation_rate": 0.008},
         resolution=4,
         time_grid=t,
         perQ=True,
@@ -141,7 +141,7 @@ def test_public_rmap_speed_inverse_supports_every_source_and_target_form_periodi
     forward = map_fork_densities_xt(0.008, 1.8, n_bins=n, resolution=4, time_grid=t, perQ=True)
     timing = np.trapezoid(1 - forward["replicated_fraction_xt"], x=t, axis=1)
     result = rmap(
-        {"replication_timing": timing, "firing_rate": source},
+        {"replication_timing": timing, "initiation_rate": source},
         target="fork_speed",
         assumptions={
             "target_form": target_form,

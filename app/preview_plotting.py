@@ -158,10 +158,19 @@ class PreviewSettingsControls:
     show_fill: Any = None
     fill_side: Any = None
     fill_options: Any = None
+    reverse_order: Any = None
+    circular_layout: Any = None
+    z_axis_label: Any = None
+    surface: Any = None
+    _sync_navigation_controls: bool = field(default=True, init=False, repr=False)
+    _stacked_navigation: dict = field(default_factory=dict, init=False, repr=False)
+    _cartesian_aspect_ratio: float = field(default=2.5, init=False, repr=False)
     legend_name: Any = None
     show_filter: Any = None
     filter_guide_options: Any = None
     filter_name: Any = None
+    filter_guides: Mapping[str, Any] = field(default_factory=dict)
+    filter_guide_names: Mapping[str, Any] = field(default_factory=dict)
     export_histogram_statistics: Any = None
     histogram_statistics_options: Any = None
     dual_y_axes: Any = None
@@ -342,11 +351,13 @@ class PreviewChartHandle:
 
         self._apply_navigation()
         self._refine_data()
+        self._apply_presentation()
         self._apply_curve_fill()
         self._apply_guides()
         self._position_toolbar()
         if self.settings is not None:
-            sync_preview_axis_limits(self.settings, self.options)
+            if self.settings._sync_navigation_controls:
+                sync_preview_axis_limits(self.settings, self.options)
             self._apply_aspect_ratio()
         self._sync_canvas_options()
         self.canvas.update()
@@ -369,10 +380,12 @@ class PreviewChartHandle:
         self._navigation = controls._navigation
         self._apply_navigation()
         self._refine_data()
+        self._apply_presentation()
         self._apply_curve_fill()
         self._apply_guides()
         self._position_toolbar()
-        sync_preview_axis_limits(controls, self.options)
+        if controls._sync_navigation_controls:
+            sync_preview_axis_limits(controls, self.options)
         self._apply_aspect_ratio()
         self._sync_canvas_options()
         refresh_statistics_exports(controls)
@@ -404,6 +417,37 @@ class PreviewChartHandle:
                 "origin": "end" if above != bool(axis.get("inverse")) else "start",
             }
 
+    def _apply_presentation(self) -> None:
+        if self.settings is None:
+            return
+        heatmap = self.options.get("dnascapePlotType") == "Heatmap"
+        if not heatmap:
+            reverse = bool(getattr(self.settings.reverse_order, "value", False))
+            series = self.options.get("series", [])
+            for index, item in enumerate(series):
+                item.setdefault("dnascapePresentationOrder", index)
+                item.setdefault("dnascapePresentationZ", item.get("z", 2))
+            self.options["series"] = sorted(series, key=lambda item: (
+                item.get("type") != "custom", (-1 if reverse else 1)*item["dnascapePresentationOrder"],
+            ))
+            for kind in {item.get("type") for item in series}:
+                layer = [item for item in self.options["series"] if item.get("type") == kind and not item.get("silent")]
+                for item, z in zip(layer, sorted((item["dnascapePresentationZ"] for item in layer), reverse=True)):
+                    item["z"] = z
+            legend = self.options.get("legend", {})
+            if isinstance(legend, dict) and isinstance(legend.get("data"), list):
+                self.options.setdefault("dnascapeLegendOrder", list(legend["data"]))
+                legend["data"] = list(reversed(self.options["dnascapeLegendOrder"])) if reverse else list(self.options["dnascapeLegendOrder"])
+            if self.settings.view.value == "Circular":
+                from dnascape.workflows.circular import circular_preview_options
+                circular_preview_options(self.options, layout=str(getattr(self.settings.circular_layout, "value", "Rings")))
+        else:
+            label = str(getattr(self.settings.z_axis_label, "value", "") or "")
+            visual_map = self.options.get("visualMap")
+            if isinstance(visual_map, dict):
+                visual_map["text"] = [label, ""]
+                visual_map["textStyle"] = {**visual_map.get("textStyle", {}), "fontSize": 10, "width": 90, "overflow": "break"}
+
     def _position_toolbar(self) -> None:
         if self.shell is None:
             return
@@ -423,7 +467,7 @@ class PreviewChartHandle:
         )
         self.options["axisPointer"] = {
             **self.options.get("axisPointer", {}),
-            "show": "auto" if hover else False,
+            "show": "auto" if hover and not self.options.get("dnascapeCircular") else False,
             "triggerOn": "mousemove|click" if hover else "none",
         }
         if not hover:
@@ -457,7 +501,8 @@ class PreviewChartHandle:
         selected = self.settings._histogram_dataset if self.settings is not None else self._histogram_dataset
         selected = max(0, min(int(selected), len(guide["choices"]) - 1))
         guide["selected"] = selected
-        self.options["graphic"] = [guide["choices"][selected]["graphic"]] if guide["visible"] else []
+        graphic = [item for item in self.options.get("graphic", []) if item.get("id") != "dn-histogram-guide"]
+        self.options["graphic"] = graphic + ([guide["choices"][selected]["graphic"]] if guide["visible"] else [])
 
     def select_histogram_dataset(self, payload: Any) -> None:
         if not isinstance(payload, Mapping) or not isinstance(payload.get("index"), int):
@@ -494,12 +539,14 @@ class PreviewChartHandle:
 
         for index, series in enumerate(self.options.get("series", [])):
             x_key = "secondary_x" if series.get("xAxisIndex") == 1 else "x"
-            areas = series.get("markArea", {}).get("data")
+            y_key = "secondary_y" if series.get("yAxisIndex") == 1 else "y"
+            areas = series.get("dnascapeCircularMaskSource", series.get("markArea", {}).get("data"))
             if callable(getattr(areas, "refine", None)):
-                area_window = visible_window(x_key)
+                area_window = ((visible_window(x_key), visible_window(y_key))
+                               if getattr(areas, 'supports_y', False) else visible_window(x_key))
                 if areas.window != area_window:
-                    jobs.append((index, "areas", areas, (area_window,)))
-            data = series.get("data")
+                    jobs.append((index, "areas", areas, area_window if getattr(areas, 'supports_y', False) else (area_window,)))
+            data = series.get("dnascapeCircularSourceData", series.get("data"))
             if not callable(getattr(data, "refine", None)):
                 continue
             y_key = "secondary_y" if series.get("yAxisIndex") == 1 else "y"
@@ -547,16 +594,21 @@ class PreviewChartHandle:
             if index >= len(self.options.get("series", [])):
                 continue
             series = self.options["series"][index]
-            current = series.get("markArea", {}).get("data") if kind == "areas" else series.get("data")
+            current = series.get("dnascapeCircularMaskSource", series.get("markArea", {}).get("data")) if kind == "areas" else series.get("dnascapeCircularSourceData", series.get("data"))
             if current is not source:
                 continue
             changed = True
             if kind == "areas":
-                series["markArea"]["data"] = result
+                if "dnascapeCircularMaskSource" in series:
+                    series["dnascapeCircularMaskSource"] = result
+                else:
+                    series["markArea"]["data"] = result
                 continue
             refined = dict(result)
             hover = refined.pop("hoverData", None)
             series.update(refined)
+            if "dnascapeCircularSourceData" in series:
+                series["dnascapeCircularSourceData"] = series["data"]
             if hasattr(series["data"], "refine"):
                 series["data"].window = window if any(value is not None for value in window) else None
             if hover is not None and index + 1 < len(self.options["series"]):
@@ -572,6 +624,7 @@ class PreviewChartHandle:
             return
         context = json.dumps([
             self.options.get("dnascapePlotType"),
+            bool(self.settings is not None and self.settings.view.value == "Circular"),
             {key: {name: value for name, value in axis.items() if name != "inverse"} for key, axis in axes.items()},
         ], sort_keys=True)
         if self._navigation.context != context:
@@ -601,6 +654,8 @@ class PreviewChartHandle:
         axes = self._navigation.axes
         self.options["dnascapeNavigation"] = dict(
             context=context, axes=axes, token=self._navigation.token, sequence=self._navigation.sequence,
+            polar=bool(self.settings is not None and self.settings.view.value == "Circular"),
+            heatmap=self.options.get("dnascapePlotType") == "Heatmap",
         )
         for key, values in tuple(self._navigation.ranges.items()):
             if key in axes and (limits := _clamp_navigation_range(values, axes[key])) is not None:
@@ -631,7 +686,7 @@ class PreviewChartHandle:
 
     def _sync_navigation_fields(self) -> None:
         controls = self.settings
-        if controls is None:
+        if controls is None or not controls._sync_navigation_controls:
             return
         object.__setattr__(controls, "_resetting_limits", True)
         try:
@@ -697,7 +752,7 @@ class PreviewChartHandle:
         if not self._commit_navigation(payload):
             return
         self._apply_navigation()
-        if self.settings is not None:
+        if self.settings is not None and self.settings._sync_navigation_controls:
             sync_preview_axis_limits(self.settings, self.options)
         self.invalidate_export()
         self._refinement_request += 1
@@ -737,7 +792,14 @@ class PreviewChartHandle:
 
     def _apply_aspect_ratio(self) -> None:
         control = self.settings.aspect_ratio if self.settings is not None else None
-        ratio = (_positive_finite(control.value) or 3.0) if control is not None else None
+        ratio = (_positive_finite(control.value) or 2.5) if control is not None else None
+        if self.options.get("dnascapeCircular"):
+            ratio = 1.
+        elif self.options.get("dnascapePlotType") == "Heatmap" and self.settings is not None and self.settings.view.value == "Circular":
+            ratio = self.settings._cartesian_aspect_ratio
+        if self.shell is not None:
+            self.shell.style("max-width: 42rem; margin-inline: auto;" if self.options.get("dnascapeCircular")
+                             else "max-width: none; margin-inline: 0;")
         self.options["dnascapeAspectRatio"] = ratio
         size = "height: 360px; aspect-ratio: auto; min-height: 0;"
         if ratio is not None:
@@ -1175,10 +1237,14 @@ def _axis_limit_editor(axis: str, markers: Mapping[str, str]) -> tuple[Any, Any,
 
 
 _PREVIEW_SETTING_MARKER_SUFFIXES: dict[str, str] = {
+    "surface": "plot-settings",
     "container": "preview-settings",
     "view": "view",
     "x_axis_label": "x-axis-label",
     "y_axis_label": "y-axis-label",
+    "z_axis_label": "z-axis-label",
+    "reverse_order": "reverse-order",
+    "circular_layout": "circular-layout",
     "primary_color": "primary-color",
     "secondary_color": "secondary-color",
     "heatmap_palette": "heatmap-palette",
@@ -1337,6 +1403,7 @@ def preview_settings_controls(
     on_reset_secondary_y_limits: Callable[[], Any] | None = None,
     allow_filter: bool = False,
     allow_legend_name: bool = False,
+    filter_labels: Mapping[str, str] | None = None,
 ) -> PreviewSettingsControls:
     """Render the common, thematically grouped preview settings panel."""
 
@@ -1344,11 +1411,14 @@ def preview_settings_controls(
 
     markers = {} if markers is None else markers
     legend_name = show_filter = filter_name = filter_guide_options = None
+    filter_guides, filter_guide_names = {}, {}
     with expansion(
         "Plot settings",
         icon="palette",
         extra_classes="dn-preview-settings-section",
     ):
+        settings_surface = ui.context.slot.parent.parent_slot.parent
+        _mark(settings_surface, markers, "surface")
         settings_grid = ui.element("div").classes(
             "dn-preview-settings-grid dn-preview-settings-main-grid"
         )
@@ -1359,7 +1429,7 @@ def preview_settings_controls(
                 with ui.element("div").classes("dn-preview-view-grid"):
                     view = _mark(
                         ui.select(
-                            ["Default", "Histogram"],
+                            ["Default", "Circular", "Histogram"],
                             value="Default",
                             label="View",
                         )
@@ -1370,7 +1440,7 @@ def preview_settings_controls(
                     )
                     with ui.element("div").classes("dn-aspect-ratio-editor"):
                         aspect_ratio = _mark(
-                            ui.number(label="Aspect ratio", value=3.0, min=0.2, max=8, step=0.1)
+                            ui.number(label="Aspect ratio", value=2.5, min=0.2, max=8, step=0.1)
                             .props('dense placeholder="Default"').classes("dn-field dn-field-compact"),
                             markers, "aspect_ratio",
                         )
@@ -1382,6 +1452,11 @@ def preview_settings_controls(
                             )
                         reset_aspect_ratio.tooltip("Reset to the default aspect ratio")
                 title = _PlotTitle(initial_title)
+                circular_layout = _mark(
+                    ui.select(["Rings", "Overlay"], value="Rings", label="Circular layout")
+                    .props("dense options-dense").classes("dn-field"), markers, "circular_layout",
+                )
+                circular_layout.visible = False
                 with ui.element("div").classes("dn-preview-histogram-grid"):
                     histogram_bins = _mark(
                         ui.number(
@@ -1502,6 +1577,7 @@ def preview_settings_controls(
                         ui.select({"below": "Below", "above": "Above"}, value="below", label="Side")
                         .props("dense options-dense").classes("dn-field"), markers, "fill_side",
                     )
+                reverse_order = _mark(ui.checkbox("Reverse order", value=False), markers, "reverse_order")
                 with ui.element("div").classes("dn-kde-controls"):
                     density = _mark(
                         ui.checkbox("KDE", value=False),
@@ -1539,6 +1615,11 @@ def preview_settings_controls(
                     markers,
                     "y_axis_label",
                 )
+                z_axis_label = _mark(
+                    ui.input(label="Z-axis label", value="").props("dense").classes("dn-field"),
+                    markers, "z_axis_label",
+                )
+                z_axis_label.visible = False
                 with ui.element("div").classes("dn-axis-option-grid"):
                     with _mark(ui.element("div"), markers, "x_axis_options").classes("dn-axis-option-row") as x_axis_options:
                         x_axis_caption = _mark(ui.label("X"), markers, "x_axis_caption").classes("dn-axis-option-label")
@@ -1630,7 +1711,7 @@ def preview_settings_controls(
                         "show_legend",
                     )
                     with ui.element("div").classes("dn-guide-pair"):
-                        show_grid = _mark(ui.checkbox("Grid", value=True), markers, "show_grid")
+                        show_grid = _mark(ui.checkbox("Grid", value=False), markers, "show_grid")
                         show_hover = _mark(ui.checkbox("Hover", value=True), markers, "show_hover")
                     colorbar = _mark(
                         ui.checkbox("Colorbar", value=True), markers, "colorbar",
@@ -1656,6 +1737,13 @@ def preview_settings_controls(
                         ui.input("Filter name", value="Filter").props("dense").classes("dn-field"),
                         markers, "filter_name",
                     )
+                if filter_labels:
+                    with ui.row().classes('dn-inline-actions') as filter_guide_options:
+                        for key, label in filter_labels.items():
+                            prefix = markers.get('container', 'preview-settings')
+                            filter_guides[key] = ui.checkbox(label, value=False).mark(f'{prefix}-{key.replace("_", "-")}-filter')
+                    for key, label in filter_labels.items():
+                        filter_guide_names[key] = ui.input(f'{label} name', value=label).props('dense').classes('dn-field').mark(f'{prefix}-{key.replace("_", "-")}-filter-name')
                 legend_position = _mark(
                     ui.select(
                         ["Top right", "Top left", "Bottom right", "Bottom left"],
@@ -1740,10 +1828,16 @@ def preview_settings_controls(
         show_fill=show_fill,
         fill_side=fill_side,
         fill_options=fill_options,
+        reverse_order=reverse_order,
+        circular_layout=circular_layout,
+        z_axis_label=z_axis_label,
+        surface=settings_surface,
         legend_name=legend_name,
         show_filter=show_filter,
         filter_guide_options=filter_guide_options,
         filter_name=filter_name,
+        filter_guides=filter_guides,
+        filter_guide_names=filter_guide_names,
         dual_y_axes=dual_y_axes,
         secondary_y_axis_label=secondary_y_axis_label,
         secondary_y_limit_editor=secondary_y_limit_editor,
@@ -1784,7 +1878,7 @@ def bind_preview_settings_updates(
     on_y_limits_change: Callable[[], Any],
     on_visibility_change: Callable[[], Any],
     on_line_type_change: Callable[[], Any] | None = None,
-    default_aspect_ratio: float | None = 3.0,
+    default_aspect_ratio: float | None = 2.5,
 ) -> None:
     """Wire the common plotting settings with identical live behavior.
 
@@ -1806,6 +1900,9 @@ def bind_preview_settings_updates(
         controls.line_width,
         controls.aspect_ratio,
         controls.fill_side,
+        controls.reverse_order,
+        controls.circular_layout,
+        controls.z_axis_label,
         controls.histogram_touching,
         controls.histogram_grouped,
         controls.show_hover,
@@ -1819,6 +1916,8 @@ def bind_preview_settings_updates(
     for control in (controls.legend_name, controls.filter_name):
         if control is not None:
             control.on_value_change(on_redraw)
+    for control in controls.filter_guide_names.values():
+        control.on_value_change(on_redraw)
     def change_domain(callback: Callable[[], Any]) -> None:
         _clear_preview_navigation(controls)
         callback()
@@ -1838,6 +1937,8 @@ def bind_preview_settings_updates(
     controls.show_fill.on_value_change(refresh_visibility_and_plot)
     if controls.show_filter is not None:
         controls.show_filter.on_value_change(refresh_visibility_and_plot)
+    for control in controls.filter_guides.values():
+        control.on_value_change(refresh_visibility_and_plot)
     controls.view.on_value_change(lambda: change_domain(on_view_change))
     controls.density.on_value_change(lambda: change_domain(on_density_change))
     controls.kde_bandwidth.on_value_change(lambda: change_domain(on_histogram_range_change))
@@ -1887,14 +1988,17 @@ def sync_preview_settings_visibility(
     allow_individual_profiles: bool = False,
     allow_standard_deviation: bool = False,
     filter_available: bool = False,
+    available_filters: tuple[str, ...] = (),
 ) -> None:
     """Show only controls that apply to the current plot representation."""
 
     heatmap = plot_type == "Heatmap"
     histogram = plot_type == "Histogram"
     boxplot = plot_type == "Boxplot"
-    line = plot_type == "Line"
+    line = plot_type in {"Line", "Circular"}
     view_options = ["Default"]
+    if not heatmap:
+        view_options.append("Circular")
     if allow_histogram:
         view_options.append("Histogram")
     if allow_boxplot:
@@ -1905,6 +2009,19 @@ def sync_preview_settings_visibility(
             controls.view.value = "Default"
         controls.view.update()
     controls.heatmap_palette.visible = heatmap
+    controls.z_axis_label.visible = heatmap
+    controls.reverse_order.visible = not heatmap
+    circular = not heatmap and controls.view.value == "Circular"
+    controls.circular_layout.visible = circular and multiple_curves
+    if circular and controls.aspect_ratio.enabled:
+        object.__setattr__(controls, "_cartesian_aspect_ratio", _positive_finite(controls.aspect_ratio.value) or 2.5)
+        controls.aspect_ratio.disable()
+        controls.reset_aspect_ratio.disable()
+        controls.aspect_ratio.set_value(1.)
+    elif not circular and not controls.aspect_ratio.enabled:
+        controls.aspect_ratio.enable()
+        controls.reset_aspect_ratio.enable()
+        controls.aspect_ratio.set_value(controls._cartesian_aspect_ratio)
     controls.z_axis_options.visible = heatmap
     controls.x_axis_options.visible = not boxplot
     controls.y_axis_options.visible = True
@@ -1939,7 +2056,7 @@ def sync_preview_settings_visibility(
     controls.line_type.visible = line or kde
     controls.fill_options.visible = line or kde
     controls.fill_side.visible = (line or kde) and bool(controls.show_fill.value)
-    legend_available = line or histogram or (boxplot and multiple_curves)
+    legend_available = line or histogram or (boxplot and multiple_curves) or (heatmap and bool(available_filters))
     controls.show_legend.visible = legend_available
     if controls.legend_name is not None:
         controls.legend_name.visible = legend_available and bool(controls.show_legend.value)
@@ -1951,6 +2068,13 @@ def sync_preview_settings_visibility(
         controls.filter_name.visible = (
             line and filter_available and bool(controls.show_filter.value) and bool(controls.show_legend.value)
         )
+    for key, control in controls.filter_guides.items():
+        available = (line or heatmap) and key in available_filters
+        control.set_visibility(available)
+        control.set_enabled(available)
+        controls.filter_guide_names[key].set_visibility(available and bool(control.value) and bool(controls.show_legend.value))
+    if controls.filter_guides and controls.filter_guide_options is not None:
+        controls.filter_guide_options.set_visibility((line or heatmap) and any(key in available_filters for key in controls.filter_guides))
     controls.legend_position.visible = legend_available and bool(
         controls.show_legend.value or (histogram and controls.show_histogram_statistics.value)
     )

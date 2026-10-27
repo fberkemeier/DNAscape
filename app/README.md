@@ -62,7 +62,7 @@ Mapping time and space-time outputs use heatmaps with position on X, time on Y,
 and the mapped quantity on the colour scale. Axes stay at the plot edges when inverted.
 Automatic X and heatmap Z bounds are shown in their editable fields, and Reset
 restores the data-derived range. Plot titles are generated from the result.
-Time and space-time firing-rate fits use Weibull without a shape selector.
+Time and space-time initiation-rate fits use Weibull without a shape selector.
 Curve type supports Solid, Dashed, Dotted, and Dash-dot in Style and individual
 Curves controls. Individual curves can inherit the shared setting or override it.
 In Analysis, combined layouts offer **Curves**, **Histograms**, or **Boxes**
@@ -181,14 +181,14 @@ dropping missing bins is unsupported in the interface and `rtrack`. Only trailin
 padding of shorter columns in wide chromosome tables is removed. Existing files
 with missing bins must be filled or regenerated before mapping.
 The SNS-seq K562 BED example selects its declared enrichment-ratio column and
-prepares Firing rate with 1 kb bins, maximum peak aggregation, zero background,
+prepares Initiation rate with 1 kb bins, maximum peak aggregation, zero background,
 and no interpolation or smoothing. IGV display scores and coordinates are
 excluded from the signal picker. Peak previews retain local maxima and background
 at their original positions within the configured preview point limit. Aggregation choices
 distinguish scored BED peaks, unit-valued BED3 calls, and continuous bedGraph or
-BigWig signals; peak-call gaps cannot be interpolated. Firing rate excludes centre
+BigWig signals; peak-call gaps cannot be interpolated. Initiation rate excludes centre
 and Z-score scaling. SNS enrichment is relative origin activity and needs a
-chosen calibration to express a firing rate. Repli-seq BigWig retains mean
+chosen calibration to express an initiation rate. Repli-seq BigWig retains mean
 aggregation and its existing continuous-signal operations and preview.
 The OKseqHMM K562 OK-seq example links to the authors' hg19 fork-directionality
 BigWig at 1 kb resolution, with read-count cutoff 10 and no 15 kb smoothing.
@@ -265,7 +265,7 @@ over 100 bins, a 2000 kb neighbourhood, and initial speed 1.4 kb/min. Progress
 and cancellation remain available; the route requires no compiled kernel or
 time grid.
 Spatial fork-speed fitting also offers **Maximum edge context (kb)**, default
-1000 kb, matching spatial firing-rate fitting. On linear subregions it reflects
+1000 kb, matching spatial initiation-rate fitting. On linear subregions it reflects
 firing and speed beyond the endpoints, caps the context adaptively, and tapers
 only the last few updates to reduce artificial endpoint spikes. Every position
 remains refinable; timing MSE scores the core outside the inferred context.
@@ -276,7 +276,7 @@ MSE before accepting each update. If smoothing prevents improvement, it tries a
 local correction with a reduced step as needed. This keeps profile-based firing
 fits from repeatedly flattening the accumulated speed profile or increasing
 MSE. All fitting routes retain their latest live MSE through intervening progress
-messages, using the same scientific-number display as firing-rate mapping.
+messages, using the same scientific-number display as initiation-rate mapping.
 Live MSE also covers directionality-based fits and refinement stages with
 console verbosity disabled.
 Time-dependent speed uses the earlier compact temporal fit; space-time speed

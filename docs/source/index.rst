@@ -8,7 +8,7 @@ DNAscape
 
 DNAscape maps and simulates DNA replication kinetics from genomic data. It
 turns timing, initiation, fork-direction, and custom tracks into kinetic
-features such as firing rate, fork speed, replicated fraction, fork density,
+features such as initiation rate, fork speed, replicated fraction, fork density,
 origin efficiency, and completion time.
 
 Use it as a Python package for reproducible analysis, or as a NiceGUI app
@@ -29,11 +29,11 @@ rmap / rsim
 
 ``rmap`` (:doc:`mappingfunctions`)
    Maps between replication features under explicit assumptions. Typical use:
-   infer firing rate from replication timing and fork speed, or predict timing
+   infer initiation rate from replication timing and fork speed, or predict timing
    from kinetic inputs.
 
 ``rsim`` (:doc:`simulationengine`)
-   Simulates stochastic S phases from firing rate and fork speed. Typical use:
+   Simulates stochastic S phases from initiation rate and fork speed. Typical use:
    compare perturbations, estimate origin efficiency, and generate timing,
    fork, and replicated-fraction outputs.
 

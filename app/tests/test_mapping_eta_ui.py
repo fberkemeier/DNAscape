@@ -94,7 +94,7 @@ def test_eta_lifecycle_through_real_mapping_action(monkeypatch, mode):
             await asyncio.sleep(0)
             with user.client:
                 _element(user, "mapping-route").set_value(
-                    "firing_rate--spacetime--initiation_events-and-replicated_fraction"
+                    "initiation_rate--spacetime--initiation_events-and-replicated_fraction"
                 )
             await asyncio.sleep(0)
             with user.client:

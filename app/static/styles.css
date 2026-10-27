@@ -1309,7 +1309,7 @@ body.body--dark .dn-nav-active {
   grid-template-columns: repeat(3, minmax(0, 1fr));
 }
 
-/* Firing-rate and fork-speed sources follow the same compact visual rhythm as
+/* Initiation-rate and fork-speed sources follow the same compact visual rhythm as
    the themed simulation settings below them. */
 .dn-simulation-data-grid {
   align-items: stretch;
@@ -3195,14 +3195,18 @@ body.body--dark .dn-nav-active {
   width: 100%;
 }
 
-.dn-mapping-region-scope {
+.dn-mapping-region-scope,
+.dn-simulation-region-scope {
   align-items: center;
   display: flex;
+  flex-wrap: wrap;
   gap: 0.85rem;
   margin-bottom: 0.38rem;
   min-height: 2rem;
   width: 100%;
 }
+.dn-simulation-filter-input, .dn-data-filter-embedded { width: 100%; gap: 0.6rem; }
+.dn-simulation-filter-input + .dn-simulation-filter-input { margin-top: 0.8rem; }
 
 .dn-mapping-periodic-slot {
   align-items: center;
@@ -3210,7 +3214,6 @@ body.body--dark .dn-nav-active {
 }
 
 .dn-mapping-whole-region {
-  margin-left: -0.42rem;
   min-height: 2.5rem;
 }
 
@@ -3225,6 +3228,45 @@ body.body--dark .dn-nav-active {
 
 .dn-mapping-settings-theme {
   width: 100%;
+}
+
+.dn-mapping-settings-fitting,
+.dn-mapping-fork-movement {
+  grid-column: 1 / -1;
+  width: 100%;
+}
+
+.dn-mapping-fit-parameters {
+  gap: 0.45rem;
+  grid-column: 1 / -1;
+  margin-top: 0.25rem;
+  width: 100%;
+}
+
+.dn-mapping-fit-row {
+  align-items: center;
+  display: grid;
+  gap: 0.5rem;
+  grid-template-columns: minmax(4.5rem, 0.85fr) repeat(3, minmax(0, 1fr));
+  min-width: 0;
+  width: 100%;
+}
+
+.dn-mapping-fit-label {
+  color: var(--dn-muted);
+  font-size: 0.75rem;
+  line-height: 1.3;
+}
+
+.dn-mapping-fork-movement {
+  margin-top: 0.35rem;
+}
+
+.dn-mapping-fork-movement .dn-mapping-setting-tau {
+  align-items: center;
+  column-gap: 0.65rem;
+  grid-column: 1 / -1;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
 }
 
 .dn-mapping-settings-themes > .dn-mapping-settings-theme:nth-child(n) {
@@ -3255,13 +3297,13 @@ body.body--dark .dn-nav-active {
 
 .dn-mapping-settings-advanced .dn-mapping-setting-error,
 .dn-mapping-settings-advanced .dn-mapping-setting-neighbourhood-range,
-.dn-mapping-settings-advanced .dn-mapping-setting-err-threshold {
+.dn-mapping-settings-advanced .dn-mapping-setting-err-threshold,
+.dn-mapping-settings-advanced .dn-mapping-setting-deviation-threshold {
   grid-column: 1;
 }
 
 .dn-mapping-settings-advanced .dn-mapping-missing-paired,
-.dn-mapping-settings-advanced .dn-mapping-setting-refine-edge-kb,
-.dn-mapping-settings-advanced .dn-mapping-setting-deviation-threshold {
+.dn-mapping-settings-advanced .dn-mapping-setting-refine-edge-kb {
   grid-column: 2;
 }
 
@@ -5098,6 +5140,18 @@ body.body--dark .dn-main-logo-frame .dn-main-logo {
     grid-column: 1 / -1;
   }
 
+  .dn-mapping-fork-movement .dn-mapping-setting-tau {
+    grid-template-columns: 1fr;
+  }
+
+  .dn-mapping-fit-row {
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+  }
+
+  .dn-mapping-fit-label {
+    grid-column: 1 / -1;
+  }
+
   .dn-mapping-detected-summary,
   .dn-mapping-detected-warning,
   .dn-mapping-upload-error {
@@ -5527,4 +5581,17 @@ body.body--dark .dn-main-logo-frame .dn-main-logo {
   .dn-drawer-toggle {
     transition: none;
   }
+}
+.dn-mapping-filter-raw-row .dn-raw-output-name { flex: 1 1 8rem; min-width: 5rem; }
+.dn-mapping-filter-raw-row .dn-mapping-filter-layout { flex: 0 1 9rem; min-width: 7rem; }
+.dn-mapping-filter-raw-row .dn-raw-output-type { flex: 0 1 5rem; min-width: 4rem; }
+.dn-mapping-filter-raw-row .dn-raw-output-fields { grid-template-columns: minmax(5rem, 1fr) minmax(7rem, 9rem) minmax(4rem, 5rem); }
+@container dn-preview (max-width: 20rem) {
+  .dn-mapping-filter-raw-row .dn-raw-output-fields { grid-template-columns: 1fr; }
+}
+.dn-simulation-filter-raw-row .dn-raw-output-fields {
+  grid-template-columns: minmax(5rem, 1fr) minmax(7rem, 9rem) minmax(4rem, 5rem);
+}
+@container dn-preview (max-width: 20rem) {
+  .dn-simulation-filter-raw-row .dn-raw-output-fields { grid-template-columns: 1fr; }
 }

@@ -22,7 +22,7 @@ def save_mapping_outputs(
     directory: str | Path = "outputs",
 ) -> tuple[Path, ...]:
     """Use the app's exact serializers, including per-dataset raw controls."""
-    from .mapping_exports import build_mapping_comparison_raw_export, build_mapping_raw_export
+    from .mapping_exports import build_mapping_comparison_raw_export, build_mapping_raw_export, mapping_output_dependence_suffix
     from .result_naming import compact_export_stem, output_file_token
 
     folder = Path(directory)
@@ -38,12 +38,17 @@ def save_mapping_outputs(
             filename = f"rmap_{stem[:120].rstrip('-') or 'mapping-result'}"
             actual_key = _output_key(named.result, selected)
             comparison = selected.startswith("comparison:")
+            suffix = mapping_output_dependence_suffix(named.result, selected if comparison else actual_key)
             if comparison or actual_key != named.result.primary_output:
                 token = (
                     f"{output_file_token(selected.removeprefix('comparison:').removesuffix('_fit'))}-cmp"
                     if comparison else output_file_token(actual_key)
                 )
+                if suffix and not comparison:
+                    token = token.removesuffix(f"-{suffix}")
                 filename += "_" + compact_export_stem(token, fallback="mapping-result-1", maximum=150)
+            if suffix:
+                filename += f"_{suffix}"
         elif len(results) > 1 and named.key not in overrides:
             filename = f"{filename}_{named.key}"
         compression = str(settings.get("compression", "gzip")) if settings.get("compress", False) else "none"

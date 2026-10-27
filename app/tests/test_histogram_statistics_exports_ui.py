@@ -96,8 +96,8 @@ def test_histogram_statistics_download_on_scientific_workflows(monkeypatch, page
                 user.find(marker="nav-simulation").click()
                 if datasets > 1:
                     with user.client:
-                        element(user, "source-firing-rate-mode").set_value("profile")
-                    await element(user, "source-firing-rate-upload").handle_uploads([
+                        element(user, "source-initiation-rate-mode").set_value("profile")
+                    await element(user, "source-initiation-rate-upload").handle_uploads([
                         Upload.SmallFileUpload(f"firing_{i}.tsv", "text/plain", b"signal\n0.01\n0.02\n0.03\n0.04\n")
                         for i in range(datasets)
                     ])

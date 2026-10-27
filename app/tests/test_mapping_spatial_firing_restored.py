@@ -25,7 +25,7 @@ HISTORICAL_TIMING = np.array([
 
 
 @pytest.mark.parametrize("method", [
-    "timing_and_speed_to_firing_rate", "timing_to_firing_constant_fork_speed",
+    "timing_and_speed_to_initiation_rate", "timing_to_firing_constant_fork_speed",
 ])
 def test_original_spatial_firing_fit_reaches_mapping_with_ten_iteration_mse(method):
     route = mapping_route(method)
@@ -50,7 +50,7 @@ def test_original_spatial_firing_fit_reaches_mapping_with_ten_iteration_mse(meth
     )
     # Mapping uses density units; the historical solver's per-bin values
     # therefore cross the public boundary divided by the bin width.
-    np.testing.assert_allclose(result.outputs["firing_rate"], HISTORICAL_RATES_PER_BIN / 50., rtol=0, atol=2e-16)
+    np.testing.assert_allclose(result.outputs["initiation_rate"], HISTORICAL_RATES_PER_BIN / 50., rtol=0, atol=2e-16)
     np.testing.assert_allclose(result.outputs["replication_timing_fit"], HISTORICAL_TIMING, rtol=0, atol=2e-12)
     assert result.fit_mse == pytest.approx(37.52451119545481, abs=1e-10)
     assert result.fit_mse == pytest.approx(np.mean((HISTORICAL_TIMING[2:-2] - OBSERVED[2:-2])**2))
@@ -60,7 +60,7 @@ def test_original_spatial_firing_fit_reaches_mapping_with_ten_iteration_mse(meth
 
 
 @pytest.mark.parametrize("method", [
-    "timing_and_speed_to_firing_rate", "timing_to_firing_constant_fork_speed",
+    "timing_and_speed_to_initiation_rate", "timing_to_firing_constant_fork_speed",
 ])
 def test_mapping_safeguards_worsening_fit_and_reports_the_actual_returned_rates(method):
     from dnascape.fitting import _map_spatial_firing_timing_with_context
@@ -88,7 +88,7 @@ def test_mapping_safeguards_worsening_fit_and_reports_the_actual_returned_rates(
     # The page returns rates per kb, while the preserved forward kernel takes
     # rates per bin. A round trip checks both the units and the plotted fit.
     prediction = _map_spatial_firing_timing_with_context(
-        result.outputs["firing_rate"] * 10., fork_speed=1.4, resolution=10.,
+        result.outputs["initiation_rate"] * 10., fork_speed=1.4, resolution=10.,
         neighbourhood_range=2000., perQ=False, edge_bins=12, historical_linear=True,
     )
     np.testing.assert_allclose(prediction, result.outputs["replication_timing_fit"], atol=1e-8)
@@ -96,7 +96,7 @@ def test_mapping_safeguards_worsening_fit_and_reports_the_actual_returned_rates(
 
 
 @pytest.mark.parametrize("method", [
-    "timing_and_speed_to_firing_rate", "timing_to_firing_constant_fork_speed",
+    "timing_and_speed_to_initiation_rate", "timing_to_firing_constant_fork_speed",
 ])
 def test_paper_step_default_fits_resolvable_origin_peaks_with_ten_iterations(method):
     from dnascape import rmap
@@ -109,9 +109,9 @@ def test_paper_step_default_fits_resolvable_origin_peaks_with_ten_iterations(met
     )
     timing = map_firing_timing(rates_per_bin, fork_speed=1.4, resolution=10.)
     source = {"replication_timing": timing}
-    if method == "timing_and_speed_to_firing_rate":
+    if method == "timing_and_speed_to_initiation_rate":
         source["fork_speed"] = 1.4
-    options = dict(source=source, target="firing_rate", method=method,
+    options = dict(source=source, target="initiation_rate", method=method,
                    resolution=10., refine_edge_kb=0., maxiter=10, verbose=False)
     historical_step = rmap(fit_step=.6, **options)
     improved = rmap(**options)
@@ -125,7 +125,7 @@ def test_paper_step_default_fits_resolvable_origin_peaks_with_ten_iterations(met
 
 
 @pytest.mark.parametrize("method", [
-    "timing_and_speed_to_firing_rate", "timing_to_firing_constant_fork_speed",
+    "timing_and_speed_to_initiation_rate", "timing_to_firing_constant_fork_speed",
 ])
 @pytest.mark.parametrize("stall_options,expected_step", [
     ({}, 2.),
@@ -147,7 +147,7 @@ def test_public_spatial_firing_default_respects_stalling_and_explicit_step(
 
     monkeypatch.setattr(routing, "map_timing_firing", capture)
     source = {"replication_timing": OBSERVED}
-    if method == "timing_and_speed_to_firing_rate":
+    if method == "timing_and_speed_to_initiation_rate":
         source["fork_speed"] = 1.4
-    rmap(source=source, target="firing_rate", method=method, resolution=10., **stall_options)
+    rmap(source=source, target="initiation_rate", method=method, resolution=10., **stall_options)
     assert recorded["fit_step"] == expected_step

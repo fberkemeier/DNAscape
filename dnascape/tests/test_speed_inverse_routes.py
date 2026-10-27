@@ -42,7 +42,7 @@ def test_mean_field_speed_routes_recover_forward_timing(
     )
     timing = np.trapezoid(1. - forward["replicated_fraction_xt"], grid, axis=1)
     result = rmap(
-        source={"replication_timing": timing, "firing_rate": firing},
+        source={"replication_timing": timing, "initiation_rate": firing},
         target="fork_speed", target_form=speed_form, resolution=4.,
         time_grid=grid, perQ=periodic, spatial_knots=3, temporal_knots=2,
         maxiter=16, tolerance=1e-6,
@@ -72,7 +72,7 @@ def test_restored_speed_routes_preserve_shape_bounds_and_supplied_firing(
         "t": np.linspace(.001, .003, len(grid))[None, :],
         "xt": np.outer(np.linspace(.001, .003, n), np.linspace(.8, 1.2, len(grid))),
     }[firing_form]
-    source = {"replication_timing": np.linspace(20., 35., n), "firing_rate": firing}
+    source = {"replication_timing": np.linspace(20., 35., n), "initiation_rate": firing}
     before = np.asarray(firing).copy()
     result = rmap(
         source=source, target="fork_speed", target_form=speed_form,
@@ -84,14 +84,14 @@ def test_restored_speed_routes_preserve_shape_bounds_and_supplied_firing(
     assert np.asarray(result).shape == expected_shape
     assert np.all(np.isfinite(result))
     assert np.all((np.asarray(result) >= .5) & (np.asarray(result) <= 2.))
-    np.testing.assert_array_equal(source["firing_rate"], before)
+    np.testing.assert_array_equal(source["initiation_rate"], before)
     assert np.isfinite(result._rmap_info["fit_mse"])
 
 
 def test_speed_route_settings_match_consumed_inverse_controls_and_dimensions():
     specs = [
         spec for spec in rmap._specs
-        if set(spec.source) == {"replication_timing", "firing_rate"}
+        if set(spec.source) == {"replication_timing", "initiation_rate"}
         and spec.target == "fork_speed"
     ]
     assert len(specs) == 8
@@ -146,16 +146,16 @@ def test_speed_route_settings_match_consumed_inverse_controls_and_dimensions():
 @pytest.mark.parametrize("spatial_firing", [False, True])
 def test_static_spatial_route_adapts_public_firing_density_without_mutating_source(resolution, spatial_firing):
     firing = np.linspace(.001, .003, 12) if spatial_firing else .002
-    source = {"replication_timing": np.linspace(15., 30., 12), "firing_rate": firing}
+    source = {"replication_timing": np.linspace(15., 30., 12), "initiation_rate": firing}
     before = np.asarray(firing).copy()
     options = dict(resolution=resolution, maxiter=2, smoothw=None, verbose=False)
     actual = rmap(source=source, target="fork_speed", target_form="space", **options)
     expected = map_timing_firing_spatial_speed(
-        {**source, "firing_rate": np.asarray(firing) * resolution}, **options,
+        {**source, "initiation_rate": np.asarray(firing) * resolution}, **options,
     )
     np.testing.assert_allclose(actual, expected, rtol=1e-13)
     np.testing.assert_allclose(actual._rmap_info["replication_timing_fit"], expected._rmap_info["replication_timing_fit"])
-    np.testing.assert_array_equal(source["firing_rate"], before)
+    np.testing.assert_array_equal(source["initiation_rate"], before)
 
 
 @pytest.mark.parametrize("anchor", [0., 20.])
@@ -165,7 +165,7 @@ def test_automatic_spatial_speed_initialization_uses_timing_only_for_bound_domin
         target_form="space", time_grid=[0., 2., 5.],
         spatial_knots=8, maxiter=0, T0=anchor,
     )
-    source = {"replication_timing": relative + anchor, "firing_rate": .001}
+    source = {"replication_timing": relative + anchor, "initiation_rate": .001}
     result = map_timing_and_firing_to_speed(source=source, initial_fork_speed=None, **options)
     expected = np.clip(np.pi / (4 * .001 * relative**2), .2, 6.)
     np.testing.assert_allclose(result, expected, rtol=1e-13)
@@ -179,7 +179,7 @@ def test_automatic_spatial_speed_initialization_retains_established_start_when_a
     # The scalar case implies a plausible local speed inside the bounds;
     # supplied spatial firing and zero firing also retain their prior start.
     result = map_timing_and_firing_to_speed(
-        source={"replication_timing": np.full(8, 20.), "firing_rate": firing},
+        source={"replication_timing": np.full(8, 20.), "initiation_rate": firing},
         target_form="space", time_grid=[0., 2., 5.], initial_fork_speed=None,
         spatial_knots=8, maxiter=0,
     )
@@ -189,13 +189,13 @@ def test_automatic_spatial_speed_initialization_retains_established_start_when_a
 def test_automatic_spatial_speed_avoids_high_cfl_seed_for_partially_bound_limited_tracks():
     timing = np.array([100., 120., 150., 200., 220., 250., 300., 500.])
     result = map_timing_and_firing_to_speed(
-        source={"replication_timing": timing, "firing_rate": 1e-6},
+        source={"replication_timing": timing, "initiation_rate": 1e-6},
         target_form="space", time_grid=[0., 2., 5.], initial_fork_speed=None,
         spatial_knots=8, maxiter=0,
     )
     np.testing.assert_allclose(result, 1.4, rtol=1e-13)
     result = map_timing_and_firing_to_speed(
-        source={"replication_timing": timing[:7], "firing_rate": 1e-6},
+        source={"replication_timing": timing[:7], "initiation_rate": 1e-6},
         target_form="space", time_grid=[0., 2., 5.], initial_fork_speed=None,
         spatial_knots=7, maxiter=0,
     )

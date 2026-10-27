@@ -23,9 +23,9 @@ import numpy as np
 
 # These limits apply again on the server; the matching browser-side limit in
 # ``data_upload`` is only a usability aid and must not be treated as security.
-MAX_UPLOAD_BYTES = 64 * 1024 * 1024
-MAX_DECOMPRESSED_BYTES = 64 * 1024 * 1024
-MAX_ARRAY_ELEMENTS = 8_000_000
+MAX_UPLOAD_BYTES = 512 * 1024 * 1024
+MAX_DECOMPRESSED_BYTES = 1024 * 1024 * 1024
+MAX_ARRAY_ELEMENTS = 64_000_000
 # Delimited uploads are parsed into float64 storage, so the array-element and
 # decompressed-byte limits are the authoritative memory bounds.  Keeping this
 # alias makes the table-specific error clear without imposing a smaller,
@@ -159,7 +159,7 @@ def _bounded_gunzip(content: bytes) -> bytes:
                 total += len(chunk)
                 if total > MAX_DECOMPRESSED_BYTES:
                     raise UploadTooLargeError(
-                        "The compressed file expands beyond the 64 MB inspection limit."
+                        "The compressed file expands beyond the inspection limit."
                     )
                 chunks.append(chunk)
     except UploadInspectionError:
@@ -325,7 +325,7 @@ def _geo_repliseq_payload(name: str, payload: bytes) -> bytes | None:
         ))
         if output.tell() > MAX_DECOMPRESSED_BYTES:
             raise UploadTooLargeError(
-                "The transposed GEO Repli-seq table exceeds the 64 MB inspection limit."
+                "The transposed GEO Repli-seq table exceeds the inspection limit."
             )
     return output.getvalue().encode("utf-8")
 
@@ -1236,7 +1236,7 @@ def inspect_upload(
     if not raw:
         raise UploadInspectionError("The selected file is empty.")
     if len(raw) > MAX_UPLOAD_BYTES:
-        raise UploadTooLargeError("Files larger than 64 MB cannot be kept in this local session.")
+        raise UploadTooLargeError(f"Files larger than {MAX_UPLOAD_BYTES // 1024**2} MiB cannot be kept in this local session.")
     source_format, payload, compressed = _source_payload(
         safe_name,
         raw,

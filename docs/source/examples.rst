@@ -26,8 +26,8 @@ Interface
      - Fast exports.
      - Full matplotlib control.
 
-Timing To Firing
-----------------
+Timing To Initiation Rate
+-------------------------
 
 .. code-block:: python
 
@@ -39,13 +39,13 @@ Timing To Firing
        data_form="space",
    )
 
-   firing_rate = rmap(
+   initiation_rate = rmap(
        source={"replication_timing": timing, "fork_speed": 1.4},
-       target="firing_rate",
+       target="initiation_rate",
        assumptions={"resolution_x": 1.0, "target_form": "space", "maxiter": 20},
    )
 
-   rsave(firing_rate, "outputs/H1_chr1_firing_rate.tsv", data_form="space")
+   rsave(initiation_rate, "outputs/H1_chr1_initiation_rate.tsv", data_form="space")
 
 Import bedGraph
 ---------------
@@ -77,7 +77,7 @@ Perturbation Sweep
    simulations = {}
    for speed in [1.4, 1.0, 0.7]:
        simulations[speed] = rsim(
-           source={"firing_rate": firing_rate, "fork_speed": speed},
+           source={"initiation_rate": initiation_rate, "fork_speed": speed},
            assumptions={
                "sim_number": 200,
                "resolution_x": 1.0,
@@ -111,7 +111,7 @@ Compare Timing
 Use Cases
 ---------
 
-* Timing to firing-rate inference.
+* Timing to initiation-rate inference.
 * Initiation profiles to predicted timing.
 * RFD comparison with timing-derived directionality.
 * Simulation of fork slowing, origin changes, stalling, or circular DNA.

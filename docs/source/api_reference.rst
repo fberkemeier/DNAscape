@@ -19,7 +19,7 @@ Route helpers:
 .. code-block:: python
 
    rmap.targets()
-   rmap.requirements(target="firing_rate")
+   rmap.requirements(target="initiation_rate")
    rmap.requirements(target="replication_timing", detail=True)
    rmap.canonical("rt")
 
@@ -27,7 +27,7 @@ Simulation
 ----------
 
 ``rsim(..., source=None, assumptions=None)``
-   Simulate stochastic S phases from firing rate and fork speed. Prefer
+   Simulate stochastic S phases from initiation rate and fork speed. Prefer
    ``rsim(source={...}, assumptions={...})`` for clear workflows.
 
 Reference tables:
@@ -86,7 +86,7 @@ Features
 
 Canonical feature names include:
 
-* ``firing_rate``
+* ``initiation_rate``
 * ``fork_speed``
 * ``replication_timing``
 * ``fork_directionality``
@@ -100,5 +100,5 @@ Canonical feature names include:
 * ``completion_time``
 * ``num_origins``
 
-Aliases such as ``rt``, ``rfd``, and ``fr`` are accepted, but canonical names
+Aliases such as ``rt``, ``rfd``, and ``ir`` are accepted, but canonical names
 are clearer in saved workflows.

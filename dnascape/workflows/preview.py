@@ -1542,7 +1542,7 @@ def _build_preview_plot_options(
     line_width: float = 2.0,
     show_markers: bool = False,
     legend_position: str = "Top right",
-    show_grid: bool = True,
+    show_grid: bool = False,
     log_z: bool = False,
     interactive: bool = True,
     log_x: bool = False,

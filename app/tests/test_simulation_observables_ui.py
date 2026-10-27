@@ -45,8 +45,8 @@ def test_tracking_options_gate_new_outputs_and_real_results_plot_and_export(monk
             user.find(marker="simulation-track-time-outputs").click()
             user.find(marker="simulation-fix-seed").click()
             with user.client:
-                control("source-firing-rate-mode").set_value("scalar")
-                control("source-firing-rate-constant").set_value(.1)
+                control("source-initiation-rate-mode").set_value("scalar")
+                control("source-initiation-rate-constant").set_value(.1)
                 control("simulation-region-end").set_value(12)
                 control("simulation-replicates").set_value(6)
             user.find(marker="action-simulate").click()

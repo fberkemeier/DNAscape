@@ -12,7 +12,7 @@ import numpy as np
 
 from dnascape.workflows.export_settings import normalize_compression
 from dnascape.workflows.mapping import MappingResult
-from dnascape.workflows.result_naming import RMAP_FILE_PREFIX, output_file_token
+from dnascape.workflows.result_naming import RMAP_FILE_PREFIX, dependence_file_suffix, output_file_token
 from dnascape.workflows.exports import (
     RAW_FORMATS,
     ExportArtifact,
@@ -21,8 +21,9 @@ from dnascape.workflows.exports import (
     safe_export_filename,
 )
 
-MAX_TEXT_EXPORT_VALUES = 1_000_000
-MAX_BINARY_EXPORT_BYTES = 128 * 1024 * 1024
+MAX_TEXT_EXPORT_VALUES = 64_000_000
+MAX_BINARY_EXPORT_BYTES = 512 * 1024 * 1024
+MAX_TEXT_EXPORT_BYTES = 1024 * 1024 * 1024
 
 
 @dataclass(frozen=True, slots=True)
@@ -36,6 +37,17 @@ class SelectedMappingOutput:
     position_kb: np.ndarray
     time_min: np.ndarray
     region_labels: tuple[str, ...]
+
+
+def mapping_output_dependence_suffix(result: MappingResult, output_key: str) -> str:
+    """Use the selected output's axes, including comparisons and input previews."""
+    if output_key.startswith("comparison:"):
+        key = output_key.removeprefix("comparison:")
+        comparison = result.comparisons.get(key)
+        return dependence_file_suffix(comparison.form if comparison is not None else result.output_forms.get(key, ""))
+    from .preview_inputs import input_preview_result
+    result = input_preview_result(result, output_key)
+    return dependence_file_suffix(result.output_forms.get(output_key, ""))
 
 
 def select_mapping_output(
@@ -113,6 +125,7 @@ def build_mapping_raw_export(
     filename: str | None = None,
     compression: str = "none",
     gzip_output: bool | None = None,
+    filter_layout: str = 'positions',
 ) -> ExportArtifact:
     """Serialize one mapped member as CSV/TSV/TXT/NPZ.
 
@@ -123,7 +136,23 @@ def build_mapping_raw_export(
 
     normalized_format = normalize_export_format(file_format, allowed=RAW_FORMATS)
     selected = select_mapping_output(result, output_key)
-    if normalized_format in {"csv", "tsv", "txt"}:
+    if output_key == 'filter_positions':
+        if filter_layout not in {'positions', 'intervals'}:
+            raise ValueError('Choose a position list or genomic intervals for the filter.')
+        values = (np.asarray(result.diagnostics.get('filter_intervals')) if filter_layout == 'intervals'
+                  else selected.values)
+        if values.size > MAX_TEXT_EXPORT_VALUES:
+            raise ValueError('The filter export is too large for this format.')
+        integers = np.rint(values).astype(np.int64)
+        if normalized_format == 'npz':
+            stream = io.BytesIO()
+            np.savez_compressed(stream, **{filter_layout: integers})
+            data = stream.getvalue()
+        else:
+            stream = io.StringIO()
+            np.savetxt(stream, integers, fmt='%d', delimiter=',' if normalized_format == 'csv' else '\t')
+            data = stream.getvalue().encode()
+    elif normalized_format in {"csv", "tsv", "txt"}:
         if selected.values.size > MAX_TEXT_EXPORT_VALUES:
             raise ValueError(
                 f"Text export contains {selected.values.size:,} values; the interactive "
@@ -139,7 +168,13 @@ def build_mapping_raw_export(
             )
         data = _binary_bytes(selected)
 
-    default_name = f"{RMAP_FILE_PREFIX}_{output_file_token(selected.key)}"
+    suffix = dependence_file_suffix(selected.semantic_form)
+    token = output_file_token(selected.key)
+    if suffix:
+        token = token.removesuffix(f"-{suffix}")
+    default_name = f"{RMAP_FILE_PREFIX}_{token}"
+    if suffix:
+        default_name += f"_{suffix}"
     base_name = filename or default_name
     inner_filename = safe_export_filename(
         base_name,
@@ -241,6 +276,9 @@ def build_mapping_comparison_raw_export(
         data = binary.getvalue()
 
     default_name = f"{RMAP_FILE_PREFIX}_{output_file_token(comparison.source_key)}-cmp"
+    suffix = dependence_file_suffix(comparison.form)
+    if suffix:
+        default_name += f"_{suffix}"
     base_name = filename or default_name
     inner_filename = safe_export_filename(
         base_name,
@@ -277,13 +315,21 @@ def _rdata_values(selected: SelectedMappingOutput) -> np.ndarray:
 
 def _text_bytes(selected: SelectedMappingOutput, file_format: str) -> bytes:
     values = _rdata_values(selected)
+    class BoundedBuffer(io.BytesIO):
+        def write(self, data):
+            if self.tell() + len(data) > MAX_TEXT_EXPORT_BYTES:
+                raise ValueError("Text export exceeds 1 GiB. Use NPZ for this dataset.")
+            return super().write(data)
+    binary = BoundedBuffer()
+    stream = io.TextIOWrapper(binary, encoding="utf-8", newline="")
     if file_format == "txt":
-        stream = io.StringIO(newline="")
         np.savetxt(stream, np.atleast_1d(values), fmt="%.18e")
-        return stream.getvalue().encode("utf-8")
+        stream.flush()
+        data = binary.getvalue()
+        stream.detach()
+        return data
 
     delimiter = "," if file_format == "csv" else "\t"
-    stream = io.StringIO(newline="")
     writer = csv.writer(stream, delimiter=delimiter, lineterminator="\n")
     if selected.semantic_form == "regions" and selected.region_labels:
         writer.writerow(("region", _column_name(selected.key)))
@@ -300,7 +346,10 @@ def _text_bytes(selected: SelectedMappingOutput, file_format: str) -> bytes:
     else:
         writer.writerow(tuple(f"t{index}" for index in range(values.shape[1])))
         writer.writerows(tuple(_number_text(value) for value in row) for row in values)
-    return stream.getvalue().encode("utf-8")
+    stream.flush()
+    data = binary.getvalue()
+    stream.detach()
+    return data
 
 
 def _binary_bytes(selected: SelectedMappingOutput) -> bytes:
@@ -343,5 +392,6 @@ __all__ = [
     "MAX_TEXT_EXPORT_VALUES",
     "SelectedMappingOutput",
     "build_mapping_raw_export",
+    "mapping_output_dependence_suffix",
     "select_mapping_output",
 ]

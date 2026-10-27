@@ -99,8 +99,8 @@ def test_app_overrides_reach_the_shared_mapping_validation(monkeypatch: pytest.M
     monkeypatch.setattr(app_mapping, "MAX_INPUT_VALUES", 2)
     request = MappingRequest(
         route=mapping_route("firing_and_speed_to_timing_deterministic"),
-        inputs={"firing_rate": [0.001, 0.002, 0.003], "fork_speed": 1.4},
-        input_forms={"firing_rate": "x", "fork_speed": "scalar"},
+        inputs={"initiation_rate": [0.001, 0.002, 0.003], "fork_speed": 1.4},
+        input_forms={"initiation_rate": "x", "fork_speed": "scalar"},
         settings={"resolution": 1.0, "neighbourhood_range": 10.0},
     )
     with pytest.raises(ValueError, match="interactive limits are 2 values"):
@@ -158,8 +158,8 @@ def test_installed_wheel_runs_mapping_and_raw_exports_without_app(tmp_path: Path
             assert callable(getattr(workflows, name)), name
         request = workflows.MappingRequest(
             route=workflows.mapping_route('firing_and_speed_to_timing_deterministic'),
-            inputs={'firing_rate': 0.001, 'fork_speed': 1.4},
-            input_forms={'firing_rate': 'scalar', 'fork_speed': 'scalar'},
+            inputs={'initiation_rate': 0.001, 'fork_speed': 1.4},
+            input_forms={'initiation_rate': 'scalar', 'fork_speed': 'scalar'},
             settings={'resolution': 1.0, 'neighbourhood_range': 10.0},
             region_start_kb=0, region_end_kb=4,
         )

@@ -2,7 +2,7 @@
 
 import numpy as np
 
-from .utils import check_cancelled, fast_shift_add, interp_nans, logistic, smoothf
+from .utils import check_cancelled, fast_shift_add, interp_nans, logistic, report_measured_work, smoothf
 
 
 def _normalise_resolution_x(resolution=1.0, resolution_x=None):
@@ -202,44 +202,46 @@ def _integrate_cdf_between(cdf_row, x, left, right):
     return np.maximum(np.interp(b, x, cdf_row) - np.interp(a, x, cdf_row), 0.0)
 
 
-def _replicated_fraction_constant_speed_static_I(x, time_grid, firing_rate_x, fork_speed):
-    F = _cumtrapz_1d(firing_rate_x, x)
-    G = _cumtrapz_1d(firing_rate_x * x, x)
-    A = np.zeros((time_grid.size, x.size), dtype=float)
-
-    for i, t in enumerate(time_grid):
-        radius = fork_speed * t
-        left = np.clip(x - radius, x[0], x[-1])
-        right = np.clip(x + radius, x[0], x[-1])
-
-        F_left = np.interp(left, x, F)
-        G_left = np.interp(left, x, G)
-        F_right = np.interp(right, x, F)
-        G_right = np.interp(right, x, G)
-
-        left_mass = F - F_left
-        right_mass = F_right - F
-        left_moment = G - G_left
-        right_moment = G_right - G
-
-        A[i] = (
-            (t - x / fork_speed) * left_mass
-            + left_moment / fork_speed
-            + (t + x / fork_speed) * right_mass
-            - right_moment / fork_speed
-        )
-
-    return np.maximum(A, 0.0)
+def _replicated_fraction_constant_speed_static_I(x, time_grid, initiation_rate_x, fork_speed):
+    return _replicated_fraction_static_kinetics(x, time_grid, initiation_rate_x,
+                                               np.full(x.size, fork_speed))
 
 
-def _replicated_fraction_constant_speed(x, time_grid, firing_rate_xt, fork_speed):
-    I_mid = 0.5 * (firing_rate_xt[:-1] + firing_rate_xt[1:])
+def _replicated_fraction_static_kinetics(x, time_grid, initiation_rate_x, fork_speed_x):
+    """Integrate partial source intervals exactly in fork travel-time coordinates."""
+    if x.size < 2:
+        return np.outer(time_grid, initiation_rate_x)
+    travel = _cumtrapz_1d(1. / fork_speed_x, x)
+    cdf = _cumtrapz_1d(initiation_rate_x, x)
+    primitive = _cumtrapz_1d(cdf, travel)
+    slope = np.diff(cdf) / np.diff(travel)
+
+    def integrated_cdf(points):
+        index = np.clip(np.searchsorted(travel, points, side="right") - 1, 0, x.size - 2)
+        distance = np.clip(points, travel[0], travel[-1]) - travel[index]
+        result = primitive[index] + cdf[index] * distance + .5 * slope[index] * distance**2
+        result = np.where(points < travel[0], 0., result)
+        return np.where(points > travel[-1], primitive[-1] + cdf[-1] * (points - travel[-1]), result)
+
+    center = integrated_cdf(travel)
+    rows = []
+    for time in time_grid:
+        check_cancelled()
+        rows.append(integrated_cdf(travel + time) - 2. * center + integrated_cdf(travel - time))
+    return np.maximum(rows, 0.)
+
+
+def _replicated_fraction_constant_speed(x, time_grid, initiation_rate_xt, fork_speed):
+    I_mid = 0.5 * (initiation_rate_xt[:-1] + initiation_rate_xt[1:])
     cdf = _cumtrapz_rows(I_mid, x)
-    A = np.zeros_like(firing_rate_xt, dtype=float)
+    A = np.zeros_like(initiation_rate_xt, dtype=float)
 
     for n in range(1, time_grid.size):
+        check_cancelled()
         total = np.zeros(x.size, dtype=float)
         for k in range(n):
+            if k % 32 == 0:
+                check_cancelled()
             dt = time_grid[k + 1] - time_grid[k]
             tau_mid = 0.5 * (time_grid[k + 1] + time_grid[k])
             radius = fork_speed * (time_grid[n] - tau_mid)
@@ -248,8 +250,8 @@ def _replicated_fraction_constant_speed(x, time_grid, firing_rate_xt, fork_speed
     return A
 
 
-def _replicated_fraction_time_speed(x, time_grid, firing_rate_xt, fork_speed_t):
-    I_mid = 0.5 * (firing_rate_xt[:-1] + firing_rate_xt[1:])
+def _replicated_fraction_time_speed(x, time_grid, initiation_rate_xt, fork_speed_t):
+    I_mid = 0.5 * (initiation_rate_xt[:-1] + initiation_rate_xt[1:])
     cdf = _cumtrapz_rows(I_mid, x)
     v = np.asarray(fork_speed_t, dtype=float).reshape(-1)
     if v.size != time_grid.size:
@@ -262,21 +264,52 @@ def _replicated_fraction_time_speed(x, time_grid, firing_rate_xt, fork_speed_t):
         dt = np.diff(time_grid)
         C[1:] = np.cumsum(0.5 * (v[:-1] + v[1:]) * dt)
 
-    A = np.zeros_like(firing_rate_xt, dtype=float)
+    A = np.zeros_like(initiation_rate_xt, dtype=float)
     for n in range(1, time_grid.size):
+        check_cancelled()
         total = np.zeros(x.size, dtype=float)
         for k in range(n):
+            if k % 32 == 0:
+                check_cancelled()
             dt = time_grid[k + 1] - time_grid[k]
-            radius = max(C[n] - 0.5 * (C[k] + C[k + 1]), 0.0)
+            midpoint = .5 * (C[k] + C[k + 1])
+            radius = max(C[n] - midpoint, 0.0)
             total += dt * _integrate_cdf_between(cdf[k], x, x - radius, x + radius)
         A[n] = total
     return A
 
 
-def _replicated_fraction_general_speed(x, time_grid, firing_rate_xt, fork_speed_xt):
-    I_mid = 0.5 * (firing_rate_xt[:-1] + firing_rate_xt[1:])
+def _static_firing_timing_time_speed(source_x, source_cdf, target_x, time_grid, speed):
+    """Integrate survival at observation sites while retaining every source origin.
+
+    This is the same closed time-speed cone integral as
+    ``_replicated_fraction_time_speed`` for static initiation. Only the
+    observation sites may be sampled; the initiation integral stays native.
+    Memory is linear in the source and observation counts, without X-by-T
+    copies of an unchanged firing field.
+    """
+    dt = np.diff(time_grid)
+    timing = np.zeros(len(target_x))
+    previous_survival = np.ones(len(target_x))
+    travel = np.r_[0., np.cumsum(.5 * (speed[:-1] + speed[1:]) * dt)]
+    midpoint = .5 * (travel[:-1] + travel[1:])
+    for index in range(1, len(time_grid)):
+        check_cancelled()
+        volume = np.zeros(len(target_x))
+        for interval in range(index):
+            radius = travel[index] - midpoint[interval]
+            volume += dt[interval] * _integrate_cdf_between(
+                source_cdf, source_x, target_x - radius, target_x + radius)
+        survival = np.clip(1. + np.expm1(-volume), 0., 1.)
+        timing += .5 * dt[index - 1] * (previous_survival + survival)
+        previous_survival = survival
+    return timing, previous_survival
+
+
+def _replicated_fraction_general_speed(x, time_grid, initiation_rate_xt, fork_speed_xt):
+    I_mid = 0.5 * (initiation_rate_xt[:-1] + initiation_rate_xt[1:])
     cdf = _cumtrapz_rows(I_mid, x)
-    A = np.zeros_like(firing_rate_xt, dtype=float)
+    A = np.zeros_like(initiation_rate_xt, dtype=float)
 
     def velocity_at(pos, tau):
         if tau <= time_grid[0]:
@@ -296,10 +329,13 @@ def _replicated_fraction_general_speed(x, time_grid, firing_rate_xt, fork_speed_
         return np.clip(pos + h * k2, x[0], x[-1])
 
     for n in range(1, time_grid.size):
+        check_cancelled()
         left = x.copy()
         right = x.copy()
         total = np.zeros(x.size, dtype=float)
         for k in range(n - 1, -1, -1):
+            if k % 32 == 0:
+                check_cancelled()
             dt = time_grid[k + 1] - time_grid[k]
             tau_hi = time_grid[k + 1]
             left_mid = step(left, tau_hi, -0.5 * dt, sign=1.0)
@@ -312,7 +348,7 @@ def _replicated_fraction_general_speed(x, time_grid, firing_rate_xt, fork_speed_
 
 
 def map_replicated_fraction_xt(
-    firing_rate,
+    initiation_rate,
     fork_speed=1.4,
     resolution=1.0,
     resolution_x=None,
@@ -333,7 +369,7 @@ def map_replicated_fraction_xt(
         max_time = max_rep_time
 
     n_bins = _resolve_n_bins_from_fields(
-        firing_rate,
+        initiation_rate,
         fork_speed,
         n_bins=n_bins,
         resolution_x=resolution,
@@ -346,22 +382,22 @@ def map_replicated_fraction_xt(
     start = float(interval_kb[0]) if interval_kb is not None else 0.0
     x = start + np.arange(int(n_bins), dtype=float) * resolution
     t = _fraction_time_axis(
-        (firing_rate, fork_speed),
+        (initiation_rate, fork_speed),
         int(n_bins),
         resolution_time=resolution_time,
         time_grid=time_grid,
         max_time=max_time,
     )
 
-    if perQ and _spatial_length(firing_rate) is None and _spatial_length(fork_speed) is None:
+    if (perQ or int(n_bins) == 1) and _spatial_length(initiation_rate) is None and _spatial_length(fork_speed) is None:
         # Homogeneous circles have one survival curve. Avoid repeating the
         # same cone computation (and kinetic-field allocations) at every bin.
         if t[0] < 0:
             raise ValueError("Replication time grids cannot start before zero.")
-        rates = _expand_space_time_field(firing_rate, t.size, 1, t, resolution_time, "firing_rate")[:, 0]
+        rates = _expand_space_time_field(initiation_rate, t.size, 1, t, resolution_time, "initiation_rate")[:, 0]
         speeds = _expand_space_time_field(fork_speed, t.size, 1, t, resolution_time, "fork_speed", positive=True)[:, 0]
         length = int(n_bins) * resolution
-        if np.asarray(firing_rate).size == 1 and np.asarray(fork_speed).size == 1:
+        if np.asarray(initiation_rate).size == 1 and np.asarray(fork_speed).size == 1:
             volume = rates[0] * np.where(
                 2 * speeds[0] * t <= length, speeds[0] * t**2,
                 length * t - length**2 / (4 * speeds[0]),
@@ -384,35 +420,50 @@ def map_replicated_fraction_xt(
         fraction = -np.expm1(-np.maximum(volume, 0.0))
         return np.broadcast_to(fraction, (int(n_bins), t.size)).copy()
 
-    I = _expand_space_time_field(firing_rate, t.size, int(n_bins), t, resolution_time, "firing_rate")
+    I = _expand_space_time_field(initiation_rate, t.size, int(n_bins), t, resolution_time, "initiation_rate")
     v = _expand_space_time_field(fork_speed, t.size, int(n_bins), t, resolution_time, "fork_speed", positive=True)
+
+    if t[0] < 0:
+        raise ValueError("Replication time grids cannot start before zero.")
+    leading = t[0] > 0
+    if leading:
+        t = np.insert(t, 0, 0.)
+        I = np.vstack((I[:1], I))
+        v = np.vstack((v[:1], v))
 
     v_raw = np.asarray(fork_speed, dtype=float)
     if perQ:
         from .lightcone import ReplicationCone
-
-        if t[0] < 0:
-            raise ValueError("Replication time grids cannot start before zero.")
-        leading = t[0] > 0
-        integration_t = np.insert(t, 0, 0.0) if leading else t
-        integration_I = np.vstack((I[:1], I)) if leading else I
-        integration_v = np.vstack((v[:1], v)) if leading else v
-        cone = ReplicationCone(integration_v, integration_t, resolution, periodic=True)
-        interval_rates = 0.5 * (integration_I[:-1] + integration_I[1:]) * np.diff(integration_t)[:, None]
+        cone = ReplicationCone(v, t, resolution, periodic=True)
+        interval_rates = 0.5 * (I[:-1] + I[1:]) * np.diff(t)[:, None]
         A = cone.apply(interval_rates)
-        if leading:
-            A = A[1:]
+    elif (_field_time_length(initiation_rate, int(n_bins)) is None
+          and _field_time_length(fork_speed, int(n_bins)) is None):
+        A = _replicated_fraction_static_kinetics(x, t, I[0], v[0])
+    elif (t.size > 1 and np.allclose(np.diff(t), t[1] - t[0], rtol=1e-12, atol=1e-12)
+          and np.all(v == v[0, 0])
+          and np.array_equal(I, np.broadcast_to(I[:1], I.shape))):
+        # A stationary field on a uniform clock has the same midpoint cones
+        # at successive ages. Accumulate each age once instead of O(T^2).
+        cdf = _cumtrapz_1d(I[0], x)
+        A = np.zeros_like(I)
+        for index in range(1, t.size):
+            check_cancelled()
+            radius = v[0, 0] * (index - .5) * (t[1] - t[0])
+            A[index] = A[index - 1] + (t[1] - t[0]) * _integrate_cdf_between(cdf, x, x - radius, x + radius)
     elif v_raw.size == 1:
         speed = float(v_raw.reshape(-1)[0])
-        if _field_time_length(firing_rate, int(n_bins)) is None:
+        if _field_time_length(initiation_rate, int(n_bins)) is None:
             A = _replicated_fraction_constant_speed_static_I(x, t, I[0], speed)
         else:
             A = _replicated_fraction_constant_speed(x, t, I, speed)
     elif v_raw.ndim == 2 and v_raw.shape[0] == 1 and v_raw.shape[1] > 1:
-        A = _replicated_fraction_time_speed(x, t, I, v_raw.reshape(-1))
+        A = _replicated_fraction_time_speed(x, t, I, v[:, 0])
     else:
         A = _replicated_fraction_general_speed(x, t, I, v)
 
+    if leading:
+        A = A[1:]
     return -np.expm1(-np.maximum(A, 0.0)).T
 
 
@@ -421,7 +472,7 @@ def map_replicated_fraction(*args, **kwargs):
 
 
 def map_fork_densities_xt(
-    firing_rate,
+    initiation_rate,
     fork_speed=1.4,
     resolution=1.0,
     resolution_x=None,
@@ -438,7 +489,7 @@ def map_fork_densities_xt(
 ):
     """Map initiation and fork speed to mean-field directional fork densities.
 
-    ``firing_rate`` and ``fork_speed`` may each be scalar, x-dependent,
+    ``initiation_rate`` and ``fork_speed`` may each be scalar, x-dependent,
     t-dependent, or space-time dependent. Fork speed is currently interpreted
     symmetrically, so the same field is used for right- and left-moving forks.
     """
@@ -453,7 +504,7 @@ def map_fork_densities_xt(
         raise ValueError("cfl must be finite and satisfy 0 < cfl <= 1.")
 
     n_bins = _resolve_n_bins_from_fields(
-        firing_rate,
+        initiation_rate,
         fork_speed,
         n_bins=n_bins,
         resolution_x=resolution,
@@ -468,19 +519,19 @@ def map_fork_densities_xt(
 
     n_bins = int(n_bins)
     t = _fraction_time_axis(
-        (firing_rate, fork_speed),
+        (initiation_rate, fork_speed),
         n_bins,
         resolution_time=resolution_time,
         time_grid=time_grid,
         max_time=max_time,
     )
     I = _expand_space_time_field(
-        firing_rate,
+        initiation_rate,
         t.size,
         n_bins,
         t,
         resolution_time,
-        "firing_rate",
+        "initiation_rate",
     )
     v = _expand_space_time_field(
         fork_speed,
@@ -634,11 +685,12 @@ def _integrate_time_field(field_xt, resolution_time=5.0, time_grid=None, name="f
 
 
 def map_initiation_events_xt(
-    firing_rate,
+    initiation_rate,
     replicated_fraction_xt,
     resolution_time=5.0,
     time_grid=None,
 ):
+    """Realised initiation rate density I(x,t)[1-f(x,t)], in events/(kb min)."""
     replicated = np.asarray(replicated_fraction_xt, dtype=float)
     if replicated.ndim != 2:
         raise ValueError("replicated_fraction_xt must be a position-by-time matrix.")
@@ -651,26 +703,26 @@ def map_initiation_events_xt(
             raise ValueError("time_grid must match the time axis of replicated_fraction_xt.")
 
     initiation = _expand_space_time_field(
-        firing_rate,
+        initiation_rate,
         replicated.shape[1],
         replicated.shape[0],
         time_grid,
         resolution_time,
-        "firing_rate",
-        positive=True,
+        "initiation_rate",
+        positive=False,
     )
     unreplicated = np.clip(1.0 - replicated, 0.0, 1.0)
     return initiation.T * unreplicated
 
 
 def map_initiation_events(
-    firing_rate,
+    initiation_rate,
     replicated_fraction_xt,
     resolution_time=5.0,
     time_grid=None,
 ):
     events_xt = map_initiation_events_xt(
-        firing_rate,
+        initiation_rate,
         replicated_fraction_xt,
         resolution_time=resolution_time,
         time_grid=time_grid,
@@ -872,6 +924,7 @@ def map_coalescence_events_xt(
     time_grid=None,
     unreplicated_floor=1e-12,
 ):
+    """Coalescence rate density 2 v rho_+ rho_- / (1-f), in events/(kb min)."""
     replicated = np.asarray(replicated_fraction_xt, dtype=float)
     right = np.asarray(right_fork_density_xt, dtype=float)
     left = np.asarray(left_fork_density_xt, dtype=float)
@@ -879,6 +932,8 @@ def map_coalescence_events_xt(
         raise ValueError("replicated_fraction_xt must be a position-by-time matrix.")
     if right.shape != replicated.shape or left.shape != replicated.shape:
         raise ValueError("fork-density fields must match replicated_fraction_xt.")
+    if (not np.isfinite(unreplicated_floor) or not 0 <= unreplicated_floor < 1):
+        raise ValueError("Unreplicated floor must be finite and between zero and one.")
 
     if time_grid is None:
         time_grid = np.arange(replicated.shape[1], dtype=float) * float(resolution_time)
@@ -968,15 +1023,15 @@ def bwmap(chrom, cell_line='Rat', bin_size=10_000,
     return interp_nans(rt) if fill_nans else rt
 
 def _map_firing_timing_legacy_linear(
-    firing_rate, *, fork_speed, resolution, neighbourhood_range,
+    initiation_rate, *, fork_speed, resolution, neighbourhood_range,
 ):
     """Original constant-speed linear timing kernel (published 187e89d).
 
     Spatial firing inversion uses this historical calculation. Its caller
-    supplies validated, positive per-bin rates and a positive scalar speed.
+    supplies validated, non-negative per-bin rates and a positive scalar speed.
     The public forward mapper keeps its zero-rate and circular corrections.
     """
-    rates = np.asarray(firing_rate, dtype=float)
+    rates = np.asarray(initiation_rate, dtype=float)
     speed_per_bin = float(fork_speed) / float(resolution)
     radius = max(1, int(neighbourhood_range / resolution))
     timing = np.zeros_like(rates)
@@ -986,13 +1041,17 @@ def _map_firing_timing_legacy_linear(
     for distance in range(radius + 1):
         if distance % 32 == 0:
             check_cancelled()
+            report_measured_work(distance / (radius + 1))
         if distance:
             fast_shift_add(neighbourhood_rates, rates, distance, perQ=False)
             fast_shift_add(neighbourhood_rates, rates, -distance, perQ=False)
         exponent = last_raw + neighbourhood_rates / speed_per_bin
         survival = np.exp(-exponent)
-        timing += (last_exp - survival) / np.clip(neighbourhood_rates, 1e-80, None)
+        increment = (last_exp - survival) / np.clip(neighbourhood_rates, 1e-80, None)
+        increment[neighbourhood_rates == 0] = last_exp[neighbourhood_rates == 0] / speed_per_bin
+        timing += increment
         last_raw, last_exp = exponent, survival
+    report_measured_work(1.)
     return timing
 
 
@@ -1023,6 +1082,7 @@ def _constant_firing_timing(rate, speed_per_bin, n, radius, perQ):
     for distance in range(last_distance + 1):
         if distance % 32 == 0:
             check_cancelled()
+            report_measured_work(distance / (last_distance + 1))
         if distance:
             if perQ:
                 active_rates += rate
@@ -1052,7 +1112,7 @@ def _constant_firing_timing(rate, speed_per_bin, n, radius, perQ):
 
 
 def map_firing_timing(
-    firing_rate,
+    initiation_rate,
     fork_speed=1.4,
     resolution=1,
     resolution_x=None,
@@ -1062,9 +1122,9 @@ def map_firing_timing(
     genome_length=None,
     interval_kb=None,
 ):
-    """Map firing rate to replication timing.
+    """Map initiation rate to replication timing.
 
-    ``firing_rate`` may be a spatial profile ``I(x)`` or a scalar ``I0``.
+    ``initiation_rate`` may be a spatial profile ``I(x)`` or a scalar ``I0``.
     Scalar inputs are expanded using the length inferred from any spatial input,
     or from ``n_bins``, ``genome_length`` or ``interval_kb``. ``fork_speed`` may
     be a scalar ``v0`` or a spatial effective speed profile ``v(x)`` with the
@@ -1072,7 +1132,7 @@ def map_firing_timing(
     """
     resolution = _normalise_resolution_x(resolution, resolution_x=resolution_x)
     n_bins = _resolve_n_bins_from_fields(
-        firing_rate,
+        initiation_rate,
         fork_speed,
         n_bins=n_bins,
         resolution_x=resolution,
@@ -1080,13 +1140,13 @@ def map_firing_timing(
         interval_kb=interval_kb,
     )
 
-    x = np.asarray(firing_rate, dtype=float)
+    x = np.asarray(initiation_rate, dtype=float)
     constant_firing = x.size == 1
     if x.size == 1:
         if n_bins is None:
             raise ValueError(
                 "Cannot infer the number of genomic bins from scalar inputs. "
-                "Provide a spatial firing_rate/fork_speed profile, or pass "
+                "Provide a spatial initiation_rate/fork_speed profile, or pass "
                 "n_bins, genome_length, or interval_kb."
             )
         value = float(x.reshape(-1)[0])
@@ -1094,16 +1154,16 @@ def map_firing_timing(
     elif x.ndim == 1:
         x = x.astype(float, copy=False)
         if n_bins is not None and int(n_bins) != x.size:
-            raise ValueError("n_bins must match the length of firing_rate.")
+            raise ValueError("n_bins must match the length of initiation_rate.")
     elif x.ndim == 2 and x.shape[1] == 1:
         x = x.reshape(-1).astype(float, copy=False)
         if n_bins is not None and int(n_bins) != x.size:
-            raise ValueError("n_bins must match the length of firing_rate.")
+            raise ValueError("n_bins must match the length of initiation_rate.")
     else:
-        raise ValueError("firing_rate must be scalar, (n,), or (n,1) for this deterministic map.")
+        raise ValueError("initiation_rate must be scalar, (n,), or (n,1) for this deterministic map.")
 
     if np.any(~np.isfinite(x)) or np.any(x < 0):
-        raise ValueError("firing_rate must contain finite values >= 0.")
+        raise ValueError("initiation_rate must contain finite values >= 0.")
 
     n = x.size
     fork_speed_arr = np.asarray(fork_speed, dtype=float)
@@ -1114,14 +1174,14 @@ def map_firing_timing(
         fork_speed_per_bin = fork_speed / resolution
     elif fork_speed_arr.ndim == 1:
         if fork_speed_arr.size != n:
-            raise ValueError("fork_speed must match the length of firing_rate.")
+            raise ValueError("fork_speed must match the length of initiation_rate.")
         if np.any(~np.isfinite(fork_speed_arr)) or np.any(fork_speed_arr <= 0):
             raise ValueError("fork_speed must contain finite positive values.")
         fork_speed_per_bin = fork_speed_arr.astype(float, copy=False) / resolution
     elif fork_speed_arr.ndim == 2 and fork_speed_arr.shape[1] == 1:
         fork_speed_arr = fork_speed_arr.reshape(-1).astype(float, copy=False)
         if fork_speed_arr.size != n:
-            raise ValueError("fork_speed must match the length of firing_rate.")
+            raise ValueError("fork_speed must match the length of initiation_rate.")
         if np.any(~np.isfinite(fork_speed_arr)) or np.any(fork_speed_arr <= 0):
             raise ValueError("fork_speed must contain finite positive values.")
         fork_speed_per_bin = fork_speed_arr / resolution
@@ -1150,6 +1210,7 @@ def map_firing_timing(
     for k in range(L + 1):
         if k % 32 == 0:
             check_cancelled()
+            report_measured_work(k / (L + 1))
         if k:
             fast_shift_add(unitary, x,  k, perQ=perQ)
             if not perQ or 2 * k != n:

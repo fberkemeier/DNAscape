@@ -11,7 +11,7 @@ class StallRateUnitTests(unittest.TestCase):
     @staticmethod
     def _simulation_inputs():
         return {
-            "firing_rate": np.linspace(0.004, 0.012, 18),
+            "initiation_rate": np.linspace(0.004, 0.012, 18),
             "fork_speed": 1.4,
             "sim_number": 3,
             "resolution_space": 5.0,
@@ -82,7 +82,7 @@ class StallRateUnitTests(unittest.TestCase):
 
     def test_structured_density_aliases_match_the_canonical_name(self):
         source = {
-            "firing_rate": np.linspace(0.004, 0.012, 18),
+            "initiation_rate": np.linspace(0.004, 0.012, 18),
             "fork_speed": 1.4,
         }
         common_assumptions = {
@@ -112,7 +112,7 @@ class StallRateUnitTests(unittest.TestCase):
                 self._assert_same_seeded_summary(canonical, aliased)
 
     def test_positive_density_selects_and_matches_rmap_simulation_route(self):
-        firing_rate = np.linspace(0.004, 0.012, 18)
+        initiation_rate = np.linspace(0.004, 0.012, 18)
         assumptions = {
             "resolution": 5.0,
             "stall_rate_per_kb": 0.17,
@@ -123,13 +123,13 @@ class StallRateUnitTests(unittest.TestCase):
         }
 
         mapped = rmap(
-            source={"firing_rate": firing_rate, "fork_speed": 1.4},
+            source={"initiation_rate": initiation_rate, "fork_speed": 1.4},
             target="replication_timing",
             assumptions=assumptions,
             return_info=True,
         )
         direct = rsim(
-            firing_rate=firing_rate * assumptions["resolution"],
+            initiation_rate=initiation_rate * assumptions["resolution"],
             fork_speed=1.4,
             **assumptions,
         )["replication_timing"]
@@ -150,7 +150,7 @@ class StallRateUnitTests(unittest.TestCase):
                             "replication_timing": timing,
                             "fork_speed": 1.4,
                         },
-                        target="firing_rate",
+                        target="initiation_rate",
                         assumptions={
                             "target_form": target_form,
                             "target_shape": "weibull",

@@ -12,15 +12,16 @@ class ForkSpeedShapeTests(unittest.TestCase):
         timing = np.linspace(20.0, 40.0, n)
         time_grid = np.asarray([0.0, 5.0, 10.0])
         evaluated_sizes = []
+        source_sizes = []
 
-        def fake_fraction(_firing_rate, **kwargs):
-            evaluated_sizes.append(int(kwargs["n_bins"]))
-            return np.zeros((int(kwargs["n_bins"]), time_grid.size), dtype=float)
+        def fake_prediction(source_x, _cdf, target_x, _axis, _speed):
+            source_sizes.append(len(source_x))
+            evaluated_sizes.append(len(target_x))
+            return np.full(len(target_x), time_grid[-1]), np.ones(len(target_x))
 
-        with patch.object(fitting, "_FULL_TIMING_DIAGNOSTIC_CELL_CAP", 0), patch.object(
-            fitting,
-            "map_replicated_fraction_xt",
-            side_effect=fake_fraction,
+        with patch.object(fitting, "_FULL_TIMING_DIAGNOSTIC_CELL_CAP", 0), patch(
+            "dnascape.mapping._static_firing_timing_time_speed",
+            side_effect=fake_prediction,
         ):
             speed = fitting._fit_exponential_speed_shape(
                 timing,
@@ -34,6 +35,7 @@ class ForkSpeedShapeTests(unittest.TestCase):
         info = speed._rmap_info
         self.assertTrue(evaluated_sizes)
         self.assertTrue(all(size < n for size in evaluated_sizes))
+        self.assertTrue(all(size == n for size in source_sizes))
         self.assertTrue(info["replication_timing_fit_interpolated"])
         self.assertEqual(np.asarray(info["replication_timing_fit"]).shape, (n,))
         self.assertEqual(np.asarray(info["residual"]).shape, (n,))
@@ -48,7 +50,7 @@ class ForkSpeedShapeTests(unittest.TestCase):
         evaluated_sizes = []
 
         def fake_predict(
-            _firing_rate,
+            _initiation_rate,
             _spatial_speed,
             _temporal_factor,
             observed_timing,
@@ -90,7 +92,7 @@ class ForkSpeedShapeTests(unittest.TestCase):
         evaluated_sizes = []
 
         def fake_predict(
-            _firing_rate,
+            _initiation_rate,
             _spatial_speed,
             _temporal_factor,
             observed_timing,
@@ -132,7 +134,7 @@ class ForkSpeedShapeTests(unittest.TestCase):
         evaluated_sizes = []
 
         def fake_predict(
-            _firing_rate,
+            _initiation_rate,
             _spatial_speed,
             _temporal_factor,
             observed_timing,
@@ -168,12 +170,12 @@ class ForkSpeedShapeTests(unittest.TestCase):
     def test_constant_fork_speed_target_shape_defaults_to_best(self):
         n = 10
         timing = np.linspace(18.0, 40.0, n)
-        firing_rate = np.linspace(2e-4, 5e-4, n)
+        initiation_rate = np.linspace(2e-4, 5e-4, n)
 
         fit = rmap(
             source={
                 "replication_timing": timing,
-                "firing_rate": firing_rate,
+                "initiation_rate": initiation_rate,
             },
             target="fork_speed",
             assumptions={
@@ -190,12 +192,12 @@ class ForkSpeedShapeTests(unittest.TestCase):
     def test_fork_speed_target_shape_defaults_to_best(self):
         n = 10
         timing = np.linspace(18.0, 40.0, n)
-        firing_rate = np.linspace(2e-4, 5e-4, n)
+        initiation_rate = np.linspace(2e-4, 5e-4, n)
 
         fit = rmap(
             source={
                 "replication_timing": timing,
-                "firing_rate": firing_rate,
+                "initiation_rate": initiation_rate,
             },
             target="fork_speed",
             assumptions={
@@ -225,13 +227,13 @@ class ForkSpeedShapeTests(unittest.TestCase):
         n = 12
         time_grid = np.arange(0.0, 80.0, 5.0)
         timing = np.linspace(20.0, 45.0, n)
-        firing_rate = np.linspace(2e-4, 5e-4, n)
+        initiation_rate = np.linspace(2e-4, 5e-4, n)
 
         with patch("dnascape.fitting.map_timing_firing_spatial_speed") as spatial_mock:
             fit = rmap(
                 source={
                     "replication_timing": timing,
-                    "firing_rate": firing_rate,
+                    "initiation_rate": initiation_rate,
                 },
                 target="fork_speed",
                 assumptions={
@@ -261,13 +263,13 @@ class ForkSpeedShapeTests(unittest.TestCase):
         n = 10
         time_grid = np.arange(0.0, 60.0, 5.0)
         timing = np.linspace(18.0, 40.0, n)
-        firing_rate = np.tile(np.linspace(2e-4, 5e-4, n)[:, None], (1, time_grid.size))
+        initiation_rate = np.tile(np.linspace(2e-4, 5e-4, n)[:, None], (1, time_grid.size))
 
         with patch("dnascape.fitting._refine_spacetime_speed") as refine_mock:
             fit = rmap(
                 source={
                     "replication_timing": timing,
-                    "firing_rate": firing_rate,
+                    "initiation_rate": initiation_rate,
                 },
                 target="fork_speed",
                 assumptions={
@@ -294,11 +296,11 @@ class ForkSpeedShapeTests(unittest.TestCase):
         n = 8
         time_grid = np.arange(0.0, 35.0, 5.0)
         timing = np.linspace(18.0, 38.0, n)
-        firing_rate = np.tile(np.linspace(2e-4, 5e-4, n)[:, None], (1, time_grid.size))
+        initiation_rate = np.tile(np.linspace(2e-4, 5e-4, n)[:, None], (1, time_grid.size))
 
         with patch("dnascape.fitting.rsim", side_effect=AssertionError("rsim should not be called")):
             constant_fit = rmap(
-                source={"replication_timing": timing, "firing_rate": firing_rate},
+                source={"replication_timing": timing, "initiation_rate": initiation_rate},
                 target="fork_speed",
                 assumptions={
                     "target_form": "constant",
@@ -309,7 +311,7 @@ class ForkSpeedShapeTests(unittest.TestCase):
                 return_info=True,
             )
             spatial_fit = rmap(
-                source={"replication_timing": timing, "firing_rate": firing_rate},
+                source={"replication_timing": timing, "initiation_rate": initiation_rate},
                 target="fork_speed",
                 assumptions={
                     "target_form": "space",
@@ -320,7 +322,7 @@ class ForkSpeedShapeTests(unittest.TestCase):
                 return_info=True,
             )
             temporal_fit = rmap(
-                source={"replication_timing": timing, "firing_rate": firing_rate},
+                source={"replication_timing": timing, "initiation_rate": initiation_rate},
                 target="fork_speed",
                 assumptions={
                     "target_form": "time",
@@ -331,7 +333,7 @@ class ForkSpeedShapeTests(unittest.TestCase):
                 return_info=True,
             )
             spacetime_fit = rmap(
-                source={"replication_timing": timing, "firing_rate": firing_rate},
+                source={"replication_timing": timing, "initiation_rate": initiation_rate},
                 target="fork_speed",
                 assumptions={
                     "target_form": "spacetime",
@@ -370,13 +372,13 @@ class ForkSpeedShapeTests(unittest.TestCase):
         }
 
         with patch("dnascape.fitting.rsim", side_effect=AssertionError("rsim should not be called")):
-            for firing_label, firing_rate in firing_forms.items():
+            for firing_label, initiation_rate in firing_forms.items():
                 for target_form, expected_shape in expected_shapes.items():
                     with self.subTest(firing=firing_label, target_form=target_form):
                         fit = rmap(
                             source={
                                 "replication_timing": timing,
-                                "firing_rate": firing_rate,
+                                "initiation_rate": initiation_rate,
                             },
                             target="fork_speed",
                             assumptions={
@@ -405,9 +407,9 @@ class ForkSpeedShapeTests(unittest.TestCase):
         timing = np.linspace(15.0, 30.0, n)
         firing_space = np.linspace(1e-5, 2e-5, n)
         firing_time = np.linspace(0.8, 1.2, time_grid.size)
-        firing_rate = np.outer(firing_space, firing_time)
+        initiation_rate = np.outer(firing_space, firing_time)
 
-        def fake_predict(_firing_rate, _spatial_speed, temporal_factor, observed_timing, *_args, **_kwargs):
+        def fake_predict(_initiation_rate, _spatial_speed, temporal_factor, observed_timing, *_args, **_kwargs):
             slope = float(temporal_factor[-1] - temporal_factor[0])
             space_gain = float(np.nanmean(_spatial_speed) - 1.4)
             return np.asarray(observed_timing, dtype=float) + 0.4 - 2.0 * space_gain - 4.0 * slope
@@ -417,7 +419,7 @@ class ForkSpeedShapeTests(unittest.TestCase):
             fit = fitting.map_timing_firing_spacetime_speed(
                 {
                     "replication_timing": timing,
-                    "firing_rate": firing_rate,
+                    "initiation_rate": initiation_rate,
                 },
                 time_grid=time_grid,
                 maxiter=2,

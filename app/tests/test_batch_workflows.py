@@ -125,7 +125,7 @@ def test_all_combinations_return_cartesian_indices() -> None:
 def test_target_first_names_include_each_varying_file_or_value() -> None:
     combinations = plan_combination_indices((2, 2, 1))
     names = target_first_combination_names(
-        "Firing rate",
+        "Initiation rate",
         (
             CombinationSource(
                 "Replication timing",
@@ -138,23 +138,23 @@ def test_target_first_names_include_each_varying_file_or_value() -> None:
     )
 
     assert names == (
-        "Firing rate · Replication timing: chr5_rt_70-130 · Fork speed: 1.4",
-        "Firing rate · Replication timing: chr3_rt_70-130 · Fork speed: 1.8",
+        "Initiation rate · Replication timing: chr5_rt_70-130 · Fork speed: 1.4",
+        "Initiation rate · Replication timing: chr3_rt_70-130 · Fork speed: 1.8",
     )
 
 
 def test_target_first_names_can_include_shared_inputs_and_remain_unique() -> None:
     source = CombinationSource("Fork speed", ("1.4", "1.4"))
     names = target_first_combination_names(
-        "Firing rate",
+        "Initiation rate",
         (source,),
         ((0,), (1,)),
         include_singletons=True,
     )
 
     assert names == (
-        "Firing rate · Fork speed: 1.4",
-        "Firing rate · Fork speed: 1.4_2",
+        "Initiation rate · Fork speed: 1.4",
+        "Initiation rate · Fork speed: 1.4_2",
     )
 
 

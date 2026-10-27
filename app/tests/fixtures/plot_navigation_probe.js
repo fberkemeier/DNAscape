@@ -308,17 +308,20 @@
       key('ControlLeft', true);
       if (Object.values(axes).some(axis => axis.dimension === 'x')) {
         const selection = chart.getModel().getComponent('grid', 0).coordinateSystem.getRect();
-        const selectionY = selection.y + selection.height / 2;
+        const heatmap = !!component.options.dnascapeNavigation.heatmap;
+        const selectionY = selection.y + selection.height * (heatmap ? .25 : .5);
+        const endY = selection.y + selection.height * (heatmap ? .75 : .5);
         const startEvent = mouse('mousedown', selection.x + selection.width / 4, selectionY, true);
-        const endEvent = mouse('mousemove', selection.x + selection.width * 3 / 4, selectionY, true);
+        const endEvent = mouse('mousemove', selection.x + selection.width * 3 / 4, endY, true);
         const selectedPixels = Math.abs(endEvent.clientX - startEvent.clientX);
         const overlay = element.querySelector('.dn-plot-range-selection');
         check(overlay && close(parseFloat(overlay.style.width), selectedPixels), 'Missing selection highlight');
         check(getComputedStyle(overlay).backgroundColor === 'rgba(176, 52, 18, 0.16)', 'Selection should be shaded red');
-        mouse('mouseup', selection.x + selection.width * 3 / 4, selectionY, true);
+        if (heatmap) check(close(parseFloat(overlay.style.height), selection.height / 2), 'Heatmap selection should cover both dimensions');
+        mouse('mouseup', selection.x + selection.width * 3 / 4, endY, true);
         check(!element.querySelector('.dn-plot-range-selection'), 'Selection overlay was not removed');
         for (const [name, range] of Object.entries(bounds())) {
-          const expected = axes[name].dimension === 'x' ? selectedPixels / selection.width : 1;
+          const expected = axes[name].dimension === 'x' ? selectedPixels / selection.width : heatmap ? .5 : 1;
           check(close(span(range, axes[name]) / span(panned[name], axes[name]), expected), name + ' region selection changed the wrong dimension');
         }
       }

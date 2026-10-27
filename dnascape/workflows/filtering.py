@@ -79,6 +79,7 @@ class DataFilterSettings:
     profile_array_key: str | None = None
     modulation: ProfileModulationSettings = field(default_factory=ProfileModulationSettings)
     between_mode: str = "within"
+    complement: bool = False
     _position_sink: Callable | None = field(default=None, repr=False, compare=False)
     _warning_sink: Callable | None = field(default=None, repr=False, compare=False)
 
@@ -413,7 +414,7 @@ def _profile_mask(profile: FilterProfile | None, length: int, positions, interva
     return mask
 
 
-def _selected(values: np.ndarray, settings: DataFilterSettings, positions, intervals, chromosome) -> np.ndarray:
+def _selection_mask(values: np.ndarray, settings: DataFilterSettings, positions, intervals, chromosome) -> np.ndarray:
     if settings.selection == "profile":
         return _profile_mask(settings.profile, len(values), positions, intervals, chromosome)
     if settings.selection == "all":
@@ -433,9 +434,17 @@ def _selected(values: np.ndarray, settings: DataFilterSettings, positions, inter
     return values < threshold if settings.comparison == "below" else values > threshold
 
 
+def _selected(values: np.ndarray, settings: DataFilterSettings, positions, intervals, chromosome) -> np.ndarray:
+    # Values already cover the post-Configure Start/End region. Invert this
+    # bounded selection once, so operations, shading and exports stay aligned.
+    mask = _selection_mask(values, settings, positions, intervals, chromosome)
+    return ~mask if settings.complement else mask
+
+
 def apply_data_filter(
     values, settings: DataFilterSettings, *, positions=None, intervals=None,
     chromosome: str | None = None, cancel: Callable[[], None] | None = None,
+    selection_values=None,
 ) -> np.ndarray:
     """Edit each ordered profile independently, using a fixed pre-edit selection.
 
@@ -450,6 +459,15 @@ def apply_data_filter(
     source = np.asarray(values, dtype=float)
     result = source.copy()
     columns = result.reshape(-1, 1) if result.ndim < 2 or result.shape[0] == 1 else result
+    reference_columns = columns
+    if selection_values is not None:
+        reference_values = np.asarray(selection_values, dtype=float)
+        if reference_values.ndim == 1:
+            reference_values = reference_values[:, None]
+        try:
+            reference_columns = np.broadcast_to(reference_values, columns.shape)
+        except ValueError as exc:
+            raise ValueError("The selection input must match the fitted profile's coordinates.") from exc
     modulation = (aligned_modulation(source, settings.modulation, coordinates=positions, chromosome=chromosome, warning=settings._warning_sink)
                   if settings.action == "modulate" else None)
     # Reproducible, distinct noise across chromosome outputs and time slices.
@@ -459,7 +477,7 @@ def apply_data_filter(
         if cancel is not None:
             cancel()
         original = columns[:, column].copy()
-        selected = _selected(original, settings, positions, intervals, chromosome)
+        selected = _selected(reference_columns[:, column], settings, positions, intervals, chromosome)
         if settings._position_sink is not None:
             settings._position_sink(
                 selected, positions, chromosome, column if columns.shape[1] > 1 else None,
@@ -537,6 +555,8 @@ def filter_metadata(settings: DataFilterSettings) -> tuple[tuple[str, str], ...]
     if not settings.enabled:
         return ()
     metadata = {"filter_selection": settings.selection, "filter_action": settings.action}
+    if settings.complement:
+        metadata["filter_complement"] = "true"
     if settings.selection in {"threshold", "minimum", "maximum"}:
         metadata.update(filter_comparison=settings.comparison, filter_threshold=str(settings.threshold))
     elif settings.selection == "between":

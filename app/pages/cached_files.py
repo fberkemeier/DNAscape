@@ -11,7 +11,7 @@ from nicegui import run, ui
 
 from app.export_settings import get_export_settings
 from app.field_hints import field_hint
-from app.mapping_exports import build_mapping_raw_export
+from app.mapping_exports import build_mapping_raw_export, mapping_output_dependence_suffix
 from app.mapping_service import MappingResult
 from app.notifications import notify
 from app.pages.common import page_intro, panel, panel_title, raw_data_open_menu, stat_strip
@@ -93,6 +93,9 @@ def _download_artifact(entry: CacheEntry) -> ExportArtifact:
         identity = compact_export_stem(entry.name, fallback=entry.payload.primary_output)
         if identity in {"mapping-result", "result"}:
             identity = output_file_token(entry.payload.primary_output)
+        suffix = mapping_output_dependence_suffix(entry.payload, entry.payload.primary_output)
+        if suffix:
+            identity += f"_{suffix}"
         return build_mapping_raw_export(
             entry.payload,
             entry.payload.primary_output,

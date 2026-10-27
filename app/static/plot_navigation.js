@@ -40,6 +40,16 @@
   }
 
   function rectangle(state) {
+    if (metadata(state)?.polar) {
+      const polar = state.chart.getModel().getComponent('polar', 0)?.coordinateSystem;
+      if (polar) {
+        const count = state.chart.getOption().polar.length;
+        const outer = state.chart.getModel().getComponent('polar', count - 1).coordinateSystem;
+        const radius = Math.max(...outer.getRadiusAxis().getExtent());
+        return {x:polar.cx-radius,y:polar.cy-radius,width:2*radius,height:2*radius,
+          cx:polar.cx,cy:polar.cy,radius,polar:true};
+      }
+    }
     return state.chart.getModel().getComponent('grid', 0)?.coordinateSystem?.getRect();
   }
 
@@ -49,6 +59,7 @@
   }
 
   function inside(rect, position) {
+    if (rect?.polar) return Math.hypot(position[0]-rect.cx,position[1]-rect.cy) <= rect.radius;
     return rect && position[0] >= rect.x && position[0] <= rect.x + rect.width &&
       position[1] >= rect.y && position[1] <= rect.y + rect.height;
   }
@@ -78,7 +89,8 @@
     if (!guide?.selectable || !guide.choices[index]) return;
     guide.selected = index;
     const graphic = guide.choices[index].graphic;
-    state.chart.setOption({graphic:guide.visible?[graphic]:[]},{replaceMerge:['graphic']});
+    const existing=(state.component.options.graphic||[]).filter(item=>item.id!=='dn-histogram-guide');
+    state.chart.setOption({graphic:existing.concat(guide.visible?[graphic]:[])},{replaceMerge:['graphic']});
     state.component.$emit('plotDataset',{index});
     datasetMenu?.remove(); datasetMenu = null;
   }
@@ -130,6 +142,22 @@
     // choose a different axis pair when multiple boxplot axes share a grid.
     const rect = rectangle(state), horizontal = axis.dimension === 'x';
     const spec = state.chart.getModel().getComponent(axis.dimension + 'Axis', axis.index).option;
+    if (rect.polar && Array.isArray(pixel)) {
+      let fraction;
+      if (horizontal) fraction = ((Math.atan2(pixel[0]-rect.cx,rect.cy-pixel[1])/(2*Math.PI))%1+1)%1;
+      else {
+        const radius = Math.hypot(pixel[0]-rect.cx,pixel[1]-rect.cy);
+        let extent = [0,rect.radius];
+        state.chart.getModel().eachComponent('polar', model => {
+          const candidate = model.coordinateSystem.getRadiusAxis().getExtent().slice().sort((a,b)=>a-b);
+          if (radius >= candidate[0] && radius <= candidate[1]) extent = candidate;
+        });
+        fraction = clamp((radius-extent[0])/(extent[1]-extent[0]),0,1);
+      }
+      if (axis.inverse) fraction=1-fraction;
+      const [lower,upper]=limits||[spec.min,spec.max];
+      return backward(forward(lower,axis)+fraction*(forward(upper,axis)-forward(lower,axis)),axis);
+    }
     let fraction = (pixel - (horizontal ? rect.x : rect.y)) / (horizontal ? rect.width : rect.height);
     if (!horizontal) fraction = 1 - fraction;
     if (axis.inverse) fraction = 1 - fraction;
@@ -152,6 +180,7 @@
   }
 
   function reserveTitleSpace(state) {
+    if (metadata(state)?.polar) return;
     const grid = state.chart.getModel().getComponent('grid', 0), axes = [], margins = {};
     state.textMeasure ||= document.createElement('canvas').getContext('2d');
     for (const axis of Object.values(metadata(state)?.axes || {})) {
@@ -208,6 +237,31 @@
           Object.assign(spec.splitLine, {showMinLine: true, showMaxLine: true});
         }
       }
+    }
+    if (metadata(state)?.polar) {
+      const options=source||state.component.options;
+      const current = ranges(state);
+      const polarAxes = (name, fallback) => (options[name]||[]).map(axis=>{
+        const values=updates[axis.dnascapeSourceAxis||fallback];
+        return values?{...axis,min:values[0],max:values[1],interval:null}:axis;
+      });
+      patch.angleAxis=polarAxes('angleAxis','x');
+      patch.radiusAxis=polarAxes('radiusAxis','y');
+      patch.series=(options.series||[]).map(series=>{
+        const key=options.angleAxis?.[series.polarIndex||0]?.dnascapeSourceAxis||'x';
+        const window=updates[key]||current[key];
+        if (series.dnascapeCircularMaskSourceData && window) {
+          const ykey=options.radiusAxis?.[series.polarIndex||0]?.dnascapeSourceAxis||'y';
+          const y=updates[ykey]||current[ykey];
+          return {data:series.dnascapeCircularMaskSourceData.filter(p=>p[1]>window[0]&&p[0]<window[1])
+            .map(p=>[Math.max(p[0],window[0]),Math.min(p[1],window[1]),y[1],y[0]])};
+        }
+        const data=series.dnascapeCircularSourceData;
+        if(!data||!window)return {};
+        if(options.dnascapePlotType==='Histogram'&&series.type==='custom'&&!series.silent)
+          return {data:data.filter(p=>p[1]>window[0]&&p[0]<window[1]).map(p=>[Math.max(p[0],window[0]),Math.min(p[1],window[1]),...p.slice(2)])};
+        return {data:data.filter(p=>p[0]>=window[0]&&p[0]<=window[1]&&(p.length!==6||p[3]<=window[1]))};
+      });
     }
     return patch;
   }
@@ -266,12 +320,14 @@
     state.chart.dispatchAction({type: 'hideTip'});
     state.chart.dispatchAction({type: 'updateAxisPointer', currTrigger: 'leave'});
     if (mode === 'select') event.stopImmediatePropagation();
-    drag = {state, mode, start, end: start, rect, initial, context: metadata(state).context};
+    drag = {state, mode, start, end: start, rect, initial, context: metadata(state).context, box:!!metadata(state).heatmap};
     if (mode === 'select') {
       const overlay = document.createElement('div');
       overlay.className = 'dn-plot-range-selection';
       overlay.setAttribute('aria-hidden', 'true');
       overlay.style.cssText = `left:${start[0]}px;top:${rect.y}px;width:0;height:${rect.height}px;`;
+      if (drag.box) overlay.style.cssText=`left:${start[0]}px;top:${start[1]}px;width:0;height:0;`;
+      if (rect.polar) overlay.style.cssText=`left:${rect.x}px;top:${rect.y}px;width:${rect.width}px;height:${rect.height}px;border-radius:50%;background:transparent;`;
       state.element.appendChild(overlay);
       drag.overlay = overlay;
     }
@@ -290,6 +346,17 @@
       const end = clamp(drag.end[0], rect.x, rect.x + rect.width);
       drag.overlay.style.left = Math.min(start[0], end) + 'px';
       drag.overlay.style.width = Math.abs(end - start[0]) + 'px';
+      if (drag.box) {
+        const y=clamp(drag.end[1],rect.y,rect.y+rect.height);
+        drag.overlay.style.top=Math.min(start[1],y)+'px';
+        drag.overlay.style.height=Math.abs(y-start[1])+'px';
+      }
+      if (rect.polar) {
+        const angle=p=>((Math.atan2(p[0]-rect.cx,rect.cy-p[1])*180/Math.PI)%360+360)%360;
+        const a=Math.min(angle(start),angle(drag.end)),b=Math.max(angle(start),angle(drag.end));
+        Object.assign(drag.overlay.style,{left:rect.x+'px',width:rect.width+'px',
+          background:`conic-gradient(transparent 0deg ${a}deg,rgba(176,52,18,.15) ${a}deg ${b}deg,transparent ${b}deg 360deg)`});
+      }
     } else {
       if (!drag.moved) return;
       const next = {};
@@ -297,7 +364,11 @@
         const axis = metadata(state).axes[key], horizontal = axis.dimension === 'x';
         const delta = drag.end[horizontal ? 0 : 1] - start[horizontal ? 0 : 1];
         const lower = forward(values[0], axis), upper = forward(values[1], axis);
-        const shift = delta / (horizontal ? rect.width : rect.height) * (upper - lower) *
+        const polarDelta = rect.polar ? (horizontal
+          ? Math.atan2(Math.sin(Math.atan2(drag.end[0]-rect.cx,rect.cy-drag.end[1])-Math.atan2(start[0]-rect.cx,rect.cy-start[1])),
+                       Math.cos(Math.atan2(drag.end[0]-rect.cx,rect.cy-drag.end[1])-Math.atan2(start[0]-rect.cx,rect.cy-start[1])))/(2*Math.PI)
+          : -(Math.hypot(drag.end[0]-rect.cx,drag.end[1]-rect.cy)-Math.hypot(start[0]-rect.cx,start[1]-rect.cy))/rect.radius) : null;
+        const shift = (polarDelta ?? delta / (horizontal ? rect.width : rect.height)) * (upper - lower) *
           (horizontal ? -1 : 1) * (axis.inverse ? -1 : 1);
         next[key] = bounded(lower + shift, upper + shift, axis);
       }
@@ -318,12 +389,14 @@
     state.suppressClickUntil = Date.now() + 250;
     suppressNavigationClickUntil = state.suppressClickUntil;
     flushFrame(state);
-    if (mode === 'select' && Math.abs(end[0] - start[0]) >= 3) {
+    if (mode === 'select' && (rect.polar ? Math.hypot(end[0]-start[0],end[1]-start[1]) : Math.abs(end[0]-start[0])) >= 3
+        && (!drag.box || Math.abs(end[1]-start[1]) >= 3)) {
       const next = {};
       for (const [key, axis] of Object.entries(metadata(state).axes)) {
-        if (axis.dimension !== 'x') continue;
-        const values = [start[0], clamp(end[0], rect.x, rect.x + rect.width)]
-          .map(pixel => valueAt(state, axis, pixel)).sort((a, b) => a - b);
+        if (axis.dimension !== 'x' && !drag.box) continue;
+        const horizontal=axis.dimension==='x';
+        const pixels=rect.polar?[start,end]:[start[horizontal?0:1],clamp(end[horizontal?0:1],horizontal?rect.x:rect.y,(horizontal?rect.x+rect.width:rect.y+rect.height))];
+        const values = pixels.map(pixel => valueAt(state, axis, pixel)).sort((a, b) => a - b);
         if (values.every(Number.isFinite)) next[key] = bounded(forward(values[0], axis), forward(values[1], axis), axis);
       }
       apply(state, next);
@@ -366,7 +439,7 @@
     const factor = Math.exp(clamp(pixels * 0.002, -1, 1)), next = {};
     for (const [key, values] of Object.entries(state.next || ranges(state))) {
       const axis = axes[key], lower = forward(values[0], axis), upper = forward(values[1], axis);
-      const value = valueAt(state, axis, position[axis.dimension === 'x' ? 0 : 1], values);
+      const value = valueAt(state, axis, rect.polar ? position : position[axis.dimension === 'x' ? 0 : 1], values);
       const anchor = clamp(forward(value, axis), lower, upper);
       if (!Number.isFinite(anchor)) continue;
       next[key] = bounded(anchor - (anchor - lower) * factor, anchor + (upper - anchor) * factor, axis);

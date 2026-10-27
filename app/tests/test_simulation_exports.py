@@ -26,6 +26,7 @@ from app.simulation_exports import (
 )
 from app.simulation_service import ConstantSimulationResult
 from dnascape.io import rload
+from dnascape.workflows.export_settings import get_export_settings
 
 
 def _result() -> ConstantSimulationResult:
@@ -921,7 +922,7 @@ def test_histogram_mode_and_distribution_outputs_use_histogram_controls(
         dpi=100,
     )
     assert calls == []
-    assert len(curves) == 1 and curves[0][0].size == 256
+    assert len(curves) == 1 and curves[0][0].size == get_export_settings().preview_points
     assert np.isfinite(curves[0][1]).all()
 
     calls.clear()

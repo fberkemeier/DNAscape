@@ -68,7 +68,7 @@ def test_mapping_reuses_prepared_bundle_across_downstream_targets(
             await set_value("mapping-region-end", 36.0)
             await set_value("mapping-setting-resolution", 2.0)
             await set_value("mapping-setting-perq", False)
-            await set_value("mapping-input-firing-rate-constant", 0.02)
+            await set_value("mapping-input-initiation-rate-constant", 0.02)
             await set_value("mapping-setting-time-grid-override", True)
             await set_value("mapping-setting-time-grid", "0, 1, 3, 6, 10")
             await map_and_wait(1)
@@ -97,14 +97,15 @@ def test_mapping_reuses_prepared_bundle_across_downstream_targets(
                 raw_names.add(control("mapping-raw-filename").value)
             assert len(raw_names) == 3
 
-            await set_value("mapping-target", "fork_directionality")
-            await set_value("mapping-route", "fork_directionality--space--fork_densities")
+            await set_value("mapping-target", "replicated_fraction")
+            await set_value("mapping-target-form", "spacetime")
+            await set_value("mapping-route", "replicated_fraction--spacetime--fork_densities")
             prepared = control("mapping-input-fork-densities-prepared-select")
             assert prepared.enabled
             assert len(prepared.options) == 1
             await set_value("mapping-whole-region", True)
             assert control("mapping-region-start").value == 0.0
-            assert control("mapping-region-end").value == 16.0
+            assert control("mapping-region-end").value == 36.0
             await set_value("mapping-whole-region", False)
             await set_value("mapping-region-start", 20.0)
             await set_value("mapping-region-end", 36.0)

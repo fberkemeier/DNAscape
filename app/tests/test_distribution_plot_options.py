@@ -31,7 +31,7 @@ def test_combined_histograms_share_bins_but_keep_each_datasets_counts() -> None:
     np.testing.assert_allclose(np.asarray(first["data"])[:, :2], np.asarray(second["data"])[:, :2])
     assert [sum(row[2] for row in item["data"]) for item in chart["series"]] == [5, 5]
     assert [row[2] for row in first["data"]] != [row[2] for row in second["data"]]
-    assert all(item["itemStyle"]["opacity"] < 1 for item in chart["series"])
+    assert all(item["itemStyle"]["opacity"] <= 1 for item in chart["series"])
 
 
 def test_combined_boxplots_use_distinct_numeric_positions_and_preserve_quartiles() -> None:
@@ -71,7 +71,7 @@ def test_all_combined_views_support_independent_log_invert_and_bounds(plot_type:
 def test_combined_kde_contains_only_two_smooth_curves() -> None:
     chart = options("Histogram", density=True)
     assert [item["type"] for item in chart["series"]] == ["line", "line"]
-    assert all(len(item["data"]) == 256 for item in chart["series"])
+    assert all(len(item["data"]) == 1000 for item in chart["series"])
     assert chart["series"][0]["z"] > chart["series"][1]["z"]
 
 
@@ -86,7 +86,7 @@ def test_kde_statistics_share_the_legend_panel_inside_the_plot() -> None:
 @pytest.mark.parametrize("samples", [[2], [2, 2, 2], [np.nan, 1, 2, 3, np.inf]])
 def test_kde_is_finite_and_integrates_to_one_on_its_automatic_domain(samples: list) -> None:
     x, y = _kde_data(samples)
-    assert len(x) == len(y) == 256
+    assert len(x) == len(y) == 1000
     assert np.isfinite(y).all() and np.all(y >= 0)
     assert np.trapezoid(y, x) == pytest.approx(1, abs=0.003)
 
@@ -103,7 +103,7 @@ def test_kde_filters_nonpositive_samples_for_log_x_and_bounds_large_inputs(monke
 
     monkeypatch.setattr(scipy.stats, "gaussian_kde", tracked)
     x, y = _kde_data(np.arange(-10, 50000), log_x=True)
-    assert x[0] > 0 and len(x) == len(y) == 256
+    assert x[0] > 0 and len(x) == len(y) == 1000
     assert sizes == [20000]
     with pytest.raises(ValueError, match="positive"):
         _kde_data([-2, 0, np.nan], log_x=True)

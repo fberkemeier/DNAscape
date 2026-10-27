@@ -472,7 +472,7 @@ def test_simulation_output_selector_is_preview_owned_and_settings_are_compact() 
     ):
         assert hook in source or hook in preview_source
     for group in (
-        "Firing rate",
+        "Initiation rate",
         "Fork speed",
         "Ensemble",
         "Timing & outputs",

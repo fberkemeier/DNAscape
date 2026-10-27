@@ -21,7 +21,7 @@ from app.simulation_service import ConstantSimulationRequest, ConstantSimulation
 
 
 def _result_for(request: ConstantSimulationRequest) -> ConstantSimulationResult:
-    firing = np.asarray(request.firing_rate, dtype=float).reshape(-1)
+    firing = np.asarray(request.initiation_rate, dtype=float).reshape(-1)
     timing = firing * 10.0
     return ConstantSimulationResult(
         position_kb=np.arange(timing.size, dtype=float),
@@ -146,26 +146,26 @@ def test_simulation_batch_raw_rows_are_independent_and_bulk_uses_each_preference
             await user.should_see("Simulate DNA replication", retries=60)
             firing_mode = cast(
                 Select,
-                next(iter(user.find(marker="source-firing-rate-mode").elements)),
+                next(iter(user.find(marker="source-initiation-rate-mode").elements)),
             )
             assert user.client is not None
             with user.client:
                 firing_mode.set_value("profile")
             uploader = cast(
                 Upload,
-                next(iter(user.find(marker="source-firing-rate-upload").elements)),
+                next(iter(user.find(marker="source-initiation-rate-upload").elements)),
             )
             await uploader.handle_uploads(
                 [
                     Upload.SmallFileUpload(
                         "sample_a.csv",
                         "text/csv",
-                        b"firing_rate\n0.1\n0.2\n0.3\n",
+                        b"initiation_rate\n0.1\n0.2\n0.3\n",
                     ),
                     Upload.SmallFileUpload(
                         "sample_b.csv",
                         "text/csv",
-                        b"firing_rate\n0.4\n0.5\n0.6\n",
+                        b"initiation_rate\n0.4\n0.5\n0.6\n",
                     ),
                 ]
             )

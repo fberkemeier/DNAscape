@@ -99,7 +99,7 @@ def test_initiation_inverse_recovers_hazard_and_masks_completed_dna():
     events = map_initiation_events_xt(firing, fraction)
     result = rmap(
         source={"initiation_events_xt": events, "replicated_fraction_xt": fraction},
-        target="firing_rate", return_info=True,
+        target="initiation_rate", return_info=True,
     )
     np.testing.assert_allclose(result["values"][:, :-1], firing[:, :-1])
     assert np.isnan(result["values"][:, -1]).all()
@@ -258,7 +258,7 @@ def test_fraction_validation_rejects_nonfields_missing_and_nonphysical_values(ba
 )))
 def test_density_summaries_match_field_integrals(member, dependence, source_kind):
     time = np.array([0., 1., 3., 6., 10.])
-    source = {"firing_rate": np.linspace(.01, .04, 6), "fork_speed": 1.4}
+    source = {"initiation_rate": np.linspace(.01, .04, 6), "fork_speed": 1.4}
     bundle = map_fork_densities_xt(**source, time_grid=time)
     field = bundle[member]
     payload = ({member: field} if source_kind == "field" else

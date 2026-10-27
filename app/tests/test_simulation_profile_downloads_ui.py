@@ -64,9 +64,9 @@ def test_overlay_downloads_and_profile_retention_do_not_pollute_cache(monkeypatc
             assert user.client is not None
             with user.client:
                 control("simulation-individual-profile-count").set_value(3)
-                control("source-firing-rate-mode").set_value("profile")
-            await user.should_see(marker="source-firing-rate-upload", retries=30)
-            await control("source-firing-rate-upload").handle_uploads([
+                control("source-initiation-rate-mode").set_value("profile")
+            await user.should_see(marker="source-initiation-rate-upload", retries=30)
+            await control("source-initiation-rate-upload").handle_uploads([
                 Upload.SmallFileUpload(f"firing_{i}.tsv", "text/tab-separated-values", b"signal\n0.01\n0.02\n0.01\n0.02\n")
                 for i in range(datasets)
             ])

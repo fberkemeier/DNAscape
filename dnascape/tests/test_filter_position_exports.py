@@ -12,6 +12,21 @@ from dnascape.workflows.export_settings import preview_point_limit
 from dnascape.workflows.uploads import inspect_upload
 
 
+def test_complement_is_bounded_by_configured_region_and_exported_as_positions_or_intervals():
+    result = convert_data(DataConversionRequest(
+        inspection=inspect_upload("signal.tsv", b"signal\n-9\n1\n-2\n3\n-4\n9\n"),
+        input_form="x", profile_binning=True, start=1000, end=5000, bin_size=1000,
+        data_filter=DataFilterSettings(enabled=True, complement=True, value=7),
+    ))
+    np.testing.assert_equal(result.preview.values, [7, -2, 7, -4])
+    assert result.shape == (4,)
+    assert dict(result.metadata)["filter_complement"] == "true"
+    positions = filter_positions_artifact(result, output_name="complement")
+    assert positions.data == b"1000\n3000\n"
+    intervals = filter_positions_artifact(result, output_name="complement", layout="intervals")
+    assert intervals.data == b"1000\t2000\n3000\t4000\n"
+
+
 @pytest.mark.parametrize("format_name", ["tsv", "txt", "csv", "npz"])
 @pytest.mark.parametrize("compressed", [False, True])
 def test_positions_export_uses_full_pre_edit_selection_in_all_raw_formats(format_name, compressed):

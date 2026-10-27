@@ -113,7 +113,7 @@ def test_all_mapping_targets_families_forms_and_shapes_render_exact_controls(
             setting.key: setting for setting in route.active_settings(shape, forms)
             if setting.location in {"region", "settings"}
         }
-        if route.target == "firing_rate" and shape == "weibull":
+        if route.target == "initiation_rate" and shape == "weibull":
             assert "fit_step" not in expected_settings
             if "replication_timing" in family.factor_keys:
                 assert {"stall_rate_per_kb", "tau", "perQ"} <= expected_settings.keys()
@@ -121,7 +121,7 @@ def test_all_mapping_targets_families_forms_and_shapes_render_exact_controls(
                 assert "space_maxiter" not in expected_settings
         if route.target == "fork_speed" and route.output_dependence == "time":
             assert "refine_seed" not in expected_settings
-        if route.target == "firing_rate" and "spacetime_order" in expected_settings:
+        if route.target == "initiation_rate" and "spacetime_order" in expected_settings:
             assert expected_settings["spacetime_order"].allowed_values == (
                 "space_then_time", "time_then_space",
             )
@@ -136,7 +136,7 @@ def test_all_mapping_targets_families_forms_and_shapes_render_exact_controls(
 
         expected_markers = {f"mapping-setting-{_slug(key)}" for key in expected_settings}
         assert not route.single_phase_fit_aliases.keys() & actual_controls.keys()
-        if route.target == "firing_rate" and route.output_dependence in {"constant", "space"}:
+        if route.target == "initiation_rate" and route.output_dependence in {"constant", "space"}:
             key = "deviation_threshold" if route.output_dependence == "space" else "neighbourhood_range"
             if key in actual_controls:
                 expected_active = forms.get("fork_speed") not in {"x", "t", "xt"}
@@ -169,7 +169,7 @@ def test_all_mapping_targets_families_forms_and_shapes_render_exact_controls(
                     "mapping-settings-fitting", "mapping-settings-simulation", "mapping-settings-advanced",
                 }, (route.method, key)
                 if "mapping-settings-advanced" in section_markers:
-                    assert live.override is None, (route.method, key)
+                    assert (live.override is not None) == (key == "tau"), (route.method, key)
                 if key.endswith("sim_number"):
                     assert live.control.value == 100, (route.method, key)
             if live.automatic:

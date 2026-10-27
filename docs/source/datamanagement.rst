@@ -76,7 +76,7 @@ Save arrays:
 
    from dnascape import rsave
 
-   rsave(firing_rate, "outputs/firing_rate_chr1.tsv", data_form="space")
+   rsave(initiation_rate, "outputs/initiation_rate_chr1.tsv", data_form="space")
    rsave(replicated_fraction, "outputs/replicated_fraction.tsv", data_form="time")
 
 Tracks

@@ -23,8 +23,11 @@ class DataFilterControls:
         self, on_loading_change: Callable[[], None], *, title="Filter",
         marker_prefix="data-manager-filter", toggle_label="Apply filter",
         default_selection="threshold", default_action="replace", header: Callable[[], None] | None = None,
-        allow_export: bool = False,
+        allow_export: bool = False, allow_complement: bool = False,
         profile_units: str = "kb", align_modulation_from_start: bool = False,
+        relative_options: dict[str, str] | None = None,
+        on_change: Callable[[], None] | None = None,
+        embedded: bool = False,
     ) -> None:
         self.controls: dict[str, Any] = {}
         self.marker_prefix = marker_prefix
@@ -36,13 +39,21 @@ class DataFilterControls:
         self._loading_count = 0
         self._locked_states: dict[str, bool] = {}
         self._on_loading_change = on_loading_change
-        with ui.expansion(title, icon="filter_alt", value=False).props("dense").classes("dn-expansion").mark(marker_prefix):
-            with ui.column().classes("dn-expansion-content dn-data-filter"):
+        section = (ui.column().classes('dn-data-filter-embedded') if embedded else
+                   ui.expansion(title, icon="filter_alt", value=False).props("dense").classes("dn-expansion"))
+        with section.mark(marker_prefix):
+            if embedded:
+                ui.label(title).classes('dn-setting-group-title')
+            with ui.column().classes("dn-data-filter" + ("" if embedded else " dn-expansion-content")):
+                if relative_options is not None:
+                    self._select('relative_to', 'Relative to', relative_options, next(iter(relative_options), None))
                 with ui.row().classes("dn-inline-actions"):
                     self._mark("enabled", ui.switch(toggle_label, value=False))
                     if allow_export:
                         self._mark("export", ui.switch("Export filter", value=False))
                         self.controls["export"].bind_enabled_from(self.controls["enabled"], "value")
+                    if allow_complement:
+                        self._mark("complement", ui.switch("Complement region", value=False))
                 with ui.column().classes("dn-data-filter-options"):
                     if header is not None:
                         header()
@@ -102,6 +113,10 @@ class DataFilterControls:
         for key in ("selection", "action", "modulation_column", "modulation_array"):
             self.controls[key].on_value_change(self._sync)
         self._sync()
+        if on_change is not None:
+            for control in self.controls.values():
+                if hasattr(control, 'on_value_change'):
+                    control.on_value_change(on_change)
 
     def _mark(self, name: str, control):
         self.controls[name] = control.mark(f"{self.marker_prefix}-{name.replace('_', '-')}")
@@ -115,6 +130,8 @@ class DataFilterControls:
 
     def _sync(self) -> None:
         selection, action = self.controls["selection"].value, self.controls["action"].value
+        if 'relative_to' in self.controls:
+            self.controls['relative_to'].set_visibility(selection not in {'profile', 'all'})
         self._threshold_group.set_visibility(selection in {"threshold", "minimum", "maximum"})
         self._between_group.set_visibility(selection == "between")
         self._profile_group.set_visibility(selection == "profile")
@@ -200,9 +217,9 @@ class DataFilterControls:
         self._sync()
 
     def set_locked(self, locked: bool):
+        if locked:
+            self._locked_states = {name: control.enabled for name, control in self.controls.items()}
         for name, control in self.controls.items():
-            if locked:
-                self._locked_states[name] = control.enabled
             if name in {"uploader", "modulation_uploader"}:
                 set_data_upload_locked(control, locked)
             elif locked:
@@ -217,6 +234,7 @@ class DataFilterControls:
             enabled=bool(value("enabled")), selection=value("selection"), comparison=value("comparison"),
             threshold=value("threshold"), lower=value("lower"), upper=value("upper"), action=action,
             between_mode=value("between_mode"),
+            complement=bool(value("complement")) if "complement" in self.controls else False,
             value=value({"multiply": "factor", "add": "offset"}.get(action, "replace_value")),
             standard_deviation=value("standard_deviation"), seed=value("seed"),
             interpolation=value("interpolation"), reference=value("reference"),

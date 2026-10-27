@@ -168,7 +168,7 @@ def test_optional_mapping_html_keeps_the_exact_chart_specification(tmp_path: Pat
 
 def test_input_plot_recipe_uses_profile_dependence_instead_of_target(tmp_path: Path) -> None:
     result = _result()
-    key = "input:firing_rate"
+    key = "input:initiation_rate"
     values = np.asarray([0.1, 0.2, 0.3])
     result = replace(
         result, output_dependence="ensemble",
@@ -522,7 +522,7 @@ def test_zero_based_profiles_end_at_the_last_coordinate_without_an_extra_tick(ki
         plot_type=kind, title="Rate", x_label="Position (kb)", y_label="Time (min)",
         color="#b03412", palette="viridis", histogram_bins=10, density=False,
         show_legend=False, show_colorbar=False, log_y=False, invert_y=False,
-        y_limits=None, series_label="Firing rate",
+        y_limits=None, series_label="Initiation rate",
     )
     for count in (10_000, 10_001, 10_003):
         axis = np.arange(float(count))
@@ -617,7 +617,7 @@ def test_rendered_y_axis_titles_stay_inside_all_preview_sizes(tmp_path: Path) ->
                     ))
     specifications.append(build_preview_plot_options(
         plot_type="Line", title="Two datasets", x_label="Position (kb)", y_label="Timing\n(minutes)",
-        secondary_y_label="Firing rate\n(per kb per min)", color="#b03412", palette="viridis",
+        secondary_y_label="Initiation rate\n(per kb per min)", color="#b03412", palette="viridis",
         histogram_bins=10, density=False, show_legend=True, show_colorbar=False,
         log_y=False, invert_y=False, y_limits=None, line_type="dashed", invert_x=True,
         series_label="Timing",

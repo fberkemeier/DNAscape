@@ -209,7 +209,7 @@ def write_plot_html(
     return destination
 
 _OUTPUT_LABELS = {
-    "firing_rate": "Firing rate",
+    "initiation_rate": "Initiation rate",
     "fork_speed": "Fork speed",
     "replication_timing": "Replication timing",
     "replication_timing_fit": "Replication timing fit",
@@ -221,6 +221,10 @@ _OUTPUT_LABELS = {
     "right_fork_density_xt": "Right-moving fork density",
     "left_fork_density_xt": "Left-moving fork density",
     "fork_density_xt": "Total fork density",
+    "initiation_events": "Initiation density (events/kb)",
+    "initiation_events_xt": "Initiation rate density (events/kb/min)",
+    "coalescence_events": "Coalescence density (events/kb)",
+    "coalescence_events_xt": "Coalescence rate density (events/kb/min)",
 }
 
 
@@ -297,7 +301,7 @@ def mapping_plot_options(
     density: bool = False,
     show_legend: bool = True,
     legend_position: str = "Top right",
-    show_grid: bool = True,
+    show_grid: bool = False,
     y_limits: tuple[float, float] | None = None,
     secondary_color: str = "#2596be",
     log_x: bool = False,
@@ -319,7 +323,7 @@ def mapping_plot_options(
     """Build a bounded ECharts view for scalar, X, T, XT, and bundle outputs.
 
     Observed profiles always display only their supplied bins. A smooth
-    periodic firing-rate fit also shows its model value at the period end;
+    periodic initiation-rate fit also shows its model value at the period end;
     this closes the model curve without changing observations or raw arrays.
     """
 
@@ -561,7 +565,7 @@ def mapping_plot_options(
     else:
         axis = _result_axis(result, kind=axis_kind, length=flattened.size)
     if (
-        output_key == "firing_rate" and output_form == "x" and axis.size > 1
+        output_key == "initiation_rate" and output_form == "x" and axis.size > 1
         and bool(getattr(result, "assumptions", {}).get("perQ", False))
         and float(getattr(result, "diagnostics", {}).get("fit_periodic_smoothing_kb", 0.)) > 0
     ):

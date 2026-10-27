@@ -10,6 +10,7 @@ from nicegui.elements.input import Input
 from nicegui.elements.label import Label
 from nicegui.elements.number import Number
 from nicegui.elements.select import Select
+from nicegui.elements.switch import Switch
 from nicegui.elements.upload import Upload
 from nicegui.testing import user_simulation
 
@@ -103,7 +104,7 @@ async def _assert_family_surface(user: Any, family: MappingRouteFamily) -> Mappi
             {"profile": "Profile"} if set(allowed) & {"x", "t", "xt"} else {}
         )
         if "scalar" in allowed and input_spec.key.removesuffix("_xt") in {
-            "firing_rate",
+            "initiation_rate",
             "fork_speed",
         }:
             expected_types = {
@@ -138,35 +139,34 @@ async def _assert_setting_present(user: Any, route: MappingRoute, key: str) -> N
 
 
 def test_expensive_mapping_settings_start_with_interactive_effort() -> None:
-    route = mapping_route("timing_and_speed_to_spacetime_firing_rate")
+    route = mapping_route("timing_and_speed_to_spacetime_initiation_rate")
     defaults = {item.key: _setting_value(item) for item in route.active_settings()}
     assert defaults["maxiter"] == 20
     assert defaults["alpha_smooth"] == 0.1
 
-    single_simulation = mapping_route("firing_and_speed_to_timing_simulation")
-    assert next(_setting_value(item) for item in single_simulation.active_settings()
-                if item.key == "sim_number") == 100
+    deterministic = mapping_route("firing_and_speed_to_timing_deterministic")
+    assert not deterministic.settings_for("simulation")
 
 
 def test_spatial_kinetic_targets_only_show_complete_factor_routes() -> None:
-    firing = _mapping_route_families_for_ui("firing_rate", "space")
+    firing = _mapping_route_families_for_ui("initiation_rate", "space")
     speed = _mapping_route_families_for_ui("fork_speed", "space")
 
     assert tuple(family.factor_keys for family in firing) == (
         ("replication_timing", "fork_speed"),
     )
     assert tuple(family.factor_keys for family in speed) == (
-        ("replication_timing", "firing_rate"),
+        ("replication_timing", "initiation_rate"),
         ("replication_timing", "fork_directionality"),
     )
     # The convenience wrapper shares the complete visible factor family.
     assert any(
         "timing_to_firing_constant_fork_speed" in family.methods
-        for family in mapping_route_families("firing_rate", "space")
+        for family in mapping_route_families("initiation_rate", "space")
     )
 
 
-def test_every_fork_speed_route_promises_the_same_fit_diagnostics_as_firing_rate() -> None:
+def test_every_fork_speed_route_promises_the_same_fit_diagnostics_as_initiation_rate() -> None:
     expected_tail = (
         "replication_timing_fit",
         "comparison:replication_timing_fit",
@@ -195,7 +195,7 @@ def test_live_spatial_kinetic_route_picker_keeps_every_complete_route() -> None:
                 assert route.options == {expected_key: expected_label}
                 assert route.value == expected_key
 
-            firing_key = "firing_rate--space--replication_timing-and-fork_speed"
+            firing_key = "initiation_rate--space--replication_timing-and-fork_speed"
             await assert_route(firing_key, "Replication timing + Fork speed")
 
             # Move away from and back to Space so the dependence callback, rather
@@ -205,16 +205,16 @@ def test_live_spatial_kinetic_route_picker_keeps_every_complete_route() -> None:
             await assert_route(firing_key, "Replication timing + Fork speed")
             await user.should_see(marker="mapping-input-replication-timing")
             await user.should_see(marker="mapping-input-fork-speed")
-            await user.should_not_see(marker="mapping-input-firing-rate")
+            await user.should_not_see(marker="mapping-input-initiation-rate")
 
-            speed_key = "fork_speed--space--replication_timing-and-firing_rate"
+            speed_key = "fork_speed--space--replication_timing-and-initiation_rate"
             directionality_key = (
                 "fork_speed--space--replication_timing-and-fork_directionality"
             )
             await _set_select(user, "mapping-target", "fork_speed")
             route = _select(user, "mapping-route")
             assert route.options == {
-                speed_key: "Replication timing + Firing rate",
+                speed_key: "Replication timing + Initiation rate",
                 directionality_key: "Replication timing + Fork directionality",
             }
             assert route.value == speed_key
@@ -222,18 +222,18 @@ def test_live_spatial_kinetic_route_picker_keeps_every_complete_route() -> None:
             await _set_select(user, "mapping-target-form", "space")
             route = _select(user, "mapping-route")
             assert route.options == {
-                speed_key: "Replication timing + Firing rate",
+                speed_key: "Replication timing + Initiation rate",
                 directionality_key: "Replication timing + Fork directionality",
             }
             assert route.value == speed_key
             await user.should_see(marker="mapping-input-replication-timing")
-            await user.should_see(marker="mapping-input-firing-rate")
+            await user.should_see(marker="mapping-input-initiation-rate")
             await user.should_not_see(marker="mapping-input-fork-speed")
 
             await _set_select(user, "mapping-route", directionality_key)
             await user.should_see(marker="mapping-input-replication-timing")
             await user.should_see(marker="mapping-input-fork-directionality")
-            await user.should_not_see(marker="mapping-input-firing-rate")
+            await user.should_not_see(marker="mapping-input-initiation-rate")
             await _assert_setting_present(
                 user,
                 mapping_route("timing_and_directionality_to_spatial_fork_speed"),
@@ -262,7 +262,7 @@ def test_mapping_target_dependence_route_and_form_selectors_follow_the_catalog()
 
             target_control = _select(user, "mapping-target")
             preferred_targets = (
-                "firing_rate", "fork_speed", "replication_timing",
+                "initiation_rate", "fork_speed", "replication_timing",
                 "fork_directionality", "fork_densities",
             )
             assert _option_keys(target_control) == (
@@ -275,16 +275,13 @@ def test_mapping_target_dependence_route_and_form_selectors_follow_the_catalog()
                 ),
             )
             assert tuple(target_control.options.values())[:5] == (
-                "Firing rate", "Fork speed", "Replication timing",
+                "Initiation rate", "Fork speed", "Replication timing",
                 "Fork directionality", "Fork densities",
             )
-            assert tuple(target_control.options.values())[-4:] == (
-                "Inter-origin distance (sim)", "S-phase duration (sim)",
-                "Completion time (sim)", "Number of origins (sim)",
-            )
+            assert not any("(sim)" in label for label in target_control.options.values())
             assert not {"kinetic_fields", "fork_density"} & target_control.options.keys()
-            assert target_control.value == "firing_rate"
-            initial_family = _mapping_route_families_for_ui("firing_rate", "space")[0]
+            assert target_control.value == "initiation_rate"
+            initial_family = _mapping_route_families_for_ui("initiation_rate", "space")[0]
             await _assert_family_surface(user, initial_family)
 
             with user.scope(marker="scientific-action-dock"):
@@ -303,7 +300,7 @@ def test_mapping_target_dependence_route_and_form_selectors_follow_the_catalog()
             assert _select(user, "mapping-target-form")._props["label"] == "Dependence"
 
             variable_dependences = ("constant", "space", "time", "spacetime")
-            for target_key in ("firing_rate", "fork_speed"):
+            for target_key in ("initiation_rate", "fork_speed"):
                 await _set_select(user, "mapping-target", target_key)
                 dependence_control = _select(user, "mapping-target-form")
                 assert _option_keys(dependence_control) == variable_dependences
@@ -325,7 +322,7 @@ def test_mapping_target_dependence_route_and_form_selectors_follow_the_catalog()
                     )
                     await _assert_family_surface(user, families[0])
 
-                    if target_key == "firing_rate" and dependence in {"time", "spacetime"}:
+                    if target_key == "initiation_rate" and dependence in {"time", "spacetime"}:
                         await user.should_not_see(marker="mapping-target-shape-field")
                         shape_control = _select(user, "mapping-target-shape")
                         assert _option_keys(shape_control) == ("weibull",)
@@ -334,7 +331,7 @@ def test_mapping_target_dependence_route_and_form_selectors_follow_the_catalog()
                         await user.should_not_see(marker="mapping-target-shape-field")
 
             # Exercise the polymorphic input itself, not merely the catalogue metadata.
-            await _set_select(user, "mapping-target", "firing_rate")
+            await _set_select(user, "mapping-target", "initiation_rate")
             await _set_select(user, "mapping-target-form", "time")
             speed_form = _select(user, "mapping-input-fork-speed-form")
             assert _option_keys(speed_form) == ("scalar", "x", "t", "xt")
@@ -387,39 +384,16 @@ def test_mapping_route_switches_remove_stale_inputs_and_render_special_sources(
             assert _option_keys(directionality_form) == ("x",)
             assert "scalar" not in directionality_form.options
 
-            # A prepared bundle is one canonical biological factor, not an _xt route label.
+            # Directionality exposes timing or kinetic inputs, never fork densities.
             await _set_select(user, "mapping-target", "fork_directionality")
-            bundle_method = "fork_density_bundle_to_directionality_time_integrated"
-            bundle_family = _family_for_method(bundle_method)
-            await _set_select(user, "mapping-route", bundle_family.key)
-            await _assert_family_surface(user, bundle_family)
-            await user.should_see(marker="mapping-input-fork-densities-prepared")
-            await user.should_see(marker="mapping-input-fork-densities-prepared-select")
-            await user.should_not_see(marker="source-fork-densities-upload")
-            await user.should_not_see(marker="mapping-input-fork-directionality")
-            await user.should_not_see(marker="mapping-input-fork-speed")
-
-            # X and XT directional densities share a family and mutually constrain forms.
-            field_method = "fork_density_fields_to_directionality_time_integrated"
-            density_family = _family_for_method(field_method)
-            await _set_select(user, "mapping-route", density_family.key)
-            await _assert_family_surface(user, density_family)
-            await user.should_not_see(marker="mapping-input-fork-densities")
-            for marker in ("right-fork-density", "left-fork-density"):
-                await user.should_see(marker=f"mapping-input-{marker}")
-                assert _select(user, f"mapping-input-{marker}-form").value == "x"
-
-            await _set_select(user, "mapping-input-right-fork-density-form", "xt")
-            left_form = _select(user, "mapping-input-left-fork-density-form")
-            assert _option_keys(left_form) == ("x", "xt")
-            assert left_form.value == "xt"
-            for marker in ("right-fork-density", "left-fork-density"):
-                await user.should_not_see(marker=f"mapping-input-{marker}-shape-guidance")
-
-            await _set_select(user, "mapping-input-left-fork-density-form", "x")
-            right_form = _select(user, "mapping-input-right-fork-density-form")
-            assert _option_keys(right_form) == ("x", "xt")
-            assert right_form.value == "x"
+            family = _family_for_method("firing_and_speed_to_directionality_deterministic")
+            await _set_select(user, "mapping-route", family.key)
+            await _assert_family_surface(user, family)
+            await user.should_see(marker="mapping-input-initiation-rate")
+            await user.should_see(marker="mapping-input-fork-speed")
+            await user.should_not_see(marker="mapping-input-fork-densities-prepared")
+            await user.should_not_see(marker="mapping-input-right-fork-density")
+            await user.should_not_see(marker="mapping-input-left-fork-density")
 
             # Target/dependence changes replace the whole family state without stale cards.
             await _set_select(user, "mapping-target", "origin_efficiency")
@@ -548,7 +522,7 @@ def test_mapping_import_controls_follow_rdata_forms_and_track_semantics() -> Non
 
             # Profile uploads are auto-detected, so the surface accepts every
             # profile format available to the route family.
-            await _set_select(user, "mapping-target", "firing_rate")
+            await _set_select(user, "mapping-target", "initiation_rate")
             await _set_select(user, "mapping-target-form", "time")
             await _set_select(user, "mapping-input-fork-speed-form", "t")
             await user.should_not_see(marker="mapping-input-fork-speed-interpretation")
@@ -629,25 +603,9 @@ def test_mapping_import_controls_follow_rdata_forms_and_track_semantics() -> Non
                 )
                 assert "__all__" in options
 
-            # Even a one-factor route accepts several complete matrix datasets.
-            await _set_select(user, "mapping-target", "initiation_pdf")
-            await _set_select(user, "mapping-target-form", "spacetime")
-            single_input_family = _family_for_method(
-                "initiation_events_xt_to_initiation_pdf_xt_normalized"
-            )
-            await _set_select(user, "mapping-route", single_input_family.key)
-            single_upload = next(
-                element
-                for element in user.find(marker="source-initiation-events-upload").elements
-                if not element.is_deleted
-            )
-            assert "max-files" not in single_upload._props
-            assert single_upload._props["multiple"] is True
-            assert ".bedgraph" not in single_upload._props["accept"]
-            assert ".bw" not in single_upload._props["accept"]
-            await user.should_not_see(
-                marker="mapping-input-initiation-events-multiple-track-guidance"
-            )
+            # Probability-density targets are reserved for Simulation.
+            assert "initiation_pdf" not in _option_keys(_select(user, "mapping-target"))
+            assert "coalescence_pdf" not in _option_keys(_select(user, "mapping-target"))
 
     asyncio.run(scenario())
 
@@ -674,7 +632,7 @@ def test_compatible_target_and_output_changes_retain_uploaded_profiles() -> None
             await user.should_see("timing.csv", retries=20)
             assert _select(user, "mapping-input-replication-timing-form").value == "x"
 
-            # All firing-rate output forms use the same timing profile.
+            # All initiation-rate output forms use the same timing profile.
             await _set_select(user, "mapping-target-form", "constant")
             await user.should_see("timing.csv", retries=20)
             await user.should_see(
@@ -691,7 +649,7 @@ def test_compatible_target_and_output_changes_retain_uploaded_profiles() -> None
     asyncio.run(scenario())
 
 
-def test_whole_region_updates_boundaries_on_upload_and_bin_width_changes() -> None:
+def test_whole_region_updates_on_upload_and_keeps_extent_when_bin_width_changes() -> None:
     async def scenario() -> None:
         async with user_simulation(index) as user:
             await user.open("/")
@@ -723,13 +681,13 @@ def test_whole_region_updates_boundaries_on_upload_and_bin_width_changes() -> No
             resolution = cast(Number, next(iter(user.find(marker="mapping-setting-resolution").elements)))
             with user.client:
                 resolution.set_value(2.0)
-            assert end.value == 14.0
+            assert end.value == 7.0
 
             await uploader.handle_uploads([
                 Upload.SmallFileUpload("timing.tsv", "text/tab-separated-values", b"timing\n8\n7\n9\n"),
             ])
             await user.should_see("Array size: 3 x 1", retries=20)
-            assert end.value == 6.0
+            assert end.value == 3.0
             user.find(marker="mapping-whole-region").click()
             assert not start._props.get("disable", False)
             assert not end._props.get("disable", False)
@@ -755,27 +713,27 @@ def test_whole_region_uses_shortest_spatial_input_and_ignores_temporal_inputs() 
             await user.open("/")
             user.find(marker="nav-mapping").click()
             await _set_select(user, "mapping-target", "fork_speed")
-            await _set_select(user, "mapping-input-firing-rate-form", "x")
+            await _set_select(user, "mapping-input-initiation-rate-form", "x")
             timing_upload = cast(Upload, next(iter(user.find(marker="source-replication-timing-upload").elements)))
             await timing_upload.handle_uploads([
                 Upload.SmallFileUpload("timing.tsv", "text/tab-separated-values", b"timing\n8\n7\n9\n6\n5\n4\n"),
             ])
             await user.should_see(marker="mapping-input-replication-timing-detected-data", retries=20)
-            firing_upload = cast(Upload, next(iter(user.find(marker="source-firing-rate-upload").elements)))
+            firing_upload = cast(Upload, next(iter(user.find(marker="source-initiation-rate-upload").elements)))
             payload = io.BytesIO()
             np.save(payload, np.full(4, 0.001))
             await firing_upload.handle_uploads([
                 Upload.SmallFileUpload("firing.npy", "application/octet-stream", payload.getvalue()),
             ])
-            await user.should_see(marker="mapping-input-firing-rate-detected-data", retries=20)
+            await user.should_see(marker="mapping-input-initiation-rate-detected-data", retries=20)
             user.find("Region").click()
             user.find(marker="mapping-whole-region").click()
             end = cast(Number, next(iter(user.find(marker="mapping-region-end").elements)))
             assert end.value == 4.0
-            await _set_select(user, "mapping-input-firing-rate-form", "t")
+            await _set_select(user, "mapping-input-initiation-rate-form", "t")
             assert end.value == 6.0
-            await _set_select(user, "mapping-input-firing-rate-form", "xt")
-            firing_upload = cast(Upload, next(iter(user.find(marker="source-firing-rate-upload").elements)))
+            await _set_select(user, "mapping-input-initiation-rate-form", "xt")
+            firing_upload = cast(Upload, next(iter(user.find(marker="source-initiation-rate-upload").elements)))
             payload = io.BytesIO()
             np.save(payload, np.full((3, 5), 0.001))
             await firing_upload.handle_uploads([
@@ -823,24 +781,33 @@ def test_mapping_settings_refresh_to_only_assumptions_accepted_by_the_route() ->
             user.find("Mapping settings").click()
 
             fitting = next(iter(user.find(marker="mapping-settings-fitting").elements))
-            simulation = next(iter(user.find(marker="mapping-settings-simulation").elements))
-            assert fitting.parent_slot.children[:2] == [fitting, simulation]
+            await user.should_not_see(marker="mapping-settings-simulation")
             settings = next(iter(user.find(marker="mapping-settings").elements))
             settings_container = settings.parent_slot.parent
             show_plot = next(iter(user.find(marker="mapping-show-plot").elements))
             advanced = next(iter(user.find(marker="mapping-settings-advanced").elements))
-            assert show_plot.parent_slot.parent.parent_slot.parent is advanced
+            whole_region = next(iter(user.find(marker="mapping-whole-region").elements))
+            periodic = next(iter(user.find(marker="mapping-setting-perq").elements))
+            assert all(isinstance(control, Switch) for control in (whole_region, periodic, show_plot))
+            scope = show_plot.parent_slot.parent
+            assert whole_region.parent_slot.parent is scope
+            assert scope.default_slot.children[-1] is show_plot
+            assert periodic.parent_slot.parent.parent_slot.parent is scope.default_slot.children[1]
+            fork_movement = next(iter(user.find(marker="mapping-settings-fork-movement").elements))
+            assert fork_movement.parent_slot.parent.parent_slot.parent is advanced
             primary = settings_container.parent_slot.parent
             assert primary.parent_slot is advanced.parent_slot
             assert primary.parent_slot.children.index(primary) < advanced.parent_slot.children.index(advanced)
             iterations = next(iter(user.find(marker="mapping-setting-maxiter").elements))
             step = next(iter(user.find(marker="mapping-setting-fit-step").elements))
-            assert iterations.parent_slot.parent.parent_slot.children.index(
-                iterations.parent_slot.parent,
-            ) < step.parent_slot.parent.parent_slot.children.index(step.parent_slot.parent)
+            assert iterations.parent_slot.parent.parent_slot.parent is step.parent_slot.parent.parent_slot.parent
+            assert iterations.parent_slot.parent.parent_slot.children[:2] == [
+                iterations.parent_slot.parent, step.parent_slot.parent,
+            ]
+            assert "dn-mapping-settings-grid" in iterations.parent_slot.parent.parent_slot.parent._classes
 
             # Default route is a fit: expose fit controls, not unrelated PDE/simulation ones.
-            route = mapping_route("timing_and_speed_to_firing_rate")
+            route = mapping_route("timing_and_speed_to_initiation_rate")
             for key in ("fit_step", "maxiter", "neighbourhood_range", "err_threshold"):
                 await _assert_setting_present(user, route, key)
             for marker in ("seed", "geometry", "cfl", "region-names"):
@@ -848,7 +815,6 @@ def test_mapping_settings_refresh_to_only_assumptions_accepted_by_the_route() ->
             for category, title in (
                 ("advanced", "Advanced"),
                 ("fitting", "Fitting"),
-                ("simulation", "Simulation"),
             ):
                 group = next(iter(user.find(marker=f"mapping-settings-{category}").elements))
                 header = cast(Label, group.default_slot.children[0])
@@ -856,21 +822,14 @@ def test_mapping_settings_refresh_to_only_assumptions_accepted_by_the_route() ->
                 assert "dn-setting-group-title" in header._classes
 
             await _set_select(user, "mapping-target", "replication_timing")
-            timing_family = _family_for_method("firing_and_speed_to_timing_simulation")
+            timing_family = _family_for_method("firing_and_speed_to_timing_deterministic")
             assert _select(user, "mapping-route").value == timing_family.key
-            # Scalar inputs resolve to the deterministic implementation; a temporal
-            # firing rate can only resolve to the registered simulation method.
-            await user.should_see(marker="mapping-setting-neighbourhood-range")
-            await user.should_not_see(marker="mapping-setting-seed")
-            await _set_select(user, "mapping-input-firing-rate-form", "t")
-            route = mapping_route("firing_and_speed_to_timing_simulation")
-            for key in ("sim_number", "stall_rate_per_kb", "seed", "geometry"):
-                await _assert_setting_present(user, route, key)
-            await _assert_setting_present(user, route, "tau")
-            await user.should_see("Stall recovery")
-            await user.should_not_see("Infinity")
-            for marker in ("fit-step", "maxiter", "cfl", "region-names"):
-                await user.should_not_see(marker=f"mapping-setting-{marker}")
+            # Every kinetic dependence uses deterministic forward timing.
+            await _set_select(user, "mapping-input-initiation-rate-form", "t")
+            route = mapping_route("firing_and_speed_to_timing_deterministic")
+            await _assert_setting_present(user, route, "perQ")
+            for key in ("sim-number", "seed", "tau", "geometry", "stall-rate-per-kb"):
+                await user.should_not_see(marker=f"mapping-setting-{key}")
 
             await _set_select(user, "mapping-target", "replicated_fraction")
             await _set_select(user, "mapping-target-form", "spacetime")
@@ -879,19 +838,16 @@ def test_mapping_settings_refresh_to_only_assumptions_accepted_by_the_route() ->
             )
             assert _select(user, "mapping-route").value == fraction_family.key
             route = mapping_route("firing_and_speed_to_replicated_fraction_xt_lightcone")
-            for key in ("resolution", "resolution_time", "time_grid", "max_time"):
+            for key in ("resolution", "resolution_time", "time_grid"):
                 await _assert_setting_present(user, route, key)
-            maximum_time = next(iter(user.find(marker="mapping-setting-max-time").elements))
-            assert maximum_time.value == 1200.0
+            await user.should_not_see(marker="mapping-setting-max-time")
             await user.should_not_see(marker="mapping-setting-max-time-override")
             for marker in ("sim-number", "fit-step", "cfl", "region-names"):
                 await user.should_not_see(marker=f"mapping-setting-{marker}")
 
             await _set_select(user, "mapping-target", "fork_densities")
             density_route = mapping_route("firing_and_speed_to_directional_fork_densities_xt_mean_field")
-            await _assert_setting_present(user, density_route, "max_time")
-            maximum_time = next(iter(user.find(marker="mapping-setting-max-time").elements))
-            assert maximum_time.value == 1200.0
+            await user.should_not_see(marker="mapping-setting-max-time")
             await user.should_not_see(marker="mapping-setting-max-time-override")
 
             await _set_select(user, "mapping-target", "coalescence_events")
@@ -918,15 +874,9 @@ def test_mapping_settings_refresh_to_only_assumptions_accepted_by_the_route() ->
             await user.should_not_see(marker="mapping-setting-fit-step")
 
             await _set_select(user, "mapping-target", "fork_directionality")
-            density_family = _family_for_method(
-                "fork_density_fields_to_directionality_time_integrated"
-            )
-            await _set_select(user, "mapping-route", density_family.key)
-            await _set_select(user, "mapping-input-right-fork-density-form", "xt")
-            route = mapping_route("fork_density_fields_to_directionality_time_integrated")
-            await _assert_setting_present(user, route, "resolution_time")
-            await _assert_setting_present(user, route, "time_grid")
-            for marker in ("sim-number", "fit-step", "cfl", "region-names"):
+            family = _family_for_method("firing_and_speed_to_directionality_deterministic")
+            await _set_select(user, "mapping-route", family.key)
+            for marker in ("sim-number", "stall-rate-per-kb", "fit-step", "cfl", "region-names"):
                 await user.should_not_see(marker=f"mapping-setting-{marker}")
 
     asyncio.run(scenario())
@@ -939,8 +889,8 @@ def test_defaulted_speed_is_visible_in_one_complete_route_in_the_ui() -> None:
             user.find(marker="nav-mapping").click()
             await user.should_see(marker="mapping-target", retries=60)
             await _set_select(user, "mapping-target", "replication_timing")
-            family = _family_for_method("firing_to_timing_simulation")
-            assert family is _family_for_method("firing_and_speed_to_timing_simulation")
+            family = _family_for_method("firing_to_timing_deterministic")
+            assert family is _family_for_method("firing_and_speed_to_timing_deterministic")
             await _set_select(user, "mapping-route", family.key)
 
             await user.should_not_see(marker="mapping-input-fork-speed-override")
@@ -953,16 +903,9 @@ def test_defaulted_speed_is_visible_in_one_complete_route_in_the_ui() -> None:
             )
             assert constant.value == 1.4
 
-            calculation = _select(user, "mapping-calculation")
-            assert calculation.options == {
-                "deterministic": "Deterministic", "simulation": "Simulation",
-            }
-            assert calculation.value == "deterministic"
+            await user.should_not_see(marker="mapping-calculation")
             await user.should_not_see(marker="mapping-setting-sim-number")
-            await _set_select(user, "mapping-calculation", "simulation")
-            await _assert_setting_present(user, mapping_route("firing_and_speed_to_timing_simulation"), "sim_number")
-            await _set_select(user, "mapping-calculation", "deterministic")
-            await user.should_not_see(marker="mapping-setting-sim-number")
+            await user.should_not_see(marker="mapping-setting-stall-rate-per-kb")
 
     asyncio.run(scenario())
 
@@ -973,9 +916,9 @@ def test_firing_target_shape_only_exposes_compatible_weibull_settings() -> None:
             await user.open("/")
             user.find(marker="nav-mapping").click()
             await user.should_see(marker="mapping-target", retries=60)
-            await _set_select(user, "mapping-target", "firing_rate")
+            await _set_select(user, "mapping-target", "initiation_rate")
             await _set_select(user, "mapping-target-form", "time")
-            family = _family_for_method("timing_and_speed_to_time_firing_rate")
+            family = _family_for_method("timing_and_speed_to_time_initiation_rate")
             await _set_select(user, "mapping-route", family.key)
             user.find("Mapping settings").click()
 
@@ -1026,25 +969,25 @@ def test_mapping_preview_and_raw_filename_follow_the_selected_output() -> None:
                 next(iter(user.find(marker="mapping-preview-x-label").elements)),
             )
             view = _select(user, "mapping-view")
-            assert output.value == "firing_rate"
+            assert output.value == "initiation_rate"
             assert output.enabled is True
             assert isinstance(output.options, dict)
-            assert output.options["firing_rate"] == "Firing rate (target)"
+            assert output.options["initiation_rate"] == "Initiation rate (target)"
             assert _option_keys(output) == (
-                "firing_rate",
+                "initiation_rate",
                 "replication_timing_fit",
                 "comparison:replication_timing_fit",
                 "fit_diagnostic",
                 "mse_diagnostic",
             )
-            assert raw_name.value == "rmap_fr"
+            assert raw_name.value == "rmap_ir"
 
             await _set_select(
                 user,
                 "mapping-preview-output",
                 "comparison:replication_timing_fit",
             )
-            assert view.enabled is False
+            assert view.enabled is True
             assert x_label.value == "Position (kb)"
             assert y_label.value == "Replication timing"
             assert raw_name.value == "rmap_rt-cmp"
@@ -1064,9 +1007,9 @@ def test_mapping_preview_and_raw_filename_follow_the_selected_output() -> None:
             assert y_label.value == "Time (min)"
             assert view.value == "Default"
 
-            await _set_select(user, "mapping-target", "firing_rate")
+            await _set_select(user, "mapping-target", "initiation_rate")
             assert _option_keys(output) == (
-                "firing_rate",
+                "initiation_rate",
                 "replication_timing_fit",
                 "comparison:replication_timing_fit",
                 "fit_diagnostic",

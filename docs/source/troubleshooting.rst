@@ -82,7 +82,7 @@ Set ``seed``:
 .. code-block:: python
 
    rsim(
-       source={"firing_rate": firing_rate, "fork_speed": 1.4},
+       source={"initiation_rate": initiation_rate, "fork_speed": 1.4},
        assumptions={"sim_number": 100, "seed": 1, "verbose": False},
    )
 

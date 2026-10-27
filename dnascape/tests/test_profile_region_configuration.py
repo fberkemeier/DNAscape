@@ -35,7 +35,7 @@ def test_native_exports_crop_rebin_then_transform_filter_and_export_positions(fo
     np.testing.assert_equal(prepared.values, [5, 0])
     np.testing.assert_equal(prepared.coordinates["position_kb"], [1, 3])
     result = convert_data(request)
-    np.testing.assert_equal(result.preview.x, [0, 2])
+    np.testing.assert_equal(result.preview.x, [1, 3])
     with np.load(io.BytesIO(result.artifact.data)) as archive:
         np.testing.assert_equal(archive["values"], [5, 0])
     assert filter_positions_artifact(result, output_name="filter").data.strip() == b"3000"

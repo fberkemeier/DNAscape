@@ -33,6 +33,11 @@ from dnascape.workflows.mapping_catalog import (
     mapping_route,
     mapping_target,
 )
+from dnascape.workflows.spatial_grid import resample_spatial, spatial_bin_count
+from dnascape.workflows.mapping_filter import (
+    MappingFilterSettings, MappingFitConstraint, prepare_filter_request,
+    filtered_speed_settings,
+)
 
 ProgressReporter = Callable[[float, str], None]
 CancelChecker = Callable[[], None]
@@ -40,13 +45,13 @@ CancelChecker = Callable[[], None]
 # Interactive limits are intentionally independent of the scientific package.
 # They prevent a malformed upload or a mistyped grid/iteration count from
 # exhausting the browser process while remaining generous for local analyses.
-MAX_INPUT_VALUES = 16_000_000
-MAX_INPUT_BYTES = 128 * 1024 * 1024
-MAX_OUTPUT_VALUES = 24_000_000
-MAX_OUTPUT_BYTES = 192 * 1024 * 1024
+MAX_INPUT_VALUES = 64_000_000
+MAX_INPUT_BYTES = 512 * 1024 * 1024
+MAX_OUTPUT_VALUES = 128_000_000
+MAX_OUTPUT_BYTES = 1024 * 1024 * 1024
 MAX_SPATIAL_POINTS = 1_000_000
 MAX_TIME_POINTS = 100_000
-MAX_GRID_CELLS = 12_000_000
+MAX_GRID_CELLS = 64_000_000
 MAX_MAPPING_SIMULATIONS = 50_000
 MAX_MAPPING_IOD_SAMPLES = 2_000_000
 MAX_TRACK_UPLOAD_BYTES = 32 * 1024 * 1024
@@ -61,11 +66,14 @@ _FIT_OUTPUT_KEYS = {
     "residual",
 }
 _DIAGNOSTIC_KEYS = {
+    'filter_intervals',
+    'filter_warnings',
     "valid_mask", "unidentifiable_count", "invalid_policy", "converged",
     "convergence_message", "optimizer_evaluations", "unreplicated_at_end",
     "identifiability", "forward_model", "firing_form", "speed_form",
     "regularization", "speed_anchor", "fit_objective", "fit_mse", "fit_used_descent",
     "fit_edge_bins", "fit_taper_bins", "fit_periodic_smoothing_kb",
+    "fork_speed_time_origin", "fork_speed_time_scale",
     "terminal_survival", "extrapolated_tail", "tail_policy", "initial_policy",
     "timing_is_restricted_mean", "clipped_derivative_count", "derivative_method",
     "monotonic_policy", "temporal_smoothw", "density_floor", "unreplicated_floor",
@@ -96,6 +104,11 @@ class MappingRequest:
     (for example ``initiation_events`` for an exact
     ``initiation_events_xt`` input).  Optional defaulted feature inputs are
     omitted unless their override is enabled in the UI.
+
+    Set ``source_resolution_x`` to resample native uploads onto the requested
+    spatial grid (ordinary app uploads use 1 kb). ``initiation_rate_per_bin`` opts
+    into the app/Simulation rate convention; the default retains public rmap's
+    rate density per kb for existing Python callers.
     """
 
     route: MappingRoute
@@ -109,6 +122,11 @@ class MappingRequest:
     resolution_t: float | None = None
     whole_genome: bool = False
     prewindowed_inputs: frozenset[str] = frozenset()
+    # None preserves the public workflow's historical already-binned contract.
+    # The app supplies the native upload spacing, independently of resolution_x.
+    source_resolution_x: float | None = None
+    initiation_rate_per_bin: bool = False
+    fit_filter: MappingFilterSettings = field(default_factory=MappingFilterSettings)
 
 
 @dataclass(frozen=True, slots=True)
@@ -158,6 +176,9 @@ class _PreparedCall:
     resolution_t: float
     spatial_size: int
     input_forms: Mapping[str, DataForm]
+    initiation_rate_per_bin: bool = False
+    end_kb: float | None = None
+    fit_filter: MappingFilterSettings = field(default_factory=MappingFilterSettings)
 
 
 @dataclass(frozen=True, slots=True)
@@ -328,6 +349,8 @@ def _normalise_input(value: Any, input_spec: MappingInput, form: DataForm) -> An
         return float(array.reshape(-1)[0])
     if form == "x":
         squeezed = np.squeeze(array)
+        if squeezed.ndim == 0 and array.size == 1:
+            squeezed = squeezed.reshape(1)
         if squeezed.ndim != 1:
             raise ValueError(f"{label} must be a one-dimensional spatial profile.")
         return _readonly(np.ascontiguousarray(squeezed, dtype=float))
@@ -423,7 +446,7 @@ def _request_resolution_x(request: MappingRequest, route: MappingRoute) -> float
     # Prepared results carry intrinsic coordinates. The previous page's
     # resolution control must not rescale a retained scientific result.
     value = None
-    for supplied in request.inputs.values():
+    for supplied in (() if request.source_resolution_x is not None else request.inputs.values()):
         if isinstance(supplied, Mapping) and "x_array" in supplied:
             axis = np.asarray(supplied["x_array"], dtype=float).reshape(-1)
             if axis.size > 1:
@@ -475,7 +498,7 @@ def _raw_spatial_bins(value: Any, form: DataForm) -> int:
             array = np.squeeze(np.asarray(value))
         except (TypeError, ValueError):
             return 0
-        return int(array.size) if array.ndim == 1 else 0
+        return int(array.size) if array.ndim <= 1 else 0
     if form == "xt":
         try:
             array = np.asarray(value)
@@ -581,6 +604,112 @@ def _slice_spatial_value(
     return value
 
 
+def _resample_spatial_inputs(
+    request: MappingRequest,
+    route: MappingRoute,
+    values: Mapping[str, Any],
+    forms: Mapping[str, DataForm],
+    *,
+    cancel: CancelChecker,
+    prewindowed_inputs: frozenset[str],
+) -> tuple[dict[str, Any], _SpatialSelection | None]:
+    """Keep native upload coordinates separate from the requested fit grid."""
+
+    resolution = _request_resolution_x(request, route)
+    native_resolution = _finite_number(
+        request.source_resolution_x, "Source resolution", positive=True,
+    )
+    spatial: list[tuple[str, Any, DataForm, int, float, float, bool]] = []
+    for key, value in values.items():
+        cancel()
+        form = forms[key]
+        bins = _raw_spatial_bins(value, form)
+        if not bins:
+            continue
+        prewindowed = key in prewindowed_inputs
+        origin = 0.0
+        step = resolution if prewindowed else native_resolution
+        if isinstance(value, Mapping) and "x_array" in value:
+            axis = np.asarray(value["x_array"], dtype=float)
+            if axis.ndim != 1 or axis.size != bins or not np.all(np.isfinite(axis)):
+                raise ValueError(
+                    "The prepared result's position axis does not match its spatial fields."
+                )
+            origin = float(axis[0])
+            if axis.size > 1:
+                step = float(axis[1] - axis[0])
+                if step <= 0 or not np.allclose(np.diff(axis), step):
+                    raise ValueError(
+                        "The prepared result must have a regular, increasing position axis."
+                    )
+        spatial.append((key, value, form, bins, step, origin, prewindowed))
+    if not spatial:
+        return dict(values), None
+    reference = max(
+        (item for item in spatial if not item[6]),
+        key=lambda item: item[3] * item[4], default=spatial[0],
+    )
+    if request.whole_genome:
+        start = max(item[5] for item in spatial)
+        end = min(item[5] + item[3] * item[4] for item in spatial)
+    else:
+        start = (
+            reference[5] if request.region_start_kb is None
+            else _finite_number(request.region_start_kb, "Region start")
+        )
+        end = (
+            reference[5] + reference[3] * reference[4] if request.region_end_kb is None
+            else _finite_number(request.region_end_kb, "Region end")
+        )
+        ordinary = tuple(item for item in spatial if not item[6])
+        if ordinary and len({item[3] * item[4] for item in ordinary}) == 1:
+            # Preserve the existing default-End behaviour for short uploads:
+            # data cannot extend beyond its native extent. Mixed local/genomic
+            # profiles must still cover the complete explicitly selected width.
+            end = min(end, reference[5] + reference[3] * reference[4])
+    count = spatial_bin_count(start, end, resolution)
+    if count > MAX_SPATIAL_POINTS:
+        raise ValueError(
+            "The requested spatial grid exceeds the local limit. "
+            "Increase the resolution or narrow the region."
+        )
+    result = dict(values)
+
+    def rebin(value: Any, *, bins: int, step: float, origin: float, key: str = "") -> Any:
+        cancel()
+        if key in {"time_grid", "time_axis", "fit_history"}:
+            return value
+        if isinstance(value, Mapping):
+            return {
+                str(k): rebin(v, bins=bins, step=step, origin=origin, key=str(k))
+                for k, v in value.items()
+            }
+        if isinstance(value, (str, bytes, bytearray)):
+            return value
+        array = np.asarray(value)
+        if key in {"x_array", "position_kb"} and array.ndim == 1 and array.size == bins:
+            return _readonly(start + np.arange(count, dtype=float) * resolution)
+        if array.ndim in (1, 2) and array.shape[0] == bins:
+            return resample_spatial(
+                array, source_resolution=step, source_start=origin,
+                start=start, end=end, resolution=resolution,
+                max_points=MAX_SPATIAL_POINTS, max_values=MAX_INPUT_VALUES,
+            )
+        return value
+
+    for key, value, form, bins, step, origin, prewindowed in spatial:
+        # Shorter ordinary uploads retain the established local-profile
+        # convention: their first value is at the selected Start.
+        is_local = bins * step < reference[3] * reference[4] and not isinstance(value, Mapping)
+        if not request.whole_genome and (prewindowed or is_local):
+            origin = start
+        if form == "x":
+            result[key] = rebin(np.asarray(value).reshape(-1), bins=bins, step=step, origin=origin)
+        else:
+            result[key] = rebin(value, bins=bins, step=step, origin=origin)
+    return result, _SpatialSelection(start, end, 0, count, reference[3])
+
+
 def _crop_spatial_inputs(
     request: MappingRequest,
     route: MappingRoute,
@@ -598,6 +727,11 @@ def _crop_spatial_inputs(
     profile's length. Mixed-length inputs never silently shorten a window.
     """
 
+    if request.source_resolution_x is not None:
+        return _resample_spatial_inputs(
+            request, route, values, forms, cancel=cancel,
+            prewindowed_inputs=prewindowed_inputs,
+        )
     resolution_x = _request_resolution_x(request, route)
     labels = {item.key: item.label for item in route.inputs}
     spatial_inputs: list[tuple[str, Any, DataForm, int, bool]] = []
@@ -803,8 +937,11 @@ def _normalise_setting(
     elif setting.kind == "number":
         normalized = _finite_number(value, setting.label)
     elif setting.kind == "number_pair":
-        normalized = _parse_number_sequence(value, setting.label)
-        if len(normalized) != 2 or normalized[1] <= normalized[0]:
+        if key in {"rate_bounds", "speed_bounds", "firing_bounds"} and isinstance(value, (tuple, list)):
+            normalized = tuple(None if item is None else _finite_number(item, setting.label, positive=True) for item in value)
+        else:
+            normalized = _parse_number_sequence(value, setting.label)
+        if len(normalized) != 2 or (all(item is not None for item in normalized) and normalized[1] <= normalized[0]):
             raise ValueError(f"{setting.label} must contain increasing lower and upper values.")
     elif setting.kind == "number_list":
         normalized = np.asarray(_parse_number_sequence(value, setting.label), dtype=float)
@@ -900,7 +1037,7 @@ def _apply_domain(
             )
         if explicit_interval is not None:
             explicit_start, explicit_end = map(float, explicit_interval)
-            interval_bins = int(math.ceil((explicit_end - explicit_start) / resolution_x))
+            interval_bins = spatial_bin_count(explicit_start, explicit_end, resolution_x)
             if explicit_start != start or interval_bins != n_bins:
                 raise ValueError(
                     "The explicit genomic interval does not match the uploaded spatial "
@@ -922,7 +1059,11 @@ def _apply_domain(
         # Uploaded X/XT data and their declared resolution are authoritative.
         # The page's default Region end must not silently turn a 64-bin upload
         # into a 1,000-bin request.
-        end = implied_end
+        end = (
+            spatial_selection.end_kb
+            if request.source_resolution_x is not None and spatial_selection is not None
+            else implied_end
+        )
     elif end is not None:
         n_bins = int(math.ceil((end - start) / resolution_x))
     else:
@@ -1036,6 +1177,7 @@ def validate_mapping_request(
 
     check_cancelled = cancel or (lambda: None)
     check_cancelled()
+    request = prepare_filter_request(request)
     if not isinstance(request.route, MappingRoute):
         raise ValueError("Mapping request must contain a resolved mapping route.")
     if not isinstance(request.whole_genome, (bool, np.bool_)):
@@ -1120,12 +1262,16 @@ def validate_mapping_request(
 
     shape = request.target_shape if request.target_shape is not None else route.default_target_shape
     available_shapes = route.shapes_for(raw_forms)
+    if (request.fit_filter.regions.enabled or request.fit_filter.relative_to is not None) and route.target == 'initiation_rate' and route.output_dependence in {'time', 'spacetime'}:
+        available_shapes = (*available_shapes, 'free')
     if shape is not None and shape not in available_shapes:
         choices = ", ".join(available_shapes) or "no configurable shapes"
         raise ValueError(f"Target shape must be one of: {choices} for the selected input forms.")
     if not route.supports_periodic(shape) and request.settings.get("perQ"):
         raise ValueError("The selected target and route support linear geometry only.")
     active_settings = {item.key: item for item in route.active_settings(shape, raw_forms)}
+    if request.fit_filter.regions.enabled and route.target == 'fork_speed' and any(item.key == 'replication_timing' for item in route.inputs):
+        active_settings = {item.key: item for item in filtered_speed_settings(route, active_settings.values())}
     supplied_settings = dict(request.settings)
     for alias, canonical in route.single_phase_fit_aliases.items():
         if alias in supplied_settings:
@@ -1171,6 +1317,9 @@ def validate_mapping_request(
 
     accepted_assumptions = _accepted_assumptions(route)
     geometry = str(assumptions.get("geometry", "")).strip().casefold()
+    if "perQ" in request.settings and "geometry" not in request.settings and "geometry" in accepted_assumptions:
+        geometry = "periodic" if bool(assumptions.get("perQ")) else "linear"
+        assumptions["geometry"] = geometry
     if geometry in {"linear", "periodic"} and "perQ" in accepted_assumptions:
         # Keep the legacy rmap boundary flag explicit in the dispatched request
         # and in MappingResult.assumptions. This mirrors rmap's own geometry
@@ -1200,8 +1349,10 @@ def validate_mapping_request(
         )
 
     if spatial_selection is not None and input_spatial_points:
-        selected_end = spatial_selection.start_kb + input_spatial_points * _request_resolution_x(
-            request, route
+        selected_end = (
+            spatial_selection.end_kb if request.source_resolution_x is not None
+            else spatial_selection.start_kb
+            + input_spatial_points * _request_resolution_x(request, route)
         )
         if "interval_kb" in accepted_assumptions:
             assumptions["interval_kb"] = (spatial_selection.start_kb, selected_end)
@@ -1213,7 +1364,12 @@ def validate_mapping_request(
             assumptions["n_bins"] = input_spatial_points
         if assumptions.get("x_array") is not None:
             explicit_x = np.asarray(assumptions["x_array"])
-            if explicit_x.size == spatial_selection.source_bins:
+            if request.source_resolution_x is not None:
+                assumptions["x_array"] = _readonly(
+                    spatial_selection.start_kb
+                    + np.arange(input_spatial_points) * _request_resolution_x(request, route)
+                )
+            elif explicit_x.size == spatial_selection.source_bins:
                 assumptions["x_array"] = _readonly(
                     np.asarray(
                         explicit_x[spatial_selection.start_index : spatial_selection.stop_index],
@@ -1258,6 +1414,9 @@ def validate_mapping_request(
         resolution_t=resolution_t,
         spatial_size=input_spatial_points,
         input_forms=MappingProxyType(dict(raw_forms)),
+        initiation_rate_per_bin=request.initiation_rate_per_bin,
+        end_kb=spatial_selection.end_kb if spatial_selection is not None else request.region_end_kb,
+        fit_filter=request.fit_filter,
     )
 
 
@@ -1388,7 +1547,7 @@ def _collect_result_outputs(
     for key, array in outputs.items():
         if key.endswith("_xt") or (
             route.output_form in {"xt", "bundle"}
-            and key in {"firing_rate", "fork_speed"}
+            and key in {"initiation_rate", "fork_speed"}
             and array.ndim == 2
         ):
             forms[key] = "xt"
@@ -1775,6 +1934,63 @@ def run_mapping(
 
         mapper = cast(Callable[..., Mapping[str, Any]], rmap)
         execution_assumptions = dict(prepared.assumptions)
+        execution_source = dict(prepared.source)
+        constraint = None
+        if prepared.fit_filter.regions.enabled:
+            reference_key = prepared.fit_filter.relative_to
+            if prepared.fit_filter.regions.selection not in {'profile', 'all'} and reference_key not in prepared.input_forms:
+                raise ValueError('Choose the input used to select filter regions.')
+            reference = prepared.source.get(reference_key, prepared.assumptions.get(reference_key, 0.))
+            constraint = MappingFitConstraint(
+                prepared.fit_filter, target=prepared.route.target, form=prepared.route.output_form,
+                reference=reference, reference_form=prepared.input_forms.get(reference_key, 'scalar'),
+                start=prepared.start_kb, resolution=prepared.resolution_x, resolution_t=prepared.resolution_t,
+                reference_time=prepared.assumptions.get('time_grid'),
+                per_bin=prepared.initiation_rate_per_bin, cancel=cancel,
+                spatial_size=prepared.spatial_size, end=prepared.end_kb,
+            )
+            if not constraint.selects_regions(prepared.spatial_size):
+                constraint = None
+            if prepared.route.output_form == 'xt':
+                grid = prepared.assumptions.get('time_grid')
+                timing = prepared.source.get('replication_timing')
+                if grid is not None:
+                    count = len(grid)
+                elif timing is not None:
+                    horizon = float(np.nanmax(timing)) * (4 if prepared.route.target == 'fork_speed' else 1)
+                    count = int(np.ceil(horizon / prepared.resolution_t)) + 2
+                else:
+                    count = 1
+                if prepared.spatial_size * count > MAX_GRID_CELLS:
+                    raise ValueError('The filtered space–time target is too large. Increase the spatial or time resolution.')
+        if prepared.initiation_rate_per_bin:
+            # Public rmap accepts rates per kb; the page and rsim accept rates
+            # per spatial bin. Convert at this boundary only. Fork speed stays
+            # in kb/min: the engine already divides it by the spatial step.
+            def density_inputs(values: Mapping[str, Any]) -> dict[str, Any]:
+                converted = dict(values)
+                for key, value in values.items():
+                    if key in {"initiation_rate", "initiation_rate_xt"}:
+                        converted[key] = np.asarray(value, dtype=float) / prepared.resolution_x
+                    elif isinstance(value, Mapping):
+                        converted[key] = density_inputs(value)
+                return converted
+
+            execution_source = density_inputs(execution_source)
+            execution_assumptions = density_inputs(execution_assumptions)
+            for key in ("rate_bounds", "floor", "initial_initiation_rate"):
+                if execution_assumptions.get(key) is not None:
+                    if key == "rate_bounds":
+                        from dnascape._fit_bounds import scale_bounds
+                        execution_assumptions[key] = scale_bounds(execution_assumptions[key], 1 / prepared.resolution_x)
+                    else:
+                        execution_assumptions[key] = np.asarray(execution_assumptions[key]) / prepared.resolution_x
+            # rmap converts this logarithmic cutoff to its per-bin solver.
+            if "err_threshold" in _accepted_assumptions(prepared.route):
+                execution_assumptions["err_threshold"] = (
+                    float(execution_assumptions.get("err_threshold", 15.))
+                    + math.log10(prepared.resolution_x)
+                )
         if reporting_enabled and "verbose" in _accepted_assumptions(prepared.route):
             # Optimizers gate their ETA and fit-error callbacks on verbose.
             # The worker context sends those callbacks to the page and keeps
@@ -1791,14 +2007,42 @@ def run_mapping(
             suppress_output=True,
             metric_report=retain_fit_mse,
         ):
-            info = mapper(
-                source=prepared.source,
-                target=prepared.route.target,
-                assumptions=execution_assumptions,
-                method=prepared.route.method,
-                return_info=True,
-            )
+            from dnascape._fit_constraints import fit_constraint_context
+            with fit_constraint_context(constraint):
+                if constraint is not None and prepared.route.target == 'fork_speed' and 'replication_timing' in execution_source:
+                    from dnascape.inverse import fit_timing_fork_speed
+                    accepted = {'initial_fork_speed', 'resolution_time', 'time_grid', 'T0', 'perQ',
+                                'maxiter', 'spatial_knots', 'temporal_knots', 'regularization', 'speed_bounds', 'tolerance', 'verbose'}
+                    options = {key: value for key, value in execution_assumptions.items() if key in accepted and value is not None}
+                    options.setdefault('maxiter', max(int(execution_assumptions.get(key) or 0) for key in ('space_maxiter', 'temporal_maxiter', 'maxiter')) or 10)
+                    fitted = fit_timing_fork_speed(
+                        execution_source['replication_timing'],
+                        initiation_rate=execution_source.get('initiation_rate', execution_assumptions.get('initiation_rate')),
+                        speed_form=prepared.route.output_dependence, resolution=prepared.resolution_x,
+                        fit_projection=constraint, **options,
+                    )
+                    info = {**fitted, 'values': fitted['fork_speed']}
+                else:
+                    if constraint is None and prepared.fit_filter.regions.enabled and prepared.route.target == 'fork_speed':
+                        accepted = _accepted_assumptions(prepared.route) | {'target_shape', 'target_form'}
+                        execution_assumptions = {key: value for key, value in execution_assumptions.items() if key in accepted}
+                    info = mapper(
+                        source=execution_source,
+                        target=prepared.route.target,
+                        assumptions=execution_assumptions,
+                        method=prepared.route.method,
+                        return_info=True,
+                    )
+                    if constraint is not None and constraint.frozen is None:
+                        if prepared.route.target in {'initiation_rate', 'fork_speed'}:
+                            raise ValueError('This route does not expose a fitted numeric profile for regional constraints.')
+                        info = dict(info)
+                        info['values'] = constraint.project(info['values'])
         info = dict(info)
+        if constraint is not None and constraint.mask is not None and prepared.fit_filter.export:
+            info['filter_intervals'] = constraint.export_intervals()
+        if constraint is not None and constraint.warnings:
+            info['filter_warnings'] = tuple(dict.fromkeys(constraint.warnings))
         for source_name, canonical_name in {
             "predicted_timing": "replication_timing_fit",
             "mse": "fit_mse",
@@ -1814,6 +2058,12 @@ def run_mapping(
             info,
             prepared.input_forms,
         )
+        if constraint is not None and prepared.fit_filter.export and constraint.mask is not None and constraint.mask.any():
+            outputs['filter_positions'] = _readonly(constraint.export_positions())
+            forms['filter_positions'] = 'supplied'
+        if prepared.initiation_rate_per_bin:
+            for key in outputs.keys() & {"initiation_rate", "initiation_rate_xt", "initiation_rate_fit", "initiation_rate_xt_fit"}:
+                outputs[key] = _readonly(outputs[key] * prepared.resolution_x)
         if "fit_history" not in outputs and reported_fit_history:
             outputs["fit_history"] = _readonly(np.asarray(reported_fit_history, dtype=float))
             forms["fit_history"] = "supplied"

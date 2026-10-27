@@ -106,7 +106,7 @@ def test_simulation_refined_rates_are_regularized_before_scoring(monkeypatch, sp
 
     def track(**kwargs):
         result = original_simulator(**kwargs)
-        captured.append((np.asarray(kwargs["firing_rate"]).copy(), result["replication_timing"].copy()))
+        captured.append((np.asarray(kwargs["initiation_rate"]).copy(), result["replication_timing"].copy()))
         assert kwargs["perQ"] is True
         return result
 
@@ -114,7 +114,7 @@ def test_simulation_refined_rates_are_regularized_before_scoring(monkeypatch, sp
     result = map_timing_firing(
         observed, fork_speed=speeds[speed_form], perQ=True, maxiter=2, sim_number=8,
         refine_seed=17, verbose=False, time_grid=times, resolution_time=5.,
-        stall_rate=.01 if speed_form == "stalled" else 0.,
+        stall_rate=.01,
     )
     assert len(captured) == 2
     scores = [np.mean((prediction - observed)**2) for _, prediction in captured]
@@ -140,8 +140,8 @@ def test_free_space_time_fits_score_the_regularized_spatial_fields(monkeypatch, 
 
     def track(**kwargs):
         result = original_simulator(**kwargs)
-        captured.append((kwargs["firing_rate"].T.copy(), result["replication_timing"].copy()))
-        np.testing.assert_array_equal(kwargs["firing_rate"][:, 0], 0.)
+        captured.append((kwargs["initiation_rate"].T.copy(), result["replication_timing"].copy()))
+        np.testing.assert_array_equal(kwargs["initiation_rate"][:, 0], 0.)
         return result
 
     monkeypatch.setattr(fitting, "rsim", track)
@@ -149,6 +149,7 @@ def test_free_space_time_fits_score_the_regularized_spatial_fields(monkeypatch, 
         rates, observed, fork_speed=1.4, resolution=1., resolution_time=5.,
         perQ=True, refine_maxiter=2, spacetime_sim_number=8, refine_seed=19,
         spacetime_update=mode, refine_verbose=False,
+        stall_rate=.01,
     )
     scores = [np.mean((prediction - observed)**2) for _, prediction in captured]
     winner = int(np.argmin(scores))

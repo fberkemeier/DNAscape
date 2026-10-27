@@ -51,7 +51,7 @@ def test_pairwise_cases_broadcast_singleton_and_use_target_first_names() -> None
 
     cases = _plan_mapping_cases(
         (timing, speed),
-        target_label="Firing rate",
+        target_label="Initiation rate",
         combination_mode="pairwise",
     )
 
@@ -60,8 +60,8 @@ def test_pairwise_cases_broadcast_singleton_and_use_target_first_names() -> None
         "Replication timing 1", "Replication timing 2",
     )
     assert tuple(case.name for case in cases) == (
-        "Firing rate · Replication timing: sample_a · Fork speed: 1.4 kb/min",
-        "Firing rate · Replication timing: sample_b · Fork speed: 1.4 kb/min",
+        "Initiation rate · Replication timing: sample_a · Fork speed: 1.4 kb/min",
+        "Initiation rate · Replication timing: sample_b · Fork speed: 1.4 kb/min",
     )
 
 
@@ -82,7 +82,7 @@ def test_all_combinations_have_deterministic_cartesian_order() -> None:
 
     cases = _plan_mapping_cases(
         (timing, speed),
-        target_label="Firing rate",
+        target_label="Initiation rate",
         combination_mode="all",
     )
 
@@ -123,11 +123,11 @@ def test_case_export_stems_are_distinct_safe_and_preserve_decimals() -> None:
         components=("1.4", "1.4"),
     )
 
-    cases = _plan_mapping_cases((repeated,), target_label="Firing rate")
+    cases = _plan_mapping_cases((repeated,), target_label="Initiation rate")
     stems = tuple(case.export_stem for case in cases)
 
     assert len(set(stems)) == 2
-    assert all(stem.startswith("fr-") for stem in stems)
+    assert all(stem.startswith("ir-") for stem in stems)
     assert all("1p4" in stem for stem in stems)
     assert all(re.fullmatch(r"[a-z0-9-]+", stem) for stem in stems)
     assert all("." not in stem for stem in stems)
@@ -151,7 +151,7 @@ def test_pairwise_cases_reject_unequal_non_singleton_counts() -> None:
     with pytest.raises(ValueError, match="one shared item or the same number"):
         _plan_mapping_cases(
             (timing, speed),
-            target_label="Firing rate",
+            target_label="Initiation rate",
             combination_mode="pairwise",
         )
 
@@ -199,8 +199,8 @@ def test_axis_validation_allows_service_to_align_each_spatial_case() -> None:
 
 def test_axis_validation_still_rejects_mismatched_time_points_per_case() -> None:
     firing = _prepared(
-        "firing_rate",
-        "Firing rate",
+        "initiation_rate",
+        "Initiation rate",
         (np.ones((3, 4)), np.ones((5, 6))),
         form="xt",
     )

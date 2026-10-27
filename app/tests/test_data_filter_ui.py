@@ -53,6 +53,10 @@ def test_filter_defaults_visibility_uploaded_mask_and_post_configure_results(mon
             assert control("filter-enabled").value is False
             from nicegui.elements.switch import Switch
             assert isinstance(control("filter-export"), Switch)
+            assert isinstance(control("filter-complement"), Switch)
+            assert control("filter-complement").value is False
+            actions = control("filter-export").parent_slot.children
+            assert actions.index(control("filter-complement")) == actions.index(control("filter-export")) + 1
             assert control("filter-profile-units").value == "bp"
             await user.should_see(marker="data-manager-filter-selection")
             assert control("filter-enabled").__class__.__name__ == "Switch"
@@ -90,6 +94,16 @@ def test_filter_defaults_visibility_uploaded_mask_and_post_configure_results(mon
             assert len(results) == 2  # Display options never reconvert the output.
             # The original negative bins remain highlighted after replacement with zero.
             assert control("preview-chart").options["series"][1]["markArea"]["data"] == areas["data"]
+            with user.client:
+                control("filter-complement").set_value(True)
+            await converted([0, -2, -6])
+            assert requests[-1].data_filter.complement is True
+            assert control("preview-chart").options["series"][1]["markArea"]["data"] == [
+                [{"xAxis": -.5}, {"xAxis": .5}],
+            ]
+            with user.client:
+                control("filter-complement").set_value(False)
+            await converted([4, 0, 0])
             with user.client:
                 control("filter-selection").set_value("between")
                 control("filter-lower").set_value(-6)
@@ -269,7 +283,7 @@ def test_filter_parameters_survive_configure_refresh_and_match_active_controls(m
                 control("filter-action").set_value("noise")
                 control("filter-standard-deviation").set_value(.2)
                 control("filter-seed").set_value(42)
-                control("feature").set_value("firing_rate")
+                control("feature").set_value("initiation_rate")
             await user.should_see(marker="data-manager-filter-standard-deviation")
             await user.should_not_see(marker="data-manager-filter-replace-value")
             assert control("filter-selection").value == "maximum"

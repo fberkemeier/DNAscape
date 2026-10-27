@@ -42,10 +42,10 @@ async def inspect_upload_event(
     if size <= 0:
         raise _workflow.UploadInspectionError("The selected file is empty.")
     if size > _workflow.MAX_UPLOAD_BYTES:
-        raise _workflow.UploadTooLargeError("Files larger than 64 MB cannot be kept in this local session.")
+        raise _workflow.UploadTooLargeError(f"Files larger than {_workflow.MAX_UPLOAD_BYTES // 1024**2} MiB cannot be kept in this local session.")
     content = await upload.read()
     if len(content) != size and len(content) > _workflow.MAX_UPLOAD_BYTES:
-        raise _workflow.UploadTooLargeError("Files larger than 64 MB cannot be kept in this local session.")
+        raise _workflow.UploadTooLargeError(f"Files larger than {_workflow.MAX_UPLOAD_BYTES // 1024**2} MiB cannot be kept in this local session.")
     inspection = await _workflow.__dict__["run"].io_bound(
         _workflow.inspect_upload,
         upload.name,

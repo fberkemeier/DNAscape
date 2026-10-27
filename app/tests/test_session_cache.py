@@ -147,15 +147,15 @@ def test_cached_workflow_download_defaults_to_compressed_tsv() -> None:
 def test_cached_mapping_download_keeps_compact_target_and_dataset_identity() -> None:
     values = np.asarray([0.2, 0.3, 0.4])
     result = MappingResult(
-        target="firing_rate",
-        target_key="firing_rate",
-        target_label="Firing rate",
+        target="initiation_rate",
+        target_key="initiation_rate",
+        target_label="Initiation rate",
         method="test",
         output_form="x",
         output_dependence="space",
-        primary_output="firing_rate",
-        outputs={"firing_rate": values},
-        output_forms={"firing_rate": "x"},
+        primary_output="initiation_rate",
+        outputs={"initiation_rate": values},
+        output_forms={"initiation_rate": "x"},
         x_axis=np.arange(values.size, dtype=float),
         time_axis=np.asarray([], dtype=float),
         region_labels=(),
@@ -163,7 +163,7 @@ def test_cached_mapping_download_keeps_compact_target_and_dataset_identity() -> 
         assumptions={},
     )
     entry = SessionCache().add_reference(
-        name="Firing rate Â· H1",
+        name="Initiation rate Â· H1",
         source="Mapping",
         detail="3 points",
         payload=result,
@@ -178,7 +178,7 @@ def test_cached_mapping_download_keeps_compact_target_and_dataset_identity() -> 
     finally:
         settings.cached_file_format, settings.cached_compression = previous
 
-    assert artifact.filename == "rmap_fr-h1.tsv.gz"
+    assert artifact.filename == "rmap_ir-h1_x.tsv.gz"
 
 
 def test_item_limit_is_enforced_independently_for_each_group() -> None:
@@ -265,7 +265,7 @@ def test_filter_sort_remove_and_clear_are_functional(monkeypatch) -> None:
         _artifact("large.png", b"12345"),
         source="Mapping",
         kind="plot",
-        detail="Firing rate",
+        detail="Initiation rate",
     )
     cache.add_artifact(
         _artifact("medium.csv", b"123"),

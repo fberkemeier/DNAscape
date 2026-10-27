@@ -19,8 +19,8 @@ from dnascape.utils import check_cancelled, progress_context
 def _spatial_speed_request() -> MappingRequest:
     return MappingRequest(
         route=mapping_route("timing_and_time_firing_to_spatial_fork_speed"),
-        inputs={"replication_timing": np.linspace(10.0, 15.0, 8), "firing_rate": np.full((1, 3), 0.001)},
-        input_forms={"replication_timing": "x", "firing_rate": "t"},
+        inputs={"replication_timing": np.linspace(10.0, 15.0, 8), "initiation_rate": np.full((1, 3), 0.001)},
+        input_forms={"replication_timing": "x", "initiation_rate": "t"},
         settings={"maxiter": 1, "spatial_knots": 4, "time_grid": [0.0, 20.0, 40.0]},
         resolution_x=1.0,
     )

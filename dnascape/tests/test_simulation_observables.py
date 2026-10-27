@@ -10,7 +10,7 @@ import dnascape.simulation as simulation
 
 def ensemble(**overrides):
     arguments = dict(
-        firing_rate=.08, fork_speed=2., n_bins=32, sim_number=5,
+        initiation_rate=.08, fork_speed=2., n_bins=32, sim_number=5,
         resolution_x=1., resolution_t=1., seed=12, verbose=False,
         time_statsQ=True, time_stats_xtQ=True, max_rep_time=128.,
         time_grid=np.array([0., .25, .7, 1.2, 2., 4., 8., 16., 32., 64., 128.]),

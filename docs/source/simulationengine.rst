@@ -1,7 +1,7 @@
 Simulation with rsim
 ====================
 
-``rsim`` simulates stochastic S phases from firing rate and fork speed.
+``rsim`` simulates stochastic S phases from initiation rate and fork speed.
 
 Call
 ----
@@ -12,7 +12,7 @@ Call
    from dnascape import rsim
 
    simulation = rsim(
-       source={"firing_rate": firing_rate, "fork_speed": 1.4},
+       source={"initiation_rate": initiation_rate, "fork_speed": 1.4},
        assumptions={
            "sim_number": 100,
            "resolution_x": 1.0,
@@ -27,7 +27,7 @@ Call
 Inputs
 ------
 
-``firing_rate`` and ``fork_speed`` can be:
+``initiation_rate`` and ``fork_speed`` can be:
 
 * scalar;
 * spatial ``(n,)``;
@@ -123,7 +123,7 @@ Fork slowing:
 .. code-block:: python
 
    slow_fork = rsim(
-       source={"firing_rate": firing_rate, "fork_speed": 0.8},
+       source={"initiation_rate": initiation_rate, "fork_speed": 0.8},
        assumptions={"sim_number": 200, "resolution_x": 1.0, "seed": 3, "verbose": False},
    )
 
@@ -132,7 +132,7 @@ Fork stalling:
 .. code-block:: python
 
    stalled = rsim(
-       source={"firing_rate": firing_rate, "fork_speed": 1.4},
+       source={"initiation_rate": initiation_rate, "fork_speed": 1.4},
        assumptions={
            "sim_number": 200,
            "resolution_x": 1.0,
@@ -158,7 +158,7 @@ Finite factors:
 .. code-block:: python
 
    finite_factors = rsim(
-       source={"firing_rate": firing_rate, "fork_speed": 1.4},
+       source={"initiation_rate": initiation_rate, "fork_speed": 1.4},
        assumptions={
            "sim_number": 200,
            "ffiring_nr": 60,
@@ -178,7 +178,7 @@ needed.
 .. code-block:: python
 
    heatmap_sim = rsim(
-       source={"firing_rate": firing_rate, "fork_speed": 1.4},
+       source={"initiation_rate": initiation_rate, "fork_speed": 1.4},
        assumptions={
            "sim_number": 50,
            "resolution_x": 1.0,
@@ -223,7 +223,7 @@ App Page
 Simulation runs ``rsim`` interactively.
 
 Inputs
-   Firing rate and fork speed as constants or uploaded profiles.
+   Initiation rate and fork speed as constants or uploaded profiles.
 
 Controls
    Region, resolution, replicates, geometry, time window, stalling, finite

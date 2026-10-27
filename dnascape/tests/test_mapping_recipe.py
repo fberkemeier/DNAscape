@@ -29,7 +29,7 @@ def _recipe() -> dict[str, Any]:
         "region": {"start_kb": 20.0, "end_kb": 24.0, "whole_genome": False, "missing_policy": "error"},
         "combination_mode": "pairwise",
         "inputs": {
-            "firing_rate": {"enabled": True, "form": "scalar", "mode": "constant", "values": 0.001},
+            "initiation_rate": {"enabled": True, "form": "scalar", "mode": "constant", "values": 0.001},
             "fork_speed": {"enabled": True, "form": "scalar", "mode": "constant", "values": 1.4},
         },
     }
@@ -51,8 +51,8 @@ def test_recipe_matches_the_exact_page_mapping_request() -> None:
     recipe = _recipe()
     expected = run_mapping(MappingRequest(
         route=mapping_route(recipe["method"]),
-        inputs={"firing_rate": 0.001, "fork_speed": 1.4},
-        input_forms={"firing_rate": "scalar", "fork_speed": "scalar"},
+        inputs={"initiation_rate": 0.001, "fork_speed": 1.4},
+        input_forms={"initiation_rate": "scalar", "fork_speed": "scalar"},
         settings=recipe["settings"],
         region_start_kb=20.0,
         region_end_kb=24.0,
@@ -83,14 +83,14 @@ def test_recipe_matches_shorter_firing_profile_at_chromosome_coordinates(
     recipe["region"].update(start_kb=24., end_kb=30., whole_genome=whole_region)
     recipe["inputs"] = {
         "replication_timing": {"form": "x", "mode": "upload", "files": [{"path": "timing.npy"}]},
-        "firing_rate": {"form": "x", "mode": "upload", "files": [{"path": "firing.npy"}]},
+        "initiation_rate": {"form": "x", "mode": "upload", "files": [{"path": "firing.npy"}]},
     }
     (_, request), = prepare_mapping_recipe(recipe, base_path=tmp_path)
     assert request.settings["refine_edge_kb"] == 3.
     expected = run_mapping(MappingRequest(
         route=mapping_route(recipe["method"]),
-        inputs={"replication_timing": timing, "firing_rate": firing},
-        input_forms={"replication_timing": "x", "firing_rate": "x"},
+        inputs={"replication_timing": timing, "initiation_rate": firing},
+        input_forms={"replication_timing": "x", "initiation_rate": "x"},
         settings=recipe["settings"], target_shape="best",
         region_start_kb=24., region_end_kb=30., resolution_x=1.,
         whole_genome=whole_region,
@@ -113,7 +113,7 @@ def test_constants_match_page_combination_order_names_and_override_controls(mode
 
     recipe = _recipe()
     recipe["combination_mode"] = mode
-    recipe["inputs"]["firing_rate"].update(mode="constants", values=[0.001, 0.002])
+    recipe["inputs"]["initiation_rate"].update(mode="constants", values=[0.001, 0.002])
     recipe["inputs"]["fork_speed"].update(mode="constants", values=[1.0, 1.5])
     recipe["setting_overrides"] = {
         "resolution": {"enabled": True, "value": 2.0},
@@ -121,7 +121,7 @@ def test_constants_match_page_combination_order_names_and_override_controls(mode
     }
     recipe["inputs"]["unused"] = {"enabled": False, "form": "x", "mode": "upload", "files": []}
     expected_cases = _plan_mapping_cases((
-        _PreparedBatchInput("firing_rate", "Firing rate", "scalar", (0.001, 0.002), (False, False)),
+        _PreparedBatchInput("initiation_rate", "Initiation rate", "scalar", (0.001, 0.002), (False, False)),
         _PreparedBatchInput("fork_speed", "Fork speed", "scalar", (1.0, 1.5), (False, False)),
     ), target_label="Replication timing", combination_mode=mode)
     before = copy.deepcopy(recipe)
@@ -193,11 +193,11 @@ def test_table_columns_missing_values_and_file_names_match_live_page(
     (tmp_path / "profile.csv").write_text("position_kb,a,b\n0,0.001,0.002\n1,,0.003\n2,0.003,0.004\n3,0.004,0.005\n")
     recipe = _recipe()
     recipe["region"].update(start_kb=0.0, end_kb=4.0, missing_policy="interpolate")
-    recipe["inputs"]["firing_rate"] = {
+    recipe["inputs"]["initiation_rate"] = {
         "form": "x", "mode": "upload",
         "files": [{"path": "profile.csv", "name": "source.csv", "column": "__all__", "array_key": None}],
     }
-    page_input = _page_import(recipe, "firing_rate", tmp_path, monkeypatch)
+    page_input = _page_import(recipe, "initiation_rate", tmp_path, monkeypatch)
     page_cases = _plan_mapping_cases((
         page_input, _PreparedBatchInput("fork_speed", "Fork speed", "scalar", (1.4,), (False,)),
     ), target_label="Replication timing")
@@ -208,10 +208,10 @@ def test_table_columns_missing_values_and_file_names_match_live_page(
         assert case.name == expected_case.name
         assert case.export_stem == expected_case.export_stem
         assert case.short_export_stem == expected_case.short_export_stem
-        np.testing.assert_array_equal(request.inputs["firing_rate"], values)
+        np.testing.assert_array_equal(request.inputs["initiation_rate"], values)
         assert request.prewindowed_inputs == frozenset()
         expected_result = run_mapping(MappingRequest(
-            route=request.route, inputs={"firing_rate": values, "fork_speed": 1.4},
+            route=request.route, inputs={"initiation_rate": values, "fork_speed": 1.4},
             input_forms=request.input_forms, settings=request.settings,
             region_start_kb=0, region_end_kb=4, resolution_x=1,
         ))
@@ -223,7 +223,7 @@ def test_numpy_array_selection_can_be_changed_without_reexporting(tmp_path: Path
     recipe = _recipe()
     recipe["region"].update(start_kb=0.0, end_kb=4.0)
     file = {"path": "profiles.npz", "name": "profiles.npz", "array_key": "first"}
-    recipe["inputs"]["firing_rate"] = {"form": "x", "mode": "upload", "files": [file]}
+    recipe["inputs"]["initiation_rate"] = {"form": "x", "mode": "upload", "files": [file]}
     first = run_mapping_recipe(recipe, base_path=tmp_path)[0].result
     file["array_key"] = "second"
     second = run_mapping_recipe(recipe, base_path=tmp_path)[0].result
@@ -243,7 +243,7 @@ def test_track_region_binning_and_prewindowed_flag_match_live_page(
     )
     recipe = _recipe()
     recipe["region"].update(start_kb=2.0, end_kb=6.0, whole_genome=whole_genome)
-    recipe["inputs"]["firing_rate"] = {
+    recipe["inputs"]["initiation_rate"] = {
         "form": "x", "mode": "upload",
         "files": [{"path": "profile.bedgraph", "name": "profile.bedgraph"}],
         "track": {
@@ -252,11 +252,11 @@ def test_track_region_binning_and_prewindowed_flag_match_live_page(
             "fill_value": 0.0, "interpolation": "none", "smooth_window": 1, "normalize": "none",
         },
     }
-    page_input = _page_import(recipe, "firing_rate", tmp_path, monkeypatch)
+    page_input = _page_import(recipe, "initiation_rate", tmp_path, monkeypatch)
     (_case, request), = prepare_mapping_recipe(recipe, base_path=tmp_path)
 
-    np.testing.assert_array_equal(request.inputs["firing_rate"], page_input.values[0])
-    assert ("firing_rate" in request.prewindowed_inputs) is page_input.prewindowed[0]
+    np.testing.assert_array_equal(request.inputs["initiation_rate"], page_input.values[0])
+    assert ("initiation_rate" in request.prewindowed_inputs) is page_input.prewindowed[0]
     assert page_input.values[0].size == (6 if whole_genome else 4)
     result = run_mapping_recipe(recipe, base_path=tmp_path)[0].result
     assert result.x_axis[0] == (0.0 if whole_genome else 2.0)
@@ -297,7 +297,7 @@ def test_track_column_choices_require_a_common_value_column_like_the_page(
     (tmp_path / "profile.bedgraph").write_text("chr1\t0\t4000\t0.001\n")
     recipe = _recipe()
     recipe["region"].update(start_kb=0.0, end_kb=4.0)
-    recipe["inputs"]["firing_rate"] = {
+    recipe["inputs"]["initiation_rate"] = {
         "form": "x", "mode": "upload",
         "files": [
             {"path": "profile.bedgraph", "name": "first.bedgraph", "column": "value"},
@@ -310,7 +310,7 @@ def test_track_column_choices_require_a_common_value_column_like_the_page(
         },
     }
     with pytest.raises(ValueError, match="same bedGraph value column"):
-        _page_import(recipe, "firing_rate", tmp_path, monkeypatch)
+        _page_import(recipe, "initiation_rate", tmp_path, monkeypatch)
     with pytest.raises(ValueError, match="same bedGraph value column"):
         prepare_mapping_recipe(recipe, base_path=tmp_path)
 

@@ -7,7 +7,7 @@ from dnascape import fitting
 
 
 @pytest.mark.parametrize("spacetime", [False, True])
-def test_simulated_speed_retains_best_evaluated_field_and_t0(monkeypatch, spacetime):
+def test_speed_refinement_retains_best_evaluated_field_and_t0(monkeypatch, spacetime):
     timing = np.array([10., 20., 30., 40.])
     axis = np.arange(0., 51., 10.)
     predictions = [np.array([20., 10., 30., 40.]),
@@ -18,8 +18,8 @@ def test_simulated_speed_retains_best_evaluated_field_and_t0(monkeypatch, spacet
         evaluated.append(np.asarray(kwargs["fork_speed"]).copy())
         return {"replication_timing": predictions[len(evaluated) - 1]}
 
-    monkeypatch.setattr(fitting, "rsim", simulate)
-    options = dict(observed_timing=timing + 100, firing_rate=.01,
+    monkeypatch.setattr(fitting, "_mapping_prediction", simulate)
+    options = dict(observed_timing=timing + 100, initiation_rate=.01,
                    resolution=2., resolution_time=10., time_grid=axis,
                    T0=100., speed_bounds=(.1, 6.), refine_edge_kb=0,
                    refine_verbose=False)
@@ -46,7 +46,7 @@ def test_simulated_speed_retains_best_evaluated_field_and_t0(monkeypatch, spacet
 
 
 @pytest.mark.parametrize("spacetime", [False, True])
-def test_simulated_speed_resamples_explicit_clock(monkeypatch, spacetime):
+def test_speed_refinement_resamples_explicit_clock(monkeypatch, spacetime):
     axis = np.array([0., 7., 20.])
     speed = np.array([1., 2., 4.])
     firing = np.array([[.01, .03, .02]])
@@ -54,8 +54,8 @@ def test_simulated_speed_resamples_explicit_clock(monkeypatch, spacetime):
     def simulate(**kwargs):
         calls.append(kwargs)
         return {"replication_timing": np.full(4, 15.)}
-    monkeypatch.setattr(fitting, "rsim", simulate)
-    options = dict(observed_timing=np.full(4, 15.), firing_rate=firing,
+    monkeypatch.setattr(fitting, "_mapping_prediction", simulate)
+    options = dict(observed_timing=np.full(4, 15.), initiation_rate=firing,
                    resolution=2., resolution_time=5., time_grid=axis,
                    refine_edge_kb=0, refine_verbose=False)
     if spacetime:
@@ -67,7 +67,7 @@ def test_simulated_speed_resamples_explicit_clock(monkeypatch, spacetime):
         assert result.shape == (1, 3)
     uniform = np.arange(0., 21., 5.)
     np.testing.assert_allclose(calls[0]["fork_speed"][0], np.interp(uniform, axis, speed))
-    np.testing.assert_allclose(calls[0]["firing_rate"][0], np.interp(uniform, axis, firing[0]))
+    np.testing.assert_allclose(calls[0]["initiation_rate"][0], np.interp(uniform, axis, firing[0]))
 
 
 def test_sequential_spacetime_density_converted_only_at_legacy_boundary(monkeypatch):
@@ -81,15 +81,15 @@ def test_sequential_spacetime_density_converted_only_at_legacy_boundary(monkeypa
         return fitting._RmapInfoArray(np.full((1, axis.size), 1.4), {})
     monkeypatch.setattr(fitting, "map_timing_firing_spatial_speed", spatial)
     monkeypatch.setattr(fitting, "_fit_exponential_speed_shape", temporal)
-    source = {"replication_timing": np.arange(20., 24.), "firing_rate": .002}
+    source = {"replication_timing": np.arange(20., 24.), "initiation_rate": .002}
     fitting.map_timing_firing_spacetime_speed_simulated(
         source, resolution=4, time_grid=axis, spacetime_order="space_then_time",
-        T0=10, _firing_rate_is_density=True, verbose=False)
-    np.testing.assert_allclose(calls["spatial"][0]["firing_rate"], .008)
-    np.testing.assert_allclose(calls["temporal"][1]["firing_rate"], .002)
+        T0=10, _initiation_rate_is_density=True, verbose=False)
+    np.testing.assert_allclose(calls["spatial"][0]["initiation_rate"], .008)
+    np.testing.assert_allclose(calls["temporal"][1]["initiation_rate"], .002)
     assert calls["spatial"][1]["T0"] == 10
     assert calls["temporal"][1]["T0"] == 10
-    assert source["firing_rate"] == .002
+    assert source["initiation_rate"] == .002
 
 
 @pytest.mark.parametrize("general", [False, True])
@@ -97,11 +97,11 @@ def test_temporal_best_keeps_density_and_t0(monkeypatch, general):
     timing = np.linspace(8., 18., 12)
     axis = np.arange(0., 41., 5.)
     firing = .002 if not general else np.full((1, axis.size), .002)
-    source = {"replication_timing": timing, "firing_rate": firing}
+    source = {"replication_timing": timing, "initiation_rate": firing}
     entry = (fitting.map_timing_firing_temporal_speed_simulated if general
              else fitting.map_timing_firing_temporal_speed)
     options = dict(resolution=4, time_grid=axis, temporal_maxiter=4,
-                   refine_edge_kb=0, verbose=False, _firing_rate_is_density=True)
+                   refine_edge_kb=0, verbose=False, _initiation_rate_is_density=True)
     def forbidden(*args, **kwargs):
         raise AssertionError("Linear historical fit must not invoke the new inverse")
     monkeypatch.setattr(fitting, "_periodic_speed_inverse", forbidden)
@@ -124,12 +124,12 @@ def test_crossed_spacetime_best_is_offset_invariant_and_retains_improvements(mon
     timing = np.linspace(8., 18., 12)
     axis = np.arange(0., 41., 5.)
     firing = .002 if general else np.full((12, axis.size), .002)
-    source = {"replication_timing": timing, "firing_rate": firing}
+    source = {"replication_timing": timing, "initiation_rate": firing}
     entry = (fitting.map_timing_firing_spacetime_speed_simulated if general
              else fitting.map_timing_firing_spacetime_speed)
     options = dict(resolution=4, time_grid=axis, space_maxiter=4, temporal_maxiter=4,
                    refine_edge_kb=0, smoothw=None, verbose=False,
-                   _firing_rate_is_density=True)
+                   _initiation_rate_is_density=True)
     def forbidden(*args, **kwargs):
         raise AssertionError("Linear historical fit must not invoke the new inverse")
     monkeypatch.setattr(fitting, "_periodic_speed_inverse", forbidden)
@@ -156,7 +156,7 @@ def test_periodic_geometry_keeps_supported_inverse(monkeypatch, name, form):
         calls.append(args)
         return np.ones((1, 3))
     monkeypatch.setattr(fitting, "_periodic_speed_inverse", periodic)
-    source = {"replication_timing": np.ones(4), "firing_rate": .002}
-    getattr(fitting, name)(source, perQ=True, _firing_rate_is_density=True, verbose=False)
+    source = {"replication_timing": np.ones(4), "initiation_rate": .002}
+    getattr(fitting, name)(source, perQ=True, _initiation_rate_is_density=True, verbose=False)
     assert calls[0][0] is source
     assert calls[0][1] == form

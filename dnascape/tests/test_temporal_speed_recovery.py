@@ -42,7 +42,7 @@ def test_speed_fit_updates_time_and_keeps_the_actual_forward_timing(firing_form,
     metrics = []
     with progress_context(metric_report=lambda *metric: metrics.append(metric), suppress_output=True):
         result = rmap(
-            source={"replication_timing": timing, "firing_rate": firing}, target="fork_speed",
+            source={"replication_timing": timing, "initiation_rate": firing}, target="fork_speed",
             target_form=speed_form, resolution=4., time_grid=times, T0=offset,
             refine_edge_kb=0., smoothw=5, verbose=False, maxiter=10,
         )
@@ -107,7 +107,7 @@ def test_speed_fit_preserves_a_genuinely_constant_forward_solution(firing_form, 
     field = np.full((1 if speed_form == "time" else n, times.size), 1.4)
     fraction = map_replicated_fraction_xt(firing, field, resolution=4., time_grid=times, n_bins=n)
     result = rmap(
-        source={"replication_timing": np.trapezoid(1. - fraction, times, axis=1), "firing_rate": firing},
+        source={"replication_timing": np.trapezoid(1. - fraction, times, axis=1), "initiation_rate": firing},
         target="fork_speed", target_form=speed_form, resolution=4., time_grid=times,
         refine_edge_kb=0., smoothw=5, verbose=False, maxiter=4,
     )

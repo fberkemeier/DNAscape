@@ -342,7 +342,7 @@ class MappingRoute:
 
         shape = self.default_target_shape if target_shape is None else target_shape
         settings = tuple(item for item in self.settings if item.key not in self.single_phase_fit_aliases)
-        if self.target == "firing_rate" and self.target_shapes:
+        if self.target == "initiation_rate" and self.target_shapes:
             if shape == "weibull":
                 settings = tuple(item for item in settings if item.key in _WEIBULL_FIRING_SETTINGS)
                 if self.output_dependence == "time":
@@ -395,7 +395,7 @@ class MappingRoute:
             settings = tuple(item for item in settings if item.key != "perQ")
         if self.output_dependence in {"time", "spacetime"} and (
             (self.target == "fork_speed" and not any(item.key == "tolerance" for item in settings))
-            or (self.target == "firing_rate" and shape == "free")
+            or (self.target == "initiation_rate" and shape == "free")
         ):
             # These wrapper aliases are redundant with the actual phase
             # controls and can be shadowed by their visible default values.
@@ -413,7 +413,7 @@ class MappingRoute:
                 for item in settings
             )
         if (
-            input_forms is not None and self.target == "firing_rate"
+            input_forms is not None and self.target == "initiation_rate"
             and self.output_dependence in {"constant", "space"}
             and input_forms.get("fork_speed") not in {"t", "xt"}
         ):
@@ -702,6 +702,8 @@ class MappingCatalog:
     def target(self, key: str) -> MappingTarget:
         """Look up a friendly target key or any exact internal target name."""
 
+        from dnascape._terminology import canonical_rate_key
+        key = canonical_rate_key(key)
         for target in self.targets:
             if target.key == key or key in target.internal_targets:
                 return target
@@ -710,6 +712,8 @@ class MappingCatalog:
     def route(self, method: str) -> MappingRoute:
         """Look up an exact public rmap method."""
 
+        from dnascape._terminology import canonical_rate_key
+        method = canonical_rate_key(method)
         for route in self.routes:
             if route.method == method:
                 return route
@@ -771,7 +775,7 @@ class MappingCatalog:
 
 
 _FEATURE_LABELS = {
-    "firing_rate": "Firing rate",
+    "initiation_rate": "Initiation rate",
     "fork_speed": "Fork speed",
     "replication_timing": "Replication timing",
     "fork_directionality": "Fork directionality",
@@ -801,7 +805,7 @@ _FEATURE_LABELS = {
 }
 
 _FEATURE_DESCRIPTIONS = {
-    "firing_rate": "Firing-rate density in min^-1 kb^-1, supplied as a constant or kinetic field.",
+    "initiation_rate": "Initiation rate per spatial bin (min^-1), supplied as a constant or kinetic field.",
     "fork_speed": "Replication-fork progression speed in kb/min.",
     "replication_timing": "Replication timing as a profile along genomic position.",
     "fork_directionality": "Net fork movement directionality along genomic position.",
@@ -814,11 +818,12 @@ _FEATURE_DESCRIPTIONS = {
     "left_fork_density": "Time-integrated left-moving fork-density profile.",
     "right_fork_density_xt": "Position-by-time right-moving fork-density field.",
     "left_fork_density_xt": "Position-by-time left-moving fork-density field.",
-    "initiation_events": "Time-integrated initiation-event profile.",
-    "initiation_events_xt": "Position-by-time initiation-event field.",
+    "initiation_events": "Expected initiations per kb, integrated over the time window.",
+    "initiation_events_xt": "Expected initiations per kb per minute: I(x,t) [1-f(x,t)].",
     "initiation_pdf": "Time-integrated initiation probability-density profile.",
     "initiation_pdf_xt": "Position-by-time initiation probability-density field.",
-    "coalescence_events_xt": "Position-by-time fork-coalescence event field.",
+    "coalescence_events": "Expected fork coalescences per kb, integrated over the time window.",
+    "coalescence_events_xt": "Expected coalescences per kb per minute: 2 v rho+ rho- / (1-f).",
     "coalescence_pdf_xt": "Position-by-time coalescence probability-density field.",
     "s_phase_duration": (
         "Elapsed time from the first realised initiation to replication completion."
@@ -828,9 +833,9 @@ _FEATURE_DESCRIPTIONS = {
 
 _TARGET_GROUP_DESCRIPTIONS = {
     "replicated_fraction": "Replicated fraction over time or across position and time.",
-    "initiation_events": "Observed initiation-event density as a spatial profile or space-time field.",
+    "initiation_events": "Expected initiation density, or initiation rate density resolved over time.",
     "initiation_pdf": "Initiation probability density as a spatial profile or space-time field.",
-    "coalescence_events": "Fork-coalescence event density as a spatial profile or space-time field.",
+    "coalescence_events": "Expected coalescence density, or coalescence rate density resolved over time.",
     "coalescence_pdf": "Coalescence probability density as a spatial profile or space-time field.",
     "origin_efficiency": (
         "Origin efficiency across genomic position or integrated over user-defined regions."
@@ -855,16 +860,17 @@ _SETTING_DESCRIPTIONS = {
     "maxiter": "Maximum number of global fitting iterations.",
     "error": "Optional MSE threshold for early stopping; automatic disables it.",
     "sim_number": "Number of stochastic simulations in the active route or fit phase.",
-    "err_threshold": "Numerical floor used while fitting firing-rate values.",
+    "err_threshold": "Numerical floor used while fitting initiation-rate values.",
     "deviation_threshold": "Tolerance below which a spatial update is left unchanged.",
-    "rate_bounds": "Lower and upper bounds for firing-rate fitting.",
+    "rate_bounds": "Lower and upper bounds for initiation-rate fitting.",
     "speed_bounds": "Lower and upper bounds for fork-speed fitting.",
     "speed_regularization": (
         "Noise-adaptive smoothness penalty on spatial fork speeds in the integrated "
         "timing fit using supplied directionality; zero disables the penalty."
     ),
-    "firing_bounds": "Lower and upper bounds for fitted firing rates.",
+    "firing_bounds": "Lower and upper bounds for fitted initiation rates.",
     "initial_fork_speed": "Starting fork-speed value for fitting, in kb/min.",
+    "initial_initiation_rate": "Starting initiation-rate value; automatic uses the route's native estimate.",
     "space_fit_step": "Spatial-phase fitting update size.",
     "space_maxiter": "Maximum number of spatial-phase fitting iterations.",
     "temporal_smoothw": "Optional smoothing window for time-dependent profiles.",
@@ -879,11 +885,11 @@ _SETTING_DESCRIPTIONS = {
     "spacetime_order": "Order of the spatial and temporal phases in a factorized fit.",
     "spacetime_kernel_t": "Temporal kernel width for mixed space-time corrections.",
     "weibull_shape": "Weibull shape parameter; 1 is exponential and 2 is linear hazard.",
-    "weibull_delay": "Activation delay for a Weibull firing-rate target.",
+    "weibull_delay": "Activation delay for a Weibull initiation-rate target.",
     "fit_weibull_shape": "Fit the Weibull shape as well as the rate field.",
     "alpha_smooth": "Smoothness regularisation applied to log(alpha).",
     "alpha_prior": "Prior strength keeping log(alpha) near its initial estimate.",
-    "floor": "Lower numerical floor for fitted firing-rate fields.",
+    "floor": "Lower numerical floor for fitted initiation-rate fields.",
     "unreplicated_floor": "Numerical floor when conditioning on unreplicated DNA.",
     "smoothw": "Spatial smoothing window for fitted profiles.",
     "refine_ratio_bounds": "Lower and upper bounds for timing-ratio refinement updates.",
@@ -910,7 +916,7 @@ _SETTING_DESCRIPTIONS = {
 
 _SETTING_LABELS = {
     "error": "MSE threshold",
-    "err_threshold": "Firing rate floor",
+    "err_threshold": "Initiation rate floor",
     "spatial_knots": "Spatial control points",
     "temporal_knots": "Temporal control points",
     "regularization": "Smoothness penalty",
@@ -922,6 +928,7 @@ _SETTING_LABELS = {
     "perQ": "Periodic",
     "cfl": "CFL factor",
     "sim_number": "Simulations",
+    "tau": "Recovery time",
     "maxiter": "Fit iterations",
     "n_bins": "Spatial bins",
     "x_array": "Position axis",
@@ -1000,7 +1007,7 @@ _SETTING_LOCATIONS: dict[str, SettingLocation] = {
             "geometry",
         )
     },
-    **{name: "derived" for name in ("n_bins", "genome_length", "interval_kb", "x_array")},
+    **{name: "derived" for name in ("n_bins", "genome_length", "interval_kb", "x_array", "max_time", "max_rep_time")},
 }
 
 _SETTING_CHOICES: dict[str, tuple[Any, ...]] = {
@@ -1054,6 +1061,7 @@ _POSITIVE_SETTINGS = {
     "weibull_shape",
     "spacetime_kernel_t",
     "initial_fork_speed",
+    "initial_initiation_rate",
     "genome_length",
     "tau",
 }
@@ -1095,6 +1103,7 @@ _SETTING_UNITS = {
     "refine_edge_kb": "kb",
     "weibull_delay": "min",
     "stall_rate_per_kb": "stalls/kb",
+    "tau": "min",
 }
 
 # These are accepted by broad wrappers but are either function-call plumbing,
@@ -1127,6 +1136,7 @@ _WEIBULL_ONLY_SETTINGS = {
     "alpha_prior",
 }
 _WEIBULL_FIRING_SETTINGS = _WEIBULL_ONLY_SETTINGS | {
+    "rate_bounds", "initial_initiation_rate",
     "perQ",
     "stall_rate_per_kb",
     "tau",
@@ -1168,6 +1178,15 @@ _SIGNATURE_ALIASES = {
 }
 
 _SETTING_FALLBACK_DEFAULTS: dict[str, Any] = {
+    "resolution": 1.0,
+    "resolution_time": 5.0,
+    "time_grid": None,
+    "max_time": None,
+    "max_rep_time": None,
+    "n_bins": None,
+    "genome_length": None,
+    "interval_kb": None,
+    "perQ": False,
     "error": None,
     "maxiter": 10,
     "weibull_shape": 2.0,
@@ -1211,7 +1230,7 @@ _FIXED_OUTPUTS: dict[str, tuple[DataForm, str]] = {
 }
 
 _DEFAULT_DEPENDENCE = {
-    "firing_rate": "space",
+    "initiation_rate": "space",
     "fork_speed": "space",
     "replicated_fraction": "time",
     "initiation_events": "space",
@@ -1228,6 +1247,11 @@ _DEPENDENCE_LABELS = {
     "spacetime": "Space-time",
     "regions": "Regions",
     "ensemble": "Ensemble",
+}
+
+_EVENT_DENSITY_LABELS = {
+    "space": "Density (events/kb)",
+    "spacetime": "Rate density (events/kb/min)",
 }
 
 _FORM_ALIASES: dict[str, tuple[DataForm, str]] = {
@@ -1285,7 +1309,7 @@ def _target_output(spec: Any) -> tuple[DataForm, str]:
     for name, values in spec.assumption_values:
         if name == "target_form" and values:
             return _FORM_ALIASES.get(str(values[0]), ("supplied", str(values[0])))
-    if spec.target in {"firing_rate", "fork_speed"}:
+    if spec.target in {"initiation_rate", "fork_speed"}:
         default_form = dict(spec.default_assumptions).get("target_form", "space")
         return _FORM_ALIASES.get(str(default_form), ("supplied", str(default_form)))
     if spec.target == "origin_efficiency":
@@ -1297,7 +1321,7 @@ def _target_output(spec: Any) -> tuple[DataForm, str]:
 
 def _target_shapes(spec: Any) -> tuple[str, ...]:
     if (
-        spec.target == "firing_rate"
+        spec.target == "initiation_rate"
         and "target_shape" in (*spec.required_assumptions, *spec.optional_assumptions)
         and dict(spec.default_assumptions).get("target_form") in {"time", "spacetime"}
     ):
@@ -1616,6 +1640,10 @@ def _setting_limits(
         return 1e-6, 1.0, 0.05
     if name == "stall_rate_per_kb":
         return 0.0, None, 0.001
+    if name == "err_threshold":
+        return None, None, 0.1
+    if name == "initial_initiation_rate":
+        return 1e-300, None, 0.001
     if name in _POSITIVE_SETTINGS:
         return 1e-12, None, 0.1
     if name in _NONNEGATIVE_SETTINGS:
@@ -1657,9 +1685,9 @@ def _route_settings(spec: Any, inputs: tuple[MappingInput, ...]) -> tuple[Mappin
             default = "periodic" if defaults.get("perQ") else "linear"
             has_default = True
         location = _SETTING_LOCATIONS.get(name, "settings")
-        # Geometry is the readable simulation control; rmap derives the legacy
-        # periodic flag from it, so presenting both would be contradictory.
-        if name == "perQ" and has_geometry:
+        # Mapping uses one Periodic switch for deterministic and stochastic
+        # routes. Retain the string alias only for saved/programmatic requests.
+        if name == "geometry" and has_geometry:
             location = "derived"
         settings.append(
             MappingSetting(
@@ -1876,6 +1904,8 @@ def _variant_description(
     dependence: str,
     descriptions: dict[str, str],
 ) -> str:
+    if internal_target in {"initiation_events", "initiation_events_xt", "coalescence_events", "coalescence_events_xt"}:
+        return _FEATURE_DESCRIPTIONS[internal_target]
     description = descriptions.get(internal_target, "Registered DNAscape mapping target.")
     return f"{description} Output dependence: {dependence}."
 
@@ -1920,7 +1950,9 @@ def _build_targets(
                 TargetVariant(
                     internal_target=internal_target,
                     dependence=dependence,
-                    label=_DEPENDENCE_LABELS.get(dependence, dependence.capitalize()),
+                    label=(_EVENT_DENSITY_LABELS[dependence]
+                           if key in {"initiation_events", "coalescence_events"}
+                           else _DEPENDENCE_LABELS.get(dependence, dependence.capitalize())),
                     output_form=output_forms[0],
                     target_shapes=tuple(str(shape) for shape in shapes),
                     default_target_shape=str(defaults[0]) if defaults else None,
@@ -1956,7 +1988,7 @@ def _build_targets(
 
 @lru_cache(maxsize=1)
 def get_mapping_catalog() -> MappingCatalog:
-    """Build and cache the public implemented rmap conversion catalogue.
+    """Build and cache the deterministic Mapping application catalogue.
 
     Both scientific discovery calls are public.  The returned snapshot is
     independent of rmap's mutable internal registration list.
@@ -1974,6 +2006,21 @@ def get_mapping_catalog() -> MappingCatalog:
     specs = tuple(
         spec for spec in rmap.routes() if spec.implemented and spec.target in public_targets
     )
+    # Simulation retains its own observables and APIs. Mapping presents only
+    # deterministic conversions, without probability-density or identity routes.
+    removed_targets = {"initiation_pdf", "initiation_pdf_xt", "coalescence_pdf", "coalescence_pdf_xt"}
+    removed_methods = {
+        "fork_density_bundle_to_directionality_time_integrated",
+        "fork_density_fields_to_directionality_time_integrated",
+        "fork_density_profiles_to_directionality",
+        "replicated_fraction_xt_to_replicated_fraction_spatial_mean",
+    }
+    specs = tuple(spec for spec in specs
+                  if spec.target not in removed_targets
+                  and spec.method not in removed_methods
+                  and not spec.method.endswith("_simulation"))
+    public_target_ids = tuple(target for target in public_target_ids
+                              if any(spec.target == target for spec in specs))
     methods = tuple(spec.method for spec in specs)
     if len(methods) != len(set(methods)):
         raise RuntimeError("rmap returned duplicate implemented method names.")

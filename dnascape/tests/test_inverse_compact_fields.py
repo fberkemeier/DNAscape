@@ -69,7 +69,7 @@ def test_chromosome_static_initialization_never_expands_time_axis(monkeypatch):
     monkeypatch.setattr(np.linalg, "lstsq", unexpected_lstsq)
     n = 249_251
     t = np.arange(0.0, 2402.0, 2.0)
-    firing = _make_field("space", 1e-5, 1e-5, (1e-9, 1), n, t, 2, 12, 4, 0, "firing_rate")
+    firing = _make_field("space", 1e-5, 1e-5, (1e-9, 1), n, t, 2, 12, 4, 0, "initiation_rate")
     speed = _make_field("space", None, 1.4, (0.2, 6), n, t, 2, 12, 4, 0, "fork_speed")
     values = speed.evaluate(speed.initial)
     assert firing.fixed.strides == (0, 0)
@@ -83,11 +83,11 @@ def test_chromosome_static_initialization_never_expands_time_axis(monkeypatch):
 @pytest.mark.parametrize("source", [np.nan, np.inf, -1.0, np.array([1.0, -2.0, 1.0])])
 def test_compact_fields_reject_invalid_values(source):
     with pytest.raises(ValueError, match="finite"):
-        _compact_space_time_field(source, 4, 3, np.arange(4.0), 1.0, "firing_rate")
+        _compact_space_time_field(source, 4, 3, np.arange(4.0), 1.0, "initiation_rate")
 
 
 def test_compact_firing_allows_zero_but_speed_does_not():
-    field = _compact_space_time_field(0.0, 4, 3, np.arange(4.0), 1.0, "firing_rate")
+    field = _compact_space_time_field(0.0, 4, 3, np.arange(4.0), 1.0, "initiation_rate")
     assert not np.any(field)
     with pytest.raises(ValueError, match="positive"):
         _compact_space_time_field(0.0, 4, 3, np.arange(4.0), 1.0, "fork_speed", True)

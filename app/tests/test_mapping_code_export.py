@@ -51,7 +51,7 @@ def _snapshot() -> MappingCodeSnapshot:
             "n_bins": SimpleNamespace(active=True, override=SimpleNamespace(value=False), control=SimpleNamespace(value=8)),
         },
         inputs={
-            "firing_rate": SimpleNamespace(form=SimpleNamespace(value="x"), override=None, surface={
+            "initiation_rate": SimpleNamespace(form=SimpleNamespace(value="x"), override=None, surface={
                 "inspections": [inspection],
                 "selection_values": {"profiles.csv": {"column": "first", "array_key": None}},
             }),
@@ -70,7 +70,7 @@ def _snapshot() -> MappingCodeSnapshot:
 
 def test_snapshot_keeps_original_inputs_selections_and_disabled_overrides() -> None:
     snapshot = _snapshot()
-    source = snapshot.recipe["inputs"]["firing_rate"]
+    source = snapshot.recipe["inputs"]["initiation_rate"]
     assert source["files"][0]["column"] == "first"
     assert source["files"][0]["source_format"] == "csv"
     assert snapshot.files == ((source["files"][0]["path"], inspect_upload(
@@ -88,7 +88,7 @@ def test_snapshot_keeps_original_inputs_selections_and_disabled_overrides() -> N
 
 def test_snapshot_keeps_automatic_advanced_fields_editable_without_enabling_them() -> None:
     snapshot = snapshot_mapping_code(
-        method="timing_and_speed_to_firing_rate", target_shape=None,
+        method="timing_and_speed_to_initiation_rate", target_shape=None,
         settings={"maxiter": 25, "fit_step": 1.0, "error": .02},
         setting_controls={
             key: SimpleNamespace(
@@ -104,6 +104,22 @@ def test_snapshot_keeps_automatic_advanced_fields_editable_without_enabling_them
         "space_fit_step": {"enabled": False, "value": 1.0},
         "error": {"enabled": True, "value": .02},
     }
+
+
+def test_fit_rows_export_native_values_including_logarithmic_floor_and_partial_bounds():
+    snapshot = snapshot_mapping_code(
+        method="timing_and_speed_to_initiation_rate", target_shape=None,
+        settings={"err_threshold": 12., "rate_bounds": (1e-12, None), "initial_initiation_rate": .002},
+        setting_controls={key: SimpleNamespace(active=True, override=None, automatic=True,
+                                             control=SimpleNamespace(value=value))
+                          for key, value in {"err_threshold": "1e-12", "rate_bounds": '["1e-12", null]',
+                                             "initial_initiation_rate": .002}.items()},
+        inputs={}, read_input=lambda _: None, region={}, combination_mode="pairwise",
+        raw_export={}, plotting={},
+    )
+    assert snapshot.recipe["setting_overrides"]["err_threshold"]["value"] == 12.
+    assert snapshot.recipe["setting_overrides"]["rate_bounds"]["value"] == [1e-12, None]
+    assert snapshot.recipe["setting_overrides"]["initial_initiation_rate"]["value"] == .002
 
 
 def test_runnable_bundle_executes_its_own_package_and_inputs_without_web_imports(tmp_path: Path) -> None:
@@ -195,7 +211,7 @@ def test_raw_batch_settings_remain_independent_and_optional_plot_matches_page(tm
     assert '"color": "#2596be"' in specification[1]
 
 
-@pytest.mark.parametrize("target", ["firing_rate", "fork_speed"])
+@pytest.mark.parametrize("target", ["initiation_rate", "fork_speed"])
 def test_mapping_code_menu_downloads_current_controls_without_running_map(
     monkeypatch: pytest.MonkeyPatch, target: str,
 ) -> None:
@@ -247,8 +263,8 @@ def test_mapping_code_menu_downloads_current_controls_without_running_map(
             await set_value("mapping-region-start", 1.0)
             await set_value("mapping-region-end", 3.0)
             await set_value("mapping-setting-resolution", 0.5)
-            constant_key = "fork_speed" if target == "firing_rate" else "firing_rate"
-            constant_value = 1.8 if target == "firing_rate" else .0018
+            constant_key = "fork_speed" if target == "initiation_rate" else "initiation_rate"
+            constant_value = 1.8 if target == "initiation_rate" else .0018
             await set_value(f"mapping-input-{constant_key.replace('_', '-')}-constant", constant_value)
             await set_value("mapping-setting-refine-edge-kb", 23.)
             await set_value("mapping-raw-filename", "user_chosen_name")

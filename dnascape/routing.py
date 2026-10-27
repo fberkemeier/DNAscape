@@ -1,6 +1,6 @@
 """High-level route registry for DNAscape feature mapping.
 
-The public ``rmap`` firing-rate contract is initiation density in
+The public ``rmap`` initiation-rate contract is initiation density in
 ``min**-1 kb**-1`` for every scalar, spatial, temporal and space-time form.
 Legacy static timing and stochastic simulators use a per-bin hazard internally;
 their route adapters multiply the density by the resolved bin width in kb.
@@ -41,15 +41,16 @@ from .mapping import (
     map_timing_directionality_fork_speed,
 )
 from .simulation import rsim
+from .utils import smoothf
 
 __all__ = ["MappingSpec", "DataTypeMapper", "rmap"]
 
 _FEATURE_ALIASES = {
-    "fr": "firing_rate",
-    "firing": "firing_rate",
-    "origin_activity": "firing_rate",
-    "initiation": "firing_rate",
-    "initiation_rate": "firing_rate",
+    "ir": "initiation_rate",
+    "firing": "initiation_rate",
+    "origin_activity": "initiation_rate",
+    "initiation": "initiation_rate",
+    "initiation_rate": "initiation_rate",
     "rt": "replication_timing",
     "timing": "replication_timing",
     "replication_time": "replication_timing",
@@ -61,8 +62,8 @@ _FEATURE_ALIASES = {
     "v": "fork_speed",
     "speed": "fork_speed",
     "fork_speeds": "fork_speed",
-    "ori_rate": "firing_rate",
-    "origin_rate": "firing_rate",
+    "ori_rate": "initiation_rate",
+    "origin_rate": "initiation_rate",
     "eff": "origin_efficiency",
     "efficiency": "origin_efficiency",
     "origin_usage": "origin_efficiency",
@@ -102,7 +103,7 @@ _FEATURE_ALIASES = {
 }
 
 _CANONICAL_FEATURES = {
-    "firing_rate",
+    "initiation_rate",
     "fork_speed",
     "replication_timing",
     "fork_directionality",
@@ -130,7 +131,7 @@ _CANONICAL_FEATURES = {
 }
 
 _FEATURE_DESCRIPTIONS = {
-    "firing_rate": "Initiation-rate density to infer or supply, in min^-1 kb^-1.",
+    "initiation_rate": "Initiation-rate density to infer or supply, in min^-1 kb^-1.",
     "fork_speed": "Fork progression speed to infer or supply.",
     "replication_timing": "Replication timing along genomic position.",
     "fork_directionality": "Net fork movement directionality along position.",
@@ -161,11 +162,11 @@ _FEATURE_DESCRIPTIONS = {
 
 _ASSUMPTION_DESCRIPTIONS = {
     "target_form": "Requested output form: scalar (constant in space and time), array (space-dependent), transposed array (time-dependent), or matrix (space-time dependent, positions by time).",
-    "target_shape": "Optional parametric shape for the target field. For firing-rate targets I(t) and I(x,t), rmap defaults to 'weibull'; use 'free' for the unconstrained fit. Fork-speed targets currently use only 'best': v(x) is site-specific, v(t) uses the current temporal fit, and v(x,t) is factorized as v_x(x) q(t).",
+    "target_shape": "Optional parametric shape for the target field. For initiation-rate targets I(t) and I(x,t), rmap defaults to 'weibull'; use 'free' for the unconstrained fit. Fork-speed targets currently use only 'best': v(x) is site-specific, v(t) uses the current temporal fit, and v(x,t) is factorized as v_x(x) q(t).",
     "weibull_shape": "Weibull shape parameter k used when target_shape='weibull'. k=2 gives a linearly increasing hazard; k=1 recovers the exponential case.",
-    "weibull_delay": "Optional activation delay, in minutes, for Weibull firing-rate target shapes.",
+    "weibull_delay": "Optional activation delay, in minutes, for Weibull initiation-rate target shapes.",
     "fit_weibull_shape": "Whether to optimise the Weibull shape parameter k in addition to alpha(x). By default k is fixed.",
-    "alpha_smooth": "Smoothness regularisation strength applied to log(alpha) for Weibull firing-rate fits.",
+    "alpha_smooth": "Smoothness regularisation strength applied to log(alpha) for Weibull initiation-rate fits.",
     "alpha_prior": "Prior regularisation strength keeping log(alpha) close to its local uniform initialisation.",
     "resolution": "Spatial resolution along the genome, in kb.",
     "resolution_time": "Temporal resolution, in minutes.",
@@ -176,9 +177,10 @@ _ASSUMPTION_DESCRIPTIONS = {
     "maxiter": "Global iteration count. For x,t targets it overrides maxiter_x and maxiter_t, setting both to the same value.",
     "error": "Optional MSE threshold for early stopping during fitting. The default None leaves early stopping off.",
     "sim_number": "Global number of stochastic simulations used by the active fitting phase when a route calls rsim.",
-    "err_threshold": "Lower numerical floor for fitted firing-rate values.",
+    "err_threshold": "Lower numerical floor for fitted initiation-rate values.",
     "deviation_threshold": "Tolerance below which a spatial firing update can be left unchanged.",
-    "rate_bounds": "Allowed lower and upper bounds for scalar firing-rate fitting.",
+    "rate_bounds": "Optional lower and upper initiation-rate bounds; Weibull fits bound amplitude. Each side can be automatic.",
+    "initial_initiation_rate": "Starting initiation rate, or starting amplitude for Weibull fits. None uses the native initializer.",
     "speed_bounds": "Allowed lower and upper bounds for fork-speed fitting.",
     "speed_regularization": (
         "Noise-adaptive smoothness penalty on site speeds in the integrated "
@@ -206,7 +208,7 @@ _ASSUMPTION_DESCRIPTIONS = {
     ),
     "refine_seed": "Seed offset for simulation-refined fitting routes.",
     "refine_verbose": "Whether refinement sub-loops print ETA and fitting error.",
-    "floor": "Lower numerical floor for fitted firing-rate fields.",
+    "floor": "Lower numerical floor for fitted initiation-rate fields.",
     "smoothw": "Spatial smoothing window for fitted profiles.",
     "stall_rate": (
         "Legacy probability that a fork stalls while crossing one spatial bin."
@@ -278,7 +280,9 @@ _ASSUMPTION_ORDER = (
     "spacetime_order",
     "spacetime_kernel_t",
     "err_threshold",
+    "initial_initiation_rate",
     "deviation_threshold",
+    "rate_bounds",
     "floor",
     "unreplicated_floor",
     "smoothw",
@@ -327,7 +331,7 @@ _FORM_DESCRIPTIONS = {
 }
 
 _PUBLIC_MAPPING_TARGETS = (
-    "firing_rate",
+    "initiation_rate",
     "fork_speed",
     "replication_timing",
     "replicated_fraction_xt",
@@ -432,18 +436,20 @@ _ASSUMPTION_ALIASES = {
 
 
 def _canonical_feature(name):
+    from ._terminology import canonical_rate_key
     text = str(name).strip().replace("-", "_")
-    key = text.lower()
+    key = canonical_rate_key(text.lower())
     if key in _FEATURE_ALIASES:
         return _FEATURE_ALIASES[key]
     if key in _CANONICAL_FEATURES:
         return key
-    return text
+    return canonical_rate_key(text)
 
 
 def _canonical_assumption(name):
+    from ._terminology import canonical_rate_key
     text = str(name).strip().replace("-", "_")
-    key = text.lower()
+    key = canonical_rate_key(text.lower())
     if key in _ASSUMPTION_ALIASES:
         return _ASSUMPTION_ALIASES[key]
     return _canonical_feature(text)
@@ -620,7 +626,7 @@ class MappingSpec:
 
 _RSIM_OPTION_NAMES = tuple(
     name for name in inspect.signature(rsim).parameters
-    if name not in {"ori_rate", "firing_rate", "initiation_rate"}
+    if name not in {"ori_rate", "initiation_rate", "initiation_rate"}
 )
 _RSIM_ASSUMPTION_NAMES = tuple(
     name for name in _RSIM_OPTION_NAMES
@@ -675,13 +681,13 @@ def _rmap_spatial_resolution(options):
     return resolution
 
 
-def _firing_density_to_bin_hazard(firing_rate, options):
+def _firing_density_to_bin_hazard(initiation_rate, options):
     """Convert public rmap density into a legacy per-bin initiation hazard."""
-    return np.asarray(firing_rate, dtype=float) * _rmap_spatial_resolution(options)
+    return np.asarray(initiation_rate, dtype=float) * _rmap_spatial_resolution(options)
 
 
 def _simulation_feature_mapper(output_name, default_options=None):
-    def mapper(firing_rate, **kwargs):
+    def mapper(initiation_rate, **kwargs):
         options = dict(default_options or {})
         # A mapping route returns one selected feature, so retaining every
         # per-replicate profile would be pure hidden memory overhead. Pooled
@@ -698,10 +704,11 @@ def _simulation_feature_mapper(output_name, default_options=None):
             for key, value in kwargs.items()
             if key in _RSIM_OPTION_NAMES
         })
-        return _simulation_feature_result(
-            rsim(firing_rate=_firing_density_to_bin_hazard(firing_rate, options), **options),
-            output_name,
-        )
+        hazard = _firing_density_to_bin_hazard(initiation_rate, options)
+        deterministic = _deterministic_mapping_feature(output_name, hazard, options)
+        if deterministic is not None:
+            return deterministic
+        return _simulation_feature_result(rsim(initiation_rate=hazard, **options), output_name)
 
     mapper.__name__ = f"map_firing_to_{output_name}_simulation"
     return mapper
@@ -721,9 +728,13 @@ def _simulation_source_feature_mapper(output_name, default_options=None):
             if key in _RSIM_ASSUMPTION_NAMES
         })
         options["fork_speed"] = source["fork_speed"]
+        hazard = _firing_density_to_bin_hazard(source["initiation_rate"], options)
+        deterministic = _deterministic_mapping_feature(output_name, hazard, options)
+        if deterministic is not None:
+            return deterministic
         return _simulation_feature_result(
             rsim(
-                firing_rate=_firing_density_to_bin_hazard(source["firing_rate"], options),
+                initiation_rate=hazard,
                 **options,
             ),
             output_name,
@@ -731,6 +742,38 @@ def _simulation_source_feature_mapper(output_name, default_options=None):
 
     mapper.__name__ = f"map_firing_and_speed_to_{output_name}_simulation"
     return mapper
+
+
+def _deterministic_mapping_feature(output_name, hazard, options):
+    """Timing and directionality have deterministic no-stalling forward maps."""
+    resolution = _rmap_spatial_resolution(options)
+    if _fitting._stochastic_mapping_model(options, resolution) or output_name not in {"replication_timing", "fork_directionality"}:
+        return None
+    if output_name == "replication_timing":
+        return _fitting._mapping_prediction(initiation_rate=hazard, **options)["replication_timing"]
+    density = np.asarray(hazard, dtype=float) / resolution
+    selected = {key: value for key, value in options.items() if key in _FORK_DENSITY_OPTIONS}
+    selected["resolution"] = resolution
+    selected["fork_speed"] = options.get("fork_speed", 1.4)
+    if selected.get("time_grid") is None and selected.get("max_time") is None and selected.get("max_rep_time") is None:
+        selected["max_time"] = 1000.
+    if options.get("geometry") in {"linear", "periodic"}:
+        selected["perQ"] = options["geometry"] == "periodic"
+    from .inverse import _compact_space_time_field, _mean_field_timing
+    from .mapping import _fraction_time_axis, _resolve_n_bins_from_fields
+    speed = selected.get("fork_speed", 1.4)
+    n = _resolve_n_bins_from_fields(density, speed, n_bins=selected.get("n_bins"), resolution_x=resolution,
+                                  genome_length=selected.get("genome_length"), interval_kb=selected.get("interval_kb"))
+    if n is None:
+        raise ValueError("Provide a spatial profile or region length for directionality.")
+    dt = selected.get("resolution_time", 5.)
+    t = _fraction_time_axis((density, speed), n, resolution_time=dt, time_grid=selected.get("time_grid"),
+                            max_time=selected.get("max_time") or selected.get("max_rep_time"))
+    i = _compact_space_time_field(density, len(t), n, t, dt, "initiation_rate")
+    v = _compact_space_time_field(speed, len(t), n, t, dt, "fork_speed", positive=True)
+    integrals = (np.zeros(n), np.zeros(n))
+    _mean_field_timing(i, v, t, resolution, selected.get("perQ", False), fork_integrals=integrals)
+    return map_fork_densities_directionality(*integrals)
 
 
 _REPLICATED_FRACTION_OPTIONS = (
@@ -748,33 +791,25 @@ _REPLICATED_FRACTION_WITH_SPEED_OPTIONS = _REPLICATED_FRACTION_OPTIONS + ("fork_
 
 
 def map_firing_and_speed_to_replicated_fraction_xt(source, **kwargs):
-    return map_replicated_fraction_xt(
-        source["firing_rate"],
-        fork_speed=source["fork_speed"],
-        **_options(kwargs, _REPLICATED_FRACTION_OPTIONS),
-    )
+    from ._forward_mapping import fraction_field
+    clock, field = fraction_field(source["initiation_rate"], source["fork_speed"],
+                                  **_options(kwargs, _REPLICATED_FRACTION_OPTIONS))
+    return _SimulationFeatureArray(field, {"time_grid": clock, "method": "deterministic"})
 
 
-def map_firing_to_replicated_fraction_xt(firing_rate, **kwargs):
-    return map_replicated_fraction_xt(
-        firing_rate,
-        **_options(kwargs, _REPLICATED_FRACTION_WITH_SPEED_OPTIONS),
-    )
+def map_firing_to_replicated_fraction_xt(initiation_rate, **kwargs):
+    return map_firing_and_speed_to_replicated_fraction_xt(
+        {"initiation_rate": initiation_rate, "fork_speed": kwargs.get("fork_speed", 1.4)}, **kwargs)
 
 
 def map_firing_and_speed_to_replicated_fraction(source, **kwargs):
-    return map_replicated_fraction(
-        source["firing_rate"],
-        fork_speed=source["fork_speed"],
-        **_options(kwargs, _REPLICATED_FRACTION_OPTIONS),
-    )
+    field = map_firing_and_speed_to_replicated_fraction_xt(source, **kwargs)
+    return _SimulationFeatureArray(np.mean(field, axis=0), field._rmap_info)
 
 
-def map_firing_to_replicated_fraction(firing_rate, **kwargs):
-    return map_replicated_fraction(
-        firing_rate,
-        **_options(kwargs, _REPLICATED_FRACTION_WITH_SPEED_OPTIONS),
-    )
+def map_firing_to_replicated_fraction(initiation_rate, **kwargs):
+    return map_firing_and_speed_to_replicated_fraction(
+        {"initiation_rate": initiation_rate, "fork_speed": kwargs.get("fork_speed", 1.4)}, **kwargs)
 
 
 _INITIATION_EVENT_OPTIONS = ("resolution_time", "time_grid")
@@ -812,7 +847,7 @@ _INITIATION_PDF_FORWARD_DEFAULTS.update(_PDF_DEFAULTS)
 
 def map_firing_and_fraction_to_initiation_events_xt(source, **kwargs):
     return map_initiation_events_xt(
-        source["firing_rate"],
+        source["initiation_rate"],
         source["replicated_fraction_xt"],
         **_options(kwargs, _INITIATION_EVENT_OPTIONS),
     )
@@ -820,7 +855,7 @@ def map_firing_and_fraction_to_initiation_events_xt(source, **kwargs):
 
 def map_firing_and_fraction_to_initiation_events(source, **kwargs):
     return map_initiation_events(
-        source["firing_rate"],
+        source["initiation_rate"],
         source["replicated_fraction_xt"],
         **_options(kwargs, _INITIATION_EVENT_OPTIONS),
     )
@@ -847,23 +882,22 @@ def map_initiation_events_xt_to_initiation_events(initiation_events_xt, **kwargs
 
 
 def map_firing_and_speed_to_initiation_events_xt(source, **kwargs):
-    replicated_fraction = map_firing_and_speed_to_replicated_fraction_xt(
-        source,
-        **_options(kwargs, _REPLICATED_FRACTION_OPTIONS),
-    )
-    return map_initiation_events_xt(
-        source["firing_rate"],
-        replicated_fraction,
-        **_options(kwargs, _INITIATION_EVENT_OPTIONS),
-    )
+    return _kinetic_event_result(source, "initiation_events_xt", **kwargs)
 
 
 def map_firing_and_speed_to_initiation_events(source, **kwargs):
-    initiation_xt = map_firing_and_speed_to_initiation_events_xt(source, **kwargs)
-    return map_initiation_events_profile(
-        initiation_xt,
-        **_options(kwargs, _INITIATION_EVENT_OPTIONS),
-    )
+    return _kinetic_event_result(source, "initiation_events", **kwargs)
+
+
+def _kinetic_event_result(source, output, **kwargs):
+    from ._event_densities import kinetic_event_densities
+    options = _options(kwargs, _REPLICATED_FRACTION_OPTIONS + ("cfl", "unreplicated_floor"))
+    fields = kinetic_event_densities(source["initiation_rate"], source["fork_speed"], **options)
+    return _SimulationFeatureArray(fields[output], {
+        "time_grid": fields["time_grid"],
+        "event_density_units": "events/(kb min)" if output.endswith("_xt") else "events/kb",
+        "event_time_integration": "adaptive",
+    })
 
 
 def map_firing_and_speed_to_initiation_pdf_xt(source, **kwargs):
@@ -991,18 +1025,7 @@ def map_fork_density_fields_to_coalescence_events(source, **kwargs):
 
 
 def map_firing_and_speed_to_coalescence_events_xt(source, **kwargs):
-    fork_density_options = _options(kwargs, _FORK_DENSITY_OPTIONS)
-    fork_densities = map_firing_and_speed_to_fork_densities_xt(
-        source,
-        **fork_density_options,
-    )
-    return map_coalescence_events_xt(
-        source["fork_speed"],
-        fork_densities["replicated_fraction_xt"],
-        fork_densities["right_fork_density_xt"],
-        fork_densities["left_fork_density_xt"],
-        **_options(kwargs, _COALESCENCE_EVENT_OPTIONS),
-    )
+    return _kinetic_event_result(source, "coalescence_events_xt", **kwargs)
 
 
 def map_firing_and_speed_to_coalescence_pdf_xt(source, **kwargs):
@@ -1018,11 +1041,7 @@ def map_coalescence_events_xt_to_coalescence_events(coalescence_events_xt, **kwa
 
 
 def map_firing_and_speed_to_coalescence_events(source, **kwargs):
-    coalescence_xt = map_firing_and_speed_to_coalescence_events_xt(source, **kwargs)
-    return map_coalescence_events_xt_to_coalescence_events(
-        coalescence_xt,
-        **kwargs,
-    )
+    return _kinetic_event_result(source, "coalescence_events", **kwargs)
 
 
 def map_firing_and_speed_to_coalescence_pdf(source, **kwargs):
@@ -1048,25 +1067,34 @@ _FORK_DENSITY_DIRECTIONALITY_DEFAULTS = {
 
 
 def map_firing_and_speed_to_fork_densities_xt(source, **kwargs):
-    return map_fork_densities_xt(
-        source["firing_rate"],
+    options = _options(kwargs, _FORK_DENSITY_OPTIONS)
+    if all(options.get(key) is None for key in ("time_grid", "max_time", "max_rep_time")):
+        from ._forward_mapping import fraction_field
+        clock, _ = fraction_field(source["initiation_rate"], source["fork_speed"],
+                                  **_options(options, _REPLICATED_FRACTION_OPTIONS))
+        options["time_grid"] = clock
+    result = map_fork_densities_xt(
+        source["initiation_rate"],
         fork_speed=source["fork_speed"],
-        **_options(kwargs, _FORK_DENSITY_OPTIONS),
+        **options,
     )
+    from .mapping import _fraction_time_axis
+    n = result["replicated_fraction_xt"].shape[0]
+    result["time_grid"] = _fraction_time_axis(
+        (source["initiation_rate"], source["fork_speed"]), n,
+        resolution_time=options.get("resolution_time", 5.), time_grid=options.get("time_grid"),
+        max_time=options.get("max_time") or options.get("max_rep_time"))
+    return result
 
 
 def map_firing_and_speed_to_right_fork_density_xt(source, **kwargs):
-    return map_firing_and_speed_to_fork_densities_xt(
-        source,
-        **kwargs,
-    )["right_fork_density_xt"]
+    fields = map_firing_and_speed_to_fork_densities_xt(source, **kwargs)
+    return _SimulationFeatureArray(fields["right_fork_density_xt"], {"time_grid": fields["time_grid"]})
 
 
 def map_firing_and_speed_to_left_fork_density_xt(source, **kwargs):
-    return map_firing_and_speed_to_fork_densities_xt(
-        source,
-        **kwargs,
-    )["left_fork_density_xt"]
+    fields = map_firing_and_speed_to_fork_densities_xt(source, **kwargs)
+    return _SimulationFeatureArray(fields["left_fork_density_xt"], {"time_grid": fields["time_grid"]})
 
 
 def map_fork_density_bundle_to_directionality(fork_densities, **kwargs):
@@ -1100,6 +1128,7 @@ _FORWARD_TIMING_OPTIONS = {
     "n_bins",
     "genome_length",
     "interval_kb",
+    "resolution_time", "time_grid", "max_time", "max_rep_time",
 }
 
 _TIMING_TO_CONSTANT_FIRING_OPTIONS = {
@@ -1112,6 +1141,7 @@ _TIMING_TO_CONSTANT_FIRING_OPTIONS = {
     "error",
     "sim_number",
     "err_threshold",
+    "initial_initiation_rate",
     "rate_bounds",
     "refine_seed",
     "verbose",
@@ -1131,7 +1161,9 @@ _TIMING_TO_SPATIAL_FIRING_OPTIONS = {
     "error",
     "sim_number",
     "err_threshold",
+    "initial_initiation_rate",
     "deviation_threshold",
+    "rate_bounds",
     "space_fit_step",
     "space_maxiter",
     "verbose",
@@ -1290,14 +1322,25 @@ def _apply_global_fit_controls(options, target_form=None):
 
 
 def map_firing_density_to_timing(
-    firing_rate, fork_speed=1.4, resolution=1.0, resolution_x=None,
+    initiation_rate, fork_speed=1.4, resolution=1.0, resolution_x=None,
     neighbourhood_range=2000, perQ=False, n_bins=None, genome_length=None,
-    interval_kb=None,
+    interval_kb=None, resolution_time=5.0, time_grid=None, max_time=None, max_rep_time=None,
 ):
     """Adapt density-valued public firing inputs to the legacy timing solver."""
     dx = _rmap_spatial_resolution({"resolution": resolution, "resolution_x": resolution_x})
+    from .mapping import _field_time_length, _resolve_n_bins_from_fields
+    n = _resolve_n_bins_from_fields(initiation_rate, fork_speed, n_bins=n_bins,
+        resolution_x=dx, genome_length=genome_length, interval_kb=interval_kb)
+    if any(_field_time_length(field, n) is not None for field in (initiation_rate, fork_speed)):
+        from ._forward_mapping import fraction_field, timing_from_fraction
+        clock, fraction = fraction_field(initiation_rate, fork_speed, resolution=dx,
+            resolution_time=resolution_time, time_grid=time_grid, max_time=max_time,
+            max_rep_time=max_rep_time, n_bins=n, interval_kb=interval_kb, perQ=perQ)
+        complete = time_grid is None and max_time is None and max_rep_time is None
+        return _SimulationFeatureArray(timing_from_fraction(clock, fraction, require_complete=complete),
+                                       {"time_grid": clock, "method": "deterministic"})
     return map_firing_timing(
-        np.asarray(firing_rate, dtype=float) * dx, fork_speed=fork_speed,
+        np.asarray(initiation_rate, dtype=float) * dx, fork_speed=fork_speed,
         resolution=dx, neighbourhood_range=neighbourhood_range, perQ=perQ,
         n_bins=n_bins, genome_length=genome_length, interval_kb=interval_kb,
     )
@@ -1305,15 +1348,57 @@ def map_firing_density_to_timing(
 
 def map_firing_and_speed_to_timing(source, **kwargs):
     return map_firing_density_to_timing(
-        source["firing_rate"], fork_speed=source["fork_speed"],
+        source["initiation_rate"], fork_speed=source["fork_speed"],
         **_options(kwargs, _FORWARD_TIMING_OPTIONS),
     )
 
 
+def map_firing_and_speed_to_directionality(source, **kwargs):
+    """Compute directionality through deterministic replication timing.
+
+    A temporal velocity weights the survival gradient at each time, which is
+    the timing-gradient identity before time integration. A static velocity
+    uses the existing timing-to-directionality route directly.
+    """
+    from .mapping import _expand_space_time_field, _field_time_length, _resolve_n_bins_from_fields
+    options = _options(kwargs, _FORWARD_TIMING_OPTIONS)
+    dx = _rmap_spatial_resolution(options)
+    firing, speed = source["initiation_rate"], source["fork_speed"]
+    n = _resolve_n_bins_from_fields(firing, speed, n_bins=options.get("n_bins"),
+        resolution_x=dx, genome_length=options.get("genome_length"), interval_kb=options.get("interval_kb"))
+    if _field_time_length(speed, n) is None:
+        timing = map_firing_and_speed_to_timing(source, **options)
+        result = map_timing_directionality(timing, speed, resolution=dx,
+            perQ=bool(options.get("perQ", False)), T0=kwargs.get("T0"), smoothw=kwargs.get("smoothw"))
+        return _SimulationFeatureArray(result, {**getattr(timing, "_rmap_info", {}), "method": "deterministic"})
+    from ._forward_mapping import fraction_field, timing_from_fraction
+    clock, fraction = fraction_field(firing, speed, **_options(options, _REPLICATED_FRACTION_OPTIONS))
+    complete = all(options.get(key) is None for key in ("time_grid", "max_time", "max_rep_time"))
+    timing_from_fraction(clock, fraction, require_complete=complete)
+    survival = 1. - fraction
+    velocity = _expand_space_time_field(speed, len(clock), n, clock,
+        options.get("resolution_time", 5.), "fork_speed", positive=True).T
+    difference = survival - np.roll(survival, 1, axis=0)
+    edge_velocity = .5 * (velocity + np.roll(velocity, 1, axis=0))
+    if not options.get("perQ", False):
+        difference[0] = 0.
+    result = np.trapezoid(edge_velocity * difference, clock, axis=1) / dx
+    result = np.clip(smoothf(result, kwargs.get("smoothw")), -1., 1.)
+    return _SimulationFeatureArray(result, {"time_grid": clock, "method": "deterministic"})
+
+
+def map_firing_to_directionality(initiation_rate, **kwargs):
+    return map_firing_and_speed_to_directionality(
+        {"initiation_rate": initiation_rate, "fork_speed": kwargs.get("fork_speed", 1.4)}, **kwargs)
+
+
 def _legacy_firing_options(options, resolution):
+    from ._fit_bounds import scale_bounds
     options = dict(options)
     if options.get("rate_bounds") is not None:
-        options["rate_bounds"] = np.asarray(options["rate_bounds"], dtype=float) * resolution
+        options["rate_bounds"] = scale_bounds(options["rate_bounds"], resolution)
+    if options.get("initial_initiation_rate") is not None:
+        options["initial_initiation_rate"] = float(options["initial_initiation_rate"]) * resolution
     if options.get("floor") is not None:
         options["floor"] = float(options["floor"]) * resolution
     options["err_threshold"] = float(options.get("err_threshold", 15.0)) - np.log10(resolution)
@@ -1323,7 +1408,7 @@ def _legacy_firing_options(options, resolution):
 def _firing_density_result(result, resolution):
     values = np.asarray(result, dtype=float) / resolution
     info = dict(getattr(result, "_rmap_info", {}))
-    info["firing_rate_units"] = "min^-1 kb^-1"
+    info["initiation_rate_units"] = "min^-1 kb^-1"
     return (_fitting._RmapInfoFloat(float(values), info) if values.ndim == 0
             else _fitting._RmapInfoArray(values, info))
 
@@ -1397,8 +1482,9 @@ def map_timing_and_speed_to_general_firing(source, **kwargs):
         # A returned coarse field has different interpolation from its fine fit.
         info.pop("replication_timing_fit", None)
     if info.get("replication_timing_fit") is None:
-        info["replication_timing_fit"] = _fitting.rsim(
-            firing_rate=simulation_rates, fork_speed=fork_speed,
+        info["replication_timing_fit"] = _fitting._mapping_prediction(
+            timing_reference=source["replication_timing"],
+            initiation_rate=simulation_rates, fork_speed=fork_speed,
             resolution_space=resolution, resolution_time=options.get("resolution_time", 5.0),
             n_bins=len(source["replication_timing"]),
             sim_number=options.get("spacetime_sim_number") or options.get("temporal_sim_number", 100),
@@ -1499,7 +1585,7 @@ def map_timing_and_directionality_to_fork_speed(source, **kwargs):
 def map_timing_and_firing_to_spatial_speed(source, **kwargs):
     options = _options(kwargs, _TIMING_TO_SPATIAL_SPEED_OPTIONS)
     source = dict(source)
-    source["firing_rate"] = _firing_density_to_bin_hazard(source["firing_rate"], options)
+    source["initiation_rate"] = _firing_density_to_bin_hazard(source["initiation_rate"], options)
     return _fitting.map_timing_firing_spatial_speed(
         source,
         **options,
@@ -1511,9 +1597,9 @@ def map_timing_and_firing_to_general_speed(source, **kwargs):
     options = _options(kwargs, _TIMING_TO_GENERAL_SPEED_OPTIONS)
     options = _apply_global_fit_controls(options, target_form=target_form)
     if target_form == "time":
-        return _fitting.map_timing_firing_temporal_speed(source, _firing_rate_is_density=True, **options)
+        return _fitting.map_timing_firing_temporal_speed(source, _initiation_rate_is_density=True, **options)
     if target_form == "spacetime":
-        return _fitting.map_timing_firing_spacetime_speed(source, _firing_rate_is_density=True, **options)
+        return _fitting.map_timing_firing_spacetime_speed(source, _initiation_rate_is_density=True, **options)
     raise ValueError("target_form must be 'time' or 'spacetime' for this route.")
 
 
@@ -1522,7 +1608,7 @@ def map_timing_and_time_firing_to_temporal_speed(source, **kwargs):
         _options(kwargs, _TIMING_TO_GENERAL_SPEED_OPTIONS), target_form="time",
     )
     return _fitting.map_timing_firing_temporal_speed_simulated(
-        source, _firing_rate_is_density=True, **options,
+        source, _initiation_rate_is_density=True, **options,
     )
 
 
@@ -1531,7 +1617,7 @@ def map_timing_and_general_firing_to_spacetime_speed(source, **kwargs):
         _options(kwargs, _TIMING_TO_GENERAL_SPEED_OPTIONS), target_form="spacetime",
     )
     return _fitting.map_timing_firing_spacetime_speed_simulated(
-        source, _firing_rate_is_density=True, **options,
+        source, _initiation_rate_is_density=True, **options,
     )
 
 
@@ -1683,14 +1769,14 @@ class DataTypeMapper:
 
         if "firing_and_speed_to_timing_simulation" not in methods:
             self.register(
-                ("firing_rate", "fork_speed"),
+                ("initiation_rate", "fork_speed"),
                 "replication_timing",
                 _simulation_source_feature_mapper("replication_timing"),
                 method="firing_and_speed_to_timing_simulation",
                 optional_assumptions=_RSIM_ASSUMPTION_NAMES,
                 default_assumptions={"verbose": False},
                 source_kinds=(
-                    ("firing_rate", ("scalar", "x", "t", "xt")),
+                    ("initiation_rate", ("scalar", "x", "t", "xt")),
                     ("fork_speed", ("scalar", "x", "t", "xt")),
                 ),
                 description="Simulation-backed timing map for kinetic fields with time dependence.",
@@ -1698,14 +1784,14 @@ class DataTypeMapper:
 
         if "firing_to_timing_simulation" not in methods:
             self.register(
-                "firing_rate",
+                "initiation_rate",
                 "replication_timing",
                 _simulation_feature_mapper("replication_timing"),
                 method="firing_to_timing_simulation",
                 required_assumptions=("fork_speed",),
                 optional_assumptions=_RSIM_OPTION_NAMES,
                 default_assumptions={"fork_speed": 1.4, "verbose": False},
-                source_kinds=(("firing_rate", ("scalar", "x", "t", "xt")),),
+                source_kinds=(("initiation_rate", ("scalar", "x", "t", "xt")),),
                 assumption_kinds=(("fork_speed", ("scalar", "x", "t", "xt")),),
                 description="Simulation-backed timing map for kinetic fields with time dependence.",
             )
@@ -1773,6 +1859,21 @@ class DataTypeMapper:
     def _ensure_directionality_routes(self):
         """Keep autoreloaded rmap instances aligned with new directionality routes."""
         methods = {spec.method for spec in self._specs}
+
+        for method, source, func in (
+            ("firing_and_speed_to_directionality_deterministic", ("initiation_rate", "fork_speed"), map_firing_and_speed_to_directionality),
+            ("firing_to_directionality_deterministic", "initiation_rate", map_firing_to_directionality),
+        ):
+            if method not in methods:
+                paired = isinstance(source, tuple)
+                self.register(source, "fork_directionality", func, method=method,
+                    required_assumptions=() if paired else ("fork_speed",),
+                    optional_assumptions=tuple(sorted(_FORWARD_TIMING_OPTIONS)) + ("T0", "smoothw"),
+                    default_assumptions={} if paired else {"fork_speed": 1.4},
+                    source_kinds=tuple((key, ("scalar", "x", "t", "xt"))
+                                       for key in (source if paired else (source,))),
+                    assumption_kinds=() if paired else (("fork_speed", ("scalar", "x", "t", "xt")),),
+                    description="Deterministic directionality through replication timing, without simulations.")
 
         if "timing_and_spatial_speed_to_directionality" not in methods:
             self.register(
@@ -1854,53 +1955,53 @@ class DataTypeMapper:
 
         if "firing_and_speed_to_replicated_fraction_xt_lightcone" not in methods:
             self.register(
-                ("firing_rate", "fork_speed"),
+                ("initiation_rate", "fork_speed"),
                 "replicated_fraction_xt",
                 map_firing_and_speed_to_replicated_fraction_xt,
                 method="firing_and_speed_to_replicated_fraction_xt_lightcone",
                 optional_assumptions=_REPLICATED_FRACTION_OPTIONS,
                 source_kinds=(
-                    ("firing_rate", ("scalar", "x", "t", "xt")),
+                    ("initiation_rate", ("scalar", "x", "t", "xt")),
                     ("fork_speed", ("scalar", "x", "t", "xt")),
                 ),
                 description="Analytical light-cone map of f(x,t) from initiation rate and fork speed.",
             )
         if "firing_to_replicated_fraction_xt_lightcone" not in methods:
             self.register(
-                "firing_rate",
+                "initiation_rate",
                 "replicated_fraction_xt",
                 map_firing_to_replicated_fraction_xt,
                 method="firing_to_replicated_fraction_xt_lightcone",
                 required_assumptions=("fork_speed",),
                 optional_assumptions=_REPLICATED_FRACTION_OPTIONS,
                 default_assumptions={"fork_speed": 1.4},
-                source_kinds=(("firing_rate", ("scalar", "x", "t", "xt")),),
+                source_kinds=(("initiation_rate", ("scalar", "x", "t", "xt")),),
                 assumption_kinds=(("fork_speed", ("scalar", "x", "t", "xt")),),
                 description="Analytical light-cone map of f(x,t) from initiation rate and fork speed.",
             )
         if "firing_and_speed_to_replicated_fraction_lightcone" not in methods:
             self.register(
-                ("firing_rate", "fork_speed"),
+                ("initiation_rate", "fork_speed"),
                 "replicated_fraction",
                 map_firing_and_speed_to_replicated_fraction,
                 method="firing_and_speed_to_replicated_fraction_lightcone",
                 optional_assumptions=_REPLICATED_FRACTION_OPTIONS,
                 source_kinds=(
-                    ("firing_rate", ("scalar", "x", "t", "xt")),
+                    ("initiation_rate", ("scalar", "x", "t", "xt")),
                     ("fork_speed", ("scalar", "x", "t", "xt")),
                 ),
                 description="Analytical light-cone map of the spatial mean replicated fraction.",
             )
         if "firing_to_replicated_fraction_lightcone" not in methods:
             self.register(
-                "firing_rate",
+                "initiation_rate",
                 "replicated_fraction",
                 map_firing_to_replicated_fraction,
                 method="firing_to_replicated_fraction_lightcone",
                 required_assumptions=("fork_speed",),
                 optional_assumptions=_REPLICATED_FRACTION_OPTIONS,
                 default_assumptions={"fork_speed": 1.4},
-                source_kinds=(("firing_rate", ("scalar", "x", "t", "xt")),),
+                source_kinds=(("initiation_rate", ("scalar", "x", "t", "xt")),),
                 assumption_kinds=(("fork_speed", ("scalar", "x", "t", "xt")),),
                 description="Analytical light-cone map of the spatial mean replicated fraction.",
             )
@@ -1917,98 +2018,98 @@ class DataTypeMapper:
         methods = {spec.method for spec in self._specs}
         if "firing_and_speed_to_initiation_events_xt_mean_field" not in methods:
             self.register(
-                ("firing_rate", "fork_speed"),
+                ("initiation_rate", "fork_speed"),
                 "initiation_events_xt",
                 map_firing_and_speed_to_initiation_events_xt,
                 method="firing_and_speed_to_initiation_events_xt_mean_field",
                 optional_assumptions=_INITIATION_FORWARD_OPTIONS,
                 default_assumptions=_INITIATION_FORWARD_DEFAULTS,
                 source_kinds=(
-                    ("firing_rate", ("scalar", "x", "t", "xt")),
+                    ("initiation_rate", ("scalar", "x", "t", "xt")),
                     ("fork_speed", ("scalar", "x", "t", "xt")),
                 ),
                 description="Mean-field observed initiation-event density I(x,t)[1-f(x,t)] from initiation rate and fork speed.",
             )
         if "firing_and_speed_to_initiation_pdf_xt_mean_field" not in methods:
             self.register(
-                ("firing_rate", "fork_speed"),
+                ("initiation_rate", "fork_speed"),
                 "initiation_pdf_xt",
                 map_firing_and_speed_to_initiation_pdf_xt,
                 method="firing_and_speed_to_initiation_pdf_xt_mean_field",
                 optional_assumptions=_INITIATION_PDF_FORWARD_OPTIONS,
                 default_assumptions=_INITIATION_PDF_FORWARD_DEFAULTS,
                 source_kinds=(
-                    ("firing_rate", ("scalar", "x", "t", "xt")),
+                    ("initiation_rate", ("scalar", "x", "t", "xt")),
                     ("fork_speed", ("scalar", "x", "t", "xt")),
                 ),
                 description="Normalized probability density phi_i(x,t) from initiation rate and fork speed.",
             )
         if "firing_and_speed_to_initiation_events_mean_field" not in methods:
             self.register(
-                ("firing_rate", "fork_speed"),
+                ("initiation_rate", "fork_speed"),
                 "initiation_events",
                 map_firing_and_speed_to_initiation_events,
                 method="firing_and_speed_to_initiation_events_mean_field",
                 optional_assumptions=_INITIATION_FORWARD_OPTIONS,
                 default_assumptions=_INITIATION_FORWARD_DEFAULTS,
                 source_kinds=(
-                    ("firing_rate", ("scalar", "x", "t", "xt")),
+                    ("initiation_rate", ("scalar", "x", "t", "xt")),
                     ("fork_speed", ("scalar", "x", "t", "xt")),
                 ),
                 description="Time-integrated initiation-observation profile from initiation rate and fork speed.",
             )
         if "firing_and_fraction_to_initiation_events_xt_mean_field" not in methods:
             self.register(
-                ("firing_rate", "replicated_fraction_xt"),
+                ("initiation_rate", "replicated_fraction_xt"),
                 "initiation_events_xt",
                 map_firing_and_fraction_to_initiation_events_xt,
                 method="firing_and_fraction_to_initiation_events_xt_mean_field",
                 optional_assumptions=_INITIATION_EVENT_OPTIONS,
                 default_assumptions=_INITIATION_EVENT_DEFAULTS,
                 source_kinds=(
-                    ("firing_rate", ("scalar", "x", "t", "xt")),
+                    ("initiation_rate", ("scalar", "x", "t", "xt")),
                     ("replicated_fraction_xt", ("xt",)),
                 ),
                 description="Mean-field observed initiation-event density I(x,t)[1-f(x,t)].",
             )
         if "firing_and_fraction_to_initiation_pdf_xt_normalized" not in methods:
             self.register(
-                ("firing_rate", "replicated_fraction_xt"),
+                ("initiation_rate", "replicated_fraction_xt"),
                 "initiation_pdf_xt",
                 map_firing_and_fraction_to_initiation_pdf_xt,
                 method="firing_and_fraction_to_initiation_pdf_xt_normalized",
                 optional_assumptions=_INITIATION_PDF_FORWARD_OPTIONS,
                 default_assumptions=_INITIATION_PDF_FORWARD_DEFAULTS,
                 source_kinds=(
-                    ("firing_rate", ("scalar", "x", "t", "xt")),
+                    ("initiation_rate", ("scalar", "x", "t", "xt")),
                     ("replicated_fraction_xt", ("xt",)),
                 ),
                 description="Normalized probability density phi_i(x,t) from initiation rate and replicated fraction.",
             )
         if "firing_and_fraction_to_initiation_events_mean_field" not in methods:
             self.register(
-                ("firing_rate", "replicated_fraction_xt"),
+                ("initiation_rate", "replicated_fraction_xt"),
                 "initiation_events",
                 map_firing_and_fraction_to_initiation_events,
                 method="firing_and_fraction_to_initiation_events_mean_field",
                 optional_assumptions=_INITIATION_EVENT_OPTIONS,
                 default_assumptions=_INITIATION_EVENT_DEFAULTS,
                 source_kinds=(
-                    ("firing_rate", ("scalar", "x", "t", "xt")),
+                    ("initiation_rate", ("scalar", "x", "t", "xt")),
                     ("replicated_fraction_xt", ("xt",)),
                 ),
                 description="Time-integrated initiation-observation profile from I(x,t) and f(x,t).",
             )
         if "firing_and_fraction_to_initiation_pdf_normalized" not in methods:
             self.register(
-                ("firing_rate", "replicated_fraction_xt"),
+                ("initiation_rate", "replicated_fraction_xt"),
                 "initiation_pdf",
                 map_firing_and_fraction_to_initiation_pdf,
                 method="firing_and_fraction_to_initiation_pdf_normalized",
                 optional_assumptions=_INITIATION_PDF_FORWARD_OPTIONS,
                 default_assumptions=_INITIATION_PDF_FORWARD_DEFAULTS,
                 source_kinds=(
-                    ("firing_rate", ("scalar", "x", "t", "xt")),
+                    ("initiation_rate", ("scalar", "x", "t", "xt")),
                     ("replicated_fraction_xt", ("xt",)),
                 ),
                 description="Time-integrated normalized probability density phi_i(x).",
@@ -2234,14 +2335,14 @@ class DataTypeMapper:
 
         if "firing_and_speed_to_coalescence_events_xt_mean_field" not in methods:
             self.register(
-                ("firing_rate", "fork_speed"),
+                ("initiation_rate", "fork_speed"),
                 "coalescence_events_xt",
                 map_firing_and_speed_to_coalescence_events_xt,
                 method="firing_and_speed_to_coalescence_events_xt_mean_field",
                 optional_assumptions=_COALESCENCE_FORWARD_OPTIONS,
                 default_assumptions=forward_defaults,
                 source_kinds=(
-                    ("firing_rate", ("scalar", "x", "t", "xt")),
+                    ("initiation_rate", ("scalar", "x", "t", "xt")),
                     ("fork_speed", ("scalar", "x", "t", "xt")),
                 ),
                 description="Mean-field observed fork-coalescence-event density from initiation rate and fork speed.",
@@ -2250,14 +2351,14 @@ class DataTypeMapper:
             pdf_forward_defaults = dict(forward_defaults)
             pdf_forward_defaults.update(_PDF_DEFAULTS)
             self.register(
-                ("firing_rate", "fork_speed"),
+                ("initiation_rate", "fork_speed"),
                 "coalescence_pdf_xt",
                 map_firing_and_speed_to_coalescence_pdf_xt,
                 method="firing_and_speed_to_coalescence_pdf_xt_mean_field",
                 optional_assumptions=_COALESCENCE_PDF_FORWARD_OPTIONS,
                 default_assumptions=pdf_forward_defaults,
                 source_kinds=(
-                    ("firing_rate", ("scalar", "x", "t", "xt")),
+                    ("initiation_rate", ("scalar", "x", "t", "xt")),
                     ("fork_speed", ("scalar", "x", "t", "xt")),
                 ),
                 description="Normalized probability density phi_c(x,t) from initiation rate and fork speed.",
@@ -2310,14 +2411,14 @@ class DataTypeMapper:
 
         if "firing_and_speed_to_coalescence_events_mean_field" not in methods:
             self.register(
-                ("firing_rate", "fork_speed"),
+                ("initiation_rate", "fork_speed"),
                 "coalescence_events",
                 map_firing_and_speed_to_coalescence_events,
                 method="firing_and_speed_to_coalescence_events_mean_field",
                 optional_assumptions=_COALESCENCE_FORWARD_OPTIONS,
                 default_assumptions=forward_defaults,
                 source_kinds=(
-                    ("firing_rate", ("scalar", "x", "t", "xt")),
+                    ("initiation_rate", ("scalar", "x", "t", "xt")),
                     ("fork_speed", ("scalar", "x", "t", "xt")),
                 ),
                 description="Time-integrated coalescence-observation profile from initiation rate and fork speed.",
@@ -2326,14 +2427,14 @@ class DataTypeMapper:
             pdf_forward_defaults = dict(forward_defaults)
             pdf_forward_defaults.update(_PDF_DEFAULTS)
             self.register(
-                ("firing_rate", "fork_speed"),
+                ("initiation_rate", "fork_speed"),
                 "coalescence_pdf",
                 map_firing_and_speed_to_coalescence_pdf,
                 method="firing_and_speed_to_coalescence_pdf_mean_field",
                 optional_assumptions=_COALESCENCE_PDF_FORWARD_OPTIONS,
                 default_assumptions=pdf_forward_defaults,
                 source_kinds=(
-                    ("firing_rate", ("scalar", "x", "t", "xt")),
+                    ("initiation_rate", ("scalar", "x", "t", "xt")),
                     ("fork_speed", ("scalar", "x", "t", "xt")),
                 ),
                 description="Time-integrated normalized probability density phi_c(x).",
@@ -2389,23 +2490,25 @@ class DataTypeMapper:
             if method in methods:
                 continue
             self.register(
-                ("firing_rate", "fork_speed"),
+                ("initiation_rate", "fork_speed"),
                 target,
                 func,
                 method=method,
                 optional_assumptions=_FORK_DENSITY_OPTIONS,
                 default_assumptions=defaults,
                 source_kinds=(
-                    ("firing_rate", ("scalar", "x", "t", "xt")),
+                    ("initiation_rate", ("scalar", "x", "t", "xt")),
                     ("fork_speed", ("scalar", "x", "t", "xt")),
                 ),
                 description=description,
             )
 
     def _candidate_specs(self, source_names, target, method):
+        from ._terminology import canonical_rate_key
+        method = canonical_rate_key(method)
         target = _canonical_feature(target)
         source_set = {_canonical_feature(name) for name in source_names}
-        if target == "replication_timing" and "firing_rate" in source_set:
+        if target == "replication_timing" and "initiation_rate" in source_set:
             self._ensure_forward_timing_routes()
         if target == "fork_speed":
             self._ensure_fork_speed_shape_routes()
@@ -2904,7 +3007,7 @@ class DataTypeMapper:
         By default the table shows implemented core mapping targets. Use
         ``requirements`` for the source data and assumptions needed for a
         specific target. Parameters can narrow or expand the catalogue, e.g.
-        ``rmap.targets(target="firing_rate")`` or
+        ``rmap.targets(target="initiation_rate")`` or
         ``rmap.targets(target=("replicated_fraction", "fork_density"))``.
         """
         if implemented is None:
@@ -3061,7 +3164,7 @@ class DataTypeMapper:
 
 rmap = DataTypeMapper()
 rmap.register(
-    ("firing_rate", "fork_speed"),
+    ("initiation_rate", "fork_speed"),
     "replication_timing",
     map_firing_and_speed_to_timing,
     method="firing_and_speed_to_timing_deterministic",
@@ -3072,31 +3175,32 @@ rmap.register(
         "n_bins",
         "genome_length",
         "interval_kb",
+        "resolution_time", "time_grid", "max_time", "max_rep_time",
     ),
     source_kinds=(
-        ("firing_rate", ("scalar", "x")),
-        ("fork_speed", ("scalar", "x")),
+        ("initiation_rate", ("scalar", "x", "t", "xt")),
+        ("fork_speed", ("scalar", "x", "t", "xt")),
     ),
-    description="Deterministic mapping for I0 or I(x) with v0 or spatial effective v(x).",
+    description="Deterministic timing from constant, spatial, temporal or space-time kinetics.",
 )
 rmap.register(
-    ("firing_rate", "fork_speed"),
+    ("initiation_rate", "fork_speed"),
     "replication_timing",
     _simulation_source_feature_mapper("replication_timing"),
     method="firing_and_speed_to_timing_simulation",
     optional_assumptions=_RSIM_ASSUMPTION_NAMES,
     default_assumptions={"verbose": False},
     source_kinds=(
-        ("firing_rate", ("scalar", "x", "t", "xt")),
+        ("initiation_rate", ("scalar", "x", "t", "xt")),
         ("fork_speed", ("scalar", "x", "t", "xt")),
     ),
     description="Simulation-backed timing map for kinetic fields with time dependence.",
 )
 rmap.register(
     ("replication_timing", "fork_speed"),
-    "firing_rate",
+    "initiation_rate",
     map_timing_and_speed_to_constant_firing,
-    method="timing_and_speed_to_constant_firing_rate",
+    method="timing_and_speed_to_constant_initiation_rate",
     required_assumptions=("target_form",),
     optional_assumptions=(
         "resolution",
@@ -3105,6 +3209,7 @@ rmap.register(
         "maxiter",
         "error",
         "err_threshold",
+        "initial_initiation_rate",
         "rate_bounds",
         "verbose",
         "print_every",
@@ -3121,9 +3226,9 @@ rmap.register(
 )
 rmap.register(
     ("replication_timing", "fork_speed"),
-    "firing_rate",
+    "initiation_rate",
     map_timing_and_speed_to_firing,
-    method="timing_and_speed_to_firing_rate",
+    method="timing_and_speed_to_initiation_rate",
     optional_assumptions=(
         "resolution",
         "neighbourhood_range",
@@ -3132,7 +3237,9 @@ rmap.register(
         "error",
         "sim_number",
         "err_threshold",
+        "initial_initiation_rate",
         "deviation_threshold",
+        "rate_bounds",
         "space_fit_step",
         "space_maxiter",
         "verbose",
@@ -3154,9 +3261,9 @@ rmap.register(
 )
 rmap.register(
     ("replication_timing", "fork_speed"),
-    "firing_rate",
+    "initiation_rate",
     map_timing_and_speed_to_constant_firing,
-    method="timing_and_variable_speed_to_firing_rate",
+    method="timing_and_variable_speed_to_initiation_rate",
     required_assumptions=("target_form",),
     optional_assumptions=(
         "resolution",
@@ -3168,6 +3275,7 @@ rmap.register(
         "error",
         "sim_number",
         "err_threshold",
+        "initial_initiation_rate",
         "rate_bounds",
         "refine_seed",
         "verbose",
@@ -3185,9 +3293,9 @@ rmap.register(
 )
 rmap.register(
     ("replication_timing", "fork_speed"),
-    "firing_rate",
+    "initiation_rate",
     map_timing_and_speed_to_firing,
-    method="timing_and_variable_speed_to_spatial_firing_rate",
+    method="timing_and_variable_speed_to_spatial_initiation_rate",
     optional_assumptions=(
         "resolution",
         "resolution_time",
@@ -3198,7 +3306,9 @@ rmap.register(
         "error",
         "sim_number",
         "err_threshold",
+        "initial_initiation_rate",
         "deviation_threshold",
+        "rate_bounds",
         "space_fit_step",
         "space_maxiter",
         "verbose",
@@ -3222,7 +3332,7 @@ rmap.register(
 # Static firing and spatial speed retain the inexpensive local ratio fitter.
 # Its public firing density is converted to a per-bin hazard in the wrapper.
 rmap.register(
-    ("replication_timing", "firing_rate"),
+    ("replication_timing", "initiation_rate"),
     "fork_speed",
     map_timing_and_firing_to_spatial_speed,
     method="timing_and_firing_to_spatial_fork_speed",
@@ -3232,9 +3342,9 @@ rmap.register(
         "n_bins", "verbose", "print_every", "target_form", "target_shape",
     ),
     default_assumptions={"verbose": False, "target_form": "space", "target_shape": "best"},
-    source_kinds=(("replication_timing", ("x",)), ("firing_rate", ("scalar", "x"))),
+    source_kinds=(("replication_timing", ("x",)), ("initiation_rate", ("scalar", "x"))),
     assumption_values=(("target_form", ("space",)), ("target_shape", ("best",))),
-    description="Iterative spatial fork-speed fitting from timing and static firing rate.",
+    description="Iterative spatial fork-speed fitting from timing and static initiation rate.",
 )
 # Constant speed and spatial speed with time-varying firing retain the inverse.
 _SPEED_INVERSE_OPTIONS = (
@@ -3255,7 +3365,7 @@ for _speed_method, _speed_form, _firing_kinds in (
     if _speed_form != "constant":
         _speed_knots += ("regularization",)
     rmap.register(
-        ("replication_timing", "firing_rate"),
+        ("replication_timing", "initiation_rate"),
         "fork_speed",
         map_timing_and_firing_to_speed,
         method=_speed_method,
@@ -3271,12 +3381,12 @@ for _speed_method, _speed_form, _firing_kinds in (
         },
         source_kinds=(
             ("replication_timing", ("x",)),
-            ("firing_rate", _firing_kinds),
+            ("initiation_rate", _firing_kinds),
         ),
         assumption_values=(("target_form", (_speed_form,)), ("target_shape", ("best",))),
         description=(
             f"Bounded {_speed_form} fork-speed inference from timing and supplied "
-            "firing rate using the mean-field replication model."
+            "initiation rate using the mean-field replication model."
         ),
     )
 # Restore the earlier temporal and alternating spatial/temporal fits. Their
@@ -3300,7 +3410,7 @@ for _speed_method, _speed_func, _speed_form, _firing_kinds in (
 ):
     _is_spacetime = _speed_form == "spacetime"
     rmap.register(
-        ("replication_timing", "firing_rate"), "fork_speed", _speed_func,
+        ("replication_timing", "initiation_rate"), "fork_speed", _speed_func,
         method=_speed_method,
         optional_assumptions=_RESTORED_SPEED_OPTIONS + (
             ("space_fit_step", "space_maxiter", "smoothw", "refine_ratio_bounds",
@@ -3312,7 +3422,7 @@ for _speed_method, _speed_func, _speed_form, _firing_kinds in (
             **({"space_fit_step": .4, "space_maxiter": 10, "spacetime_order": "crossed"}
                if _is_spacetime else {}),
         },
-        source_kinds=(("replication_timing", ("x",)), ("firing_rate", _firing_kinds)),
+        source_kinds=(("replication_timing", ("x",)), ("initiation_rate", _firing_kinds)),
         assumption_values=(
             ("target_form", (_speed_form,)), ("target_shape", ("best",)),
         ) + ((("spacetime_order", ("crossed", "space_then_time", "time_then_space")),)
@@ -3420,7 +3530,7 @@ rmap.register(
     description="Integration of fork directionality to timing with constant or spatial fork speed.",
 )
 rmap.register(
-    "firing_rate",
+    "initiation_rate",
     "replication_timing",
     map_firing_density_to_timing,
     method="firing_to_timing_deterministic",
@@ -3432,29 +3542,30 @@ rmap.register(
         "n_bins",
         "genome_length",
         "interval_kb",
+        "resolution_time", "time_grid", "max_time", "max_rep_time",
     ),
     default_assumptions={"fork_speed": 1.4},
-    source_kinds=(("firing_rate", ("scalar", "x")),),
-    assumption_kinds=(("fork_speed", ("scalar", "x")),),
-    description="Deterministic mapping for I0 or I(x) with v0 or spatial effective v(x).",
+    source_kinds=(("initiation_rate", ("scalar", "x", "t", "xt")),),
+    assumption_kinds=(("fork_speed", ("scalar", "x", "t", "xt")),),
+    description="Deterministic timing from constant, spatial, temporal or space-time kinetics.",
 )
 rmap.register(
-    "firing_rate",
+    "initiation_rate",
     "replication_timing",
     _simulation_feature_mapper("replication_timing"),
     method="firing_to_timing_simulation",
     required_assumptions=("fork_speed",),
     optional_assumptions=_RSIM_OPTION_NAMES,
     default_assumptions={"fork_speed": 1.4, "verbose": False},
-    source_kinds=(("firing_rate", ("scalar", "x", "t", "xt")),),
+    source_kinds=(("initiation_rate", ("scalar", "x", "t", "xt")),),
     assumption_kinds=(("fork_speed", ("scalar", "x", "t", "xt")),),
     description="Simulation-backed timing map for kinetic fields with time dependence.",
 )
 rmap.register(
     "replication_timing",
-    "firing_rate",
+    "initiation_rate",
     map_timing_to_constant_firing_density,
-    method="timing_to_constant_firing_rate_constant_fork_speed",
+    method="timing_to_constant_initiation_rate_constant_fork_speed",
     required_assumptions=("fork_speed", "target_form"),
     optional_assumptions=(
         "resolution",
@@ -3463,6 +3574,7 @@ rmap.register(
         "maxiter",
         "error",
         "err_threshold",
+        "initial_initiation_rate",
         "rate_bounds",
         "verbose",
         "print_every",
@@ -3477,7 +3589,7 @@ rmap.register(
 )
 rmap.register(
     "replication_timing",
-    "firing_rate",
+    "initiation_rate",
     map_timing_to_spatial_firing_density,
     method="timing_to_firing_constant_fork_speed",
     required_assumptions=("fork_speed",),
@@ -3489,7 +3601,9 @@ rmap.register(
         "error",
         "sim_number",
         "err_threshold",
+        "initial_initiation_rate",
         "deviation_threshold",
+        "rate_bounds",
         "space_fit_step",
         "space_maxiter",
         "verbose",
@@ -3504,13 +3618,13 @@ rmap.register(
     source_kinds=(("replication_timing", ("x",)),),
     assumption_kinds=(("fork_speed", ("scalar",)),),
     assumption_values=(("target_form", ("space",)),),
-    description="Iterative fit of a space-dependent firing rate with constant fork speed.",
+    description="Iterative fit of a space-dependent initiation rate with constant fork speed.",
 )
 rmap.register(
     "replication_timing",
-    "firing_rate",
+    "initiation_rate",
     map_timing_to_constant_firing_density,
-    method="timing_to_constant_firing_rate_variable_fork_speed",
+    method="timing_to_constant_initiation_rate_variable_fork_speed",
     required_assumptions=("fork_speed", "target_form"),
     optional_assumptions=(
         "resolution",
@@ -3522,6 +3636,7 @@ rmap.register(
         "error",
         "sim_number",
         "err_threshold",
+        "initial_initiation_rate",
         "rate_bounds",
         "refine_seed",
         "verbose",
@@ -3538,9 +3653,9 @@ rmap.register(
 )
 rmap.register(
     "replication_timing",
-    "firing_rate",
+    "initiation_rate",
     map_timing_to_spatial_firing_density,
-    method="timing_to_spatial_firing_rate_variable_fork_speed",
+    method="timing_to_spatial_initiation_rate_variable_fork_speed",
     required_assumptions=("fork_speed",),
     optional_assumptions=(
         "resolution",
@@ -3552,7 +3667,9 @@ rmap.register(
         "error",
         "sim_number",
         "err_threshold",
+        "initial_initiation_rate",
         "deviation_threshold",
+        "rate_bounds",
         "space_fit_step",
         "space_maxiter",
         "verbose",
@@ -3572,9 +3689,9 @@ rmap.register(
 )
 rmap.register(
     ("replication_timing", "fork_speed"),
-    "firing_rate",
+    "initiation_rate",
     map_timing_and_speed_to_general_firing,
-    method="timing_and_speed_to_time_firing_rate",
+    method="timing_and_speed_to_time_initiation_rate",
     optional_assumptions=(
         "resolution",
         "resolution_time",
@@ -3584,7 +3701,9 @@ rmap.register(
         "error",
         "sim_number",
         "err_threshold",
+        "initial_initiation_rate",
         "deviation_threshold",
+        "rate_bounds",
         "space_fit_step",
         "space_maxiter",
         "verbose",
@@ -3627,13 +3746,13 @@ rmap.register(
         ("fork_speed", ("scalar", "x", "t", "xt")),
     ),
     assumption_values=(("target_form", ("time",)), ("target_shape", ("free", "weibull"))),
-    description="Time-only firing-rate target; defaults to a Weibull firing-time model.",
+    description="Time-only initiation-rate target; defaults to a Weibull firing-time model.",
 )
 rmap.register(
     ("replication_timing", "fork_speed"),
-    "firing_rate",
+    "initiation_rate",
     map_timing_and_speed_to_general_firing,
-    method="timing_and_speed_to_spacetime_firing_rate",
+    method="timing_and_speed_to_spacetime_initiation_rate",
     optional_assumptions=(
         "resolution",
         "resolution_time",
@@ -3643,7 +3762,9 @@ rmap.register(
         "error",
         "sim_number",
         "err_threshold",
+        "initial_initiation_rate",
         "deviation_threshold",
+        "rate_bounds",
         "space_fit_step",
         "space_maxiter",
         "verbose",
@@ -3691,7 +3812,7 @@ rmap.register(
         ("fork_speed", ("scalar", "x", "t", "xt")),
     ),
     assumption_values=(("target_form", ("spacetime",)), ("target_shape", ("free", "weibull"))),
-    description="Space-time firing-rate target; defaults to a Weibull firing-time model.",
+    description="Space-time initiation-rate target; defaults to a Weibull firing-time model.",
 )
 rmap.register(
     "replication_timing",
@@ -3766,155 +3887,155 @@ rmap.register(
 )
 
 rmap.register(
-    ("firing_rate", "fork_speed"),
+    ("initiation_rate", "fork_speed"),
     "replicated_fraction_xt",
     map_firing_and_speed_to_replicated_fraction_xt,
     method="firing_and_speed_to_replicated_fraction_xt_lightcone",
     optional_assumptions=_REPLICATED_FRACTION_OPTIONS,
     source_kinds=(
-        ("firing_rate", ("scalar", "x", "t", "xt")),
+        ("initiation_rate", ("scalar", "x", "t", "xt")),
         ("fork_speed", ("scalar", "x", "t", "xt")),
     ),
     description="Analytical light-cone map of f(x,t) from initiation rate and fork speed.",
 )
 rmap.register(
-    "firing_rate",
+    "initiation_rate",
     "replicated_fraction_xt",
     map_firing_to_replicated_fraction_xt,
     method="firing_to_replicated_fraction_xt_lightcone",
     required_assumptions=("fork_speed",),
     optional_assumptions=_REPLICATED_FRACTION_OPTIONS,
     default_assumptions={"fork_speed": 1.4},
-    source_kinds=(("firing_rate", ("scalar", "x", "t", "xt")),),
+    source_kinds=(("initiation_rate", ("scalar", "x", "t", "xt")),),
     assumption_kinds=(("fork_speed", ("scalar", "x", "t", "xt")),),
     description="Analytical light-cone map of f(x,t) from initiation rate and fork speed.",
 )
 rmap.register(
-    ("firing_rate", "fork_speed"),
+    ("initiation_rate", "fork_speed"),
     "replicated_fraction",
     map_firing_and_speed_to_replicated_fraction,
     method="firing_and_speed_to_replicated_fraction_lightcone",
     optional_assumptions=_REPLICATED_FRACTION_OPTIONS,
     source_kinds=(
-        ("firing_rate", ("scalar", "x", "t", "xt")),
+        ("initiation_rate", ("scalar", "x", "t", "xt")),
         ("fork_speed", ("scalar", "x", "t", "xt")),
     ),
     description="Analytical light-cone map of the spatial mean replicated fraction.",
 )
 rmap.register(
-    "firing_rate",
+    "initiation_rate",
     "replicated_fraction",
     map_firing_to_replicated_fraction,
     method="firing_to_replicated_fraction_lightcone",
     required_assumptions=("fork_speed",),
     optional_assumptions=_REPLICATED_FRACTION_OPTIONS,
     default_assumptions={"fork_speed": 1.4},
-    source_kinds=(("firing_rate", ("scalar", "x", "t", "xt")),),
+    source_kinds=(("initiation_rate", ("scalar", "x", "t", "xt")),),
     assumption_kinds=(("fork_speed", ("scalar", "x", "t", "xt")),),
     description="Analytical light-cone map of the spatial mean replicated fraction.",
 )
 
 rmap.register(
-    ("firing_rate", "fork_speed"),
+    ("initiation_rate", "fork_speed"),
     "initiation_events_xt",
     map_firing_and_speed_to_initiation_events_xt,
     method="firing_and_speed_to_initiation_events_xt_mean_field",
     optional_assumptions=_INITIATION_FORWARD_OPTIONS,
     default_assumptions=_INITIATION_FORWARD_DEFAULTS,
     source_kinds=(
-        ("firing_rate", ("scalar", "x", "t", "xt")),
+        ("initiation_rate", ("scalar", "x", "t", "xt")),
         ("fork_speed", ("scalar", "x", "t", "xt")),
     ),
     description="Mean-field observed initiation-event density I(x,t)[1-f(x,t)] from initiation rate and fork speed.",
 )
 rmap.register(
-    ("firing_rate", "fork_speed"),
+    ("initiation_rate", "fork_speed"),
     "initiation_pdf_xt",
     map_firing_and_speed_to_initiation_pdf_xt,
     method="firing_and_speed_to_initiation_pdf_xt_mean_field",
     optional_assumptions=_INITIATION_PDF_FORWARD_OPTIONS,
     default_assumptions=_INITIATION_PDF_FORWARD_DEFAULTS,
     source_kinds=(
-        ("firing_rate", ("scalar", "x", "t", "xt")),
+        ("initiation_rate", ("scalar", "x", "t", "xt")),
         ("fork_speed", ("scalar", "x", "t", "xt")),
     ),
     description="Normalized probability density phi_i(x,t) from initiation rate and fork speed.",
 )
 rmap.register(
-    ("firing_rate", "fork_speed"),
+    ("initiation_rate", "fork_speed"),
     "initiation_events",
     map_firing_and_speed_to_initiation_events,
     method="firing_and_speed_to_initiation_events_mean_field",
     optional_assumptions=_INITIATION_FORWARD_OPTIONS,
     default_assumptions=_INITIATION_FORWARD_DEFAULTS,
     source_kinds=(
-        ("firing_rate", ("scalar", "x", "t", "xt")),
+        ("initiation_rate", ("scalar", "x", "t", "xt")),
         ("fork_speed", ("scalar", "x", "t", "xt")),
     ),
     description="Time-integrated initiation-observation profile from initiation rate and fork speed.",
 )
 rmap.register(
-    ("firing_rate", "fork_speed"),
+    ("initiation_rate", "fork_speed"),
     "initiation_pdf",
     map_firing_and_speed_to_initiation_pdf,
     method="firing_and_speed_to_initiation_pdf_mean_field",
     optional_assumptions=_INITIATION_PDF_FORWARD_OPTIONS,
     default_assumptions=_INITIATION_PDF_FORWARD_DEFAULTS,
     source_kinds=(
-        ("firing_rate", ("scalar", "x", "t", "xt")),
+        ("initiation_rate", ("scalar", "x", "t", "xt")),
         ("fork_speed", ("scalar", "x", "t", "xt")),
     ),
     description="Time-integrated normalized initiation probability density from initiation rate and fork speed.",
 )
 
 rmap.register(
-    ("firing_rate", "replicated_fraction_xt"),
+    ("initiation_rate", "replicated_fraction_xt"),
     "initiation_events_xt",
     map_firing_and_fraction_to_initiation_events_xt,
     method="firing_and_fraction_to_initiation_events_xt_mean_field",
     optional_assumptions=_INITIATION_EVENT_OPTIONS,
     default_assumptions=_INITIATION_EVENT_DEFAULTS,
     source_kinds=(
-        ("firing_rate", ("scalar", "x", "t", "xt")),
+        ("initiation_rate", ("scalar", "x", "t", "xt")),
         ("replicated_fraction_xt", ("xt",)),
     ),
     description="Mean-field observed initiation-event density I(x,t)[1-f(x,t)].",
 )
 rmap.register(
-    ("firing_rate", "replicated_fraction_xt"),
+    ("initiation_rate", "replicated_fraction_xt"),
     "initiation_pdf_xt",
     map_firing_and_fraction_to_initiation_pdf_xt,
     method="firing_and_fraction_to_initiation_pdf_xt_normalized",
     optional_assumptions=_INITIATION_PDF_FORWARD_OPTIONS,
     default_assumptions=_INITIATION_PDF_FORWARD_DEFAULTS,
     source_kinds=(
-        ("firing_rate", ("scalar", "x", "t", "xt")),
+        ("initiation_rate", ("scalar", "x", "t", "xt")),
         ("replicated_fraction_xt", ("xt",)),
     ),
     description="Normalized probability density phi_i(x,t) from initiation rate and replicated fraction.",
 )
 rmap.register(
-    ("firing_rate", "replicated_fraction_xt"),
+    ("initiation_rate", "replicated_fraction_xt"),
     "initiation_events",
     map_firing_and_fraction_to_initiation_events,
     method="firing_and_fraction_to_initiation_events_mean_field",
     optional_assumptions=_INITIATION_EVENT_OPTIONS,
     default_assumptions=_INITIATION_EVENT_DEFAULTS,
     source_kinds=(
-        ("firing_rate", ("scalar", "x", "t", "xt")),
+        ("initiation_rate", ("scalar", "x", "t", "xt")),
         ("replicated_fraction_xt", ("xt",)),
     ),
     description="Time-integrated initiation-observation profile from I(x,t) and f(x,t).",
 )
 rmap.register(
-    ("firing_rate", "replicated_fraction_xt"),
+    ("initiation_rate", "replicated_fraction_xt"),
     "initiation_pdf",
     map_firing_and_fraction_to_initiation_pdf,
     method="firing_and_fraction_to_initiation_pdf_normalized",
     optional_assumptions=_INITIATION_PDF_FORWARD_OPTIONS,
     default_assumptions=_INITIATION_PDF_FORWARD_DEFAULTS,
     source_kinds=(
-        ("firing_rate", ("scalar", "x", "t", "xt")),
+        ("initiation_rate", ("scalar", "x", "t", "xt")),
         ("replicated_fraction_xt", ("xt",)),
     ),
     description="Time-integrated normalized probability density phi_i(x).",
@@ -4112,27 +4233,27 @@ rmap.register(
     description="Time-integrated coalescence-observation profile from explicit fork-density fields.",
 )
 rmap.register(
-    ("firing_rate", "fork_speed"),
+    ("initiation_rate", "fork_speed"),
     "coalescence_events_xt",
     map_firing_and_speed_to_coalescence_events_xt,
     method="firing_and_speed_to_coalescence_events_xt_mean_field",
     optional_assumptions=_COALESCENCE_FORWARD_OPTIONS,
     default_assumptions=_COALESCENCE_FORWARD_DEFAULTS,
     source_kinds=(
-        ("firing_rate", ("scalar", "x", "t", "xt")),
+        ("initiation_rate", ("scalar", "x", "t", "xt")),
         ("fork_speed", ("scalar", "x", "t", "xt")),
     ),
     description="Mean-field observed fork-coalescence-event density from initiation rate and fork speed.",
 )
 rmap.register(
-    ("firing_rate", "fork_speed"),
+    ("initiation_rate", "fork_speed"),
     "coalescence_pdf_xt",
     map_firing_and_speed_to_coalescence_pdf_xt,
     method="firing_and_speed_to_coalescence_pdf_xt_mean_field",
     optional_assumptions=_COALESCENCE_PDF_FORWARD_OPTIONS,
     default_assumptions=_COALESCENCE_PDF_FORWARD_DEFAULTS,
     source_kinds=(
-        ("firing_rate", ("scalar", "x", "t", "xt")),
+        ("initiation_rate", ("scalar", "x", "t", "xt")),
         ("fork_speed", ("scalar", "x", "t", "xt")),
     ),
     description="Normalized probability density phi_c(x,t) from initiation rate and fork speed.",
@@ -4178,27 +4299,27 @@ rmap.register(
     description="Time-integrated normalized probability density phi_c(x).",
 )
 rmap.register(
-    ("firing_rate", "fork_speed"),
+    ("initiation_rate", "fork_speed"),
     "coalescence_events",
     map_firing_and_speed_to_coalescence_events,
     method="firing_and_speed_to_coalescence_events_mean_field",
     optional_assumptions=_COALESCENCE_FORWARD_OPTIONS,
     default_assumptions=_COALESCENCE_FORWARD_DEFAULTS,
     source_kinds=(
-        ("firing_rate", ("scalar", "x", "t", "xt")),
+        ("initiation_rate", ("scalar", "x", "t", "xt")),
         ("fork_speed", ("scalar", "x", "t", "xt")),
     ),
     description="Time-integrated coalescence-observation profile from initiation rate and fork speed.",
 )
 rmap.register(
-    ("firing_rate", "fork_speed"),
+    ("initiation_rate", "fork_speed"),
     "coalescence_pdf",
     map_firing_and_speed_to_coalescence_pdf,
     method="firing_and_speed_to_coalescence_pdf_mean_field",
     optional_assumptions=_COALESCENCE_PDF_FORWARD_OPTIONS,
     default_assumptions=_COALESCENCE_PDF_FORWARD_DEFAULTS,
     source_kinds=(
-        ("firing_rate", ("scalar", "x", "t", "xt")),
+        ("initiation_rate", ("scalar", "x", "t", "xt")),
         ("fork_speed", ("scalar", "x", "t", "xt")),
     ),
     description="Time-integrated normalized probability density phi_c(x).",
@@ -4215,7 +4336,7 @@ _SIMULATION_DERIVED_FEATURES = {
 
 for _target, _defaults in _SIMULATION_DERIVED_FEATURES.items():
     rmap.register(
-        ("firing_rate", "fork_speed"),
+        ("initiation_rate", "fork_speed"),
         _target,
         _simulation_source_feature_mapper(_target, _defaults),
         method=f"firing_and_speed_to_{_target}_simulation",
@@ -4225,13 +4346,13 @@ for _target, _defaults in _SIMULATION_DERIVED_FEATURES.items():
             **_defaults,
         },
         source_kinds=(
-            ("firing_rate", ("scalar", "x", "t", "xt")),
+            ("initiation_rate", ("scalar", "x", "t", "xt")),
             ("fork_speed", ("scalar", "x", "t", "xt")),
         ),
         description="Simulation-derived feature generated with rsim.",
     )
     rmap.register(
-        "firing_rate",
+        "initiation_rate",
         _target,
         _simulation_feature_mapper(_target, _defaults),
         method=f"firing_to_{_target}_simulation",
@@ -4242,7 +4363,7 @@ for _target, _defaults in _SIMULATION_DERIVED_FEATURES.items():
             "verbose": False,
             **_defaults,
         },
-        source_kinds=(("firing_rate", ("scalar", "x", "t", "xt")),),
+        source_kinds=(("initiation_rate", ("scalar", "x", "t", "xt")),),
         assumption_kinds=(("fork_speed", ("scalar", "x", "t", "xt")),),
         description="Simulation-derived feature generated with rsim.",
     )
@@ -4281,14 +4402,14 @@ for _target, _func, _method, _description in (
     ),
 ):
     rmap.register(
-        ("firing_rate", "fork_speed"),
+        ("initiation_rate", "fork_speed"),
         _target,
         _func,
         method=_method,
         optional_assumptions=_FORK_DENSITY_OPTIONS,
         default_assumptions=_FORK_DENSITY_DEFAULTS,
         source_kinds=(
-            ("firing_rate", ("scalar", "x", "t", "xt")),
+            ("initiation_rate", ("scalar", "x", "t", "xt")),
             ("fork_speed", ("scalar", "x", "t", "xt")),
         ),
         description=_description,
@@ -4328,14 +4449,23 @@ rmap.register(
     description="Survival integral with explicit initial conditioning and finite-window tail policy.",
 )
 
+def _bundle_extraction_mapper(extract):
+    def mapper(bundle, **kwargs):
+        info = {key: bundle[key] for key in ("time_grid", "x_array") if key in bundle}
+        return _SimulationFeatureArray(extract(bundle), info)
+    return mapper
+
+
 for _target, _func in (
     ("replicated_fraction_xt", _conversions.map_bundle_to_fraction),
     ("right_fork_density_xt", _conversions.map_bundle_to_right),
     ("left_fork_density_xt", _conversions.map_bundle_to_left),
 ):
     rmap.register(
-        "fork_densities_xt", _target, _func,
+        "fork_densities_xt", _target, _bundle_extraction_mapper(_func),
         method=f"fork_density_bundle_to_{_target}_extraction",
+        optional_assumptions=("resolution", "resolution_time", "time_grid", "x_array"),
+        default_assumptions={"resolution": 1., "resolution_time": 5., "time_grid": None, "x_array": None},
         description="Extract a validated field from an existing fork-density bundle.",
     )
 
@@ -4374,8 +4504,8 @@ for _target in ("right_fork_density", "left_fork_density"):
         for _source_kind, _source, _kinds in (
             ("field", _member, ((_member, ("xt",)),)),
             ("bundle", "fork_densities_xt", ()),
-            ("forward", ("firing_rate", "fork_speed"), (
-                ("firing_rate", ("scalar", "x", "t", "xt")),
+            ("forward", ("initiation_rate", "fork_speed"), (
+                ("initiation_rate", ("scalar", "x", "t", "xt")),
                 ("fork_speed", ("scalar", "x", "t", "xt")),
             )),
         ):
@@ -4425,9 +4555,9 @@ for _source, _func, _method, _kinds in (
 
 _EVENT_INVERSE_DEFAULTS = {"unreplicated_floor": 1e-8, "invalid_policy": "mask", "target_form": "spacetime"}
 rmap.register(
-    ("initiation_events_xt", "replicated_fraction_xt"), "firing_rate",
+    ("initiation_events_xt", "replicated_fraction_xt"), "initiation_rate",
     _conversions.map_events_and_fraction_to_firing,
-    method="initiation_events_and_fraction_to_firing_rate_local_inverse",
+    method="initiation_events_and_fraction_to_initiation_rate_local_inverse",
     optional_assumptions=tuple(_EVENT_INVERSE_DEFAULTS), default_assumptions=_EVENT_INVERSE_DEFAULTS,
     source_kinds=(("initiation_events_xt", ("xt",)), ("replicated_fraction_xt", ("xt",))),
     assumption_values=(("target_form", ("spacetime",)), ("invalid_policy", ("mask", "zero", "raise"))),
@@ -4452,3 +4582,7 @@ rmap.register(
     ),
     description="Symmetric fork-speed reconstruction from df/dt divided by total active fork density.",
 )
+
+# Include the deterministic kinetic directionality methods in first-use
+# discovery, in addition to the autoreload hook used when invoking rmap.
+rmap._ensure_directionality_routes()

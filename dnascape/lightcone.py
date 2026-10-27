@@ -10,7 +10,7 @@ adjoint differentiates this same discretization, without one solve per bin.
 import numpy as np
 from scipy.signal import fftconvolve
 
-from .utils import check_cancelled
+from .utils import check_cancelled, report_measured_work
 
 
 class ReplicationCone:
@@ -48,7 +48,7 @@ class ReplicationCone:
             self.travel_length = self.travel[-1] + 0.5 * self.dx * (inv_v[-1] + inv_v[0])
         # Cached geometries use O(X T^2) space only when explicitly affordable.
         # Larger domains stream one output-time slice in O(X T) memory.
-        projected = self.t.size * (self.t.size - 1) * self.n * 4
+        projected = self.t.size * (self.t.size - 1) * self.n * 8
         self._geometry = {} if projected <= int(cache_bytes) else None
 
     def _positions_from_travel(self, travel):
@@ -81,6 +81,7 @@ class ReplicationCone:
         count = max(1, int(np.ceil(duration * max_speed / (2.0 * self.dx))))
         result = positions.copy()
         for index in range(count):
+            check_cancelled()
             hi = upper_weight + (lower_weight - upper_weight) * index / count
             lo = upper_weight + (lower_weight - upper_weight) * (index + 1) / count
             dt = duration / count
@@ -115,6 +116,7 @@ class ReplicationCone:
             position_left = self.x.copy()
             position_right = self.x.copy()
             for interval in range(output_index - 1, -1, -1):
+                check_cancelled()
                 position_left = self._advance(position_left, interval, 1.0, 0.5, -1.0)
                 position_right = self._advance(position_right, interval, 1.0, 0.5, 1.0)
                 left[interval] = position_left
@@ -132,8 +134,8 @@ class ReplicationCone:
             np.clip(left, 0, self.n, out=left)
             np.clip(right, 0, self.n, out=right)
         if self._geometry is not None:
-            left = left.astype(np.float32)
-            right = right.astype(np.float32)
+            # Retain coordinate precision: rounding absolute positions made
+            # periodic gradients depend slightly on the choice of the seam.
             self._geometry[output_index] = (left, right)
         return left, right
 
@@ -156,6 +158,7 @@ class ReplicationCone:
         volume = np.zeros((self.t.size, self.n), dtype=float)
         for output_index in range(1, self.t.size):
             check_cancelled()
+            report_measured_work((output_index - 1) * output_index / (self.t.size * (self.t.size - 1)))
             left, right = self.geometry(output_index)
             current = prefix[:output_index]
             mass = np.zeros_like(left, dtype=float)
@@ -176,6 +179,7 @@ class ReplicationCone:
         prefix_gradient = np.zeros((self.t.size - 1, self.n + 1))
         for output_index in range(1, self.t.size):
             check_cancelled()
+            report_measured_work((output_index - 1) * output_index / (self.t.size * (self.t.size - 1)))
             left, right = self.geometry(output_index)
             offsets = np.arange(output_index, dtype=np.intp)[:, None] * (self.n + 1)
             size = output_index * (self.n + 1)
@@ -215,23 +219,36 @@ class WeibullCone:
         self._kernel_cache = {}
 
     def _convolve(self, values, kernel):
+        check_cancelled()
         if self.periodic:
             return np.fft.irfft(np.fft.rfft(values) * np.fft.rfft(kernel), n=self.n)
         return fftconvolve(values, np.concatenate((kernel[:0:-1], kernel)), mode="same")
+
+    def _convolve_rows(self, values, kernels):
+        rows = []
+        for index, row in enumerate(kernels):
+            report_measured_work(index / len(kernels))
+            rows.append(self._convolve(values, row))
+        return np.array(rows)
 
     def _kernels(self, shape):
         if shape not in self._kernel_cache:
             distances = np.arange(self.n, dtype=float) * self.dx
             if self.periodic:
                 distances = np.minimum(distances, self.n * self.dx - distances)
-            available = self.cone.distance[:, None] - distances[None, :]
-            latest = np.interp(np.maximum(available, 0.0), self.cone.distance, self.t)
-            ages = np.maximum(latest - self.delay[0], 0.0)
-            ages[available < 0] = 0.0
-            kernel = ages**shape
-            derivative = np.zeros_like(kernel)
-            positive = ages > 0
-            derivative[positive] = kernel[positive] * np.log(ages[positive])
+            check_cancelled()
+            kernel = np.empty((self.t.size, self.n))
+            derivative = np.empty_like(kernel)
+            for index, distance in enumerate(self.cone.distance):
+                check_cancelled()
+                available = distance - distances
+                latest = np.interp(np.maximum(available, 0.0), self.cone.distance, self.t)
+                ages = np.maximum(latest - self.delay[0], 0.0)
+                ages[available < 0] = 0.0
+                kernel[index] = ages**shape
+                derivative[index] = 0.
+                positive = ages > 0
+                derivative[index, positive] = kernel[index, positive] * np.log(ages[positive])
             # Shape optimization should not accumulate one grid per proposal.
             self._kernel_cache.clear()
             self._kernel_cache[shape] = (kernel, derivative)
@@ -240,9 +257,9 @@ class WeibullCone:
     def volumes(self, alpha, shape, shape_gradient=False):
         if self.convolution:
             kernel, derivative = self._kernels(shape)
-            volume = np.array([self.dx * self._convolve(alpha, row) for row in kernel])
+            volume = self.dx * self._convolve_rows(alpha, kernel)
             derivative_volume = (
-                np.array([self.dx * self._convolve(alpha, row) for row in derivative])
+                self.dx * self._convolve_rows(alpha, derivative)
                 if shape_gradient else None
             )
         else:
@@ -265,7 +282,11 @@ class WeibullCone:
             weights = np.vstack((np.zeros((1, self.n)), weights))
         if self.convolution:
             kernel, _ = self._kernels(shape)
-            return sum(self.dx * self._convolve(row, k) for row, k in zip(weights, kernel))
+            result = 0
+            for index, (row, k) in enumerate(zip(weights, kernel)):
+                report_measured_work(index / len(kernel))
+                result = result + self.dx * self._convolve(row, k)
+            return result
         age = np.maximum(self.t[:, None] - self.delay[None, :], 0.0)
         integrated_hazard = np.diff(age**shape, axis=0)
         return np.sum(self.cone.adjoint(weights) * integrated_hazard, axis=0)

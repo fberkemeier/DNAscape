@@ -47,5 +47,5 @@ def test_mapping_local_speed_explicit_zero_is_forwarded_without_changing_other_i
     assert np.isfinite(result.outputs[result.primary_output][:, 2]).all()
     assert np.isnan(result.outputs[result.primary_output][:, 3]).all()
     assert result.diagnostics["unreplicated_floor"] == 0.
-    firing = mapping_route("initiation_events_and_fraction_to_firing_rate_local_inverse")
+    firing = mapping_route("initiation_events_and_fraction_to_initiation_rate_local_inverse")
     assert firing.setting("unreplicated_floor").default == 1e-8

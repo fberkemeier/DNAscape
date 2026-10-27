@@ -24,7 +24,7 @@ def _result_for(request: ConstantSimulationRequest) -> ConstantSimulationResult:
         np.ceil((request.region_end_kb - request.region_start_kb) / request.resolution_x)
     )
     position = request.region_start_kb + np.arange(bins, dtype=float) * request.resolution_x
-    timing = np.full(bins, float(np.asarray(request.firing_rate).reshape(-1)[0]))
+    timing = np.full(bins, float(np.asarray(request.initiation_rate).reshape(-1)[0]))
     return ConstantSimulationResult(
         position_kb=position,
         replication_timing=timing,
@@ -47,7 +47,7 @@ async def _wait_for(predicate: Any, *, attempts: int = 100) -> None:
 async def _open_simulation(user: Any) -> None:
     await user.open("/")
     user.find(marker="nav-simulation").click()
-    await user.should_see(marker="source-firing-rate-mode", retries=60)
+    await user.should_see(marker="source-initiation-rate-mode", retries=60)
     line = next(iter(user.find(marker="simulation-status-line").elements))
     assert line.default_slot.children == [next(iter(user.find(marker="simulation-status").elements))]
 
@@ -74,12 +74,14 @@ def test_movement_and_factor_controls_are_conditional_and_reach_the_worker(monke
 
             assert user.client is not None
             with user.client:
-                control("source-firing-rate-mode").set_value("scalar")
+                control("source-initiation-rate-mode").set_value("scalar")
                 control("simulation-region-end").set_value(5)
             await user.should_see("Fork movement")
             assert control("simulation-fork-stalling").value is False
             assert control("simulation-stochastic-movement").value is False
-            assert list(control("simulation-geometry").options.values()) == ["Linear", "Periodic"]
+            assert control('simulation-periodic').value is False
+            assert control('simulation-show-plot').value is True
+            assert control('simulation-whole-region').enabled is False
             assert list(control("simulation-missing-values").options.values()) == ["Error", "Interpolate", "Zero"]
             await user.should_see("Fix seed")
             for marker in ("simulation-stall-rate-per-kb", "simulation-stall-recovery", "simulation-stall-duration",
@@ -174,12 +176,12 @@ def test_simulation_constant_rows_share_the_matching_selection() -> None:
     async def scenario() -> None:
         async with user_simulation(index) as user:
             await _open_simulation(user)
-            await _use_multiple_constants(user, "firing-rate")
+            await _use_multiple_constants(user, "initiation-rate")
             await _use_multiple_constants(user, "fork-speed")
 
             firing_matching = _select(
                 user,
-                "source-firing-rate-combination-mode",
+                "source-initiation-rate-combination-mode",
             )
             speed_matching = _select(
                 user,
@@ -192,10 +194,10 @@ def test_simulation_constant_rows_share_the_matching_selection() -> None:
             assert speed_matching.options == firing_matching.options
             assert firing_matching.value == speed_matching.value == "pairwise"
             assert "dn-mapping-constant-value" in _number(
-                user, "firing-rate", 1
+                user, "initiation-rate", 1
             )._classes
-            assert _number(user, "firing-rate", 2)._props["aria-label"] == (
-                "Firing rate for Value 2"
+            assert _number(user, "initiation-rate", 2)._props["aria-label"] == (
+                "Initiation rate for Value 2"
             )
 
             assert user.client is not None
@@ -233,12 +235,12 @@ def test_simulation_pairwise_broadcast_and_all_combinations_are_deterministic(
     async def scenario() -> None:
         async with user_simulation(index) as user:
             await _open_simulation(user)
-            await _use_multiple_constants(user, "firing-rate")
+            await _use_multiple_constants(user, "initiation-rate")
 
             assert user.client is not None
             with user.client:
-                _number(user, "firing-rate", 1).set_value(0.01)
-                _number(user, "firing-rate", 2).set_value(0.02)
+                _number(user, "initiation-rate", 1).set_value(0.01)
+                _number(user, "initiation-rate", 2).set_value(0.02)
                 # The ordinary Constant mode is the singleton source here.
                 next(
                     iter(user.find(marker="source-fork-speed-constant").elements)
@@ -248,7 +250,7 @@ def test_simulation_pairwise_broadcast_and_all_combinations_are_deterministic(
             user.find(marker="action-simulate").click()
             await _wait_for(lambda: len(requests) == 2)
             await user.should_see("2 datasets complete", retries=60)
-            assert [request.firing_rate for request in requests] == pytest.approx(
+            assert [request.initiation_rate for request in requests] == pytest.approx(
                 [0.01, 0.02]
             )
             assert [request.fork_speed for request in requests] == pytest.approx(
@@ -264,7 +266,7 @@ def test_simulation_pairwise_broadcast_and_all_combinations_are_deterministic(
                 _number(user, "fork-speed", 3).set_value(1.3)
                 _select(
                     user,
-                    "source-firing-rate-combination-mode",
+                    "source-initiation-rate-combination-mode",
                 ).set_value("all")
             await _wait_for(
                 lambda: _select(
@@ -283,7 +285,7 @@ def test_simulation_pairwise_broadcast_and_all_combinations_are_deterministic(
             user.find(marker="action-simulate").click()
             await _wait_for(lambda: len(requests) == 8)
             assert [
-                (float(request.firing_rate), float(request.fork_speed))
+                (float(request.initiation_rate), float(request.fork_speed))
                 for request in requests[2:]
             ] == pytest.approx(
                 [
@@ -303,13 +305,13 @@ def test_simulation_constants_follow_counterpart_files_and_survive_middle_remova
     async def scenario() -> None:
         async with user_simulation(index) as user:
             await _open_simulation(user)
-            await _use_multiple_constants(user, "firing-rate")
-            _click_add(user, "firing-rate")
-            await user.should_see(marker="source-firing-rate-constant-3", retries=20)
+            await _use_multiple_constants(user, "initiation-rate")
+            _click_add(user, "initiation-rate")
+            await user.should_see(marker="source-initiation-rate-constant-3", retries=20)
             assert user.client is not None
             with user.client:
                 for control, value in zip(
-                    (_number(user, "firing-rate", index) for index in range(1, 4)),
+                    (_number(user, "initiation-rate", index) for index in range(1, 4)),
                     (0.011, 0.022, 0.033),
                     strict=True,
                 ):
@@ -337,14 +339,14 @@ def test_simulation_constants_follow_counterpart_files_and_survive_middle_remova
             )
             await user.should_see("Files: 3", retries=60)
             await _wait_for(
-                lambda: _number(user, "firing-rate", 3)._props.get("aria-label")
-                == "Firing rate for speed_c.tsv"
+                lambda: _number(user, "initiation-rate", 3)._props.get("aria-label")
+                == "Initiation rate for speed_c.tsv"
             )
-            controls = [_number(user, "firing-rate", index) for index in range(1, 4)]
+            controls = [_number(user, "initiation-rate", index) for index in range(1, 4)]
             assert [control._props["aria-label"] for control in controls] == [
-                "Firing rate for speed_a.tsv",
-                "Firing rate for speed_b.tsv",
-                "Firing rate for speed_c.tsv",
+                "Initiation rate for speed_a.tsv",
+                "Initiation rate for speed_b.tsv",
+                "Initiation rate for speed_c.tsv",
             ]
             assert [control.value for control in controls] == pytest.approx(
                 [0.011, 0.022, 0.033]
@@ -359,13 +361,13 @@ def test_simulation_constants_follow_counterpart_files_and_survive_middle_remova
             await user.should_not_see("speed_b.tsv", retries=30)
             await _wait_for(
                 lambda: len(
-                    user.find(marker="source-firing-rate-constant-list").elements
+                    user.find(marker="source-initiation-rate-constant-list").elements
                 )
                 == 1
-                and _number(user, "firing-rate", 2)._props.get("aria-label")
-                == "Firing rate for speed_c.tsv"
+                and _number(user, "initiation-rate", 2)._props.get("aria-label")
+                == "Initiation rate for speed_c.tsv"
             )
-            remaining = [_number(user, "firing-rate", index) for index in (1, 2)]
+            remaining = [_number(user, "initiation-rate", index) for index in (1, 2)]
             assert [control.value for control in remaining] == pytest.approx(
                 [0.011, 0.033]
             )
@@ -381,7 +383,7 @@ def test_simulation_case_cap_is_checked_before_cartesian_materialization(
 
     values = tuple(float(index) for index in range(224))
     first = _PreparedSimulationSource(
-        label="Firing rate",
+        label="Initiation rate",
         values=values,
         components=tuple(f"firing-{index}" for index in range(len(values))),
     )
@@ -404,7 +406,7 @@ def test_simulation_case_export_stems_remain_unique_after_ascii_folding() -> Non
     from app.pages.simulation import _plan_simulation_cases, _PreparedSimulationSource
 
     firing = _PreparedSimulationSource(
-        label="Firing rate",
+        label="Initiation rate",
         values=(0.01, 0.02),
         components=("数据一", "数据二"),
     )
@@ -449,4 +451,4 @@ def test_simulation_rejects_mixed_vector_and_spacetime_files_before_running() ->
     )
 
     with pytest.raises(ValueError, match="one consistent data type"):
-        _validate_simulation_batch_selection(controls, label="Firing rate")
+        _validate_simulation_batch_selection(controls, label="Initiation rate")

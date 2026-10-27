@@ -1,4 +1,4 @@
-"""Regression tests for endpoint-stable spatial firing-rate inference."""
+"""Regression tests for endpoint-stable spatial initiation-rate inference."""
 
 import math
 
@@ -104,7 +104,7 @@ def test_endpoint_context_preserves_rsim_fork_speed_forms(speed, expected_shape)
 
 
 def test_endpoint_context_rejects_mismatched_spatial_speed_fields():
-    with pytest.raises(ValueError, match="spatial length matching firing_rate"):
+    with pytest.raises(ValueError, match="spatial length matching initiation_rate"):
         _pad_spatial_firing_inputs(
             np.ones(4),
             np.ones((3, 2)),
@@ -154,7 +154,7 @@ def test_periodic_fit_has_full_wraparound_support_regardless_of_edge_setting():
 
 def test_rmap_exposes_edge_refinement_for_spatial_firing_routes():
     route = next(
-        spec for spec in rmap.routes() if spec.method == "timing_and_speed_to_firing_rate"
+        spec for spec in rmap.routes() if spec.method == "timing_and_speed_to_initiation_rate"
     )
     assert "refine_edge_kb" in route.optional_assumptions
 

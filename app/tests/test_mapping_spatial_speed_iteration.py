@@ -14,8 +14,8 @@ from app.mapping_service import MappingRequest, run_mapping
 def _request():
     return MappingRequest(
         route=mapping_route("timing_and_firing_to_spatial_fork_speed"),
-        inputs={"replication_timing": np.linspace(20., 50., 96), "firing_rate": .001},
-        input_forms={"replication_timing": "x", "firing_rate": "scalar"},
+        inputs={"replication_timing": np.linspace(20., 50., 96), "initiation_rate": .001},
+        input_forms={"replication_timing": "x", "initiation_rate": "scalar"},
         settings={"maxiter": 2, "smoothw": None, "T0": 10.},
         region_start_kb=32., region_end_kb=64., resolution_x=1.,
     )
@@ -96,15 +96,15 @@ def test_mapping_button_completes_the_real_restored_route_with_page_defaults(mon
             await set_value("mapping-target-form", "space")
             await set_value("mapping-region-start", 2.)
             await set_value("mapping-region-end", 10.)
-            await set_value("mapping-input-firing-rate-constant", .001)
+            await set_value("mapping-input-initiation-rate-constant", .001)
             await user.should_not_see(marker="mapping-match-smallest-profile")
             if firing_profile:
-                await set_value("mapping-input-firing-rate-type", "profile")
+                await set_value("mapping-input-initiation-rate-type", "profile")
                 firing_content = "value\n" + "\n".join(str(x) for x in np.linspace(.0008, .0016, 8)) + "\n"
-                await control("source-firing-rate-upload").handle_uploads([
+                await control("source-initiation-rate-upload").handle_uploads([
                     Upload.SmallFileUpload("firing.tsv", "text/tab-separated-values", firing_content.encode()),
                 ])
-                await user.should_see(marker="mapping-input-firing-rate-detected-data", retries=40)
+                await user.should_see(marker="mapping-input-initiation-rate-detected-data", retries=40)
             content = "value\n" + "\n".join(str(x) for x in np.linspace(20., 40., 16)) + "\n"
             await control("source-replication-timing-upload").handle_uploads([
                 Upload.SmallFileUpload("timing.tsv", "text/tab-separated-values", content.encode()),

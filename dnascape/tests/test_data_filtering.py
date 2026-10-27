@@ -31,6 +31,40 @@ def test_defaults_are_inert_and_enabled_defaults_replace_only_negative_bins():
     np.testing.assert_equal(apply_data_filter(values, settings(selection="profile", value=None)), values)
 
 
+@pytest.mark.parametrize("options,selected_indices", [
+    ({"selection": "threshold", "threshold": 5}, [2, 3, 4, 5]),
+    ({"selection": "between", "lower": 4, "upper": 8}, [0, 4, 5]),
+    ({"selection": "between", "lower": 4, "upper": 8, "between_mode": "outside"}, [1, 2, 3, 5]),
+    ({"selection": "minimum", "threshold": 5}, [2, 3, 4, 5]),
+    ({"selection": "maximum", "comparison": "above", "threshold": 3}, [0, 1, 2, 5]),
+    ({"selection": "nan"}, [0, 1, 2, 3, 4]),
+    ({"selection": "profile", "profile": FilterProfile(np.array([1, 4]), layout="positions", units="index")}, [0, 2, 3, 5]),
+    ({"selection": "profile", "profile": FilterProfile(np.array([[1, 3]]), layout="intervals", units="index")}, [0, 3, 4, 5]),
+    ({"selection": "all"}, []),
+])
+def test_complement_inverts_every_selection_for_edits_preview_and_export(options, selected_indices):
+    values = np.array([0., 4., 5., 8., 10., np.nan])
+    mask = np.zeros(values.size, dtype=bool)
+    mask[selected_indices] = True
+    captured = []
+    config = settings(complement=True, value=99, _position_sink=lambda selected, *_args, **_kwargs: captured.append(selected.copy()), **options)
+    expected = values.copy()
+    expected[mask] = 99
+    np.testing.assert_equal(apply_data_filter(values, config), expected)
+    np.testing.assert_equal(captured[0], mask)
+    preview = capture_filter_selection(values, config)
+    np.testing.assert_array_equal(np.unpackbits(np.frombuffer(preview.packed, dtype=np.uint8))[:values.size], mask)
+    np.testing.assert_equal(values, [0, 4, 5, 8, 10, np.nan])
+
+
+def test_complement_is_off_by_default_and_missing_profile_stays_inert():
+    assert DataFilterSettings().complement is False
+    values = np.array([1., -2., 3.])
+    np.testing.assert_equal(apply_data_filter(values, DataFilterSettings(complement=True)), values)
+    np.testing.assert_equal(apply_data_filter(values, settings(selection="profile", complement=True)), values)
+    assert capture_filter_selection(values, settings(selection="profile", complement=True)) is None
+
+
 @pytest.mark.parametrize("options,expected", [
     (dict(selection="threshold", comparison="above", threshold=5), [0, 4, 5, 99, 99]),
     (dict(selection="between", lower=4, upper=8), [0, 99, 99, 99, 10]),

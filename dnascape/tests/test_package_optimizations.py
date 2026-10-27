@@ -155,7 +155,7 @@ class SelectiveLoadingTests(unittest.TestCase):
 class SimulationOptimizationTests(unittest.TestCase):
     def test_retention_controls_preserve_seeded_summaries(self):
         kwargs = {
-            "firing_rate": np.linspace(0.001, 0.003, 24),
+            "initiation_rate": np.linspace(0.001, 0.003, 24),
             "fork_speed": 1.4,
             "sim_number": 5,
             "resolution_space": 1.0,
@@ -202,7 +202,7 @@ class SimulationOptimizationTests(unittest.TestCase):
 
     def test_replication_profile_retention_is_bounded_without_sampling_summaries(self):
         kwargs = {
-            "firing_rate": np.linspace(0.001, 0.003, 18),
+            "initiation_rate": np.linspace(0.001, 0.003, 18),
             "fork_speed": 1.4,
             "sim_number": 6,
             "resolution_space": 1.0,
@@ -257,7 +257,7 @@ class SimulationOptimizationTests(unittest.TestCase):
 
         with patch("dnascape.simulation.simulate_replication", fake_simulate_replication):
             result = rsim(
-                firing_rate=np.full(4, 0.01),
+                initiation_rate=np.full(4, 0.01),
                 sim_number=3,
                 retain_rep_times_limit=2,
                 retain_inter_origin_distances=False,
@@ -277,7 +277,7 @@ class SimulationOptimizationTests(unittest.TestCase):
 
     def test_replication_profile_limit_validation_is_conditional_on_retention(self):
         base = {
-            "firing_rate": 0.001,
+            "initiation_rate": 0.001,
             "n_bins": 8,
             "sim_number": 2,
             "retain_inter_origin_distances": False,
@@ -325,7 +325,7 @@ class SimulationOptimizationTests(unittest.TestCase):
 
         with patch("dnascape.simulation.simulate_replication", fake_simulate_replication):
             result = rsim(
-                firing_rate=0.01,
+                initiation_rate=0.01,
                 n_bins=1,
                 sim_number=sim_number,
                 seed=seed,
@@ -376,7 +376,7 @@ class SimulationOptimizationTests(unittest.TestCase):
 
         with patch("dnascape.simulation.simulate_replication", fake_simulate_replication):
             result = rsim(
-                firing_rate=0.01,
+                initiation_rate=0.01,
                 n_bins=4,
                 sim_number=3,
                 retain_rep_times_per_sim=False,
@@ -427,7 +427,7 @@ class SimulationOptimizationTests(unittest.TestCase):
 
             with patch("dnascape.simulation.simulate_replication", fake_simulate_replication):
                 result = rsim(
-                    firing_rate=0.01,
+                    initiation_rate=0.01,
                     n_bins=5,
                     sim_number=3,
                     retain_rep_times_per_sim=False,
@@ -469,7 +469,7 @@ class SimulationOptimizationTests(unittest.TestCase):
 
     def test_inter_origin_limit_validation_is_conditional_on_retention(self):
         base = {
-            "firing_rate": 0.01,
+            "initiation_rate": 0.01,
             "n_bins": 8,
             "sim_number": 2,
             "retain_rep_times_per_sim": False,
@@ -517,7 +517,7 @@ class SimulationOptimizationTests(unittest.TestCase):
 
         with patch("dnascape.simulation.simulate_replication", fake_simulate_replication):
             result = rsim(
-                firing_rate=0.01,
+                initiation_rate=0.01,
                 n_bins=5,
                 sim_number=2,
                 perQ=True,
@@ -532,7 +532,7 @@ class SimulationOptimizationTests(unittest.TestCase):
 
     def test_inter_origin_distribution_is_independent_of_time_statistics(self):
         common = {
-            "firing_rate": 100.0,
+            "initiation_rate": 100.0,
             "fork_speed": 1.4,
             "n_bins": 12,
             "sim_number": 4,
@@ -575,7 +575,7 @@ class SimulationOptimizationTests(unittest.TestCase):
     def test_prepared_fields_are_bitwise_seed_equivalent(self):
         n_bins = 14
         resolution_time = 2.0
-        firing_rate = np.outer(
+        initiation_rate = np.outer(
             np.linspace(0.001, 0.003, n_bins),
             np.linspace(0.8, 1.2, 12),
         )
@@ -583,7 +583,7 @@ class SimulationOptimizationTests(unittest.TestCase):
             np.linspace(1.2, 1.6, n_bins),
             np.linspace(0.9, 1.1, 12),
         )
-        prepared_firing = _as_rate_field(firing_rate, "firing_rate", n_bins)
+        prepared_firing = _as_rate_field(initiation_rate, "initiation_rate", n_bins)
         prepared_inverse_speed = _as_inverse_speed_field(
             fork_speed,
             "fork_speed",
@@ -594,7 +594,7 @@ class SimulationOptimizationTests(unittest.TestCase):
             axis=0,
         )
         common = {
-            "firing_rate": firing_rate,
+            "initiation_rate": initiation_rate,
             "fork_speed": fork_speed,
             "n_bins": n_bins,
             "resolution_time": resolution_time,
@@ -618,7 +618,7 @@ class SimulationOptimizationTests(unittest.TestCase):
                 np.testing.assert_array_equal(expected, actual)
 
     def test_rsim_rejects_invalid_execution_parameters(self):
-        base = {"firing_rate": 0.001, "n_bins": 8, "verbose": False}
+        base = {"initiation_rate": 0.001, "n_bins": 8, "verbose": False}
         with self.assertRaisesRegex(ValueError, "sim_number"):
             rsim(**base, sim_number=1.5)
         with self.assertRaisesRegex(ValueError, "tau"):
@@ -635,7 +635,7 @@ class SimulationOptimizationTests(unittest.TestCase):
     def test_space_time_memmaps_are_removed_after_last_view(self):
         with tempfile.TemporaryDirectory() as tmpdir:
             result = rsim(
-                firing_rate=np.full(10, 0.01),
+                initiation_rate=np.full(10, 0.01),
                 fork_speed=1.4,
                 sim_number=1,
                 time_stats_xtQ=True,
@@ -665,11 +665,11 @@ class MappingSimulationRetentionTests(unittest.TestCase):
         self.assertIn("completion_time", routing_module.rmap.features())
         with patch.object(routing_module, "rsim", side_effect=fake_rsim):
             duration = routing_module.rmap(
-                source={"firing_rate": 0.01, "fork_speed": 1.4},
+                source={"initiation_rate": 0.01, "fork_speed": 1.4},
                 target="s_phase_duration",
             )
             completion = routing_module.rmap(
-                source={"firing_rate": 0.01, "fork_speed": 1.4},
+                source={"initiation_rate": 0.01, "fork_speed": 1.4},
                 target="completion_time",
             )
 
@@ -685,7 +685,7 @@ class MappingSimulationRetentionTests(unittest.TestCase):
 
         mapper = routing_module._simulation_source_feature_mapper("replication_timing")
         with patch.object(routing_module, "rsim", side_effect=fake_rsim):
-            mapped = mapper({"firing_rate": 0.01, "fork_speed": 1.4})
+            mapped = mapper({"initiation_rate": 0.01, "fork_speed": 1.4}, stall_rate_per_kb=.01)
 
         np.testing.assert_array_equal(mapped, np.arange(4.0))
         self.assertIs(captured["retain_rep_times_per_sim"], False)
@@ -722,7 +722,8 @@ class MappingSimulationRetentionTests(unittest.TestCase):
         mapper = routing_module._simulation_source_feature_mapper("replication_timing")
         with patch.object(routing_module, "rsim", side_effect=fake_rsim):
             mapper(
-                {"firing_rate": 0.01, "fork_speed": 1.4},
+                {"initiation_rate": 0.01, "fork_speed": 1.4},
+                stall_rate_per_kb=.01,
                 retain_rep_times_per_sim=True,
                 retain_inter_origin_distances=True,
             )
@@ -738,12 +739,27 @@ class MappingSimulationRetentionTests(unittest.TestCase):
             for node in ast.walk(tree)
             if isinstance(node, ast.Call)
             and isinstance(node.func, ast.Name)
-            and node.func.id == "rsim"
+            and node.func.id in {"rsim", "_mapping_prediction"}
         ]
 
         self.assertGreater(len(calls), 0)
+        dispatcher = next(node for node in tree.body
+                          if isinstance(node, ast.FunctionDef) and node.name == "_mapping_prediction")
         for call in calls:
+            if dispatcher.lineno <= call.lineno <= dispatcher.end_lineno:
+                # The dispatcher forwards the options from the fit call sites
+                # checked below; it also preserves explicit retention overrides.
+                self.assertEqual(call.func.id, "rsim")
+                self.assertEqual(len(call.keywords), 1)
+                self.assertIsNone(call.keywords[0].arg)
+                self.assertEqual(call.keywords[0].value.id, "options")
+                continue
             keywords = {item.arg: item.value for item in call.keywords if item.arg is not None}
+            if (call.func.id == "_mapping_prediction"
+                    and all(item.arg is not None for item in call.keywords)
+                    and not {"stall_rate", "stall_rate_per_kb", "fork_speed_std", "ffiring_nr"} & keywords.keys()):
+                # These diagnostic calls cannot select a stochastic model.
+                continue
             with self.subTest(line=call.lineno):
                 for name in (
                     "retain_rep_times_per_sim",

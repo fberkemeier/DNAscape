@@ -18,7 +18,7 @@ PLOT_OPTIONS = dict(
 )
 
 
-def _result(*, key="firing_rate", form="x", periodic=True, values=None):
+def _result(*, key="initiation_rate", form="x", periodic=True, values=None):
     return MappingResult(
         target=key, target_key=key, target_label=key, method="test",
         output_form=form, output_dependence={"x": "space", "t": "time", "xt": "spacetime"}[form],
@@ -30,7 +30,7 @@ def _result(*, key="firing_rate", form="x", periodic=True, values=None):
 
 
 @pytest.mark.parametrize("periodic", [False, True])
-@pytest.mark.parametrize("key", ["firing_rate", "fork_speed", "replication_timing", "input:replication_timing"])
+@pytest.mark.parametrize("key", ["initiation_rate", "fork_speed", "replication_timing", "input:replication_timing"])
 def test_spatial_previews_keep_exact_samples_and_coordinates(periodic, key):
     result = _result(key=key, periodic=periodic)
     original = result.outputs[key].copy()
@@ -76,7 +76,7 @@ def test_periodic_heatmaps_keep_the_same_extent_and_pixels(form):
 
 def test_combined_periodic_preview_does_not_append_wraparound_bins():
     results = [SimpleNamespace(key=str(i), name=f"Dataset {i}", result=_result()) for i in range(2)]
-    options = combined_mapping_plot_options(results, output_key="firing_rate", **PLOT_OPTIONS)
+    options = combined_mapping_plot_options(results, output_key="initiation_rate", **PLOT_OPTIONS)
     for series in options["series"]:
         assert series["data"] == [[40000., 0.1], [40001., 0.3], [40002., 0.2]]
 
@@ -100,9 +100,9 @@ def test_periodic_geometry_does_not_shift_downsampled_observations():
 
 @pytest.mark.parametrize("periodic", [False, True])
 @pytest.mark.parametrize("method,speed_form", [
-    ("timing_and_speed_to_firing_rate", "scalar"),
+    ("timing_and_speed_to_initiation_rate", "scalar"),
     ("timing_to_firing_constant_fork_speed", "scalar"),
-    ("timing_and_variable_speed_to_spatial_firing_rate", "x"),
+    ("timing_and_variable_speed_to_spatial_initiation_rate", "x"),
 ])
 def test_real_firing_fit_keeps_observed_timing_and_plot_coordinates(periodic, method, speed_form):
     observed = 110. + 15. * np.sin(np.arange(32.) / 4.) + np.arange(32.) / 2.
@@ -121,7 +121,7 @@ def test_real_firing_fit_keeps_observed_timing_and_plot_coordinates(periodic, me
     comparison = result.comparisons["replication_timing_fit"]
     np.testing.assert_array_equal(observed, original)
     np.testing.assert_array_equal(comparison.observed, original)
-    assert np.all(np.isfinite(result.outputs["firing_rate"]))
+    assert np.all(np.isfinite(result.outputs["initiation_rate"]))
     options = mapping_plot_options(result, output_key="comparison:replication_timing_fit", **PLOT_OPTIONS)
     np.testing.assert_array_equal(np.asarray(options["series"][0]["data"])[:, 1], original)
     np.testing.assert_array_equal(np.asarray(options["series"][0]["data"])[:, 0], result.x_axis)
@@ -148,16 +148,16 @@ def test_periodic_inverse_and_forward_do_not_depend_on_where_the_ring_starts(cou
 def test_smooth_periodic_firing_model_closes_without_extending_observed_timing():
     observed = np.linspace(110., 130., 64)
     result = run_mapping(MappingRequest(
-        route=mapping_route("timing_and_speed_to_firing_rate"),
+        route=mapping_route("timing_and_speed_to_initiation_rate"),
         inputs={"replication_timing": observed, "fork_speed": 1.4},
         input_forms={"replication_timing": "x", "fork_speed": "scalar"},
         settings={"perQ": True, "maxiter": 2}, resolution_x=2.,
     ))
     assert result.diagnostics["fit_periodic_smoothing_kb"] > 0
     assert "fit_periodic_smoothing_kb" not in result.outputs
-    rates = result.outputs["firing_rate"]
+    rates = result.outputs["initiation_rate"]
     assert rates.size == observed.size
-    rate_plot = mapping_plot_options(result, output_key="firing_rate", **PLOT_OPTIONS)
+    rate_plot = mapping_plot_options(result, output_key="initiation_rate", **PLOT_OPTIONS)
     points = rate_plot["series"][0]["data"]
     assert len(points) == rates.size + 1
     assert points[-1] == [128., rates[0]]

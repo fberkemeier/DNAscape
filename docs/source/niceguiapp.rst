@@ -157,14 +157,14 @@ Data Manager
    not silently change that scientific meaning.
 
    The K562 SNS-seq BED example selects column 4 (average enrichment ratio),
-   excluding IGV display scores and coordinates. Prepare as Firing rate uses
+   excluding IGV display scores and coordinates. Prepare as Initiation rate uses
    1 kb bins, maximum aggregation to retain peak heights, zero background,
    no interpolation, and no smoothing. Its enrichment values represent relative
-   origin activity; a firing-rate calibration remains an explicit scaling choice.
+   origin activity; an initiation-rate calibration remains an explicit scaling choice.
    Scored BED peaks offer maximum, mean, integrated signal, and coverage;
    BED3 calls offer presence, covered bases, and coverage. Continuous bedGraph
    and BigWig retain their supported signal aggregations. Interpolation is
-   unavailable between called peaks, and firing-rate scaling excludes centre
+   unavailable between called peaks, and initiation-rate scaling excludes centre
    and Z-score. BED peak previews retain local extrema at their original
    coordinates within the configured preview point limit. Repli-seq BigWig conversion and
    preview behavior are unchanged.
@@ -181,9 +181,9 @@ Mapping
 
    Mapping settings put fit iterations before step size and start simulation
    ensembles at 100 runs. **Advanced** pairs **MSE threshold** with **Missing values**,
-   neighbourhood range with maximum edge context, and **Firing rate floor** with
+   neighbourhood range with maximum edge context, and **Initiation rate floor** with
    deviation threshold, followed by a full-width **Show plot** row. Route-specific
-   controls appear only when needed. The firing rate floor accepts the rate
+   controls appear only when needed. The initiation rate floor accepts the rate
    directly (for example, ``1e-15``), preserving the solver's numerical limit. Optional
    numerical fields use automatic values when blank; spatial overrides follow
    the main fit controls until edited. A zero MSE or deviation threshold disables
@@ -199,18 +199,18 @@ Mapping
    timing MSE, including when firing is supplied as a spatial profile.
 
    Spatial fork-speed fitting offers **Maximum edge context (kb)** with the same
-   1000 kb default as spatial firing-rate fitting. Linear subregions use reflected
+   1000 kb default as spatial initiation-rate fitting. Linear subregions use reflected
    firing and speed with an adaptive context cap and a narrow endpoint update
    taper to reduce artificial speed spikes. Every bin remains refinable; timing
    MSE scores the core outside that context. Set the value to 0 for true chromosome
    ends. Periodic fits are unaffected, and downloaded code keeps the chosen value.
 
-   Periodic spatial firing-rate fits also regularize log-rate curvature around
+   Periodic spatial initiation-rate fits also regularize log-rate curvature around
    the ring, including the join. This is applied to the seed and each fitting
    update before predicting timing; observed timing is unchanged. The smoothing
    scale is 5% of the typical fork-travel distance, bounded between one bin and
    1/32 of the region (one bin for very short regions), and is reported as
-   ``fit_periodic_smoothing_kb``. The firing-rate preview closes the smooth model
+   ``fit_periodic_smoothing_kb``. The initiation-rate preview closes the smooth model
    curve at the period end, while downloads retain only the original bins.
    First and last stored bins are neighbouring positions, not duplicate endpoints.
    In Python, ``map_timing_firing(..., stabilize=False)`` retains the previous
@@ -243,7 +243,7 @@ Mapping
    Exporting code does not start Mapping or replace its results.
 
 Simulation
-   Run bounded constant or uploaded firing-rate and fork-speed fields through ``rsim``.
+   Run bounded constant or uploaded initiation-rate and fork-speed fields through ``rsim``.
    Under **Origin & fork behaviour**, **Firing factor** places Fork coupling next
    to Finite pool, with Pool size and Recycle rate below. **Fork movement** offers
    separate Fork stalling and Stochastic movement switches, both off by default.

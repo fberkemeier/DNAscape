@@ -36,7 +36,7 @@ from app.simulation_service import (
 
 def _request(**changes: Any) -> ConstantSimulationRequest:
     baseline = ConstantSimulationRequest(
-        firing_rate=0.5,
+        initiation_rate=0.5,
         fork_speed=2.0,
         resolution_x=1.0,
         resolution_t=1.0,
@@ -54,7 +54,7 @@ def _request(**changes: Any) -> ConstantSimulationRequest:
 @pytest.mark.parametrize("fork_speed", [1.4, np.linspace(1., 2., 4), np.array([[1., 1.5, 2.]]),
                                         np.linspace(1., 2., 4)[:, None] * np.array([[1., 1.5, 2.]])])
 def test_stochastic_speed_is_forwarded_and_used_for_every_dependence(fork_speed):
-    request = _request(firing_rate=np.array([10., 0., 0., 0.]), fork_speed=fork_speed, fork_speed_std=0.3)
+    request = _request(initiation_rate=np.array([10., 0., 0., 0.]), fork_speed=fork_speed, fork_speed_std=0.3)
     first = run_constant_simulation(request)
     second = run_constant_simulation(request)
     deterministic = run_constant_simulation(replace(request, fork_speed_std=0))
@@ -342,7 +342,7 @@ def test_uploaded_kinetic_fields_are_passed_to_rsim_with_native_shapes(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     source_seen: dict[str, Any] = {}
-    firing_rate = np.asarray([0.1, 0.2, 0.3, 0.4])
+    initiation_rate = np.asarray([0.1, 0.2, 0.3, 0.4])
     fork_speed = np.asarray([[1.0, 1.5, 2.0]])
 
     def inspect_rsim(*, source: dict[str, Any], assumptions: dict[str, Any]) -> dict[str, Any]:
@@ -361,15 +361,15 @@ def test_uploaded_kinetic_fields_are_passed_to_rsim_with_native_shapes(
         }
 
     monkeypatch.setattr(dnascape, "rsim", inspect_rsim)
-    result = run_constant_simulation(_request(firing_rate=firing_rate, fork_speed=fork_speed))
+    result = run_constant_simulation(_request(initiation_rate=initiation_rate, fork_speed=fork_speed))
 
-    np.testing.assert_array_equal(source_seen["firing_rate"], firing_rate)
+    np.testing.assert_array_equal(source_seen["initiation_rate"], initiation_rate)
     np.testing.assert_array_equal(source_seen["fork_speed"], fork_speed)
-    assert np.asarray(source_seen["firing_rate"]).shape == (4,)
+    assert np.asarray(source_seen["initiation_rate"]).shape == (4,)
     assert np.asarray(source_seen["fork_speed"]).shape == (1, 3)
-    assert np.asarray(source_seen["firing_rate"]).flags.writeable is False
+    assert np.asarray(source_seen["initiation_rate"]).flags.writeable is False
     assert np.asarray(source_seen["fork_speed"]).flags.writeable is False
-    assert firing_rate.flags.writeable is True
+    assert initiation_rate.flags.writeable is True
     assert fork_speed.flags.writeable is True
     np.testing.assert_array_equal(result.replication_timing, [4.0, 3.0, 2.0, 1.0])
 
@@ -377,11 +377,11 @@ def test_uploaded_kinetic_fields_are_passed_to_rsim_with_native_shapes(
 @pytest.mark.parametrize(
     ("changes", "message"),
     (
-        ({"firing_rate": np.asarray([0.1, 0.2, 0.3])}, "must contain 4 values"),
+        ({"initiation_rate": np.asarray([0.1, 0.2, 0.3])}, "must contain 4 values"),
         ({"fork_speed": np.ones((3, 2))}, "must contain 4 rows"),
-        ({"firing_rate": np.asarray([0.1, -0.2, 0.3, 0.4])}, "non-negative"),
+        ({"initiation_rate": np.asarray([0.1, -0.2, 0.3, 0.4])}, "non-negative"),
         ({"fork_speed": np.asarray([1.0, 0.0, 1.0, 1.0])}, "greater than zero"),
-        ({"firing_rate": np.ones((2, 2, 2))}, "must be scalar"),
+        ({"initiation_rate": np.ones((2, 2, 2))}, "must be scalar"),
     ),
 )
 def test_uploaded_kinetic_field_validation_matches_rsim(
@@ -395,7 +395,7 @@ def test_uploaded_kinetic_field_validation_matches_rsim(
 @pytest.mark.parametrize(
     ("changes", "message"),
     (
-        ({"firing_rate": math.nan}, "Firing rate must be finite"),
+        ({"initiation_rate": math.nan}, "Initiation rate must be finite"),
         ({"fork_speed": 0.0}, "Fork speed must be finite and greater than zero"),
         ({"fork_speed_std": -0.1}, "Fork-speed standard deviation must be non-negative"),
         ({"fork_speed_std": math.inf}, "Fork-speed standard deviation must be finite"),
@@ -461,7 +461,7 @@ def test_summary_mode_does_not_limit_or_allocate_an_unused_time_grid() -> None:
 def test_fractional_resolution_does_not_create_a_floating_point_extra_bin() -> None:
     validated = validate_constant_simulation(
         _request(
-            firing_rate=np.asarray([0.1, 0.2, 0.3]),
+            initiation_rate=np.asarray([0.1, 0.2, 0.3]),
             fork_speed=np.asarray([1.1, 1.2, 1.3]),
             resolution_x=0.1,
             region_end_kb=3 * 0.1,

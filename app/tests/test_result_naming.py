@@ -19,7 +19,7 @@ def test_combination_names_offer_concise_and_fully_descriptive_forms() -> None:
     names = combination_result_names(
         "Simulation",
         (
-            ("Firing rate", ("sample_a", "sample_b")),
+            ("Initiation rate", ("sample_a", "sample_b")),
             ("Fork speed", ("1.4 kb/min",)),
         ),
         ((0, 0), (1, 0)),
@@ -30,8 +30,8 @@ def test_combination_names_offer_concise_and_fully_descriptive_forms() -> None:
         "Simulation · sample_b",
     )
     assert tuple(name.full for name in names) == (
-        "Simulation · Firing rate: sample_a · Fork speed: 1.4 kb/min",
-        "Simulation · Firing rate: sample_b · Fork speed: 1.4 kb/min",
+        "Simulation · Initiation rate: sample_a · Fork speed: 1.4 kb/min",
+        "Simulation · Initiation rate: sample_b · Fork speed: 1.4 kb/min",
     )
     assert names[0].display("short") == names[0].short
     assert names[0].display("FULL") == names[0].full
@@ -39,7 +39,7 @@ def test_combination_names_offer_concise_and_fully_descriptive_forms() -> None:
 
 def test_short_names_omit_shared_singletons_but_remain_unique() -> None:
     names = combination_result_names(
-        "Firing rate",
+        "Initiation rate",
         (
             ("Replication timing", ("cell_a", "cell_b")),
             ("Fork speed", ("1.4 kb/min",)),
@@ -49,8 +49,8 @@ def test_short_names_omit_shared_singletons_but_remain_unique() -> None:
     )
 
     assert tuple(name.short for name in names) == (
-        "Firing rate · cell_a",
-        "Firing rate · cell_b",
+        "Initiation rate · cell_a",
+        "Initiation rate · cell_b",
     )
     assert all("1.4" not in name.short and "linear" not in name.short for name in names)
     assert all("Fork speed: 1.4 kb/min" in name.full for name in names)
@@ -59,7 +59,7 @@ def test_short_names_omit_shared_singletons_but_remain_unique() -> None:
 
 def test_short_names_keep_a_single_uploaded_profile_but_omit_fixed_scalars() -> None:
     names = combination_names(
-        "Firing rate",
+        "Initiation rate",
         (
             CombinationSource(
                 "Replication timing",
@@ -72,14 +72,14 @@ def test_short_names_keep_a_single_uploaded_profile_but_omit_fixed_scalars() -> 
         include_singletons=True,
     )
 
-    assert names[0].short == "Firing rate · sample_a"
+    assert names[0].short == "Initiation rate · sample_a"
     assert names[0].full.endswith("Fork speed: 1.4 kb/min")
 
 
 def test_cartesian_combination_names_follow_planner_order_deterministically() -> None:
     combinations = plan_combination_indices((2, 3), mode="all")
     first = combination_result_names(
-        "Firing rate",
+        "Initiation rate",
         (
             ("Replication timing", ("timing_a", "timing_b")),
             ("Fork speed", ("1.0 kb/min", "1.5 kb/min", "2.0 kb/min")),
@@ -87,7 +87,7 @@ def test_cartesian_combination_names_follow_planner_order_deterministically() ->
         combinations,
     )
     second = combination_result_names(
-        "Firing rate",
+        "Initiation rate",
         (
             ("Replication timing", ("timing_a", "timing_b")),
             ("Fork speed", ("1.0 kb/min", "1.5 kb/min", "2.0 kb/min")),
@@ -97,12 +97,12 @@ def test_cartesian_combination_names_follow_planner_order_deterministically() ->
 
     assert first == second
     assert tuple(name.short for name in first) == (
-        "Firing rate · timing_a + 1.0",
-        "Firing rate · timing_a + 1.5",
-        "Firing rate · timing_a + 2.0",
-        "Firing rate · timing_b + 1.0",
-        "Firing rate · timing_b + 1.5",
-        "Firing rate · timing_b + 2.0",
+        "Initiation rate · timing_a + 1.0",
+        "Initiation rate · timing_a + 1.5",
+        "Initiation rate · timing_a + 2.0",
+        "Initiation rate · timing_b + 1.0",
+        "Initiation rate · timing_b + 1.5",
+        "Initiation rate · timing_b + 2.0",
     )
 
 
@@ -131,12 +131,12 @@ def test_filename_stems_fold_unicode_and_use_a_readable_fallback() -> None:
 
 def test_export_stems_use_shared_scientific_acronyms() -> None:
     assert output_file_token("replication_timing") == "rt"
-    assert output_file_token("firing_rate") == "fr"
+    assert output_file_token("initiation_rate") == "ir"
     assert output_file_token("fork_speed") == "fs"
     assert output_file_token("inter_origin_distances") == "iod"
     assert output_file_token("replicated_fraction_xt") == "rf-xt"
-    assert compact_export_stem("Firing rate / Replication timing H1") == "fr-rt-h1"
-    assert compact_export_stem("Firing rate Â· H1") == "fr-h1"
+    assert compact_export_stem("Initiation rate / Replication timing H1") == "ir-rt-h1"
+    assert compact_export_stem("Initiation rate Â· H1") == "ir-h1"
 
 
 def test_compact_export_stems_remain_unique_after_abbreviation() -> None:

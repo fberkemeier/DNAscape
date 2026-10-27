@@ -62,13 +62,19 @@ def test_periodic_variable_fields_are_rotation_equivariant():
     assert np.all(np.diff(first, axis=1) >= -1e-12)
 
 
-def test_periodic_initiation_route_uses_periodic_survival():
+def test_periodic_initiation_routes_distinguish_mean_field_kinetics_and_supplied_survival():
     firing, speed = 0.02, 1.3
     t = np.arange(0.0, 31.0, 1.0)
     fraction = map_replicated_fraction_xt(firing, speed, n_bins=12, time_grid=t, perQ=True)
-    initiation = rmap(source={"firing_rate": firing, "fork_speed": speed}, target="initiation_events_xt",
+    initiation = rmap(source={"initiation_rate": firing, "fork_speed": speed}, target="initiation_events_xt",
                       assumptions={"n_bins": 12, "time_grid": t, "perQ": True})
-    np.testing.assert_allclose(initiation, firing * (1 - fraction))
+    # The kinetic event route solves the published mean-field transport system.
+    np.testing.assert_allclose(initiation, np.broadcast_to(firing*np.exp(-firing*speed*t*t), initiation.shape), atol=1e-9)
+    # A supplied fraction is authoritative, including finite-circle effects
+    # outside the mean-field approximation on very short periodic molecules.
+    supplied = rmap(source={"initiation_rate": firing, "replicated_fraction_xt": fraction},
+                    target="initiation_events_xt", time_grid=t)
+    np.testing.assert_allclose(supplied, firing * (1 - fraction))
 
 
 @pytest.mark.parametrize("count", [1, 2, 3, 4, 9])
@@ -174,12 +180,12 @@ def test_stochastic_weibull_converts_density_to_per_bin_hazard(resolution, targe
     info = mapped._rmap_info
     assert simulation.call_count == 2
     for call in simulation.call_args_list:
-        per_bin = call.kwargs["firing_rate"]
+        per_bin = call.kwargs["initiation_rate"]
         simulation_t = np.arange(per_bin.shape[1]) * 2.0
         age_lo = np.maximum(simulation_t[:, None] - info["weibull_delay"], 0.0)
         age_hi = np.maximum(simulation_t[:, None] + 2.0 - info["weibull_delay"], 0.0)
         density = (info["alpha"] * (age_hi**info["weibull_shape"] - age_lo**info["weibull_shape"]) / 2.0).T
-        np.testing.assert_allclose(per_bin, density * resolution)
+        np.testing.assert_allclose(np.broadcast_to(per_bin, density.shape), density * resolution)
         np.testing.assert_allclose(np.mean(per_bin[:, :mapped.shape[1]], axis=0),
                                    np.mean(mapped, axis=0) * resolution)
 
@@ -232,5 +238,5 @@ def test_weibull_delayed_hazard_has_no_pre_activation_firing_or_infinite_samples
     t = np.arange(0.0, 21.0)
     fields = _weibull_survival_fields(np.full(8, 1e-3), 1.4, shape=shape,
                                      time_grid=t, delay=5.0, rate_floor=0.0, perQ=True)
-    assert np.isfinite(fields["firing_rate"]).all()
-    assert np.all(fields["firing_rate"][:, :5] == 0)
+    assert np.isfinite(fields["initiation_rate"]).all()
+    assert np.all(fields["initiation_rate"][:, :5] == 0)

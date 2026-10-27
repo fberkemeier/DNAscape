@@ -6,11 +6,13 @@
 
 DNAscape is a local browser app for preparing, mapping, simulating, visualising, and analysing DNA replication data. It brings the main DNAscape workflows into one interface while keeping the computation on your computer.
 
+**Initiation rate** (`initiation_rate`, abbreviated `ir`) describes the rate of origin firing in unreplicated DNA.
+
 ## What you can do
 
 - **Prepare data:** import tables, NumPy profiles, bedGraph, or BigWig tracks; select genomic regions; bin, smooth, rescale, invert, or filter values; and export DNAscape-ready profiles.
 - **Map replication features:** infer supported kinetic targets from one or more compatible input profiles or constant values.
-- **Run simulations:** simulate replication from firing-rate and fork-speed profiles or constants, compare datasets, and inspect standard or detailed outputs.
+- **Run simulations:** simulate replication from initiation-rate and fork-speed profiles or constants, compare datasets, and inspect standard or detailed outputs.
 - **Plot and analyse data:** compare multiple profiles, smooth each dataset independently, export plots, and calculate Pearson, Spearman, and Kendall tau correlations. Download all selected correlation matrices and paired sample counts in one CSV or TSV report.
 - **Reuse recent work:** reopen or download files and completed workflows retained in the current browser session.
 
@@ -78,6 +80,8 @@ Open [http://127.0.0.1:8080](http://127.0.0.1:8080) in your browser. Keep the te
 2. Keep the default constant inputs and select **Simulate**.
 3. Explore the generated outputs and plotting settings in the Preview panel.
 
+Simulation's **Region** includes **Whole region**, **Periodic** and **Show plot** switches. Whole region uses the genomic extent of an uploaded initiation-rate or fork-speed profile. **Filter** can edit initiation rate, fork speed, or both independently, after selecting and resampling the region. Original uploads are preserved. Each filter has its own region selection, transform and optional position/interval export. Plot settings provide separate filter guides and names. Gaussian filter noise uses its own seed when supplied, otherwise the simulation seed when fixed.
+
 To try a file-based workflow, open **Data Manager** and use the bundled example at `examples/data/example/replication_timing_hESC.csv`.
 
 ## Managing data
@@ -88,9 +92,19 @@ Use **Data Manager** to turn a Repli-seq BigWig track into a replication-timing 
 2. In **Configure**, set **Prepare as** to **Replication timing**. Under **Region & binning**, choose **One chromosome**, select the chromosome and Start/End coordinates, set **Bin size (bp)** to **1000**, and keep **Aggregation** at **Mean**.
 3. Under **Values**, set **Value scaling** to **Target interval**, **Minimum** to **30**, and **Maximum** to **500**. Check **Invert** so higher Repli-seq scores become earlier replication times.
 4. Set **Missing values** to **Fill with a value**, and **Fill value** to **30**. Custom fills are applied after scaling, so missing bins become exactly 30 minutes.
-5. Under **Output**, optionally enable **Show plot preview after conversion**, then click **Convert**. Download the result from **Generated files**; TSV is the default format. When using the profile in Mapping or Simulation, set the spatial resolution to **1 kb** to match the 1000 bp bins.
+5. Under **Output**, optionally enable **Show plot preview after conversion**, then click **Convert**. Download the result from **Generated files**; TSV is the default format. Mapping and Simulation assume array uploads are sampled at **1 kb**. Their **Resolution** control sets the output bin width: wider bins average the source values, while finer bins use linear interpolation. The selected Start/End interval stays fixed. Initiation rates are expressed per output bin (min⁻¹); fork speeds remain in kb/min, with travel time scaled by bin width.
 
 The K562 example contains relative timing scores; rescaling them to 30–500 minutes assigns an assumed absolute time range. Filling missing bins with 30 assigns them the earliest time in this example. Other missing-value choices are **Keep empty values**, **Fill with zero** (the default), **Fill with minimum**, **Fill with maximum**, and **Report error**.
+
+In Mapping, **Fitting** lists only the target quantity. Set lower and upper bounds independently, or leave a field blank for the route's automatic default. An optional initial guess sets the solver's starting value. Weibull routes fit an initiation-rate amplitude, so their bounds and guess apply to that amplitude. Supplied timing and kinetic profiles remain unchanged. Standard kinetic fits and forward timing/directionality maps use deterministic predictions at zero stall rate; nonzero stalling uses stochastic ensembles. Explicitly stochastic fork-speed and firing-factor models retain their requested simulation model. Periodic joins are used consistently across speed dependences. Timing-gradient directionality requires timing data compatible with the periodic join. Automatic raw-output filenames end in `_c`, `_x`, `_t` or `_xt` for their declared dependence.
+
+Temporal fork-speed fits anchor the initial speed at the first time point and scale their time dependence to the observed timing interval. Sampling timing observations retains the full spatial firing integral, including narrow origins between observation sites. For spatial firing inputs, automatic time grids follow the data and extend until the omitted survival integral is negligible. Explicit time grids are preserved.
+
+Mapping offers deterministic observables. Directionality accepts timing plus fork speed, or initiation rate plus fork speed through the timing relation. Temporal velocities weight the survival gradient before time integration. Directionality from fork densities, initiation/coalescence probability densities and ensemble-only outputs remain available through Simulation and the Python API. Forward time limits are inferred from the kinetic profiles and extended to completion; supplied time grids retain their explicit limits. Replicated fraction integrates partially covered spatial bins, including spatially varying fork travel times.
+
+For **Initiation events** and **Coalescence events**, **Quantity** selects **Density (events/kb)**, integrated over the computed time window, or **Rate density (events/kb/min)**. These expected event densities retain their counts; they are not normalized probability distributions. With unreplicated fraction `s = 1-f`, the rates are `j_i = I*s` and `j_c = 2*v*rho_right*rho_left/s` for symmetric fork speeds, following [Gauthier, Norio and Bechhoefer (2012), Eqs. 1–6](https://doi.org/10.1371/journal.pone.0032053). Both forward outputs use the same deterministic transport solution for full space–time initiation-rate and speed profiles. The solver evolves conditional fork densities `g = rho/s` and `-log(s)` to avoid division near completion, with second-order spatial transport and adaptive time integration. Integrated densities are accumulated during the solve, independently of the displayed time samples. Spatial refinement reduces the remaining discretization error. The terminology follows the unnormalized event densities in [Baker and Bechhoefer (2014), Section II.A](https://doi.org/10.1103/PhysRevE.89.032703).
+
+Mapping's **Filter** selects regions relative to a supplied input, or from uploaded positions or intervals. It applies the same transforms as Data Manager to the initial fitted target, then holds those values fixed in every fitting step. Inputs remain unchanged. Regional constraints automatically select a compatible spatial or space–time target; time-resolved firing uses a free profile so the frozen regions can obey their own constraints. Constrained fork-speed fits use the existing deterministic mean-field solver with exact sensitivities and expose its control points, smoothness and convergence tolerance in Mapping settings. Frozen values override fit bounds locally and must remain valid kinetic values (non-negative initiation rates or positive fork speeds). Filter positions can be exported separately, and runnable Mapping downloads include auxiliary filter and modulation profiles.
 
 ## Comparing and analysing data
 

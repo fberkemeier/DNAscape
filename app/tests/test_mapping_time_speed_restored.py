@@ -53,8 +53,8 @@ def test_restored_speed_routes_keep_selected_region_time_axis_and_firing_forms(
     messages = []
     result = run_mapping(MappingRequest(
         route=mapping_route(method),
-        inputs={"replication_timing": full_timing, "firing_rate": firing},
-        input_forms={"replication_timing": "x", "firing_rate": firing_form},
+        inputs={"replication_timing": full_timing, "initiation_rate": firing},
+        input_forms={"replication_timing": "x", "initiation_rate": firing_form},
         settings=options, resolution_x=dx, resolution_t=5.,
         region_start_kb=96., region_end_kb=160.,
     ), report=lambda _, message: messages.append(message))

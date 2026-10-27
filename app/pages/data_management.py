@@ -164,7 +164,7 @@ _POLISHABLE_FORMS = frozenset({"x", "t", "xt", "track"})
 _FEATURES = {
     "generic": "Generic profile",
     "replication_timing": "Replication timing",
-    "firing_rate": "Firing rate",
+    "initiation_rate": "Initiation rate",
     "fork_speed": "Fork speed",
     "fork_directionality": "Fork directionality",
     "replicated_fraction": "Replicated fraction",
@@ -172,7 +172,7 @@ _FEATURES = {
 _FEATURE_VALUE_NAMES = {
     "generic": "value",
     "replication_timing": "replication_timing",
-    "firing_rate": "firing_rate",
+    "initiation_rate": "initiation_rate",
     "fork_speed": "fork_speed",
     "fork_directionality": "fork_directionality",
     "replicated_fraction": "replicated_fraction",
@@ -183,7 +183,7 @@ _FEATURE_HINTS = {
         "ENCODE wavelet Repli-seq is relative timing (earlier = larger), not absolute "
         "DNAscape time in minutes."
     ),
-    "firing_rate": "Firing-rate profiles should be finite and non-negative.",
+    "initiation_rate": "Initiation-rate profiles should be finite and non-negative.",
     "fork_speed": "Fork-speed profiles should be positive and use consistent units.",
     "fork_directionality": "Fork directionality is normally bounded between -1 and 1.",
     "replicated_fraction": "Replicated fraction is normally bounded between 0 and 1.",
@@ -191,7 +191,7 @@ _FEATURE_HINTS = {
 _FEATURE_THRESHOLD_DEFAULTS: Mapping[str, tuple[bool, float | None, float | None]] = {
     "generic": (False, None, None),
     "replication_timing": (True, 0.0, None),
-    "firing_rate": (True, 0.0, None),
+    "initiation_rate": (True, 0.0, None),
     "fork_speed": (True, 0.0, None),
     "fork_directionality": (True, -1.0, 1.0),
     "replicated_fraction": (True, 0.0, 1.0),
@@ -591,7 +591,7 @@ def _apply_track_defaults(
 
     if inspection is not None and inspection.source_format in {"bigwig", "bedgraph"}:
         settings["aggregation"] = _default_track_aggregation(inspection, selected, backend)
-        if selected == "firing_rate" and inspection.source_format == "bedgraph":
+        if selected == "initiation_rate" and inspection.source_format == "bedgraph":
             settings.update(
                 bin_size=1_000,
                 track_missing="zero",
@@ -726,7 +726,7 @@ def _default_track_aggregation(
     options = _track_aggregation_options(backend, inspection)
     preferred = "max" if (
         inspection.track_kind in {"peaks", "intervals"}
-        or (feature == "firing_rate" and inspection.source_format == "bedgraph")
+        or (feature == "initiation_rate" and inspection.source_format == "bedgraph")
     ) else "mean"
     if feature == "replication_timing" and "mean" in options:
         preferred = "mean"
@@ -743,7 +743,7 @@ def _track_interpolation_options(inspection: UploadInspection) -> dict[str, str]
 
 def _value_scaling_options(feature: str) -> dict[str, str]:
     options = dict(_VALUE_SCALING)
-    if feature == "firing_rate":
+    if feature == "initiation_rate":
         options.pop("center")
         options.pop("zscore")
     return options
@@ -1118,7 +1118,6 @@ def render(_navigate: Callable[[str], None]) -> None:
         "end": 1,
         "bin_size": 1_000,
         "source_bin_size": 1_000,
-        "source_start": 0,
         "_profile_grid_key": None,
         "profile_region_custom": False,
         "profile_bin_custom": False,
@@ -1986,7 +1985,7 @@ def render(_navigate: Callable[[str], None]) -> None:
                             async def use_bedgraph_example() -> None:
                                 await use_link_example(
                                     url=_SNS_EXAMPLE_URL,
-                                    feature="firing_rate",
+                                    feature="initiation_rate",
                                     aggregation="max",
                                     track_missing="zero",
                                 )
@@ -2574,9 +2573,21 @@ def render(_navigate: Callable[[str], None]) -> None:
                                     settings["chromosome"] = chromosomes[0]
                                 positions, intervals, supplied = spatial_profile_grid(
                                     current_source.inspection, length,
-                                    source_bin_size=settings["source_bin_size"], source_start=settings["source_start"],
+                                    source_bin_size=settings["source_bin_size"],
                                     chromosome=settings["chromosome"] if chromosomes else None,
                                 )
+                                native_bin_size = max(1, int(round(np.median(intervals[:, 1] - intervals[:, 0]) * 1000)))
+                                coordinate_names = {str(name).lower().replace(" ", "_") for name in current_source.inspection.columns}
+                                intrinsic_resolution = supplied and (
+                                    len(positions) > 1
+                                    or any({start, end} <= coordinate_names for start, end in (
+                                        ("start", "end"), ("start_bp", "end_bp"), ("start_kb", "end_kb"),
+                                    ))
+                                )
+                                if intrinsic_resolution:
+                                    settings["source_bin_size"] = native_bin_size
+                                full_start = int(round(intervals[0, 0] * 1000))
+                                full_end = int(round(intervals[-1, 1] * 1000))
                                 grid_key = (current_source.source_id, current_source.selection, settings["chromosome"] if chromosomes else None)
                                 if settings["_profile_grid_key"] != grid_key:
                                     previous = settings["_profile_grid_key"]
@@ -2584,24 +2595,47 @@ def render(_navigate: Callable[[str], None]) -> None:
                                         settings.update(profile_region_custom=False, profile_bin_custom=False)
                                     settings["_profile_grid_key"] = grid_key
                                 if not settings["profile_region_custom"]:
-                                    settings.update(start=int(round(intervals[0, 0] * 1000)), end=int(round(intervals[-1, 1] * 1000)))
+                                    settings.update(start=full_start, end=full_end)
                                 if not settings["profile_bin_custom"]:
-                                    settings["bin_size"] = max(1, int(round(np.median(intervals[:, 1] - intervals[:, 0]) * 1000)))
+                                    settings["bin_size"] = native_bin_size
+
+                                def reset_profile_region() -> None:
+                                    controls["start"].set_value(full_start)
+                                    controls["end"].set_value(full_end)
+                                    settings.update(start=full_start, end=full_end, profile_region_custom=False)
+
                                 ui.label("Region & binning").classes("dn-setting-group-title")
                                 with ui.element("div").classes("dn-data-filter-grid"):
                                     if len(chromosomes) > 1:
                                         controls["chromosome"] = ui.select(
                                             list(chromosomes), value=settings["chromosome"], label="Chromosome",
-                                        ).props("dense options-dense").classes("dn-field").mark("data-manager-chromosome")
-                                    if not supplied:
-                                        for name, label, minimum in (("source_start", "Source start (bp)", 0), ("source_bin_size", "Source resolution (bp)", 1)):
-                                            controls[name] = ui.number(label, value=settings[name], min=minimum, step=1).props("dense").classes("dn-field").mark(f"data-manager-{name.replace('_', '-')}")
-                                    for name, label in (("start", "Start (bp)"), ("end", "End (bp)"), ("bin_size", "Bin size (bp)")):
-                                        controls[name] = ui.number(label, value=settings[name], min=0 if name == "start" else 1, step=1).props("dense").classes("dn-field").mark(f"data-manager-{name.replace('_', '-')}")
-                                    controls["aggregation"] = ui.select(
-                                        {"mean": "Mean", "sum": "Sum", "min": "Minimum", "max": "Maximum"},
-                                        value=settings["aggregation"] if settings["aggregation"] in {"mean", "sum", "min", "max"} else "mean", label="Aggregation",
-                                    ).props("dense options-dense").classes("dn-field").mark("data-manager-aggregation")
+                                        ).props("dense options-dense").classes("dn-field").style("grid-column: 1 / -1").mark("data-manager-chromosome")
+                                    controls["source_bin_size"] = (
+                                        ui.number("Source resolution (bp)", value=settings["source_bin_size"], min=1, step=1)
+                                        .props("dense").classes("dn-field").mark("data-manager-source-bin-size")
+                                    )
+                                    controls["source_bin_size"].set_enabled(not intrinsic_resolution)
+                                    controls["bin_size"] = (
+                                        ui.number("Bin size (bp)", value=settings["bin_size"], min=1, step=1)
+                                        .props("dense").classes("dn-field").mark("data-manager-bin-size")
+                                    )
+                                    controls["start"] = (
+                                        ui.number("Start (bp)", value=settings["start"], min=0, step=1)
+                                        .props("dense").classes("dn-field").mark("data-manager-start")
+                                    )
+                                    with ui.element("div").classes("dn-data-manager-end-field"):
+                                        controls["end"] = (
+                                            ui.number("End (bp)", value=settings["end"], min=1, step=1)
+                                            .props("dense").classes("dn-field").mark("data-manager-end")
+                                        )
+                                        with controls["end"].add_slot("append"):
+                                            controls["reset_region"] = (
+                                                ui.button(icon=RESET_ICON, color=None, on_click=reset_profile_region)
+                                                .props('flat round dense aria-label="Reset to full region"')
+                                                .classes("dn-reset-button dn-data-manager-region-reset")
+                                                .mark("data-manager-reset-region")
+                                                .tooltip("Use the full source region")
+                                            )
 
                                 def source_grid_changed(name: str) -> None:
                                     value = controls[name].value
@@ -2612,10 +2646,10 @@ def render(_navigate: Callable[[str], None]) -> None:
                                     settings.update(profile_region_custom=False, profile_bin_custom=False)
                                     render_conversion_settings.refresh()
 
-                                for name in ("source_start", "source_bin_size", "chromosome"):
+                                for name in ("source_bin_size", "chromosome"):
                                     if name in controls:
                                         controls[name].on_value_change(lambda _event, name=name: source_grid_changed(name))
-                                for name in ("start", "end", "bin_size", "aggregation"):
+                                for name in ("start", "end", "bin_size"):
                                     controls[name].on_value_change(lambda _event, name=name: store_control(name))
                             ui.label("Values").classes(
                                 "dn-setting-group-title dn-data-manager-setting-heading"
@@ -2823,7 +2857,8 @@ def render(_navigate: Callable[[str], None]) -> None:
                     lambda: [(source.source_id, source.inspection.name) for source in sources_for_mode()]
                 )
                 filter_controls = DataFilterControls(
-                    set_convert_enabled, allow_export=True, profile_units="bp", align_modulation_from_start=True,
+                    set_convert_enabled, allow_export=True, allow_complement=True,
+                    profile_units="bp", align_modulation_from_start=True,
                 )
 
                 with action_dock():
@@ -3096,7 +3131,7 @@ def render(_navigate: Callable[[str], None]) -> None:
                             on_log_x_change=preview_log_x_changed,
                             on_y_limits_change=preview_y_limits_changed,
                             on_visibility_change=sync_plot_visibility,
-                            default_aspect_ratio=3.0,
+                            default_aspect_ratio=2.5,
                         )
                         sync_plot_visibility()
                         def filter_application_changed() -> None:
@@ -3504,7 +3539,7 @@ def render(_navigate: Callable[[str], None]) -> None:
                 length = (details.shape[0] if len(details.shape) == 2 and (details.form == "xt" or 1 not in details.shape)
                           else int(np.prod(details.shape)))
                 _positions, intervals, _supplied = spatial_profile_grid(
-                    current, length, source_bin_size=settings["source_bin_size"], source_start=settings["source_start"], chromosome=chromosome,
+                    current, length, source_bin_size=settings["source_bin_size"], chromosome=chromosome,
                 )
                 if not settings["profile_region_custom"]:
                     controls["start"].value = int(round(intervals[0, 0] * 1000))
@@ -3513,12 +3548,11 @@ def render(_navigate: Callable[[str], None]) -> None:
                     controls["bin_size"].value = max(1, int(round(np.median(intervals[:, 1] - intervals[:, 0]) * 1000)))
             kwargs.update(
                 profile_binning=True,
-                source_start=_integer(controls["source_start"], "Source start", minimum=0),
                 source_bin_size=_integer(controls["source_bin_size"], "Source resolution", minimum=1),
                 start=_integer(controls["start"], "Start", minimum=0),
                 end=_integer(controls["end"], "End", minimum=1),
                 bin_size=_integer(controls["bin_size"], "Bin size", minimum=1),
-                aggregation=str(controls["aggregation"].value),
+                aggregation="mean",
                 chromosome=chromosome,
                 memory_limit_mb=get_export_settings().conversion_memory_limit_mb,
             )

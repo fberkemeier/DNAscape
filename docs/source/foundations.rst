@@ -18,7 +18,7 @@ Shapes
    * - Space
      - ``(n,)``
      - One value per genomic bin.
-     - Timing, firing rate, fork speed, RFD.
+     - Timing, initiation rate, fork speed, RFD.
    * - Time
      - ``(1, T)``
      - One value per S-phase time bin.
@@ -37,8 +37,8 @@ Quantities
 ``replication_timing``
    Average replication time per genomic bin.
 
-``firing_rate``
-   Origin initiation propensity.
+``initiation_rate``
+   Rate of origin firing in unreplicated DNA, abbreviated ``ir``.
 
 ``fork_speed``
    Fork progression speed, usually kb/min.
@@ -71,18 +71,18 @@ rmap And rsim
 -------------
 
 ``rmap`` maps between compatible features. ``rsim`` simulates stochastic
-S phases from firing rate and fork speed. They chain naturally:
+S phases from initiation rate and fork speed. They chain naturally:
 
 .. code-block:: python
 
-   firing_rate = rmap(
+   initiation_rate = rmap(
        source={"replication_timing": timing, "fork_speed": 1.4},
-       target="firing_rate",
+       target="initiation_rate",
        assumptions={"resolution_x": 1.0, "target_form": "space"},
    )
 
    simulation = rsim(
-       source={"firing_rate": firing_rate, "fork_speed": 1.4},
+       source={"initiation_rate": initiation_rate, "fork_speed": 1.4},
        assumptions={"sim_number": 100, "seed": 1, "verbose": False},
    )
 

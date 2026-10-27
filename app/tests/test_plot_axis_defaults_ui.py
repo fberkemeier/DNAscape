@@ -43,11 +43,18 @@ def test_displayed_axis_defaults_custom_limits_and_reset(form: str) -> None:
             if form == "t":
                 assert options()["series"][0]["type"] == "line"
             else:
+                assert "Circular" not in control("view").options
+                assert control("show-grid").value is False
+                await user.should_not_see(marker="plotting-reverse-order")
+                with user.client:
+                    control("z-axis-label").set_value("Initiation rate")
+                await asyncio.sleep(0)
+                assert options()["visualMap"]["text"][0] == "Initiation rate"
                 assert control("z-minimum").value == pytest.approx(options()["visualMap"]["min"])
                 assert control("z-maximum").value == pytest.approx(options()["visualMap"]["max"])
             assert user.client is not None
             original_x = (control("x-minimum").value, control("x-maximum").value)
-            assert control("aspect-ratio").value == 3.0
+            assert control("aspect-ratio").value == 2.5
             assert control("aspect-ratio")._props["stack-label"] is True
             assert control("x-axis-label")._props["stack-label"] is True
             with user.client:
@@ -60,7 +67,7 @@ def test_displayed_axis_defaults_custom_limits_and_reset(form: str) -> None:
             assert chart_styles["height"] == "auto"
             user.find(marker="plotting-reset-aspect-ratio").click()
             await asyncio.sleep(0)
-            assert options()["dnascapeAspectRatio"] == 3.0
+            assert options()["dnascapeAspectRatio"] == 2.5
             assert control("aspect-ratio")._props["stack-label"] is True
             assert control("result-plot")._style["height"] == "auto"
             with user.client:
@@ -99,10 +106,10 @@ def test_mapping_time_profile_uses_position_time_heatmap_defaults(monkeypatch) -
     def mapped(request, report, cancel):
         cancel()
         return MappingResult(
-            target="firing_rate", target_key="firing_rate", target_label="Firing rate",
+            target="initiation_rate", target_key="initiation_rate", target_label="Initiation rate",
             method=request.route.method, output_form="t", output_dependence="time",
-            primary_output="firing_rate", outputs={"firing_rate": np.asarray([[0.01, 0.02, 0.03]])},
-            output_forms={"firing_rate": "t"}, x_axis=np.arange(3.0),
+            primary_output="initiation_rate", outputs={"initiation_rate": np.asarray([[0.01, 0.02, 0.03]])},
+            output_forms={"initiation_rate": "t"}, x_axis=np.arange(3.0),
             time_axis=np.asarray([0.0, 5.0, 10.0]), region_labels=(),
             elapsed_seconds=0.01, assumptions={},
         )

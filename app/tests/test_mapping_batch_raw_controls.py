@@ -25,17 +25,17 @@ def _mapped_result(request: MappingRequest) -> MappingResult:
     return MappingResult(
         target=request.route.target,
         target_key=request.route.target_key,
-        target_label="Firing rate",
+        target_label="Initiation rate",
         method=request.route.method,
         output_form="x",
         output_dependence="space",
-        primary_output="firing_rate",
+        primary_output="initiation_rate",
         outputs={
-            "firing_rate": mapped,
+            "initiation_rate": mapped,
             "replication_timing_fit": timing,
         },
         output_forms={
-            "firing_rate": "x",
+            "initiation_rate": "x",
             "replication_timing_fit": "x",
         },
         x_axis=np.arange(timing.size, dtype=float),
@@ -265,8 +265,8 @@ def test_mapping_batch_raw_rows_are_independent_and_bulk_uses_each_preference(
             assert first_compress is not second_compress
             assert first_download is not second_download
             assert first_remove is not second_remove
-            assert str(first_name.value).startswith("rmap_fr-")
-            assert str(second_name.value).startswith("rmap_fr-")
+            assert str(first_name.value).startswith("rmap_ir-")
+            assert str(second_name.value).startswith("rmap_ir-")
             assert "timing-a" in str(first_name.value)
             assert "timing-b" in str(second_name.value)
             assert first_name.value != second_name.value
@@ -300,7 +300,7 @@ def test_mapping_batch_raw_rows_are_independent_and_bulk_uses_each_preference(
             fit_first_name, *_ = controls(1)
             assert fit_first_name.value != "first_custom"
             with user.client:
-                output.set_value("firing_rate")
+                output.set_value("initiation_rate")
             await asyncio.sleep(0)
             (
                 first_name,
@@ -336,8 +336,8 @@ def test_mapping_batch_raw_rows_are_independent_and_bulk_uses_each_preference(
                 )
                 for call in export_calls[:2]
             ] == [
-                ("firing_rate", "TSV", "first_custom", "none"),
-                ("firing_rate", "CSV", "second_custom", "gzip"),
+                ("initiation_rate", "TSV", "first_custom", "none"),
+                ("initiation_rate", "CSV", "second_custom", "gzip"),
             ]
 
             user.find(marker="mapping-download-all-raw").click()
@@ -351,8 +351,8 @@ def test_mapping_batch_raw_rows_are_independent_and_bulk_uses_each_preference(
                 )
                 for call in export_calls[2:]
             ] == [
-                ("firing_rate", "TSV", "first_custom", "none"),
-                ("firing_rate", "CSV", "second_custom", "gzip"),
+                ("initiation_rate", "TSV", "first_custom", "none"),
+                ("initiation_rate", "CSV", "second_custom", "gzip"),
             ]
             assert archive_calls == [
                 ("first_custom.tsv", "second_custom.csv.gz")

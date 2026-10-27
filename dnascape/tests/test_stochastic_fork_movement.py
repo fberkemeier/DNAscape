@@ -19,7 +19,7 @@ def speed_field(form, n=12):
 
 def common(form, **changes):
     return dict(
-        firing_rate=np.linspace(0.01, 0.08, 12), fork_speed=speed_field(form),
+        initiation_rate=np.linspace(0.01, 0.08, 12), fork_speed=speed_field(form),
         sim_number=4, resolution_t=0.5, n_bins=12, seed=719, verbose=False, **changes,
     )
 
@@ -61,7 +61,7 @@ def test_local_mean_uses_the_current_position_and_time(monkeypatch, form):
     monkeypatch.setattr(engine, "_positive_speed_samples", doubled_speed)
     field = speed_field(form, n=5)
     result = engine.simulate_replication(
-        firing_rate=np.array([1000., 0, 0, 0, 0]), fork_speed=field, n_bins=5,
+        initiation_rate=np.array([1000., 0, 0, 0, 0]), fork_speed=field, n_bins=5,
         resolution_t=0.25, rng=np.random.default_rng(921), fork_speed_std=0.2,
     )
     times = result[3]
@@ -121,7 +121,7 @@ def test_temporal_stochastic_crossings_use_later_speeds_and_preserve_arrival_ord
     speeds = np.array([[.01, 10.]])
     if form == "xt":
         speeds = np.repeat(speeds, 2, axis=0)
-    arguments = dict(firing_rate=np.array([1., 0.]), fork_speed=speeds,
+    arguments = dict(initiation_rate=np.array([1., 0.]), fork_speed=speeds,
                      resolution_t=1., fork_speed_std=.3, max_rep_time=None)
     early = engine.simulate_replication(**arguments, rng=OriginAt(0.))[3][1]
     late = engine.simulate_replication(**arguments, rng=OriginAt(1.))[3][1]
@@ -136,7 +136,7 @@ def test_sd_one_does_not_create_the_seeded_neighbouring_bin_spike(form):
     speed = {"scalar": 1.4, "x": np.linspace(1., 1.8, n),
              "t": np.array([[1., 1.4, 1.8]]),
              "xt": np.linspace(1., 1.8, n)[:, None] * np.array([[1., 1.2, .8]])}[form]
-    result = rsim(firing_rate=.01, fork_speed=speed, fork_speed_std=1., sim_number=10,
+    result = rsim(initiation_rate=.01, fork_speed=speed, fork_speed_std=1., sim_number=10,
                   n_bins=n, resolution_t=5., seed=6, verbose=False)
     assert np.max(np.abs(np.diff(result["replication_timing"]))) < 5
 
@@ -153,6 +153,6 @@ def test_stochastic_movement_supports_stalls_and_fork_coupled_finite_factors():
     result = rsim(**kwargs)
     assert np.isfinite(result["replication_timing"]).all()
     assert np.all(result["replication_timing"] >= 0)
-    structured = rsim(source={"firing_rate": kwargs.pop("firing_rate"), "fork_speed": kwargs.pop("fork_speed")},
+    structured = rsim(source={"initiation_rate": kwargs.pop("initiation_rate"), "fork_speed": kwargs.pop("fork_speed")},
                       assumptions=kwargs)
     np.testing.assert_array_equal(result["rep_times_per_sim"], structured["rep_times_per_sim"])

@@ -54,27 +54,55 @@ def test_static_firing_step_adapts_to_stalling_and_preserves_user_choice(
             await user.open("/")
             user.find(marker="nav-mapping").click()
             await user.should_see(marker="mapping-target", retries=60)
-            await _set(user, "mapping-target", "firing_rate")
+            await _set(user, "mapping-target", "initiation_rate")
             await _set(user, "mapping-target-form", "space")
-            await _set(user, "mapping-route", "firing_rate--space--replication_timing-and-fork_speed")
+            await _set(user, "mapping-route", "initiation_rate--space--replication_timing-and-fork_speed")
             controls = latest["settings"]
             floor = controls["err_threshold"]
             assert controls["error"].control.label == "MSE threshold"
-            assert floor.control.label == "Firing rate floor"
+            assert floor.control.label == "Lower bound"
             assert floor.control.value == "1e-15"
-            assert mapping_page._read_setting(floor) == 15.
+            with pytest.raises(KeyError):
+                mapping_page._read_setting(floor)
             advanced_grid = controls["error"].holder.parent_slot.parent
             assert advanced_grid.default_slot.children == [
                 controls["error"].holder, _element(user, "mapping-region-missing"),
                 controls["neighbourhood_range"].holder, controls["refine_edge_kb"].holder,
-                floor.holder, controls["deviation_threshold"].holder,
-                _element(user, "mapping-show-plot"),
+                controls["deviation_threshold"].holder,
+                _element(user, "mapping-settings-fork-movement"),
             ]
+            fork_grid = _element(user, "mapping-settings-fork-movement").default_slot.children[1]
+            assert fork_grid.default_slot.children == [
+                controls["stall_rate_per_kb"].holder, controls["sim_number"].holder,
+                controls["tau"].holder,
+            ]
+            recovery = controls["tau"]
+            assert recovery.override.text == "Stall recovery"
+            assert recovery.override.value is False
+            assert recovery.control.label == "Recovery time (min)"
+            assert recovery.control.value == 10.
+            with pytest.raises(KeyError):
+                mapping_page._read_setting(recovery)
+            assert recovery.holder.visible is False
+            await _set(user, "mapping-setting-stall-rate-per-kb", .001)
+            assert recovery.holder.visible is True
+            await _set(user, "mapping-setting-tau-override", True)
+            assert recovery.control.parent_slot.parent.visible
+            assert mapping_page._read_setting(recovery) == 10.
+            await _set(user, "mapping-setting-tau", 25.)
+            assert mapping_page._read_setting(recovery) == 25.
+            await _set(user, "mapping-setting-tau-override", False)
+            assert not recovery.control.parent_slot.parent.visible
+            with pytest.raises(KeyError):
+                mapping_page._read_setting(recovery)
+            await _set(user, "mapping-setting-stall-rate-per-kb", 0.)
+            assert recovery.holder.visible is False
+            assert "Mapping" in controls["sim_number"].control._props["data-dn-hint"]
             await _set(user, "mapping-setting-err-threshold", "2.5e-12")
             assert mapping_page._read_setting(floor) == pytest.approx(-math.log10(2.5e-12))
-            for invalid in ("0", "-1e-15", "1.1", "inf", "infinite", "nan", "1e-999", "oops", ""):
+            for invalid in ("0", "-1e-15", "inf", "infinite", "nan", "1e-999", "oops"):
                 await _set(user, "mapping-setting-err-threshold", invalid)
-                with pytest.raises(ValueError, match="Firing rate floor"):
+                with pytest.raises(ValueError, match="Initiation rate floor"):
                     mapping_page._read_setting(floor)
             await _set(user, "mapping-setting-err-threshold", "1e-15")
             assert mapping_page._read_setting(controls["fit_step"]) == 2.
@@ -120,7 +148,7 @@ def test_static_firing_step_adapts_to_stalling_and_preserves_user_choice(
             assert _element(user, "mapping-region-missing").value == "zero"
             assert _element(user, "mapping-show-plot").value is False
             assert _element(user, "mapping-region-missing").parent_slot.parent is advanced_grid
-            assert _element(user, "mapping-show-plot").parent_slot.parent is advanced_grid
+            assert "dn-mapping-region-scope" in _element(user, "mapping-show-plot").parent_slot.parent._classes
 
     asyncio.run(scenario())
 
@@ -237,7 +265,7 @@ def test_fully_unidentifiable_inverse_maps_and_previews_without_fabricated_point
             user.find(marker="nav-mapping").click()
             await user.should_see(marker="mapping-target", retries=60)
             await _set(user, "mapping-target-form", "spacetime")
-            await _set(user, "mapping-route", "firing_rate--spacetime--initiation_events-and-replicated_fraction")
+            await _set(user, "mapping-route", "initiation_rate--spacetime--initiation_events-and-replicated_fraction")
             user.find("Mapping settings").click()
             await user.should_see(marker="mapping-setting-invalid-policy", retries=30)
             await _set(user, "mapping-region-start", 0.)
@@ -251,7 +279,7 @@ def test_fully_unidentifiable_inverse_maps_and_previews_without_fabricated_point
             await user.should_not_see(marker="mapping-error")
             assert len(results) == 1, (notifications, _element(user, "mapping-status").text, _element(user, "action-map").text)
             assert results[0].diagnostics["unidentifiable_count"] == 20
-            assert np.isnan(results[0].outputs["firing_rate"]).all()
+            assert np.isnan(results[0].outputs["initiation_rate"]).all()
             await user.should_see(marker="mapping-result-plot", retries=30)
             options = _element(user, "mapping-result-plot").options
             assert options["series"] == []

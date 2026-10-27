@@ -21,6 +21,7 @@ from dnascape.workflows.result_naming import (
     combination_result_names as combination_result_names,
     compact_component as compact_component,
     compact_export_stem as compact_export_stem,
+    dependence_file_suffix as dependence_file_suffix,
     normalize_name_style as normalize_name_style,
     output_file_token as output_file_token,
     safe_filename_stem as safe_filename_stem,

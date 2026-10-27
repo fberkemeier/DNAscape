@@ -724,7 +724,7 @@ def test_sns_enrichment_maximum_keeps_peak_heights_and_zero_background(
         bin_size=1000,
         aggregation="max",
         value_column="enrichment_ratio",
-        biological_role="firing_rate",
+        biological_role="initiation_rate",
     )
     prepared = prepare_data(request)
     np.testing.assert_array_equal(prepared.values, [10, 0, 20])
@@ -759,7 +759,7 @@ def test_sns_preview_keeps_isolated_peaks_at_their_zero_based_bin_positions() ->
     result = convert_data(DataConversionRequest(
         inspection=inspection, input_form="track", target_format="npz",
         chromosome="chr1", start=0, end=2000000, bin_size=1000, aggregation="max",
-        biological_role="firing_rate",
+        biological_role="initiation_rate",
     ))
     assert result.preview is not None
     preview = result.preview
@@ -795,7 +795,7 @@ def test_coordinate_tsv_round_trips_as_a_mapping_profile() -> None:
             start=0,
             end=30,
             bin_size=10,
-            value_name="firing_rate",
+            value_name="initiation_rate",
         )
     )
 

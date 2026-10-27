@@ -47,7 +47,9 @@ class _CaptureChart:
 
 def test_preview_setting_markers_cover_every_shared_control_consistently() -> None:
     expected = {name for name in PreviewSettingsControls.__dataclass_fields__ if not name.startswith("_")}.difference(
-        {"primary_color_surface", "secondary_color_surface", "title"}
+        {"primary_color_surface", "secondary_color_surface", "title",
+         # Simulation-only collections give each named filter its own marker.
+         "filter_guides", "filter_guide_names"}
     )
     expected.add("container")
 
@@ -316,7 +318,7 @@ def test_heatmap_scale_is_compact_and_labels_its_vertical_bar_cleanly() -> None:
         log_y=False,
         invert_y=False,
         y_limits=None,
-        series_label="Firing rate",
+        series_label="Initiation rate",
         values=np.asarray([[1.0, 2.0], [3.0, 4.0]]),
         x_axis=np.asarray([0.0, 1.0]),
         y_axis=np.asarray([0.0, 5.0]),

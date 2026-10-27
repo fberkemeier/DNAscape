@@ -56,6 +56,7 @@ class _Field:
     bounds: tuple
     offset: int
     fixed: object = None
+    projection: object = None
 
     @property
     def count(self):
@@ -73,6 +74,8 @@ class _Field:
         bt = self.bt[:1] if self.bt.shape[1] == 1 else self.bt
         bx = self.bx[:1] if self.bx.shape[1] == 1 else self.bx
         values = np.exp(bt @ coefficients @ bx.T)
+        if self.projection is not None:
+            values = self.projection.project(values, transposed=True)
         return np.broadcast_to(values, (self.bt.shape[0], self.bx.shape[0]))
 
     def derivative(self, values, index, n_parameters):
@@ -82,6 +85,12 @@ class _Field:
                 values.shape[1], self.count
             )
             derivative[:, self.offset : self.offset + self.count] = values[index, :, None] * basis
+            if self.projection is not None:
+                mask = self.projection.mask
+                if self.projection.form == 't':
+                    derivative *= ~mask[index, 0]
+                else:
+                    derivative *= (~mask[:, min(index, mask.shape[1] - 1)])[:, None]
         return derivative
 
     def output(self, values):
@@ -97,6 +106,7 @@ class _Field:
 def _mean_field_timing(
     firing, speed, time_grid, resolution, perQ, fields=None, parameters=None,
     *, progress=None, use_native=True,
+    fork_integrals=None,
 ):
     """Match mapping.map_fork_densities_xt while propagating exact tangents.
 
@@ -122,6 +132,8 @@ def _mean_field_timing(
     for ti in range(1, len(time_grid)):
         check_cancelled()
         interval = time_grid[ti] - time_grid[ti - 1]
+        old_right = right.copy() if fork_integrals is not None else None
+        old_left = left.copy() if fork_integrals is not None else None
         substeps = max(
             1, int(np.ceil(
                 (max_velocity if static_speed else np.max(speed[ti - 1 : ti + 1]))
@@ -148,6 +160,9 @@ def _mean_field_timing(
                 interval, substeps, resolution, perQ, i0, i1, v0, v1,
                 di0, di1, dv0, dv1, f, right, left, timing, df, dright, dleft, dtiming,
             )
+            if fork_integrals is not None:
+                fork_integrals[0][:] += .5 * interval * (old_right + right)
+                fork_integrals[1][:] += .5 * interval * (old_left + left)
             continue
         old_f, old_df = f.copy(), df.copy()
         for step in range(substeps):
@@ -206,6 +221,9 @@ def _mean_field_timing(
                 dright, dleft = drn, dln
                 dright[completed], dleft[completed], df[completed] = 0, 0, 0
         timing += interval * (1 - 0.5 * (old_f + f))
+        if fork_integrals is not None:
+            fork_integrals[0][:] += .5 * interval * (old_right + right)
+            fork_integrals[1][:] += .5 * interval * (old_left + left)
         if p:
             dtiming -= interval * 0.5 * (old_df + df)
     return timing, dtiming, f
@@ -276,7 +294,7 @@ def _make_field(
 def fit_timing_fork_speed(
     observed_timing,
     *,
-    firing_rate,
+    initiation_rate,
     speed_form="constant",
     initial_fork_speed=1.4,
     resolution=1.0,
@@ -291,8 +309,9 @@ def fit_timing_fork_speed(
     speed_bounds=(0.2, 6.0),
     tolerance=1e-5,
     verbose=False,
+    fit_projection=None,
 ):
-    """Fit fork speed to timing while holding the supplied firing rate fixed.
+    """Fit fork speed to timing while holding the supplied initiation rate fixed.
 
     ``speed_form`` selects the fitted field parameterization.
     ``fit_mse`` always excludes regularization.
@@ -301,8 +320,10 @@ def fit_timing_fork_speed(
     Periodic fits use equally spaced circular spatial knots and the same
     smoothness penalty across every neighbouring knot, including the join.
     """
-    if firing_rate is None:
-        raise ValueError("Firing rate must be supplied when fitting fork speed.")
+    if initiation_rate is None:
+        raise ValueError("Initiation rate must be supplied when fitting fork speed.")
+    if _form(speed_form) == "time" and not np.any(np.asarray(initiation_rate, dtype=float) > 0):
+        raise ValueError("A positive initiation rate is required to infer fork speed.")
     observed = np.asarray(observed_timing, dtype=float)
     if observed.ndim != 1 or not observed.size or not np.any(np.isfinite(observed)):
         raise ValueError("observed_timing must be a non-empty vector with finite observations.")
@@ -334,7 +355,7 @@ def fit_timing_fork_speed(
     if time_grid is None:
         supplied_lengths = {
             array.shape[1]
-            for value in (firing_rate,)
+            for value in (initiation_rate,)
             if value is not None
             for array in (np.asarray(value),)
             if array.ndim == 2 and array.shape[1] > 1
@@ -357,12 +378,13 @@ def fit_timing_fork_speed(
     ):
         raise ValueError("time_grid must begin at zero and be finite and strictly increasing.")
     speed_form = _form(speed_form)
-    speed_bounds = (0.2, 6.0) if speed_bounds is None else tuple(map(float, speed_bounds))
+    from ._fit_bounds import fit_bounds
+    speed_bounds = fit_bounds(speed_bounds, (0.2, 6.0), label="Fork-speed bounds")
     if len(speed_bounds) != 2 or not np.all(np.isfinite(speed_bounds)) or not 0 < speed_bounds[0] < speed_bounds[1]:
         raise ValueError("speed_bounds must contain finite positive increasing bounds.")
     if initial_fork_speed is None:
         initial_fork_speed = 1.4
-        supplied_firing = np.asarray(firing_rate) if firing_rate is not None else None
+        supplied_firing = np.asarray(initiation_rate) if initiation_rate is not None else None
         if (
             speed_form == "space"
             and supplied_firing is not None and supplied_firing.size == 1
@@ -390,7 +412,7 @@ def fit_timing_fork_speed(
     _report_progress(.04, "Preparing kinetic fields...")
     first = _make_field(
         "space",
-        firing_rate,
+        initiation_rate,
         None,
         (1e-9, 1.0),
         observed.size,
@@ -399,7 +421,7 @@ def fit_timing_fork_speed(
         spatial_knots,
         temporal_knots,
         0,
-        "firing_rate",
+        "initiation_rate",
         periodic=perQ,
     )
     second = _make_field(
@@ -417,6 +439,7 @@ def fit_timing_fork_speed(
         periodic=perQ,
     )
     fields = (first, second)
+    second.projection = fit_projection
     initial = np.concatenate([field.initial for field in fields])
     if not initial.size:
         raise ValueError("At least one kinetic field must be fitted.")
@@ -513,7 +536,7 @@ def fit_timing_fork_speed(
     firing, speed = (field.evaluate(solution.x) for field in fields)
     prediction = cache["prediction"]
     return {
-        "firing_rate": first.output(firing),
+        "initiation_rate": first.output(firing),
         "fork_speed": second.output(speed),
         "speed_form": speed_form,
         "time_grid": t,
@@ -556,7 +579,7 @@ def map_timing_and_firing_to_speed(
         raise ValueError("The constrained fork-speed route supports target_shape='best'.")
     info = fit_timing_fork_speed(
         source["replication_timing"],
-        firing_rate=source["firing_rate"],
+        initiation_rate=source["initiation_rate"],
         speed_form=target_form,
         resolution=resolution,
         resolution_time=resolution_time,
@@ -573,7 +596,7 @@ def map_timing_and_firing_to_speed(
         verbose=verbose,
     )
     values = info.pop("fork_speed")
-    info.pop("firing_rate", None)
+    info.pop("initiation_rate", None)
     info["target_shape"] = "best"
     info["fork_speed_shape"] = {
         "constant": "constant v0",

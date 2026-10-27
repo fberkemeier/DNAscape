@@ -141,7 +141,7 @@ def test_convolution_formula_survives_configure_changes(monkeypatch):
             ])
             await user.should_see("kernel.tsv", retries=60)
             with user.client:
-                control("feature").set_value("firing_rate")
+                control("feature").set_value("initiation_rate")
             assert control("filter-modulation-expression").value == formula
             user.find(marker="action-convert").click()
             for _ in range(180):

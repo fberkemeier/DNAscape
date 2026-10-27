@@ -45,8 +45,9 @@ MAX_PLOT_SERIES_POINTS = 20_000
 MAX_PLOT_XT_ROWS = 1_000
 MAX_PLOT_XT_COLUMNS = 2_000
 MAX_PLOT_PIXELS = 25_000_000
-MAX_TEXT_EXPORT_VALUES = 1_000_000
-MAX_BINARY_EXPORT_BYTES = 128 * 1024 * 1024
+MAX_TEXT_EXPORT_VALUES = 64_000_000
+MAX_TEXT_EXPORT_BYTES = 1024 * 1024 * 1024
+MAX_BINARY_EXPORT_BYTES = 512 * 1024 * 1024
 MAX_CHART_CAPTURE_BYTES = 64 * 1024 * 1024
 
 _SPACE_OUTPUTS = {
@@ -1045,13 +1046,21 @@ def _image_extent(x: np.ndarray, y: np.ndarray) -> tuple[float, float, float, fl
 
 def _text_bytes(selected: SelectedOutput, file_format: str) -> bytes:
     values, _data_form, columns = _rdata_payload(selected)
+    class BoundedBuffer(io.BytesIO):
+        def write(self, data):
+            if self.tell() + len(data) > MAX_TEXT_EXPORT_BYTES:
+                raise ValueError("Text export exceeds 1 GiB. Use NPZ for this dataset.")
+            return super().write(data)
+    binary = BoundedBuffer()
+    stream = io.TextIOWrapper(binary, encoding="utf-8", newline="")
     if file_format == "txt":
-        stream = io.StringIO(newline="")
         np.savetxt(stream, values, fmt="%.18e")
-        return stream.getvalue().encode("utf-8")
+        stream.flush()
+        data = binary.getvalue()
+        stream.detach()
+        return data
 
     delimiter = {"csv": ",", "tsv": "\t"}[file_format]
-    stream = io.StringIO(newline="")
     writer = csv.writer(stream, delimiter=delimiter, lineterminator="\n")
     if values.ndim == 1:
         writer.writerow((_column_name(selected.key),))
@@ -1060,7 +1069,10 @@ def _text_bytes(selected: SelectedOutput, file_format: str) -> bytes:
         assert columns is not None
         writer.writerow(columns)
         writer.writerows(tuple(_number_text(value) for value in row) for row in values)
-    return stream.getvalue().encode("utf-8")
+    stream.flush()
+    data = binary.getvalue()
+    stream.detach()
+    return data
 
 
 def _binary_bytes(selected: SelectedOutput) -> bytes:

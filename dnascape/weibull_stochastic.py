@@ -4,9 +4,49 @@ import time
 
 import numpy as np
 
+from ._fit_bounds import fit_bounds, initial_rate
 from .mapping import _expand_space_time_field
 from .simulation import rsim
-from .utils import check_cancelled, etaferr
+from .utils import check_cancelled, etaferr, measured_work
+
+
+def _simulation_speed(fork_speed, output_t, simulation_t, n, dt):
+    """Retain scalar/x/t fields instead of expanding them to a dense matrix."""
+    check_cancelled()
+    raw = np.asarray(fork_speed, dtype=float)
+    if np.any(~np.isfinite(raw)) or np.any(raw <= 0):
+        raise ValueError("fork_speed must contain finite positive values.")
+    if raw.size == 1:
+        return float(raw.reshape(-1)[0])
+    if raw.ndim == 1 and raw.size == n:
+        return raw
+    if raw.ndim == 2 and raw.shape == (n, 1):
+        return raw[:, 0]
+    if raw.ndim == 2 and raw.shape[0] == 1:
+        temporal = _expand_space_time_field(raw, output_t.size, 1, output_t, dt, "fork_speed", positive=True)
+        return np.interp(simulation_t, output_t, temporal[:, 0])[None, :]
+    temporal = _expand_space_time_field(raw, output_t.size, n, output_t, dt, "fork_speed", positive=True)
+    result = np.empty((n, simulation_t.size))
+    for index in range(n):
+        if index % 128 == 0:
+            check_cancelled()
+        result[index] = np.interp(simulation_t, output_t, temporal[:, index])
+    return result
+
+
+def _interval_hazard(alpha, shape, times, delay, dt, *, temporal=False):
+    check_cancelled()
+    if temporal and np.all(delay == delay[0]):
+        alpha, delay = alpha[:1], delay[:1]
+    hazard = np.empty((alpha.size, times.size))
+    columns = max(1, 1_000_000 // max(1, times.size))
+    for start in range(0, alpha.size, columns):
+        check_cancelled()
+        stop = start + columns
+        age_lo = np.maximum(times[:, None] - delay[None, start:stop], 0.)
+        age_hi = np.maximum(times[:, None] + dt - delay[None, start:stop], 0.)
+        hazard[start:stop] = (alpha[start:stop] * (age_hi**shape - age_lo**shape) / dt).T
+    return hazard
 
 
 def _spatial_log_roughness(log_alpha, *, periodic):
@@ -22,6 +62,7 @@ def fit_stochastic_weibull(
     T0, target_form, weibull_shape, weibull_delay, fit_weibull_shape,
     alpha_smooth, alpha_prior, maxiter, refine_edge_kb, refine_verbose, perQ,
     floor, error, stall_rate, stall_rate_per_kb, tau, sim_number, refine_seed,
+    rate_bounds=None, initial_initiation_rate=None,
 ):
     from .fitting import (
         _refinement_crop_mask,
@@ -54,19 +95,15 @@ def fit_stochastic_weibull(
     # Cover six observed mean durations to make that numerical cutoff explicit.
     horizon = max(float(output_t[-1]), float(np.max(relative[mask])) * 6.0, float(np.max(delay)) + dt)
     simulation_t = np.arange(0.0, horizon + dt, dt)
-    temporal_speed = _expand_space_time_field(
-        fork_speed, output_t.size, observed.size, output_t, dt, "fork_speed", positive=True,
-    )
-    speed = np.array([
-        np.interp(simulation_t, output_t, temporal_speed[:, index])
-        for index in range(observed.size)
-    ])
+    speed = _simulation_speed(fork_speed, output_t, simulation_t, observed.size, dt)
     initial_alpha = _weibull_alpha_initial(
         np.where(mask, relative, np.median(relative[mask])), fork_speed, k, floor,
     )
     temporal = target_form in {"time", "t"}
     if temporal:
         initial_alpha[:] = np.median(initial_alpha[mask])
+    low, high = fit_bounds(rate_bounds, (floor, np.exp(100)), label="Initiation-amplitude bounds")
+    initial_alpha = initial_rate(initial_initiation_rate, initial_alpha, low, high)
     z_initial = np.log(np.maximum(initial_alpha, floor))
     z = z_initial.copy()
     seed = 0 if refine_seed is None else int(refine_seed)
@@ -75,15 +112,13 @@ def fit_stochastic_weibull(
 
     def evaluate(log_alpha, shape, diagnostics=False):
         check_cancelled()
-        alpha = np.exp(np.clip(log_alpha, np.log(floor), 100))
-        age_lo = np.maximum(simulation_t[:, None] - delay, 0.0)
-        age_hi = np.maximum(simulation_t[:, None] + dt - delay, 0.0)
+        alpha = np.exp(np.clip(log_alpha, np.log(low), np.log(high)))
         # Exact interval-averaged hazard avoids the k<1 activation singularity.
-        hazard = (alpha * (age_hi**shape - age_lo**shape) / dt).T
+        hazard = _interval_hazard(alpha, shape, simulation_t, delay, dt, temporal=temporal)
         simulation = rsim(
             # Weibull amplitudes describe initiation per kb. The legacy
             # simulator accepts initiation hazard per spatial bin.
-            firing_rate=hazard * float(resolution), fork_speed=speed, n_bins=observed.size,
+            initiation_rate=hazard * float(resolution), fork_speed=speed, n_bins=observed.size,
             resolution_space=resolution, resolution_time=dt, sim_number=int(sim_number),
             perQ=perQ, stall_rate=stall_rate, stall_rate_per_kb=stall_rate_per_kb, tau=tau,
             seed=seed, verbose=False, time_statsQ=False, time_stats_xtQ=diagnostics,
@@ -98,7 +133,8 @@ def fit_stochastic_weibull(
         regularisation += alpha_prior * float(np.mean((log_alpha - z_initial)**2))
         return mse + regularisation, mse, prediction, simulation
 
-    best_loss, best_mse, prediction, _ = evaluate(z, k)
+    with measured_work(maxiter + 1):
+        best_loss, best_mse, prediction, _ = evaluate(z, k)
     history.append(best_mse)
     for iteration in range(int(maxiter)):
         if error is not None and best_mse <= error:
@@ -115,7 +151,7 @@ def fit_stochastic_weibull(
         # Common random numbers and monotone acceptance prevent stochastic
         # differences between ensembles from masquerading as fitting gains.
         for step in (0.5, 0.25, 0.125):
-            proposed_z = np.maximum(z + step * correction, np.log(floor))
+            proposed_z = np.clip(z + step * correction, np.log(low), np.log(high))
             loss, mse, proposed_prediction, _ = evaluate(proposed_z, k)
             if loss < best_loss:
                 z, best_loss, best_mse, prediction = proposed_z, loss, mse, proposed_prediction
@@ -126,7 +162,7 @@ def fit_stochastic_weibull(
                 proposed_k = float(np.clip(k * factor, 0.25, 8.0))
                 # Preserve the hazard near the observed mean while changing
                 # shape so amplitude and shape do not move in lockstep.
-                proposed_z = z + (k - proposed_k) * np.log(np.median(relative[mask]))
+                proposed_z = np.clip(z + (k - proposed_k) * np.log(np.median(relative[mask])), np.log(low), np.log(high))
                 loss, mse, proposed_prediction, _ = evaluate(proposed_z, proposed_k)
                 if loss < best_loss:
                     z, k = proposed_z, proposed_k
@@ -138,19 +174,22 @@ def fit_stochastic_weibull(
                     err=best_mse, done=iteration + 1 == maxiter or not accepted)
         if not accepted:
             break
-    _, best_mse, prediction, simulation = evaluate(z, k, diagnostics=True)
+    diagnostics = observed.size * output_t.size <= 1_000_000
+    _, best_mse, prediction, simulation = evaluate(z, k, diagnostics=diagnostics)
     alpha = np.exp(z)
-    age_lo = np.maximum(output_t[:, None] - delay, 0.0)
-    age_hi = np.maximum(output_t[:, None] + dt - delay, 0.0)
-    hazard = np.maximum(alpha * (age_hi**k - age_lo**k) / dt, floor).T
+    hazard = np.maximum(_interval_hazard(alpha, k, output_t, delay, dt, temporal=temporal), floor)
     values = np.mean(hazard, axis=0, keepdims=True) if temporal else hazard
-    return _RmapInfoArray(values, {
+    info = {
         "alpha": alpha, "lambda": alpha ** (-1.0 / k), "weibull_shape": k,
         "weibull_delay": delay, "time_grid": output_t, "target_shape": "weibull",
         "target_form": target_form, "predicted_timing": prediction + offset,
         "residual": prediction + offset - observed, "mse": best_mse,
         "fit_mse": best_mse, "fit_history": np.asarray(history),
-        "survival": 1.0 - np.asarray(simulation["replicated_fraction_xt"]),
         "forward_backend": "stochastic_weibull", "simulation_hazard_horizon": simulation_t[-1] + dt,
         "sim_number": int(sim_number), "refine_seed": seed,
-    })
+    }
+    if diagnostics:
+        info["survival"] = 1.0 - np.asarray(simulation["replicated_fraction_xt"])
+    else:
+        info["spacetime_diagnostics_omitted"] = True
+    return _RmapInfoArray(values, info)

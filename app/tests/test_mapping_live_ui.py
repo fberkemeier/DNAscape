@@ -30,13 +30,13 @@ def _mapped_result(request: MappingRequest, values: np.ndarray) -> MappingResult
     return MappingResult(
         target=request.route.target,
         target_key=request.route.target_key,
-        target_label="Firing rate",
+        target_label="Initiation rate",
         method=request.route.method,
         output_form="x",
         output_dependence="space",
-        primary_output="firing_rate",
-        outputs={"firing_rate": values},
-        output_forms={"firing_rate": "x"},
+        primary_output="initiation_rate",
+        outputs={"initiation_rate": values},
+        output_forms={"initiation_rate": "x"},
         x_axis=np.arange(values.size, dtype=float),
         time_axis=np.asarray([], dtype=float),
         region_labels=(),
@@ -124,16 +124,16 @@ def test_combined_mapping_colors_every_curve_and_limits_dense_hover(
     named = tuple(
         mapping_page._NamedMappingResult(
             f"mapping-case-{index}",
-            f"Firing rate · Input: sample_{index}",
-            f"firing-rate-sample-{index}",
+            f"Initiation rate · Input: sample_{index}",
+            f"initiation-rate-sample-{index}",
             cast(MappingResult, object()),
-            f"Firing rate · sample_{index}",
-            f"firing-rate-sample-{index}",
+            f"Initiation rate · sample_{index}",
+            f"initiation-rate-sample-{index}",
         )
         for index in range(1, 8)
     )
     color_keys = tuple(
-        (item.key, "firing_rate", series_index)
+        (item.key, "initiation_rate", series_index)
         for item in named
         for series_index in range(2)
     )
@@ -145,7 +145,7 @@ def test_combined_mapping_colors_every_curve_and_limits_dense_hover(
     options = mapping_page._combined_mapping_plot_options(
         named,
         colors=colors,
-        output_key="firing_rate",
+        output_key="initiation_rate",
     )
 
     assert [item["lineStyle"]["color"] for item in options["series"]] == list(
@@ -437,7 +437,7 @@ def test_mapping_batch_runs_all_files_tabs_exports_and_preserves_previous_result
                 next(iter(user.find(marker="mapping-preview-output").elements)),
             )
             assert layout.value == "Combined"
-            assert tuple(output.options) == ("firing_rate", "input:replication_timing")
+            assert tuple(output.options) == ("initiation_rate", "input:replication_timing")
 
             # Histograms share one binning configuration and may be overlaid
             # just like line profiles. Individual selection remains available.
@@ -524,15 +524,15 @@ def test_mapping_batch_runs_all_files_tabs_exports_and_preserves_previous_result
                 "mapping-case-2",
             )
             assert tuple(dataset_select.options.values()) == (
-                "Firing rate · timing_a",
-                "Firing rate · timing_b",
+                "Initiation rate · timing_a",
+                "Initiation rate · timing_b",
             )
             with user.client:
                 dataset_select.set_value("mapping-case-2")
             await asyncio.sleep(0)
             # Dataset selection must retain the submit-time output
             # intersection; result-specific outputs cannot leak into a batch.
-            assert tuple(output.options) == ("firing_rate", "input:replication_timing")
+            assert tuple(output.options) == ("initiation_rate", "input:replication_timing")
 
             user.find(marker="mapping-download-all-raw").click()
             for _ in range(40):
@@ -650,7 +650,7 @@ def test_mapping_batch_submit_plan_rejects_mismatched_counts_and_forms() -> None
         _plan_mapping_batch(
             (
                 constants,
-                replace(constants, key="firing_rate", label="Firing rate", values=(0.1, 0.2)),
+                replace(constants, key="initiation_rate", label="Initiation rate", values=(0.1, 0.2)),
             )
         )
 
@@ -696,11 +696,11 @@ def test_spatial_speed_submit_aligns_profiles_and_keeps_selected_boundaries(
     requests: list[MappingRequest] = []
     calls: list[dict[str, Any]] = []
     results: list[MappingResult] = []
-    timing = 10.0 + np.arange(30, dtype=float) / 10.0
+    timing = 10.0 + np.arange(60, dtype=float) / 10.0
     local_firing = np.full(10, 0.01)
     whole_finished = threading.Event()
-    selected_end = 36.0 if firing_form == "scalar" else 44.0
-    expected_bins = 6 if firing_form == "scalar" else 10
+    selected_end = 36.0 if firing_form == "scalar" else 34.0
+    expected_bins = 6 if firing_form == "scalar" else 5
 
     def fake_rmap(**kwargs: Any) -> dict[str, Any]:
         calls.append(kwargs)
@@ -745,25 +745,25 @@ def test_spatial_speed_submit_aligns_profiles_and_keeps_selected_boundaries(
             await set_value("mapping-target", "fork_speed")
             await set_value("mapping-target-form", "space")
             assert control("mapping-route").value == (
-                "fork_speed--space--replication_timing-and-firing_rate"
+                "fork_speed--space--replication_timing-and-initiation_rate"
             )
             await set_value("mapping-region-start", 24.0)
             await set_value("mapping-region-end", selected_end)
             await set_value("mapping-setting-resolution", 2.0)
             await upload("source-replication-timing-upload", "timing.csv", timing)
             if firing_form == "x":
-                await set_value("mapping-input-firing-rate-type", "profile")
-                await upload("source-firing-rate-upload", "firing.csv", local_firing)
+                await set_value("mapping-input-initiation-rate-type", "profile")
+                await upload("source-initiation-rate-upload", "firing.csv", local_firing)
                 await set_value("mapping-region-end", 56.0)
                 user.find(marker="action-map").click()
-                await user.should_see("choose a width of at most 20 kb", retries=60)
+                await user.should_see("The selected region must lie within the source interval", retries=60)
                 assert requests == calls == results == []
                 assert control("mapping-region-start").value == 24.0
                 assert control("mapping-region-end").value == 56.0
                 assert control("action-map").enabled
                 await set_value("mapping-region-end", selected_end)
             else:
-                await set_value("mapping-input-firing-rate-constant", 0.01)
+                await set_value("mapping-input-initiation-rate-constant", 0.01)
 
             user.find(marker="action-map").click()
             await user.should_see(marker="mapping-result-plot", retries=60)
@@ -774,12 +774,12 @@ def test_spatial_speed_submit_aligns_profiles_and_keeps_selected_boundaries(
             assert requests[0].region_end_kb == selected_end
             assert requests[0].resolution_x == 2.0
             np.testing.assert_allclose(
-                calls[0]["source"]["replication_timing"], timing[12 : 12 + expected_bins]
+                calls[0]["source"]["replication_timing"], timing[24 : int(selected_end)].reshape(-1, 2).mean(axis=1)
             )
             if firing_form == "x":
-                np.testing.assert_array_equal(calls[0]["source"]["firing_rate"], local_firing)
+                np.testing.assert_allclose(calls[0]["source"]["initiation_rate"], np.full(expected_bins, .005))
             else:
-                assert calls[0]["source"]["firing_rate"] == 0.01
+                assert calls[0]["source"]["initiation_rate"] == 0.005
             np.testing.assert_array_equal(
                 results[0].x_axis, 24.0 + np.arange(expected_bins) * 2.0
             )
@@ -788,18 +788,18 @@ def test_spatial_speed_submit_aligns_profiles_and_keeps_selected_boundaries(
             if firing_form == "x":
                 await set_value("mapping-whole-region", True)
                 assert control("mapping-region-start").value == 0.0
-                assert control("mapping-region-end").value == 20.0
+                assert control("mapping-region-end").value == 10.0
                 user.find(marker="action-map").click()
                 assert await asyncio.to_thread(whole_finished.wait, 5)
                 await user.should_see("Complete in", retries=60)
                 await user.should_not_see(marker="mapping-error")
                 assert len(requests) == len(calls) == len(results) == 2
                 assert requests[1].whole_genome is True
-                np.testing.assert_array_equal(calls[1]["source"]["replication_timing"], timing[:10])
-                np.testing.assert_array_equal(calls[1]["source"]["firing_rate"], local_firing)
-                np.testing.assert_array_equal(results[1].x_axis, np.arange(10) * 2.0)
+                np.testing.assert_array_equal(calls[1]["source"]["replication_timing"], timing[:10].reshape(5, 2).mean(axis=1))
+                np.testing.assert_allclose(calls[1]["source"]["initiation_rate"], np.full(5, .005))
+                np.testing.assert_array_equal(results[1].x_axis, np.arange(5) * 2.0)
                 assert control("mapping-region-start").value == 0.0
-                assert control("mapping-region-end").value == 20.0
+                assert control("mapping-region-end").value == 10.0
 
     asyncio.run(scenario())
 
@@ -830,7 +830,7 @@ def test_mapping_multiple_constants_pair_with_independent_profile_files(
                 next(iter(user.find(marker="mapping-route").elements)),
             )
             with user.client:
-                route.set_value("firing_rate--space--replication_timing-and-fork_speed")
+                route.set_value("initiation_rate--space--replication_timing-and-fork_speed")
             await asyncio.sleep(0)
             await asyncio.sleep(0)
 
@@ -1241,8 +1241,8 @@ def test_mapping_axis_limits_remain_editable_and_resettable(
         if heatmap:
             return replace(
                 result, output_form="xt", output_dependence="spacetime",
-                outputs={"firing_rate": np.arange(12.0).reshape(4, 3)},
-                output_forms={"firing_rate": "xt"}, time_axis=np.asarray([0.0, 10.0, 20.0]),
+                outputs={"initiation_rate": np.arange(12.0).reshape(4, 3)},
+                output_forms={"initiation_rate": "xt"}, time_axis=np.asarray([0.0, 10.0, 20.0]),
             )
         return result
 
@@ -1308,12 +1308,12 @@ def test_mapping_reports_mse_and_orders_residual_before_mse_output(
         return replace(
             result,
             outputs={
-                "firing_rate": np.asarray([0.2, 0.4, 0.6]),
+                "initiation_rate": np.asarray([0.2, 0.4, 0.6]),
                 "residual": np.asarray([0.1, -0.2, 0.05]),
                 "fit_history": np.asarray([0.4, 0.2, 0.0525]),
             },
             output_forms={
-                "firing_rate": "x",
+                "initiation_rate": "x",
                 "residual": "x",
                 "fit_history": "supplied",
             },
@@ -1363,7 +1363,7 @@ def test_mapping_reports_mse_and_orders_residual_before_mse_output(
             )
             assert x_label.value == "Iteration"
             assert y_label.value == "MSE"
-            assert raw_name.value == "rmap_fr-timing_mse"
+            assert raw_name.value == "rmap_ir-timing_mse"
             chart = cast(
                 EChart,
                 next(iter(user.find(marker="mapping-result-plot").elements)),
@@ -1609,15 +1609,15 @@ def test_periodic_spatial_preview_ends_at_the_last_returned_bin() -> None:
     from app.pages.mapping import _mapping_plot_options
 
     result = MappingResult(
-        target="firing_rate",
-        target_key="firing_rate",
-        target_label="Firing rate",
+        target="initiation_rate",
+        target_key="initiation_rate",
+        target_label="Initiation rate",
         method="test",
         output_form="x",
         output_dependence="space",
-        primary_output="firing_rate",
-        outputs={"firing_rate": np.asarray([0.1, 0.3, 0.2])},
-        output_forms={"firing_rate": "x"},
+        primary_output="initiation_rate",
+        outputs={"initiation_rate": np.asarray([0.1, 0.3, 0.2])},
+        output_forms={"initiation_rate": "x"},
         x_axis=np.asarray([10.0, 11.0, 12.0]),
         time_axis=np.asarray([], dtype=float),
         region_labels=(),
@@ -1626,12 +1626,12 @@ def test_periodic_spatial_preview_ends_at_the_last_returned_bin() -> None:
     )
     options = _mapping_plot_options(
         result,
-        output_key="firing_rate",
+        output_key="initiation_rate",
         plot_type="Line",
         normalization="None",
-        title="Firing rate",
+        title="Initiation rate",
         x_label="Position (kb)",
-        y_label="Firing rate",
+        y_label="Initiation rate",
         color="#2c7f77",
         palette="viridis",
         histogram_bins=20,
@@ -1889,7 +1889,7 @@ def test_log_z_uses_logarithmic_colours_and_masks_nonpositive_values() -> None:
         log_z=True,
         invert_y=False,
         y_limits=None,
-        series_label="Firing rate",
+        series_label="Initiation rate",
         values=np.asarray([[0.0, 1.0], [10.0, 100.0]]),
         x_axis=np.asarray([10.0, 11.0]),
         y_axis=np.asarray([0.0, 5.0]),
@@ -1900,7 +1900,7 @@ def test_log_z_uses_logarithmic_colours_and_masks_nonpositive_values() -> None:
     assert options["visualMap"]["min"] == pytest.approx(0.0)
     assert options["visualMap"]["max"] == pytest.approx(2.0)
     assert options["visualMap"]["text"] == ["100", "1"]
-    assert options["graphic"][0]["style"]["text"] == "Firing rate (log scale)"
+    assert options["graphic"][0]["style"]["text"] == "Initiation rate (log scale)"
     assert ":formatter" in options["visualMap"]
 
 
@@ -1910,7 +1910,7 @@ def test_heatmap_frame_ends_at_the_last_time_without_clipping_labels() -> None:
     time_axis = np.arange(0.0, 1_380.0, 5.0)
     options = build_preview_plot_options(
         plot_type="Heatmap",
-        title="Firing rate",
+        title="Initiation rate",
         x_label="Chromosome position (kb)",
         y_label="Time (min)",
         color="#2c7f77",
@@ -1922,7 +1922,7 @@ def test_heatmap_frame_ends_at_the_last_time_without_clipping_labels() -> None:
         log_y=False,
         invert_y=False,
         y_limits=None,
-        series_label="Firing rate",
+        series_label="Initiation rate",
         values=np.ones((time_axis.size, 10)),
         x_axis=np.arange(10, dtype=float),
         y_axis=time_axis,
@@ -2027,7 +2027,7 @@ def test_large_heatmap_is_block_averaged_to_a_bounded_static_raster() -> None:
         log_y=False,
         invert_y=False,
         y_limits=None,
-        series_label="Firing rate",
+        series_label="Initiation rate",
         values=values,
         x_axis=np.arange(values.shape[1], dtype=float),
         y_axis=np.arange(values.shape[0], dtype=float),
@@ -2091,18 +2091,18 @@ def test_fit_comparison_preview_overlays_observed_and_fitted_profiles() -> None:
     from app.pages.mapping import _mapping_plot_options
 
     result = MappingResult(
-        target="firing_rate",
-        target_key="firing_rate",
-        target_label="Firing rate",
+        target="initiation_rate",
+        target_key="initiation_rate",
+        target_label="Initiation rate",
         method="test_fit",
         output_form="scalar",
         output_dependence="constant",
-        primary_output="firing_rate",
+        primary_output="initiation_rate",
         outputs={
-            "firing_rate": np.asarray([0.001]),
+            "initiation_rate": np.asarray([0.001]),
             "replication_timing_fit": np.asarray([8.2, 7.1, 9.1]),
         },
-        output_forms={"firing_rate": "scalar", "replication_timing_fit": "x"},
+        output_forms={"initiation_rate": "scalar", "replication_timing_fit": "x"},
         x_axis=np.asarray([10.0, 11.0, 12.0]),
         time_axis=np.asarray([], dtype=float),
         region_labels=(),
@@ -2156,16 +2156,16 @@ def test_fit_comparison_is_selectable_in_the_live_mapping_output(
         return MappingResult(
             target=request.route.target,
             target_key=request.route.target_key,
-            target_label="Firing rate",
+            target_label="Initiation rate",
             method=request.route.method,
             output_form="x",
             output_dependence="space",
-            primary_output="firing_rate",
+            primary_output="initiation_rate",
             outputs={
-                "firing_rate": np.asarray([0.1, 0.2, 0.3]),
+                "initiation_rate": np.asarray([0.1, 0.2, 0.3]),
                 "replication_timing_fit": fitted,
             },
-            output_forms={"firing_rate": "x", "replication_timing_fit": "x"},
+            output_forms={"initiation_rate": "x", "replication_timing_fit": "x"},
             x_axis=np.asarray([0.0, 1.0, 2.0]),
             time_axis=np.asarray([], dtype=float),
             region_labels=(),

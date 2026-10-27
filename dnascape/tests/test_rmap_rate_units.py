@@ -11,8 +11,8 @@ from dnascape.simulation import rsim
 
 
 def _source(firing, speed, explicit):
-    return ({"firing_rate": firing, "fork_speed": speed}, {}) if explicit else (
-        {"firing_rate": firing}, {"fork_speed": speed},
+    return ({"initiation_rate": firing, "fork_speed": speed}, {}) if explicit else (
+        {"initiation_rate": firing}, {"fork_speed": speed},
     )
 
 
@@ -49,7 +49,7 @@ def test_density_timing_converges_to_independent_uniform_continuum_expectation(d
     firing_density = .02
     speed = 1.4
     actual = rmap(
-        source={"firing_rate": firing_density, "fork_speed": speed},
+        source={"initiation_rate": firing_density, "fork_speed": speed},
         target="replication_timing", resolution=dx, genome_length=128., perQ=True,
     )
     # For a uniform infinite DNA molecule, S(t)=exp(-I*v*t**2), hence this
@@ -73,11 +73,11 @@ def test_every_simulation_forward_route_matches_seeded_legacy_bin_hazards(target
     if target == "replication_timing":
         method = "firing_and_speed_to_timing_simulation" if explicit else "firing_to_timing_simulation"
     options = dict(
-        resolution=dx, sim_number=16, seed=781, verbose=False,
+        resolution=dx, sim_number=16, seed=781, verbose=False, stall_rate_per_kb=.01,
         retain_rep_times_per_sim=False,
         retain_inter_origin_distances=(target == "inter_origin_distance"),
     )
-    expected = rsim(firing_rate=firing * dx, fork_speed=1.4, **options)[target]
+    expected = rsim(initiation_rate=firing * dx, fork_speed=1.4, **options)[target]
     actual = rmap(source=source, target=target, method=method, **options, **assumptions)
     np.testing.assert_array_equal(actual, expected)
 
@@ -96,13 +96,13 @@ def test_stochastic_density_conversion_respects_all_forms_and_resolution_aliases
         "xt": np.linspace(.015, .03, n)[:, None] * np.linspace(.8, 1.4, len(grid))[None, :],
     }[form]
     dx = 2.5
-    options = dict(sim_number=16, seed=722, time_grid=grid, resolution_time=2., n_bins=n, verbose=False)
+    options = dict(sim_number=16, seed=722, stall_rate_per_kb=.01, time_grid=grid, resolution_time=2., n_bins=n, verbose=False)
     expected = rsim(
-        firing_rate=np.asarray(firing) * dx, fork_speed=1.4,
+        initiation_rate=np.asarray(firing) * dx, fork_speed=1.4,
         resolution=dx, **options,
     )["replication_timing"]
     actual = rmap(
-        source={"firing_rate": firing, "fork_speed": 1.4},
+        source={"initiation_rate": firing, "fork_speed": 1.4},
         target="replication_timing", method="firing_and_speed_to_timing_simulation",
         **{resolution_key: dx}, **options,
     )
@@ -113,7 +113,7 @@ def test_stochastic_density_conversion_respects_all_forms_and_resolution_aliases
 def test_mean_field_and_observation_routes_keep_density_units_without_rescaling(dx, periodic):
     firing = np.linspace(.01, .03, 10)
     grid = np.arange(0., 42., 2.)
-    source = {"firing_rate": firing, "fork_speed": 1.4}
+    source = {"initiation_rate": firing, "fork_speed": 1.4}
     options = dict(resolution=dx, time_grid=grid, perQ=periodic)
     fraction = map_replicated_fraction_xt(firing, fork_speed=1.4, **options)
     actual_fraction = rmap(source=source, target="replicated_fraction_xt", **options)
@@ -123,7 +123,7 @@ def test_mean_field_and_observation_routes_keep_density_units_without_rescaling(
     for key in ("replicated_fraction_xt", "right_fork_density_xt", "left_fork_density_xt"):
         np.testing.assert_array_equal(actual_bundle[key], bundle[key])
     events = rmap(
-        source={"firing_rate": firing, "replicated_fraction_xt": fraction},
+        source={"initiation_rate": firing, "replicated_fraction_xt": fraction},
         target="initiation_events_xt", resolution=dx, time_grid=grid,
     )
     np.testing.assert_allclose(events, firing[:, None] * (1. - fraction))

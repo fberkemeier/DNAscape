@@ -1,7 +1,7 @@
 Quickstart
 ==========
 
-This example builds a timing profile, maps it to firing rate with ``rmap``,
+This example builds a timing profile, maps it to initiation rate with ``rmap``,
 simulates with ``rsim``, and exports the results.
 
 Python
@@ -16,16 +16,16 @@ Python
    replication_timing = 35 + 25 * (1 - np.exp(-((x_kb - 250) / 130) ** 2))
    fork_speed = 1.4  # kb/min
 
-Map timing to firing rate:
+Map timing to initiation rate:
 
 .. code-block:: python
 
-   firing_rate = rmap(
+   initiation_rate = rmap(
        source={
            "replication_timing": replication_timing,
            "fork_speed": fork_speed,
        },
-       target="firing_rate",
+       target="initiation_rate",
        assumptions={
            "resolution_x": 1.0,
            "target_form": "space",
@@ -39,7 +39,7 @@ Simulate:
 .. code-block:: python
 
    simulation = rsim(
-       source={"firing_rate": firing_rate, "fork_speed": fork_speed},
+       source={"initiation_rate": initiation_rate, "fork_speed": fork_speed},
        assumptions={
            "sim_number": 100,
            "resolution_x": 1.0,
@@ -57,15 +57,15 @@ Export:
 
 .. code-block:: python
 
-   rsave(firing_rate, "outputs/firing_rate_chr1.tsv", data_form="space")
+   rsave(initiation_rate, "outputs/initiation_rate_chr1.tsv", data_form="space")
    rsave(predicted_timing, "outputs/predicted_timing_chr1.tsv", data_form="space")
    rsave(replicated_fraction, "outputs/replicated_fraction.tsv", data_form="time")
 
 .. figure:: _static/img/mapped_firing_placeholder.svg
    :width: 760
-   :alt: Placeholder for inferred firing-rate profile
+   :alt: Placeholder for inferred initiation-rate profile
 
-   Placeholder for an inferred firing-rate profile.
+   Placeholder for an inferred initiation-rate profile.
 
 Same Workflow In The App
 ------------------------
@@ -83,9 +83,9 @@ Same Workflow In The App
    * - Map
      - Mapping: target **Initiation rate**, route **Replication timing + fork
        speed**.
-     - ``rmap(..., target="firing_rate")``.
+     - ``rmap(..., target="initiation_rate")``.
    * - Simulate
-     - Simulation: supply firing rate, fork speed, replicates, seed.
+     - Simulation: supply initiation rate, fork speed, replicates, seed.
      - ``rsim(source=..., assumptions=...)``.
    * - Export
      - Use page export controls or Cached Files.

@@ -88,7 +88,7 @@ def test_preloaded_pages_still_build_on_demand_with_independent_client_controls(
 
             user.find(marker="nav-mapping").click()
             target = cast(Select, next(iter(user.find(marker="mapping-target").elements)))
-            assert target.value == "firing_rate"
+            assert target.value == "initiation_rate"
             assert user.client is not None
             first_client = user.client
             with first_client:
@@ -114,7 +114,7 @@ def test_preloaded_pages_still_build_on_demand_with_independent_client_controls(
             user.find(marker="nav-mapping").click()
             fresh_target = cast(Select, next(iter(user.find(marker="mapping-target").elements)))
             assert fresh_target is not target
-            assert fresh_target.value == "firing_rate"
+            assert fresh_target.value == "initiation_rate"
             assert target.value == "fork_speed"
 
     asyncio.run(scenario())

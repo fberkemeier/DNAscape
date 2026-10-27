@@ -26,7 +26,7 @@ def test_hover_colours_match_rendered_pixels_for_every_palette_and_scale(tmp_pat
                 values = np.asarray([[.001, .01, 1., 100., 1000.]]) if log_z else np.asarray([[-1., 0., .5, 1., 2.]])
                 options = build_preview_plot_options(
                     plot_type="Heatmap", title="Kinetics", x_label="Position", y_label="Time",
-                    series_label="Firing <rate>", color="#b03412", palette=palette,
+                    series_label="Initiation <rate>", color="#b03412", palette=palette,
                     histogram_bins=20, density=False, show_legend=False, show_colorbar=True,
                     log_y=False, invert_y=False, log_z=log_z, invert_z=invert_z,
                     y_limits=None,

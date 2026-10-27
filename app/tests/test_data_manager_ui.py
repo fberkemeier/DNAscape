@@ -392,7 +392,7 @@ def test_sns_firing_preset_and_switch_back_to_repliseq_bigwig(
             await _wait_for(lambda: control("action-inspect-data-link-1").text == "✓")
             assert not control("action-inspect-data-link-1").enabled
             await user.should_see("The source is ready.", retries=80)
-            assert control("data-manager-feature").value == "firing_rate"
+            assert control("data-manager-feature").value == "initiation_rate"
             assert control("data-manager-aggregation").value == "max"
             assert control("data-manager-bin-size").value == 1000
             column = control("data-manager-bedgraph-value-column")
@@ -405,13 +405,13 @@ def test_sns_firing_preset_and_switch_back_to_repliseq_bigwig(
             assert control("data-manager-smoothing").value == "none"
             assert "zscore" not in control("data-manager-value-scaling").options
 
-            # Selecting Firing rate also repairs a manually changed generic preset.
+            # Selecting Initiation rate also repairs a manually changed generic preset.
             control("data-manager-feature").set_value("generic")
             await asyncio.sleep(0.1)
             control("data-manager-aggregation").set_value("mean")
             control("data-manager-smoothing").set_value("moving_average")
             control("data-manager-value-scaling").set_value("zscore")
-            control("data-manager-feature").set_value("firing_rate")
+            control("data-manager-feature").set_value("initiation_rate")
             await asyncio.sleep(0.1)
             assert control("data-manager-aggregation").value == "max"
             assert control("data-manager-smoothing").value == "none"
@@ -423,7 +423,7 @@ def test_sns_firing_preset_and_switch_back_to_repliseq_bigwig(
             assert requests[0].aggregation == "max"
             assert requests[0].smooth_window == 1
             assert requests[0].interpolation == "none"
-            assert requests[0].biological_role == "firing_rate"
+            assert requests[0].biological_role == "initiation_rate"
             assert not control("action-inspect-data-link-1").enabled
 
             user.find(marker="use-encode-data-example").click()
@@ -495,7 +495,7 @@ def test_all_wide_chromosome_headers_remain_spatial_profiles() -> None:
     (
         ("generic", (False, None, None)),
         ("replication_timing", (True, 0.0, None)),
-        ("firing_rate", (True, 0.0, None)),
+        ("initiation_rate", (True, 0.0, None)),
         ("fork_speed", (True, 0.0, None)),
         ("fork_directionality", (True, -1.0, 1.0)),
         ("replicated_fraction", (True, 0.0, 1.0)),
@@ -540,8 +540,8 @@ def test_blank_value_bounds_fall_back_to_prepare_as_defaults(
     (
         ("replication_timing", {"threshold_min": -1}, False),
         ("replication_timing", {"value_scaling": "interval", "rescale_min": 30, "rescale_max": 500}, True),
-        ("firing_rate", {"value_scaling": "multiplier", "scale": 2}, True),
-        ("firing_rate", {"value_scaling": "multiplier", "scale": -1}, False),
+        ("initiation_rate", {"value_scaling": "multiplier", "scale": 2}, True),
+        ("initiation_rate", {"value_scaling": "multiplier", "scale": -1}, False),
         ("fork_speed", {"threshold_min": .5, "threshold_max": 5}, True),
         ("fork_speed", {"value_scaling": "center"}, False),
         ("fork_directionality", {"threshold_min": -.5, "threshold_max": .5}, True),

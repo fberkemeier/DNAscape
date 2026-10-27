@@ -41,7 +41,7 @@ def run_native(firing, speed, t, resolution, periodic, fields=None, parameters=N
 @pytest.mark.parametrize("forms", list(product(("constant", "space", "time", "spacetime"), repeat=2)))
 def test_native_matches_numpy_on_all_form_pairs_and_completion_branches(monkeypatch, periodic, n, rate, forms):
     t = np.array([0.0, 0.17, 1.4, 3.0, 9.0, 18.0, 33.0])
-    first = _make_field(forms[0], None, rate, (1e-6, 3), n, t, 2, 3, 2, 0, "firing_rate")
+    first = _make_field(forms[0], None, rate, (1e-6, 3), n, t, 2, 3, 2, 0, "initiation_rate")
     second = _make_field(forms[1], None, 1.4, (0.2, 6), n, t, 2, 3, 2, first.count, "fork_speed")
     parameters = np.concatenate([first.initial, second.initial])
     parameters += np.linspace(-0.2, 0.3, parameters.size)
@@ -178,7 +178,7 @@ def test_mismatched_native_abi_is_rejected_before_resolving_kernel(monkeypatch):
 @pytest.mark.parametrize("periodic", [False, True])
 def test_native_chunking_preserves_global_midpoints_and_single_trapezoid(monkeypatch, periodic):
     t, n = np.array([0.0, 360.0, 381.0]), 13
-    firing = _make_field("time", None, 0.00002, (1e-8, 1), n, t, 2, 3, 2, 0, "firing_rate")
+    firing = _make_field("time", None, 0.00002, (1e-8, 1), n, t, 2, 3, 2, 0, "initiation_rate")
     speed = _make_field("spacetime", None, 1.4, (0.2, 6), n, t, 2, 3, 2, firing.count, "fork_speed")
     fields = (firing, speed)
     parameters = np.concatenate([field.initial for field in fields])

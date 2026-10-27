@@ -25,7 +25,7 @@ PLOTTING_FILE_PREFIX = "plot"
 OUTPUT_FILE_TOKENS: dict[str, str] = {
     "replication-timing": "rt",
     "replication-timing-fit": "rt-fit",
-    "firing-rate": "fr",
+    "initiation-rate": "ir",
     "fork-speed": "fs",
     "fork-directionality": "fd",
     "inter-origin-distance": "iod",
@@ -236,8 +236,16 @@ def safe_filename_stem(
 def output_file_token(output_key: str, *, fallback: str = "data") -> str:
     """Return the shared concise token for one scientific output key."""
 
+    from dnascape._terminology import canonical_rate_key
+    output_key = canonical_rate_key(str(output_key).replace("-", "_"))
     stem = safe_filename_stem(output_key, fallback=fallback)
     return OUTPUT_FILE_TOKENS.get(stem, stem)
+
+
+def dependence_file_suffix(form: str) -> str:
+    """Identify a kinetic output's declared axes without inferring from its size."""
+    return {"scalar": "c", "constant": "c", "x": "x", "space": "x",
+            "t": "t", "time": "t", "xt": "xt", "spacetime": "xt"}.get(str(form), "")
 
 
 def compact_export_stem(
@@ -328,6 +336,7 @@ __all__ = [
     "combination_result_names",
     "compact_component",
     "compact_export_stem",
+    "dependence_file_suffix",
     "normalize_name_style",
     "output_file_token",
     "safe_filename_stem",

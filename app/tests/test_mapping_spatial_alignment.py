@@ -24,15 +24,15 @@ def test_chromosome_and_local_profile_use_the_complete_selected_window(
     firing = np.linspace(0.001, 0.002, 10_000)
     prepared = validate_mapping_request(MappingRequest(
         route=mapping_route("timing_and_firing_to_spatial_fork_speed"),
-        inputs={"replication_timing": timing, "firing_rate": firing},
-        input_forms={"replication_timing": "x", "firing_rate": "x"},
+        inputs={"replication_timing": timing, "initiation_rate": firing},
+        input_forms={"replication_timing": "x", "initiation_rate": "x"},
         region_start_kb=start, region_end_kb=end, resolution_x=1,
     ))
     np.testing.assert_array_equal(
         prepared.source["replication_timing"],
         timing[expected_start:expected_start + expected_size],
     )
-    np.testing.assert_array_equal(prepared.source["firing_rate"], firing[:expected_size])
+    np.testing.assert_array_equal(prepared.source["initiation_rate"], firing[:expected_size])
     assert prepared.spatial_size == expected_size
     assert prepared.start_kb == expected_start
 
@@ -85,11 +85,11 @@ def test_oversized_width_is_rejected_before_mapping(monkeypatch, resolution, sta
     monkeypatch.setattr(dnascape, "rmap", forbidden)
     request = MappingRequest(
         route=mapping_route("timing_and_firing_to_spatial_fork_speed"),
-        inputs={"replication_timing": np.ones(100_000), "firing_rate": np.full(10_000, .001)},
-        input_forms={"replication_timing": "x", "firing_rate": "x"},
+        inputs={"replication_timing": np.ones(100_000), "initiation_rate": np.full(10_000, .001)},
+        input_forms={"replication_timing": "x", "initiation_rate": "x"},
         region_start_kb=start, region_end_kb=end, resolution_x=resolution,
     )
-    with pytest.raises(ValueError, match=r"Firing rate, the shortest spatial profile.*10,000 bins"):
+    with pytest.raises(ValueError, match=r"Initiation rate, the shortest spatial profile.*10,000 bins"):
         run_mapping(request)
     assert request.region_start_kb == start
     assert request.region_end_kb == end
@@ -99,8 +99,8 @@ def test_end_outside_the_largest_profile_is_rejected():
     with pytest.raises(ValueError, match=r"Region end.*outside.*longest uploaded spatial input"):
         validate_mapping_request(MappingRequest(
             route=mapping_route("timing_and_firing_to_spatial_fork_speed"),
-            inputs={"replication_timing": np.ones(100), "firing_rate": np.full(20, .001)},
-            input_forms={"replication_timing": "x", "firing_rate": "x"},
+            inputs={"replication_timing": np.ones(100), "initiation_rate": np.full(20, .001)},
+            input_forms={"replication_timing": "x", "initiation_rate": "x"},
             region_start_kb=90., region_end_kb=105., resolution_x=1.,
         ))
 
@@ -111,12 +111,12 @@ def test_whole_region_uses_zero_to_the_shortest_length_and_ignores_entered_bound
     firing = np.linspace(.001, .002, 20)
     prepared = validate_mapping_request(MappingRequest(
         route=mapping_route("timing_and_firing_to_spatial_fork_speed"),
-        inputs={"replication_timing": timing, "firing_rate": firing},
-        input_forms={"replication_timing": "x", "firing_rate": "x"},
+        inputs={"replication_timing": timing, "initiation_rate": firing},
+        input_forms={"replication_timing": "x", "initiation_rate": "x"},
         region_start_kb=start, region_end_kb=end, resolution_x=2., whole_genome=True,
     ))
     np.testing.assert_array_equal(prepared.source["replication_timing"], timing[:20])
-    np.testing.assert_array_equal(prepared.source["firing_rate"], firing)
+    np.testing.assert_array_equal(prepared.source["initiation_rate"], firing)
     assert prepared.start_kb == 0.
     assert prepared.spatial_size == 20
 
@@ -126,13 +126,13 @@ def test_spacetime_firing_is_cropped_in_space_without_changing_its_time_axis() -
     firing = np.arange(60, dtype=float).reshape(20, 3) * 1e-5
     prepared = validate_mapping_request(MappingRequest(
         route=mapping_route("timing_and_time_firing_to_spatial_fork_speed"),
-        inputs={"replication_timing": timing, "firing_rate": firing},
-        input_forms={"replication_timing": "x", "firing_rate": "xt"},
+        inputs={"replication_timing": timing, "initiation_rate": firing},
+        input_forms={"replication_timing": "x", "initiation_rate": "xt"},
         region_start_kb=50, region_end_kb=62, resolution_x=1,
         settings={"time_grid": [0, 2, 5]},
     ))
     np.testing.assert_array_equal(prepared.source["replication_timing"], timing[50:62])
-    np.testing.assert_array_equal(prepared.source["firing_rate"], firing[:12, :])
+    np.testing.assert_array_equal(prepared.source["initiation_rate"], firing[:12, :])
     np.testing.assert_array_equal(prepared.assumptions["time_grid"], [0, 2, 5])
 
 
@@ -159,12 +159,12 @@ def test_constant_firing_spatial_speed_sends_only_selected_timing_to_rmap(
     monkeypatch.setattr(dnascape, "rmap", record_rmap)
     result = run_mapping(MappingRequest(
         route=mapping_route("timing_and_firing_to_spatial_fork_speed"),
-        inputs={"replication_timing": timing, "firing_rate": 0.001},
-        input_forms={"replication_timing": "x", "firing_rate": "scalar"},
+        inputs={"replication_timing": timing, "initiation_rate": 0.001},
+        input_forms={"replication_timing": "x", "initiation_rate": "scalar"},
         region_start_kb=start, region_end_kb=end, resolution_x=resolution,
     ))
     np.testing.assert_array_equal(captured["source"]["replication_timing"], observed)
-    assert captured["source"]["firing_rate"] == 0.001
+    assert captured["source"]["initiation_rate"] == 0.001
     assert captured["assumptions"]["resolution"] == resolution
     assert captured["assumptions"]["target_form"] == "space"
     assert result.outputs["fork_speed"].size == stop - first

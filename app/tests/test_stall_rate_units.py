@@ -24,7 +24,7 @@ from app.simulation_service import (
 
 def _request(**changes: Any) -> ConstantSimulationRequest:
     baseline = ConstantSimulationRequest(
-        firing_rate=0.5,
+        initiation_rate=0.5,
         fork_speed=2.0,
         resolution_x=5.0,
         resolution_t=1.0,

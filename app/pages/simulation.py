@@ -29,6 +29,9 @@ from app.batch_workflows import (
 from app.export_settings import get_export_settings
 from app.field_hints import field_hint
 from app.notifications import notify
+from app.data_filter_controls import DataFilterControls
+from app.simulation_filter_guides import add_simulation_filter_guides
+from dnascape.workflows.simulation_filters import FILTER_LABELS, build_simulation_filter_export
 from app.statistics_exports import HistogramStatisticsExport
 from app.raw_data_transfer import RawInputTarget, open_raw_artifact
 from app.mapping_uploads import (
@@ -182,7 +185,7 @@ _SPACETIME_OUTPUTS = {
 }
 _STANDARD_OUTPUTS = {**_BASE_OUTPUTS, **_DISTRIBUTION_OUTPUTS}
 _INPUT_OUTPUTS = {
-    "Firing rate (input)": _OutputSpec("input:firing_rate", "Position (kb)", "Firing rate", "input"),
+    "Initiation rate (input)": _OutputSpec("input:initiation_rate", "Position (kb)", "Initiation rate", "input"),
     "Fork speed (input)": _OutputSpec("input:fork_speed", "Position (kb)", "Fork speed", "input"),
 }
 _OUTPUT_SPECS = {
@@ -606,7 +609,7 @@ def _render_simulation_multiple_constants(
                         ui.number(
                             value=retained.values_by_key[row_key],
                             min=0,
-                            step=0.001 if label.casefold() == "firing rate" else 0.1,
+                            step=0.001 if label.casefold() == "initiation rate" else 0.1,
                         )
                         .props("dense")
                         .classes("dn-field dn-mapping-constant-value")
@@ -953,7 +956,7 @@ def _render_simulation_source(
                 if replaced_index is None:
                     inspections.append(inspection)
                 else:
-                    # Keep N/N firing-rate and fork-speed pairing stable when
+                    # Keep N/N initiation-rate and fork-speed pairing stable when
                     # one same-name dataset is replaced.
                     inspections[replaced_index] = inspection
                 if len(inspections) == 1:
@@ -1625,7 +1628,7 @@ def _result_plot_options(
     line_width: float = 1.8,
     line_type: str = "solid",
     show_markers: bool = False,
-    show_grid: bool = True,
+    show_grid: bool = False,
     log_z: bool = False,
     log_x: bool = False,
     invert_x: bool = False,
@@ -1670,10 +1673,10 @@ def _result_plot_options(
             )
         if spec.key == "replicon_lengths":
             raise ValueError(
-                "No completed replicons were recorded. Increase the maximum replication time or firing rate."
+                "No completed replicons were recorded. Increase the maximum replication time or initiation rate."
             )
         raise ValueError(
-            "The selected output has no finite values. Try a positive firing rate or a "
+            "The selected output has no finite values. Try a positive initiation rate or a "
             "longer replication-time cap."
         )
 
@@ -1890,7 +1893,7 @@ def _render_result_plot(
     line_width: float = 1.8,
     line_type: str = "solid",
     show_markers: bool = False,
-    show_grid: bool = True,
+    show_grid: bool = False,
     log_x: bool = False,
     invert_x: bool = False,
     invert_z: bool = False,
@@ -1995,14 +1998,16 @@ def render(_navigate: Callable[[str], None]) -> None:
     batch_raw_preferences: dict[tuple[str, str], _SimulationRawPreference] = {}
     ensemble_raw_preferences: dict[tuple[str, str], _SimulationRawPreference] = {}
     batch_raw_page = {"value": 1}
+    filter_raw_refresh = {'call': lambda: None}
     rendered_name_style = {"value": _simulation_name_style()}
     source_region_refresh: dict[str, Callable[[], Any]] = {"call": lambda: None}
     simulation_constant_states = {
-        "firing_rate": _SimulationConstantState.create(),
+        "initiation_rate": _SimulationConstantState.create(),
         "fork_speed": _SimulationConstantState.create(),
     }
     simulation_combination_mode = {"value": "pairwise"}
     simulation_sources: dict[str, _SimulationSourceControls] = {}
+    filter_controls: dict[str, DataFilterControls] = {}
     refreshing_constant_surfaces = False
 
     page_intro(
@@ -2027,8 +2032,8 @@ def render(_navigate: Callable[[str], None]) -> None:
 
                         peer_key = (
                             "fork_speed"
-                            if current_key == "firing_rate"
-                            else "firing_rate"
+                            if current_key == "initiation_rate"
+                            else "initiation_rate"
                         )
                         peer = simulation_sources.get(peer_key)
                         if (
@@ -2062,22 +2067,22 @@ def render(_navigate: Callable[[str], None]) -> None:
 
                     with ui.element("div").classes("dn-simulation-data-grid"):
                         with ui.column().classes("dn-setting-group"):
-                            ui.label("Firing rate").classes("dn-setting-group-title")
+                            ui.label("Initiation rate").classes("dn-setting-group-title")
                             firing_source = _render_simulation_source(
-                                "Firing rate",
+                                "Initiation rate",
                                 constant=0.01,
                                 units="min⁻¹ per bin",
                                 retained_constants=simulation_constant_states[
-                                    "firing_rate"
+                                    "initiation_rate"
                                 ],
                                 peer_constant_rows=lambda: counterpart_rows(
-                                    "firing_rate"
+                                    "initiation_rate"
                                 ),
                                 combination_mode=simulation_combination_mode,
                                 on_profile_change=lambda: source_region_refresh["call"](),
                                 on_structure_change=scientific_source_structure_changed,
                             )
-                            simulation_sources["firing_rate"] = firing_source
+                            simulation_sources["initiation_rate"] = firing_source
                         with ui.column().classes("dn-setting-group"):
                             ui.label("Fork speed").classes("dn-setting-group-title")
                             speed_source = _render_simulation_source(
@@ -2098,6 +2103,14 @@ def render(_navigate: Callable[[str], None]) -> None:
                     # The first source is rendered before its peer exists.
                     refresh_constant_surfaces()
                 with expansion("Region", icon="straighten"):
+                    with ui.row().classes('dn-simulation-region-scope'):
+                        whole_region = ui.switch('Whole region', value=False).mark('simulation-whole-region')
+                        periodic = ui.switch('Periodic', value=False).mark('simulation-periodic')
+                        show_plot = ui.switch('Show plot', value=True).mark('simulation-show-plot')
+                    whole_region.disable()
+                    field_hint(whole_region, 'Use the full genomic extent of an uploaded profile.')
+                    field_hint(periodic, 'Join the two region boundaries into a circle.')
+                    field_hint(show_plot, 'Show the simulation preview.')
                     with two_column_fields():
                         resolution_x = (
                             ui.number(
@@ -2122,9 +2135,7 @@ def render(_navigate: Callable[[str], None]) -> None:
                             .mark("simulation-region-start")
                         )
                         region_end = (
-                            ui.number(
-                                label="End (kb, exclusive)", value=1_000.0, min=0.000001, step=1.0
-                            )
+                            ui.number(label="End (kb)", value=1_000.0, min=0.000001, step=1.0)
                             .props("dense")
                             .classes("dn-field")
                             .mark("simulation-region-end")
@@ -2136,7 +2147,7 @@ def render(_navigate: Callable[[str], None]) -> None:
                         nonlocal automatic_region_end
                         sizes: set[int] = set()
                         for source, source_label in (
-                            (firing_source, "Firing rate"),
+                            (firing_source, "Initiation rate"),
                             (speed_source, "Fork speed"),
                         ):
                             if str(source.mode.value) != "profile" or not source.inspections:
@@ -2153,30 +2164,41 @@ def render(_navigate: Callable[[str], None]) -> None:
                             except (OSError, TypeError, ValueError):
                                 continue
                             spatial_size = _simulation_spatial_size(value)
+                            if spatial_size is None and str(source.form.value) == 'x':
+                                array = np.asarray(value)
+                                spatial_size = array.shape[0] if array.ndim else None
                             if spatial_size is not None:
                                 sizes.add(spatial_size)
                         if len(sizes) > 1:
                             # Keep uploads permissive. The complete, named
                             # consistency error is reported transactionally when
                             # Simulate is selected.
+                            whole_region.disable()
                             return
                         if not sizes:
+                            whole_region.set_value(False)
+                            whole_region.disable()
+                            if not running:
+                                region_start.enable()
+                                region_end.enable()
                             return
-                        raw_resolution = resolution_x.value
-                        if raw_resolution is None:
-                            return
-                        try:
-                            spatial_resolution = float(raw_resolution)
-                        except (TypeError, ValueError):
-                            return
-                        if not math.isfinite(spatial_resolution) or spatial_resolution <= 0:
-                            return
-                        automatic_region_end = sizes.pop() * spatial_resolution
-                        region_start.set_value(0.0)
-                        region_end.set_value(automatic_region_end)
+                        if not running:
+                            whole_region.enable()
+                        was_automatic = automatic_region_end is None or (
+                            region_start.value == 0.0 and region_end.value == automatic_region_end
+                        )
+                        # Array uploads are natively sampled at 1 kb. Changing
+                        # the destination bin width only changes the sample count.
+                        automatic_region_end = float(sizes.pop())
+                        if was_automatic or whole_region.value:
+                            region_start.set_value(0.0)
+                            region_end.set_value(automatic_region_end)
+                        region_start.set_enabled(not running and not whole_region.value)
+                        region_end.set_enabled(not running and not whole_region.value)
 
                     source_region_refresh["call"] = sync_region_to_profiles
                     resolution_x.on_value_change(sync_region_to_profiles)
+                    whole_region.on_value_change(sync_region_to_profiles)
                     sync_region_to_profiles()
 
                 with expansion("Simulation settings", icon="tune"):
@@ -2194,16 +2216,6 @@ def render(_navigate: Callable[[str], None]) -> None:
                                 .props("dense")
                                 .classes("dn-field")
                                 .mark("simulation-replicates")
-                            )
-                            geometry = (
-                                ui.select(
-                                    {"linear": "Linear", "periodic": "Periodic"},
-                                    value="linear",
-                                    label="Geometry",
-                                )
-                                .props("dense options-dense")
-                                .classes("dn-field")
-                                .mark("simulation-geometry")
                             )
                             missing_values = (
                                 ui.select(
@@ -2338,6 +2350,32 @@ def render(_navigate: Callable[[str], None]) -> None:
                                             )
                                             fork_speed_std.bind_visibility_from(stochastic_movement, "value")
 
+                filter_refresh = {'call': lambda: None}
+                with expansion('Filter', icon='filter_alt'):
+                    filter_relative = ui.select(
+                        {'initiation_rate': 'Initiation rate', 'fork_speed': 'Fork speed', 'both': 'Both'},
+                        value='initiation_rate', label='Relative to',
+                    ).props('dense options-dense').classes('dn-field').mark('simulation-filter-relative-to')
+                    field_hint(filter_relative, 'Choose which simulation inputs to filter independently.')
+                    filter_panels = {}
+
+                    def sync_simulation_filters() -> None:
+                        for key, section in filter_panels.items():
+                            section.set_visibility(filter_relative.value in {key, 'both'})
+                        filter_refresh['call']()
+
+                    for key, label in (('initiation_rate', 'Initiation rate'), ('fork_speed', 'Fork speed')):
+                        with ui.column().classes('dn-simulation-filter-input') as section:
+                            filter_panels[key] = section
+                            filter_controls[key] = DataFilterControls(
+                                sync_simulation_filters, title=label, embedded=True,
+                                marker_prefix=f'simulation-filter-{key.replace("_", "-")}',
+                                allow_export=True, allow_complement=True, profile_units='bp',
+                                align_modulation_from_start=True, on_change=sync_simulation_filters,
+                            )
+                    filter_relative.on_value_change(sync_simulation_filters)
+                    sync_simulation_filters()
+
                 def combined_preview_compatible() -> bool:
                     if not 2 <= len(latest_items) <= _MAX_COMBINED_PREVIEW_DATASETS:
                         return False
@@ -2345,7 +2383,7 @@ def render(_navigate: Callable[[str], None]) -> None:
                     spec = _output_spec(selected_label, latest_result)
                     if spec.kind not in {"space", "time"}:
                         return False
-                    if str(view.value or "Default") != "Default":
+                    if str(view.value or "Default") not in {"Default", "Circular"}:
                         return False
                     try:
                         selected = tuple(
@@ -2382,6 +2420,9 @@ def render(_navigate: Callable[[str], None]) -> None:
                     selected = str(output.value or "Replication timing")
                     spec = _output_spec(selected, latest_result)
                     requested_view = str(view.value or "Default")
+                    if spec.kind == "xt" and requested_view == "Circular":
+                        view.set_value("Default")
+                        requested_view = "Default"
                     if spec.kind == "xt" and requested_view == "Default":
                         return "Heatmap"
                     if requested_view == "Boxplot":
@@ -2777,9 +2818,16 @@ def render(_navigate: Callable[[str], None]) -> None:
 
                 def render_latest_result() -> None:
                     nonlocal result_chart
+                    plot_settings.surface.visible = bool(show_plot.value)
                     if plot_settings._statistics_export is not None:
                         plot_settings._statistics_export.refresh()
                     if latest_result is None:
+                        return
+                    if not show_plot.value:
+                        result_chart = None
+                        result_slot.clear()
+                        with result_slot:
+                            preview_plot('Plot hidden', kind='simulation')
                         return
                     if not plotting_settings_ready(
                         plot_settings,
@@ -2901,6 +2949,21 @@ def render(_navigate: Callable[[str], None]) -> None:
                                     y_limits=current_y_limits(),
                                     on_download=download_plot,
                                 )
+                            selected = str(output.value or 'Replication timing')
+                            spec = _output_spec(selected, latest_result)
+                            if spec.kind in {'space', 'time', 'xt'} and str(view.value or 'Default') == 'Default':
+                                shown = tuple(item.result for item in latest_items) if combined_preview_active() else (latest_result,)
+                                selected_outputs = [select_result_output(result, spec.key) for result in shown]
+                                temporal_axes = ([selected.y for selected in selected_outputs] if spec.kind == 'xt' else
+                                                 [selected.x for selected in selected_outputs] if spec.kind == 'time' else
+                                                 [result.time_grid for result in shown])
+                                guide_time_end = max((float(axis[-1]) for axis in temporal_axes if axis is not None and len(axis)),
+                                                     default=float(time_window.value or 0.))
+                                add_simulation_filter_guides(
+                                    result_chart.options, shown, plot_settings, kind=spec.kind,
+                                    time_end=guide_time_end,
+                                )
+                                result_chart.update()
                             result_chart.attach_settings(plot_settings)
                         except (RuntimeError, TypeError, ValueError) as exc:
                             result_chart = None
@@ -2928,6 +2991,12 @@ def render(_navigate: Callable[[str], None]) -> None:
                             status.text = "Stopping simulation..."
                             simulate_button.disable()
                         return
+                    if any(control.loading for control in filter_controls.values()):
+                        notify('Wait for the filter uploads to finish.', type='warning')
+                        return
+                    selected_filters = {key: control.snapshot() for key, control in filter_controls.items()
+                                        if filter_relative.value in {key, 'both'} and control.controls['enabled'].value}
+                    selected_filter_exports = frozenset(key for key in selected_filters if filter_controls[key].controls['export'].value)
 
                     cancel_event = Event()
 
@@ -2954,7 +3023,9 @@ def render(_navigate: Callable[[str], None]) -> None:
                             region_end,
                             replicates,
                             individual_profile_count,
-                            geometry,
+                            whole_region,
+                            periodic,
+                            filter_relative,
                             missing_values,
                             fixed_seed,
                             seed,
@@ -2985,6 +3056,9 @@ def render(_navigate: Callable[[str], None]) -> None:
                         set_data_upload_locked(speed_source.uploader, False)
                         for control in frozen_controls:
                             control.enable()
+                        for control in filter_controls.values():
+                            control.set_locked(False)
+                        sync_region_to_profiles()
                         simulate_button.set_text("Simulate")
                         simulate_button.set_icon(workflow_action_icon("simulation"))
                         simulate_button.enable()
@@ -3001,6 +3075,8 @@ def render(_navigate: Callable[[str], None]) -> None:
                     set_data_upload_locked(speed_source.uploader, True)
                     for control in frozen_controls:
                         control.disable()
+                    for control in filter_controls.values():
+                        control.set_locked(True)
                     simulate_button.set_text("Stop")
                     simulate_button.set_icon("stop")
                     progress.visible = True
@@ -3016,7 +3092,7 @@ def render(_navigate: Callable[[str], None]) -> None:
                         ]:
                             _validate_simulation_batch_selection(
                                 firing_source,
-                                label="Firing rate",
+                                label="Initiation rate",
                             )
                             _validate_simulation_batch_selection(
                                 speed_source,
@@ -3025,13 +3101,13 @@ def render(_navigate: Callable[[str], None]) -> None:
                             return (
                                 _materialize_simulation_sources(
                                     firing_source,
-                                    label="Firing rate",
-                                    missing_policy=missing_policy,
+                                    label="Initiation rate",
+                                    missing_policy='ignore' if 'initiation_rate' in selected_filters else missing_policy,
                                 ),
                                 _materialize_simulation_sources(
                                     speed_source,
                                     label="Fork speed",
-                                    missing_policy=missing_policy,
+                                    missing_policy='ignore' if 'fork_speed' in selected_filters else missing_policy,
                                 ),
                             )
 
@@ -3058,7 +3134,7 @@ def render(_navigate: Callable[[str], None]) -> None:
                             _prepare_simulation_source(
                                 firing_source,
                                 firing_values,
-                                label="Firing rate",
+                                label="Initiation rate",
                                 units="min⁻¹ per bin",
                             ),
                             _prepare_simulation_source(
@@ -3095,7 +3171,7 @@ def render(_navigate: Callable[[str], None]) -> None:
                         ] = []
                         for case in cases:
                             dataset_name = case.identity.display(_simulation_name_style())
-                            firing_rate = prepared_sources[0].values[
+                            initiation_rate = prepared_sources[0].values[
                                 case.item_indices[0]
                             ]
                             fork_speed = prepared_sources[1].values[
@@ -3104,7 +3180,7 @@ def render(_navigate: Callable[[str], None]) -> None:
                             paired_sizes = {
                                 size
                                 for size in (
-                                    _simulation_spatial_size(firing_rate),
+                                    _simulation_spatial_size(initiation_rate),
                                     _simulation_spatial_size(fork_speed),
                                 )
                                 if size is not None
@@ -3114,33 +3190,28 @@ def render(_navigate: Callable[[str], None]) -> None:
                                     f"{size:,}" for size in sorted(paired_sizes)
                                 )
                                 raise ValueError(
-                                    f"{dataset_name}: firing-rate and fork-speed spatial "
+                                    f"{dataset_name}: initiation-rate and fork-speed spatial "
                                     f"axes disagree ({sizes} bins)."
                                 )
                             region_end_value = (
                                 region_start_value
-                                + next(iter(paired_sizes)) * resolution_x_value
+                                + next(iter(paired_sizes))
                                 if paired_sizes and not use_selected_end
                                 else configured_region_end
                             )
-                            if use_selected_end:
-                                firing_rate = _trim_simulation_profile(
-                                    firing_rate, start=region_start_value,
-                                    end=configured_region_end, resolution=resolution_x_value,
-                                )
-                                fork_speed = _trim_simulation_profile(
-                                    fork_speed, start=region_start_value,
-                                    end=configured_region_end, resolution=resolution_x_value,
-                                )
                             paired_values.append(
-                                (firing_rate, fork_speed, region_end_value)
+                                (initiation_rate, fork_speed, region_end_value)
                             )
                         shared_request = dict(
                             resolution_x=resolution_x_value,
+                            source_resolution_x=1.0,
                             resolution_t=_number(resolution_t, "Time step"),
                             region_start_kb=region_start_value,
                             replicates=_integer(replicates, "Simulations (replicates)"),
-                            geometry=str(geometry.value),
+                            geometry='periodic' if periodic.value else 'linear',
+                            whole_region=bool(whole_region.value),
+                            data_filters=selected_filters,
+                            export_filters=selected_filter_exports,
                             time_window=_number(time_window, "Time window"),
                             max_replication_time=_number(
                                 max_replication_time,
@@ -3175,28 +3246,33 @@ def render(_navigate: Callable[[str], None]) -> None:
                         )
                         requests = tuple(
                             ConstantSimulationRequest(
-                                firing_rate=firing_rate,
+                                initiation_rate=initiation_rate,
                                 fork_speed=fork_speed,
                                 region_end_kb=request_region_end,
                                 **shared_request,
                             )
-                            for firing_rate, fork_speed, request_region_end in paired_values
+                            for initiation_rate, fork_speed, request_region_end in paired_values
                         )
                         # Validate the entire batch before the first scientific
                         # worker starts, so a mismatch cannot leave a partially
                         # published set of results.
+                        prepared_requests = []
                         for case, request in zip(
                             cases,
                             requests,
                             strict=True,
                         ):
                             try:
-                                validate_constant_simulation(request)
+                                validated = await run.io_bound(validate_constant_simulation, request, check_cancelled)
+                                if validated is None:
+                                    raise RuntimeError('Simulation validation stopped before returning.')
+                                prepared_requests.append(validated.request if request.data_filters else request)
                             except (TypeError, ValueError) as exc:
                                 raise ValueError(
                                     f"{case.identity.display(_simulation_name_style())}: "
                                     f"{exc}"
                                 ) from exc
+                        requests = tuple(prepared_requests)
                         check_cancelled()
                     except CancelledError:
                         progress.visible = False
@@ -3357,6 +3433,9 @@ def render(_navigate: Callable[[str], None]) -> None:
                                 "Replicon length retention was truncated because it exceeded the local data limit.",
                                 type="warning",
                             )
+                        for warning in dict.fromkeys(message for item in latest_items if item.result.filter_state is not None
+                                                     for message in item.result.filter_state.warnings):
+                            notify(warning, type='warning')
                         if len(latest_items) > 1:
                             presentation.value = "Combined"
                             presentation.update()
@@ -3645,6 +3724,7 @@ def render(_navigate: Callable[[str], None]) -> None:
                     )
 
                 plot_settings = preview_settings_controls(
+                    filter_labels=FILTER_LABELS,
                     initial_title="Replication timing",
                     initial_x_label="Position (kb)",
                     initial_y_label="Replication timing",
@@ -3832,6 +3912,7 @@ def render(_navigate: Callable[[str], None]) -> None:
 
                         @ui.refreshable
                         def render_batch_raw_files() -> None:
+                            filter_raw_refresh['call']()
                             if len(latest_items) < 2:
                                 return
                             selected_label = str(output.value or "Replication timing")
@@ -4075,6 +4156,59 @@ def render(_navigate: Callable[[str], None]) -> None:
                             ensemble_raw_container.visible = shown
 
                         render_ensemble_raw_files()
+                    filter_layouts = {}
+
+                    @ui.refreshable
+                    def render_filter_raw_files() -> None:
+                        _, _, first, stop = _simulation_raw_page_bounds(len(latest_items), int(batch_raw_page['value']))
+                        for item in latest_items[first:stop]:
+                            state = item.result.filter_state
+                            if state is None:
+                                continue
+                            for key, label in FILTER_LABELS.items():
+                                if key not in state.exports or key not in state.selections:
+                                    continue
+                                kind = f'{key}_filter'
+                                name = _simulation_raw_default_filename(item, kind)
+                                preference = ensemble_raw_preferences.setdefault((item.key, kind), _SimulationRawPreference(file_name=name, automatic_name=name))
+                                ui.label((f'{_simulation_display_name(item)} · ' if len(latest_items) > 1 else '') + label + ' positions').classes('dn-download-file-name')
+                                handlers = {}
+                                prefix = f'simulation-{key.replace("_", "-")}-filter-{item.key}'
+                                controls = raw_output_file_row(
+                                    file_name=preference.file_name, default_type=preference.file_type,
+                                    default_compress=preference.compress, reserve_remove_space=True,
+                                    on_open=lambda _controls, destination, handlers=handlers: handlers['download'](open_in=destination),
+                                    markers={'row': prefix + '-raw', 'download': prefix + '-download'},
+                                    extra_classes='dn-simulation-filter-raw-row',
+                                )
+                                with controls.file_type.parent_slot.parent:
+                                    layout = ui.select({'positions': 'Position list', 'intervals': 'Genomic intervals'},
+                                        value=filter_layouts.get((item.key, key), 'positions'), label='Layout').props('dense options-dense').classes('dn-field')
+                                layout.move(controls.file_type.parent_slot.parent, target_index=1)
+                                def remember(*, controls=controls, preference=preference, layout=layout, token=(item.key, key)):
+                                    preference.file_name = str(controls.file_name.value or '')
+                                    preference.customized = preference.file_name != preference.automatic_name
+                                    preference.file_type = str(controls.file_type.value or 'TSV')
+                                    preference.compress = bool(controls.compress.value)
+                                    filter_layouts[token] = layout.value
+                                for control in (controls.file_name, controls.file_type, controls.compress, layout):
+                                    control.on_value_change(remember)
+                                async def download(*, open_in=None, state=state, key=key, controls=controls, layout=layout):
+                                    try:
+                                        artifact = await run.io_bound(build_simulation_filter_export, state, key, controls.file_type.value,
+                                            filename=controls.file_name.value, layout=layout.value,
+                                            compression=get_export_settings().raw_compression if controls.compress.value else 'none')
+                                        if open_in is not None:
+                                            await open_raw_artifact(artifact, open_in, _navigate, preferred_input='filter_positions')
+                                        else:
+                                            ui.download(artifact.data, artifact.filename, artifact.media_type)
+                                    except (RuntimeError, ValueError, TypeError) as exc:
+                                        notify(str(exc), type='negative')
+                                handlers['download'] = download
+                                controls.download_button.on_click(download)
+
+                    render_filter_raw_files()
+                    filter_raw_refresh['call'] = render_filter_raw_files.refresh
                 raw_controls.row.set_visibility(len(latest_items) <= 1)
                 if raw_controls.remove_button is not None:
                     raw_controls.remove_button.set_visibility(
@@ -4255,12 +4389,12 @@ def render(_navigate: Callable[[str], None]) -> None:
                     requested_view = str(view.value or "Default")
                     allow_individual_profiles = (
                         selected == "Replication timing"
-                        and requested_view == "Default"
+                        and requested_view in {"Default", "Circular"}
                         and not combined_preview_active()
                     )
                     allow_standard_deviation = (
                         selected == "Replication timing"
-                        and requested_view == "Default"
+                        and requested_view in {"Default", "Circular"}
                         and not combined_preview_active()
                     )
                     if allow_individual_profiles:
@@ -4283,7 +4417,7 @@ def render(_navigate: Callable[[str], None]) -> None:
                         boxplot = False
                     else:
                         time_array = False
-                        histogram = requested_view == "Histogram"
+                        histogram = spec.kind == "distribution" or requested_view == "Histogram"
                         boxplot = requested_view == "Boxplot"
                     sync_preview_settings_visibility(
                         plot_settings,
@@ -4300,12 +4434,15 @@ def render(_navigate: Callable[[str], None]) -> None:
                         allow_boxplot=spec.kind == "distribution",
                         allow_individual_profiles=allow_individual_profiles,
                         allow_standard_deviation=allow_standard_deviation,
+                        available_filters=tuple({key for item in latest_items if item.result.filter_state is not None
+                                                 for key in item.result.filter_state.selections}),
                     )
                     # A combined batch uses one colour control per dataset; the
                     # single-series colour field would otherwise be ambiguous.
                     if combined_preview_active():
                         plot_settings.primary_color_surface.visible = False
                     render_ensemble_raw_files.refresh()
+                    render_filter_raw_files.refresh()
 
                 def sync_output_options() -> None:
                     """Expose only outputs retained by the latest simulation."""
@@ -4474,6 +4611,8 @@ def render(_navigate: Callable[[str], None]) -> None:
                 show_individual_profiles.on_value_change(ensemble_display_changed)
                 show_standard_deviation.on_value_change(ensemble_display_changed)
                 individual_profile_count.on_value_change(individual_profile_count_changed)
+                show_plot.on_value_change(render_latest_result)
+                filter_refresh['call'] = sync_view_controls
                 sync_view_controls()
 
                 if latest_result is not None:
@@ -4552,7 +4691,7 @@ def render(_navigate: Callable[[str], None]) -> None:
                         await append_raw_uploads(lambda: simulation_sources[key].uploader, files)
                     return tuple(
                         RawInputTarget(key, label, lambda files, key=key: receive(key, files))
-                        for key, label in (("firing_rate", "Firing rate"), ("fork_speed", "Fork speed"))
+                        for key, label in (("initiation_rate", "Initiation rate"), ("fork_speed", "Fork speed"))
                     )
 
                 current_session_cache().register_input_targets("simulation", raw_input_targets)

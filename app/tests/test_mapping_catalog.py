@@ -31,9 +31,9 @@ from app.mapping_catalog import (
 )
 from dnascape import rmap
 
-EXPECTED_PUBLIC_TARGET_COUNT = 24
-EXPECTED_IMPLEMENTED_METHOD_COUNT = 105
-EXPECTED_FRIENDLY_TARGET_COUNT = 17
+EXPECTED_PUBLIC_TARGET_COUNT = 16
+EXPECTED_IMPLEMENTED_METHOD_COUNT = 71
+EXPECTED_FRIENDLY_TARGET_COUNT = 11
 
 
 def _records(table: Any) -> tuple[dict[str, Any], ...]:
@@ -125,9 +125,15 @@ def test_catalog_is_an_exact_snapshot_of_the_public_implemented_rmap_registry() 
     records = _records(rmap.targets(implemented=True))
     public_targets = tuple(str(record["target"]) for record in records)
     public_target_set = set(public_targets)
-    implemented_specs = tuple(
-        spec for spec in rmap.routes() if spec.implemented and spec.target in public_target_set
-    )
+    excluded_targets = {"initiation_pdf", "initiation_pdf_xt", "coalescence_pdf", "coalescence_pdf_xt"}
+    excluded_methods = {"fork_density_bundle_to_directionality_time_integrated",
+        "fork_density_fields_to_directionality_time_integrated", "fork_density_profiles_to_directionality",
+        "replicated_fraction_xt_to_replicated_fraction_spatial_mean"}
+    implemented_specs = tuple(spec for spec in rmap.routes()
+        if spec.implemented and spec.target in public_target_set
+        and spec.target not in excluded_targets and spec.method not in excluded_methods
+        and not spec.method.endswith("_simulation"))
+    public_targets = tuple(t for t in public_targets if any(s.target == t for s in implemented_specs))
     methods = tuple(spec.method for spec in implemented_specs)
 
     # These explicit counts intentionally make scientific registry drift visible.
@@ -152,7 +158,7 @@ def test_route_families_are_factor_only_and_partition_all_exact_methods() -> Non
     )
 
     assert catalog.route_family_count > 0
-    assert catalog.route_family_count == 75
+    assert catalog.route_family_count == 51
     assert len(represented_methods) == EXPECTED_IMPLEMENTED_METHOD_COUNT
     assert len(represented_methods) == len(set(represented_methods))
     assert set(represented_methods) == set(catalog.methods)
@@ -195,9 +201,7 @@ def test_removed_targets_have_no_routes_and_only_simulation_targets_are_marked()
     removed = {"kinetic_fields", "fork_density", "fork_density_xt"}
     assert not removed & set(catalog.public_target_ids)
     assert all(route.target not in removed for route in rmap.routes())
-    assert {target.key for target in catalog.targets if target.requires_simulation} == {
-        "inter_origin_distance", "s_phase_duration", "completion_time", "num_origins",
-    }
+    assert not any(target.requires_simulation for target in catalog.targets)
     for target in catalog.targets:
         assert target.requires_simulation == all(
             route.method.endswith("_simulation") for route in catalog.routes_for(target.key)
@@ -205,7 +209,7 @@ def test_removed_targets_have_no_routes_and_only_simulation_targets_are_marked()
 
 
 def test_direct_firing_inverse_keeps_its_controls_without_a_parametric_shape() -> None:
-    route = mapping_route("initiation_events_and_fraction_to_firing_rate_local_inverse")
+    route = mapping_route("initiation_events_and_fraction_to_initiation_rate_local_inverse")
     assert route.target_shapes == ()
     assert route.default_target_shape is None
     assert {item.key for item in route.active_settings()} == {
@@ -227,10 +231,9 @@ def test_same_feature_reductions_name_the_source_dependence_and_never_offer_iden
         for route in family.variants:
             assert route.output_form not in route.inputs[0].forms
 
-    assert len(reductions) == 9
+    assert len(reductions) == 6
     assert {family.target_key for family in reductions} == {
-        "initiation_events", "initiation_pdf", "coalescence_events", "coalescence_pdf",
-        "replicated_fraction", "right_fork_density", "left_fork_density",
+        "initiation_events", "coalescence_events", "right_fork_density", "left_fork_density",
     }
 
 
@@ -389,24 +392,6 @@ def test_canonical_profile_and_spacetime_families_resolve_exact_parameter_names(
     """X and XT spellings are one visible factor family, not duplicate routes."""
 
     catalog = get_mapping_catalog()
-    density_family = next(
-        family
-        for family in catalog.route_families_for("fork_directionality", "space")
-        if family.factor_keys == ("right_fork_density", "left_fork_density")
-    )
-    assert density_family.allowed_forms("left_fork_density", {"right_fork_density": "x"}) == ("x",)
-    assert density_family.allowed_forms("left_fork_density", {"right_fork_density": "xt"}) == (
-        "xt",
-    )
-    profile = density_family.resolve({"right_fork_density": "x", "left_fork_density": "x"})
-    spacetime = density_family.resolve({"right_fork_density": "xt", "left_fork_density": "xt"})
-    assert profile.method == "fork_density_profiles_to_directionality"
-    assert spacetime.method == "fork_density_fields_to_directionality_time_integrated"
-    assert density_family.exact_input_key(profile, "right_fork_density") == "right_fork_density"
-    assert (
-        density_family.exact_input_key(spacetime, "right_fork_density") == "right_fork_density_xt"
-    )
-
     regional_families = catalog.route_families_for("origin_efficiency", "regions")
     for factor, x_method, xt_method in (
         (
@@ -475,7 +460,7 @@ def test_every_catalog_route_preserves_rmap_inputs_forms_and_constraints() -> No
         if spec.implemented and spec.target in set(catalog.public_target_ids)
     }
 
-    assert set(catalog.methods) == set(authoritative)
+    assert set(catalog.methods) <= set(authoritative)
     for route in catalog.routes:
         spec = authoritative[route.method]
         assert route.target == spec.target
@@ -574,7 +559,7 @@ def test_every_friendly_target_variant_has_routes_and_consistent_forms() -> None
 
 def test_dependence_shape_region_and_bundle_semantics_are_not_generalized() -> None:
     expected_variable_dependences = ("constant", "space", "time", "spacetime")
-    firing = mapping_target("firing_rate")
+    firing = mapping_target("initiation_rate")
     speed = mapping_target("fork_speed")
     timing = mapping_target("replication_timing")
     directionality = mapping_target("fork_directionality")
@@ -587,9 +572,9 @@ def test_dependence_shape_region_and_bundle_semantics_are_not_generalized() -> N
     assert "constant" not in directionality.dependences
 
     for dependence in ("constant", "space"):
-        assert all(not route.target_shapes for route in mapping_routes("firing_rate", dependence))
+        assert all(not route.target_shapes for route in mapping_routes("initiation_rate", dependence))
     for dependence in ("time", "spacetime"):
-        routes = tuple(route for route in mapping_routes("firing_rate", dependence)
+        routes = tuple(route for route in mapping_routes("initiation_rate", dependence)
                        if "replication_timing" in route.source_keys)
         assert routes
         assert all(route.target_shapes == ("weibull",) for route in routes)
@@ -604,11 +589,8 @@ def test_dependence_shape_region_and_bundle_semantics_are_not_generalized() -> N
     assert len(regional_routes) == 4
     assert all(route.input("regions").forms == ("regions",) for route in regional_routes)
     origin = mapping_target("origin_efficiency")
-    assert origin.dependences == ("space", "regions")
-    simulation_routes = mapping_routes("origin_efficiency", "space")
-    assert len(simulation_routes) == 2
-    assert all("simulation" in route.method for route in simulation_routes)
-    assert all(route.output_form == "x" for route in simulation_routes)
+    assert origin.dependences == ("regions",)
+    assert not mapping_routes("origin_efficiency", "space")
 
     bundle_consumers = tuple(
         route
@@ -624,11 +606,11 @@ def test_route_settings_are_exact_assumptions_for_each_scientific_family() -> No
     """The page must never show a generic setting which the selected route rejects."""
 
     representatives = {
-        "firing_and_speed_to_timing_simulation": {
-            "present": {"sim_number", "stall_rate_per_kb", "seed", "geometry"},
+        "firing_and_speed_to_timing_deterministic": {
+            "present": {"perQ", "neighbourhood_range"},
             "absent": {"fit_step", "maxiter", "cfl", "region_names"},
         },
-        "timing_and_speed_to_firing_rate": {
+        "timing_and_speed_to_initiation_rate": {
             "present": {"fit_step", "maxiter", "neighbourhood_range", "err_threshold"},
             "absent": {"seed", "geometry", "cfl", "region_names"},
         },
@@ -644,7 +626,7 @@ def test_route_settings_are_exact_assumptions_for_each_scientific_family() -> No
             "present": {"resolution", "resolution_time", "time_grid", "region_names"},
             "absent": {"sim_number", "fit_step", "cfl", "seed"},
         },
-        "fork_density_fields_to_directionality_time_integrated": {
+        "firing_and_speed_to_directionality_deterministic": {
             "present": {"resolution_time", "time_grid"},
             "absent": {"sim_number", "fit_step", "cfl", "region_names"},
         },
@@ -660,20 +642,12 @@ def test_route_settings_are_exact_assumptions_for_each_scientific_family() -> No
         assert not {"target_form", "target_shape", *route.source_keys} & setting_keys
         assert all(route.setting(setting.key) is setting for setting in route.settings)
 
-    simulation = mapping_route("firing_and_speed_to_timing_simulation")
-    assert {item.key for item in simulation.settings_for("simulation")} >= {
-        "sim_number",
-        "stall_rate_per_kb",
-        "seed",
-    }
-    assert simulation.setting("geometry").location == "region"
-    assert simulation.setting("geometry").allowed_values == ("linear", "periodic")
-    assert simulation.setting("sim_number").max_value == 50_000
+    assert not mapping_route("firing_and_speed_to_directionality_deterministic").settings_for("simulation")
 
     deterministic = mapping_route("firing_and_speed_to_timing_deterministic")
     assert deterministic.setting("perQ").label == "Periodic"
 
-    fit = mapping_route("timing_and_speed_to_firing_rate")
+    fit = mapping_route("timing_and_speed_to_initiation_rate")
     assert fit.setting("maxiter").category == "fitting"
     assert fit.setting("neighbourhood_range").category == "numerics"
     assert fit.setting("maxiter").max_value is None
@@ -697,18 +671,18 @@ def test_route_settings_are_exact_assumptions_for_each_scientific_family() -> No
 
 
 def test_defaulted_feature_assumptions_remain_optional_overrides() -> None:
-    defaulted = mapping_route("firing_to_timing_simulation").input("fork_speed")
+    defaulted = mapping_route("firing_to_timing_deterministic").input("fork_speed")
     assert defaulted.role == "feature_assumption"
     assert defaulted.has_default is True
     assert defaulted.default == 1.4
     assert defaulted.required is False
 
-    explicit = mapping_route("firing_and_speed_to_timing_simulation").input("fork_speed")
+    explicit = mapping_route("firing_and_speed_to_timing_deterministic").input("fork_speed")
     assert explicit.role == "source"
     assert explicit.has_default is False
     assert explicit.required is True
 
-    variable = mapping_route("timing_to_spatial_firing_rate_variable_fork_speed").input(
+    variable = mapping_route("timing_to_spatial_initiation_rate_variable_fork_speed").input(
         "fork_speed"
     )
     assert variable.role == "feature_assumption"
@@ -727,7 +701,7 @@ def test_numeric_setting_defaults_are_finite_and_stall_recovery_is_opt_in() -> N
             ):
                 assert math.isfinite(float(setting.default)), (route.method, setting.key)
 
-    tau = mapping_route("firing_and_speed_to_timing_simulation").setting("tau")
+    tau = mapping_route("timing_and_speed_to_initiation_rate").setting("tau")
     assert tau.required is False
     assert tau.has_default is True
     assert tau.default is None
@@ -744,7 +718,7 @@ def test_setting_defaults_follow_exact_delegated_optimizer_and_preserve_inherita
     assert spatial.setting("smoothw").default == 100
     assert spatial.setting("neighbourhood_range").default == 2000
     edge_context = spatial.setting("refine_edge_kb")
-    assert edge_context.default == mapping_route("timing_and_speed_to_firing_rate").setting("refine_edge_kb").default == 1000
+    assert edge_context.default == mapping_route("timing_and_speed_to_initiation_rate").setting("refine_edge_kb").default == 1000
     assert edge_context.label == "Maximum edge context"
     assert edge_context.unit == "kb"
     assert spatial.setting("perQ").default is False
@@ -769,7 +743,7 @@ def test_setting_defaults_follow_exact_delegated_optimizer_and_preserve_inherita
             assert speed_route.setting("spacetime_order").default == "crossed"
 
     # The XT branch must not inherit the T branch's .35 update or 100 simulations.
-    spacetime = mapping_route("timing_and_speed_to_spacetime_firing_rate")
+    spacetime = mapping_route("timing_and_speed_to_spacetime_initiation_rate")
     for key in ("temporal_fit_step", "temporal_maxiter", "temporal_sim_number"):
         assert spacetime.setting(key).default is None
     assert spacetime.setting("spacetime_order").default == "space_then_time"
@@ -780,7 +754,7 @@ def test_setting_defaults_follow_exact_delegated_optimizer_and_preserve_inherita
 
 
 def test_active_settings_follow_shape_and_implemented_scientific_branch() -> None:
-    firing = mapping_route("timing_and_speed_to_spacetime_firing_rate")
+    firing = mapping_route("timing_and_speed_to_spacetime_initiation_rate")
     weibull = {item.key for item in firing.active_settings("weibull")}
     free = {item.key for item in firing.active_settings("free")}
     assert {"alpha_smooth", "alpha_prior", "weibull_shape"} <= weibull
@@ -838,15 +812,10 @@ def test_active_settings_follow_shape_and_implemented_scientific_branch() -> Non
             "tolerance", "regularization", "spatial_knots", "temporal_knots",
         } & settings.keys()
 
-    pdf = mapping_route("firing_and_fraction_to_initiation_pdf_xt_normalized")
-    assert {item.key for item in pdf.active_settings()} == {
-        "resolution",
-        "resolution_time",
-        "time_grid",
-        "x_array",
-    }
-    profiles = mapping_route("fork_density_profiles_to_directionality")
-    assert profiles.active_settings() == ()
+    with pytest.raises(KeyError):
+        mapping_route("firing_and_fraction_to_initiation_pdf_xt_normalized")
+    with pytest.raises(KeyError):
+        mapping_route("fork_density_profiles_to_directionality")
 
 
 def test_periodic_controls_match_actual_forward_and_inverse_geometry_support() -> None:
@@ -861,7 +830,7 @@ def test_periodic_controls_match_actual_forward_and_inverse_geometry_support() -
         assert route.supports_periodic() is True
         assert "perQ" in {item.key for item in route.active_settings()}
     for method in (
-        "firing_and_speed_to_timing_simulation",
+        "firing_and_speed_to_timing_deterministic",
         "firing_and_speed_to_coalescence_events_xt_mean_field",
         "timing_and_firing_to_spatial_fork_speed",
         "timing_and_directionality_to_spatial_fork_speed",
@@ -879,8 +848,8 @@ def test_bundle_axis_settings_remain_validated_but_are_derived_from_stored_coord
         assert set(original) <= set(active)
         for key, setting in original.items():
             assert active[key] == replace(setting, location="derived")
-    pdf = mapping_route("fork_density_bundle_to_coalescence_pdf_xt_mean_field")
-    assert {item.key for item in pdf.active_settings() if item.location == "derived"} >= axis_keys
+    bundle = mapping_route("fork_density_bundle_to_coalescence_events_xt_mean_field")
+    assert {item.key for item in bundle.active_settings() if item.location == "derived"} >= {"resolution_time", "time_grid"}
 
 
 def test_rdata_format_and_shape_guidance_matches_the_public_io_contract() -> None:

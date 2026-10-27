@@ -31,7 +31,7 @@ def _time_axis(count: int, resolution: float, explicit: Any = None) -> np.ndarra
 
 
 def add_mapping_input_previews(result: Any, prepared: Any) -> Any:
-    """Keep aligned, nonconstant inputs without copying their numeric data."""
+    """Keep aligned inputs and broadcast constants without copying data."""
 
     outputs = dict(result.outputs)
     forms = dict(result.output_forms)
@@ -52,6 +52,9 @@ def add_mapping_input_previews(result: Any, prepared: Any) -> Any:
             )
         elif form in {"x", "t", "xt"}:
             profiles.append((source_key, form, source, prepared.assumptions.get("time_grid")))
+        elif form == "scalar" and source_key in {"initiation_rate", "fork_speed"}:
+            count = max(1, prepared.spatial_size, result.x_axis.size)
+            profiles.append((source_key, "x", np.broadcast_to(float(np.asarray(source).reshape(-1)[0]), (count,)), None))
     for source_key, form, source, explicit_time in profiles:
         key = INPUT_PREFIX + source_key
         if key in outputs:
@@ -83,7 +86,7 @@ def add_simulation_input_previews(result: Any, request: Any) -> Any:
     outputs = dict(result.outputs)
     forms = dict(result.input_forms)
     axes = dict(result.input_axes)
-    for source_key in ("firing_rate", "fork_speed"):
+    for source_key in ("initiation_rate", "fork_speed"):
         key = INPUT_PREFIX + source_key
         values = _readonly(getattr(request, source_key))
         if values.ndim == 0 or values.size == 1 or key in outputs:

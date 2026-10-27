@@ -80,7 +80,7 @@ def test_speed_inverse_penalizes_a_local_perturbation_equally_at_the_join(index)
     initial[index] *= np.exp(.3)
     observed = np.full(size, 10.)
     result = fit_timing_fork_speed(
-        observed, firing_rate=.008, speed_form="space", initial_fork_speed=initial,
+        observed, initiation_rate=.008, speed_form="space", initial_fork_speed=initial,
         spatial_knots=size, regularization=strength, maxiter=0, perQ=True,
         resolution=4., time_grid=np.arange(0., 63., 3.),
     )
@@ -105,8 +105,8 @@ def test_periodic_speed_fit_moves_with_the_ring_and_its_circular_knot_grid(form,
         speed_form=form, perQ=True, resolution=4., time_grid=t, spatial_knots=knots,
         temporal_knots=2, regularization=.05, maxiter=18, tolerance=1e-10,
     )
-    first = fit_timing_fork_speed(observed, firing_rate=firing, **options)
-    shifted = fit_timing_fork_speed(np.roll(observed, shift), firing_rate=np.roll(firing, shift), **options)
+    first = fit_timing_fork_speed(observed, initiation_rate=firing, **options)
+    shifted = fit_timing_fork_speed(np.roll(observed, shift), initiation_rate=np.roll(firing, shift), **options)
     np.testing.assert_allclose(shifted["fork_speed"], np.roll(first["fork_speed"], shift, axis=0), rtol=2e-6, atol=2e-7)
     np.testing.assert_allclose(shifted["replication_timing_fit"], np.roll(first["replication_timing_fit"], shift), rtol=1e-7)
     assert shifted["fit_objective"] == pytest.approx(first["fit_objective"], rel=2e-8, abs=1e-12)
@@ -117,7 +117,7 @@ def test_automatic_periodic_speed_initialization_interpolates_across_missing_joi
     observed = 30. + 20. * np.cos(2 * np.pi * np.arange(size) / size)
     observed[[0, 1, 15]] = np.nan
     options = dict(
-        firing_rate=.008, speed_form="space", initial_fork_speed=None, spatial_knots=size,
+        initiation_rate=.008, speed_form="space", initial_fork_speed=None, spatial_knots=size,
         perQ=True, resolution=4., time_grid=np.arange(0., 183., 3.), maxiter=0,
     )
     first = fit_timing_fork_speed(observed, **options)

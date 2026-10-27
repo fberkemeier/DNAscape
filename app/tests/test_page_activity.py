@@ -54,9 +54,9 @@ class _BlockedWorker:
         if self.slug == "mapping":
             return MappingResult(
                 target=request.route.target, target_key=request.route.target_key,
-                target_label="Firing rate", method=request.route.method,
-                output_form="x", output_dependence="space", primary_output="firing_rate",
-                outputs={"firing_rate": values / 10}, output_forms={"firing_rate": "x"},
+                target_label="Initiation rate", method=request.route.method,
+                output_form="x", output_dependence="space", primary_output="initiation_rate",
+                outputs={"initiation_rate": values / 10}, output_forms={"initiation_rate": "x"},
                 x_axis=np.arange(3.0), time_axis=np.asarray([]), region_labels=(),
                 elapsed_seconds=0.01, assumptions={},
             )
@@ -146,7 +146,7 @@ def test_background_workflow_finishes_and_stops_across_page_switches(
 @pytest.mark.parametrize(
     ("source", "message"),
     (
-        ("firing-rate", "Upload firing rate data."),
+        ("initiation-rate", "Upload initiation rate data."),
         ("fork-speed", "Upload fork speed data."),
     ),
 )

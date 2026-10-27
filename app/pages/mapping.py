@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import math
 import re
 from collections.abc import Callable, Mapping, Sequence
@@ -15,6 +16,8 @@ import numpy as np
 from nicegui import run, ui
 
 from app.notifications import notify
+from app.data_filter_controls import DataFilterControls
+from dnascape.workflows.mapping_filter import MappingFilterSettings, compatible_filter_dependence, filtered_speed_settings
 from app.field_hints import FIELD_HINTS, MAPPING_SETTING_HINTS, field_hint
 from app.statistics_exports import HistogramStatisticsExport
 from app.raw_data_transfer import RawInputTarget, open_raw_artifact
@@ -63,6 +66,7 @@ from app.mapping_code_export import (
 )
 from app.mapping_eta import MappingEta
 from app.mapping_exports import (
+    mapping_output_dependence_suffix,
     build_mapping_comparison_raw_export,
     build_mapping_raw_export,
 )
@@ -117,6 +121,7 @@ from app.preview_plotting import (
 from app.result_naming import (
     RMAP_FILE_PREFIX,
     compact_export_stem,
+    dependence_file_suffix,
     output_file_token,
     safe_filename_stem,
     unique_compact_export_stems,
@@ -161,12 +166,12 @@ _FORMAT_LABELS = {
 }
 
 _SCALAR_DEFAULTS = {
-    "firing_rate": 0.001,
+    "initiation_rate": 0.001,
     "fork_speed": 1.4,
 }
 
 _SCALAR_UNITS = {
-    "firing_rate": "min⁻¹ kb⁻¹",
+    "initiation_rate": "min⁻¹ per bin",
     "fork_speed": "kb/min",
 }
 
@@ -180,7 +185,7 @@ _SETTING_CATEGORY_LABELS = {
 }
 
 _OUTPUT_LABELS = {
-    "firing_rate": "Firing rate",
+    "initiation_rate": "Initiation rate",
     "fork_speed": "Fork speed",
     "replication_timing": "Replication timing",
     "replication_timing_fit": "Replication timing fit",
@@ -192,7 +197,17 @@ _OUTPUT_LABELS = {
     "right_fork_density_xt": "Right-moving fork density",
     "left_fork_density_xt": "Left-moving fork density",
     "fork_density_xt": "Total fork density",
+    "initiation_events": "Initiation density (events/kb)",
+    "initiation_events_xt": "Initiation rate density (events/kb/min)",
+    "coalescence_events": "Coalescence density (events/kb)",
+    "coalescence_events_xt": "Coalescence rate density (events/kb/min)",
 }
+
+
+def _mapping_dependence_label(target_key: str, dependence: str) -> str:
+    if target_key in {"initiation_events", "coalescence_events"}:
+        return mapping_target(target_key).variant(dependence).label
+    return _DEPENDENCE_LABELS.get(dependence, dependence.replace("_", " ").title())
 
 _BUNDLE_OUTPUTS = {
     "fork_densities": (
@@ -206,6 +221,7 @@ _BUNDLE_OUTPUTS = {
 _COMPARISON_PREFIX = "comparison:"
 _FIT_DIAGNOSTIC_KEY = "fit_diagnostic"
 _MSE_DIAGNOSTIC_KEY = "mse_diagnostic"
+_ALL_PLOTS_KEY = "all_plots"
 _PLOT_TYPES = ["Line", "Heatmap", "Histogram", "Boxplot"]
 _BATCH_COLOURS = (
     "#b03412",
@@ -356,7 +372,7 @@ class _MappingRawExportSelection:
 # Mapping-page setup. Resolve it while the local app starts so opening Mapping
 # never pays that cold cost or leaves the navigation looking unresponsive.
 _MAPPING_TARGET_ORDER = (
-    "firing_rate",
+    "initiation_rate",
     "fork_speed",
     "replication_timing",
     "fork_directionality",
@@ -396,8 +412,11 @@ def _slug(value: str) -> str:
     return "-".join(value.casefold().replace("_", " ").split())
 
 
-def _mapping_method_name(method: str) -> str:
+def _mapping_method_name(method: str, assumptions=None) -> str:
     """Keep implementation identifiers out of the preview's method summary."""
+    if assumptions is not None and method.endswith(("to_timing_simulation", "to_fork_directionality_simulation")):
+        if assumptions.get("ffiring_nr") is None and not any(float(assumptions.get(key) or 0.) > 0 for key in ("stall_rate", "stall_rate_per_kb", "fork_speed_std")):
+            return "Deterministic mapping"
     for token, label in (
         ("simulation", "Simulation"), ("lightcone", "Light-cone mapping"),
         ("mean_field", "Mean-field mapping"), ("region_integral", "Region integration"),
@@ -572,7 +591,7 @@ def _preview_outputs(route: MappingRoute) -> dict[str, str]:
     }
     input_keys = {_friendly_input_key(item.key) for item in route.inputs}
     if "replication_timing" in input_keys and route.target_key in {
-        "firing_rate",
+        "initiation_rate",
         "fork_speed",
     }:
         outputs.setdefault("replication_timing_fit", "Replication timing fit")
@@ -602,7 +621,7 @@ def _result_preview_outputs(result: MappingResult) -> dict[str, str]:
             )
         )
         for key in output_keys
-        if key in result.outputs and key not in {"fit_history", "residual"}
+        if key in result.outputs and key not in {"fit_history", "residual", "filter_positions"}
     }
     for fitted_key, comparison in result.comparisons.items():
         source_label = _OUTPUT_LABELS.get(
@@ -610,6 +629,15 @@ def _result_preview_outputs(result: MappingResult) -> dict[str, str]:
             comparison.source_key.replace("_", " ").title(),
         )
         outputs[f"{_COMPARISON_PREFIX}{fitted_key}"] = f"{source_label}: observed vs fitted"
+    # Inputs precede fit curves; keep comparisons and the complete column
+    # immediately beneath them, followed by the fitting diagnostics.
+    ordered = {key: label for key, label in outputs.items()
+               if not key.startswith(_COMPARISON_PREFIX) and key not in result.comparisons}
+    ordered.update({key: label for key, label in outputs.items()
+                    if key.startswith(_COMPARISON_PREFIX) or key in result.comparisons})
+    outputs = ordered
+    if any(key.startswith(INPUT_PREFIX) for key in outputs):
+        outputs[_ALL_PLOTS_KEY] = "All plots: inputs and target"
     # Keep fit diagnostics together at the end of the selector: the residual
     # profile first and the optimizer's MSE trace after it.
     if "residual" in result.outputs:
@@ -617,6 +645,24 @@ def _result_preview_outputs(result: MappingResult) -> dict[str, str]:
     if "fit_history" in result.outputs:
         outputs["fit_history"] = "MSE"
     return outputs
+
+
+def _all_mapping_plot_outputs(result: MappingResult) -> tuple[str, ...]:
+    """One chart per quantity, with observed/fitted data in the same chart."""
+    compared = {comparison.source_key for comparison in result.comparisons.values()}
+    outputs = [result.primary_output]
+    outputs.extend(key for key in result.outputs
+                   if key.startswith(INPUT_PREFIX) and key.removeprefix(INPUT_PREFIX) not in compared)
+    outputs.extend(_COMPARISON_PREFIX + key for key in result.comparisons)
+    return tuple(dict.fromkeys(outputs))
+
+
+def _mapping_constant_profile(result: MappingResult, key: str) -> MappingResult:
+    if result.output_forms.get(key) != "scalar" or result.x_axis.size < 2:
+        return result
+    values = np.broadcast_to(float(np.asarray(result.outputs[key]).reshape(-1)[0]), result.x_axis.shape)
+    return replace(result, outputs={**result.outputs, key: values},
+                   output_forms={**result.output_forms, key: "x"})
 
 
 def _default_preview_output(result: MappingResult, options: Mapping[str, str]) -> str:
@@ -667,7 +713,7 @@ def _render_mapping_result(
     legend_position: str,
     y_limits: tuple[float, float] | None,
     on_download: Callable[[str], Any],
-    show_grid: bool = True,
+    show_grid: bool = False,
     log_x: bool = False,
     invert_x: bool = False,
     invert_z: bool = False,
@@ -779,9 +825,7 @@ def _setting_value(setting: Any) -> Any:
 
 
 def _setting_label(setting: Any) -> str:
-    if setting.key == "tau":
-        label = "Stall lifetime"
-    elif setting.key in {"space_maxiter", "temporal_maxiter"}:
+    if setting.key in {"space_maxiter", "temporal_maxiter"}:
         label = "Space fit iterations" if setting.key == "space_maxiter" else "Time fit iterations"
     else:
         label = setting.label
@@ -794,6 +838,15 @@ def _render_setting_field(setting: Any, *, automatic: bool = False, initial: Any
     marker = f"mapping-setting-{_slug(setting.key)}"
     value = initial if automatic else _setting_value(setting)
     label = _setting_label(setting)
+    if setting.key == "tau":
+        if setting.default is None or value is None or not math.isfinite(value) or value <= 0:
+            value = 10.0
+        return (
+            ui.number(label=label, value=value, min=0.000001, step=1.0)
+            .props("dense")
+            .classes("dn-field")
+            .mark(marker)
+        )
     if setting.key == "err_threshold":
         return (
             ui.input(label=label, value=f"{10.0 ** -float(value):g}")
@@ -802,9 +855,10 @@ def _render_setting_field(setting: Any, *, automatic: bool = False, initial: Any
             .mark(marker)
         )
     if setting.kind == "boolean":
+        toggle = ui.switch if setting.key == "perQ" else ui.checkbox
         return (
-            ui.checkbox(label, value=bool(value))
-            .classes("dn-mapping-setting-checkbox")
+            toggle(label, value=bool(value))
+            .classes("dn-mapping-setting-switch" if setting.key == "perQ" else "dn-mapping-setting-checkbox")
             .mark(marker)
         )
     if setting.kind == "choice":
@@ -864,7 +918,7 @@ def _render_setting(
             automatic_value = 0.0
         elif automatic and setting.kind == "boolean":
             automatic_value = False
-        if needs_override and not direct:
+        if needs_override and (not direct or setting.key == "tau"):
             override_label = (
                 "Stall recovery" if setting.key == "tau" else f"Set {_setting_label(setting)}"
             )
@@ -873,6 +927,8 @@ def _render_setting(
                 .classes("dn-mapping-setting-override")
                 .mark(f"mapping-setting-{_slug(setting.key)}-override")
             )
+            if setting.key == "tau":
+                field_hint(override, "Allow stalled forks to restart during Mapping.")
             with ui.element("div").classes("dn-mapping-setting-optional") as field_holder:
                 control = _render_setting_field(setting)
             field_holder.bind_visibility_from(override, "value")
@@ -897,6 +953,8 @@ def _render_setting(
 def _mapping_setting_group(setting: Any, keys: set[str]) -> str:
     """Keep fitting stages prominent and secondary route controls together."""
 
+    if setting.key in {"sim_number", "stall_rate_per_kb", "stall_rate", "tau"}:
+        return "fork_movement"
     if setting.category == "simulation":
         return "simulation"
     if setting.key in {"maxiter", "fit_step", "temporal_maxiter", "temporal_fit_step"}:
@@ -922,9 +980,18 @@ def _sync_contextual_mapping_settings(
         except (TypeError, ValueError):
             pass  # Allow incomplete field edits.
     active = {"refine_edge_kb": not is_periodic}
-    if route.target == "firing_rate" and route.output_dependence == "space":
+    ensemble = stalled
+    for key in ("fork_speed_std", "ffiring_nr"):
+        live = controls.get(key)
+        if live is not None and (live.override is None or live.override.value):
+            value = live.control.value
+            ensemble = ensemble or (value not in (None, "") and (key == "ffiring_nr" or float(value) > 0))
+    if route.target in {"initiation_rate", "fork_speed", "replication_timing", "fork_directionality"}:
+        active.update({key: ensemble for key in controls if "sim_number" in key or key in {"seed", "refine_seed"}})
+    active["tau"] = stalled
+    if route.target == "initiation_rate" and route.output_dependence == "space":
         active["deviation_threshold"] = not (variable_speed or stalled)
-    if route.target == "firing_rate" and route.output_dependence == "constant":
+    if route.target == "initiation_rate" and route.output_dependence == "constant":
         active["neighbourhood_range"] = not variable_speed
     for key, enabled in active.items():
         live = controls.get(key)
@@ -944,6 +1011,87 @@ _MAPPING_ADVANCED_ORDER = (
     "err_threshold", "deviation_threshold", "space_maxiter", "space_fit_step",
 )
 
+_FIT_PARAMETER_SETTINGS = {"rate_bounds", "speed_bounds", "firing_bounds", "err_threshold", "floor", "initial_initiation_rate", "initial_fork_speed"}
+
+
+def _render_fit_parameter_rows(route, settings, input_forms, input_controls, on_change):
+    controls = {}
+    specifications = {item.key: item for item in settings if item.key in _FIT_PARAMETER_SETTINGS}
+    quantity = route.target
+    bound_key = "rate_bounds" if quantity == "initiation_rate" else "speed_bounds"
+    initial_key = "initial_initiation_rate" if quantity == "initiation_rate" else "initial_fork_speed"
+    floor_key = next((key for key in ("err_threshold", "floor") if key in specifications), None)
+    fitted = quantity in {"initiation_rate", "fork_speed"} and bool(specifications)
+    rows = ([(quantity, "Initiation-rate amplitude" if quantity == "initiation_rate" and "weibull_shape" in {s.key for s in settings} else mapping_target(route.target_key).label, True)] if fitted else [])
+    with ui.column().classes("dn-mapping-fit-parameters").mark("mapping-fitting-parameters"):
+        for key, label, editable in rows:
+            marker = f"mapping-fit-{_slug(key)}"
+            with ui.element("div").classes("dn-mapping-fit-row").mark(marker) as row:
+                is_amplitude = editable and "weibull_shape" in {item.key for item in settings}
+                ui.label(label).classes("dn-mapping-fit-label")
+                bounds = specifications.get(bound_key) if editable else None
+                defaults = bounds.default if bounds is not None and bounds.default is not None else (None, None)
+                lower_value = defaults[0]
+                if editable and floor_key is not None:
+                    lower_value = 10. ** -float(specifications[floor_key].default) if floor_key == "err_threshold" else specifications[floor_key].default
+                lower = ui.input("Lower bound", value=None if lower_value is None else f"{lower_value:g}", placeholder="Automatic").props("dense inputmode=decimal").classes("dn-field").mark(marker + "-lower")
+                upper = ui.input("Upper bound", value=None if defaults[1] is None else f"{defaults[1]:g}", placeholder="Automatic").props("dense inputmode=decimal").classes("dn-field").mark(marker + "-upper")
+                initial_spec = specifications.get(initial_key) if editable else None
+                initial = ui.number("Initial guess", value=initial_spec.default if initial_spec is not None else None).props('dense placeholder="Automatic"').classes("dn-field").mark(marker + "-initial")
+                field_hint(lower, "Minimum fitted value; blank keeps the route default.")
+                field_hint(upper, "Maximum fitted value; blank keeps the route default.")
+                field_hint(initial, "Starting fitted value; blank uses the route's automatic estimate.")
+                if is_amplitude:
+                    field_hint(lower, "Minimum Weibull amplitude; the curve varies with time.")
+                    field_hint(upper, "Maximum Weibull amplitude; the curve varies with time.")
+                    field_hint(initial, "Starting Weibull amplitude; blank uses the timing-based estimate.")
+                if bounds is not None:
+                    hidden = ui.input(value=None if bounds.default is None else json.dumps(bounds.default)).mark(f"mapping-setting-{_slug(bound_key)}")
+                    hidden.set_visibility(False)
+                    lower.bind_enabled_from(hidden, "enabled")
+                    upper.bind_enabled_from(hidden, "enabled")
+                    controls[bound_key] = _SettingControl(bounds, hidden, None, holder=row, automatic=bounds.default is None)
+
+                    def sync_bounds(_event=None, *, lo=lower, hi=upper, target=hidden,
+                                    original=(lower.value, upper.value), native_default=bounds.default):
+                        values = tuple(None if control.value in (None, "") else control.value for control in (lo, hi))
+                        if values == original:
+                            target.set_value(None if native_default is None else json.dumps(native_default))
+                            if on_change is not None:
+                                on_change()
+                            return
+                        if values[0] in (0, "0"):
+                            values = (None, values[1])
+                        target.set_value(None if values == (None, None) else json.dumps(values))
+                        if on_change is not None:
+                            on_change()
+
+                    lower.on_value_change(sync_bounds)
+                    upper.on_value_change(sync_bounds)
+                else:
+                    upper.disable()
+                if floor_key is not None:
+                    if is_amplitude and floor_key == "floor":
+                        numerical_floor = ui.input(value=str(specifications[floor_key].default)).mark("mapping-setting-floor")
+                        numerical_floor.set_visibility(False)
+                        controls[floor_key] = _SettingControl(specifications[floor_key], numerical_floor, holder=row, automatic=True, automatic_value=numerical_floor.value)
+                    else:
+                        lower.mark(marker + "-lower", f"mapping-setting-{_slug(floor_key)}")
+                        controls[floor_key] = _SettingControl(specifications[floor_key], lower, None, holder=row, automatic=True, automatic_value=lower.value)
+                        if on_change is not None:
+                            lower.on_value_change(on_change)
+                elif bounds is None:
+                    lower.disable()
+                if initial_spec is not None:
+                    initial.mark(marker + "-initial", f"mapping-setting-{_slug(initial_key)}")
+                    controls[initial_key] = _SettingControl(initial_spec, initial, None, holder=row, automatic=initial_spec.default is None)
+                    if on_change is not None:
+                        initial.on_value_change(on_change)
+                else:
+                    initial.disable()
+                    field_hint(initial, "This direct fit does not require an initial guess.")
+    return controls
+
 
 def _render_route_setting_groups(
     route: MappingRoute,
@@ -953,15 +1101,22 @@ def _render_route_setting_groups(
     input_forms: Mapping[str, DataForm] | None = None,
     on_change: Callable[[], Any] | None = None,
     advanced_container: Any | None = None,
+    input_controls: Mapping[str, Any] | None = None,
+    filtered: bool = False,
 ) -> dict[str, _SettingControl]:
     """Render categorized controls for one route and one UI location."""
 
+    active = route.active_settings(target_shape, input_forms)
+    if filtered and route.target == 'fork_speed' and any(item.key == 'replication_timing' for item in route.inputs):
+        active = filtered_speed_settings(route, active)
     settings = tuple(
         setting
-        for setting in route.active_settings(target_shape, input_forms)
+        for setting in active
         if setting.location == location
     )
-    if not settings and advanced_container is None:
+    parameter_settings = tuple(setting for setting in settings if setting.key in _FIT_PARAMETER_SETTINGS)
+    settings = tuple(setting for setting in settings if setting.key not in _FIT_PARAMETER_SETTINGS)
+    if not settings and not parameter_settings and advanced_container is None:
         ui.label("No additional controls are needed for this route.").classes(
             "dn-mapping-input-hint"
         )
@@ -974,6 +1129,8 @@ def _render_route_setting_groups(
         ) for setting in settings
     }
     present_categories = set(groups.values())
+    if location == "settings":
+        present_categories.add("fitting")
     categories = tuple(
         category for category in _SETTING_CATEGORY_LABELS if category in present_categories
     ) + tuple(
@@ -990,7 +1147,24 @@ def _render_route_setting_groups(
                 ordered_keys = _MAPPING_ADVANCED_ORDER if category == "advanced" else _MAPPING_SETTING_ORDER
                 order = {key: index for index, key in enumerate(ordered_keys)}
                 category_settings.sort(key=lambda item: order.get(item.key, len(order)))
-            if category == "advanced" and advanced_container is not None:
+            if category == "fork_movement":
+                fork_order = {
+                    key: index for index, key in enumerate(
+                        ("stall_rate_per_kb", "stall_rate", "sim_number", "tau")
+                    )
+                }
+                category_settings.sort(key=lambda item: fork_order[item.key])
+                parent = advanced_container
+                if parent is None:
+                    parent = ui.column().classes("dn-mapping-settings-advanced")
+                with parent:
+                    with (
+                        ui.column().classes("dn-setting-subgroup dn-mapping-fork-movement")
+                        .mark("mapping-settings-fork-movement")
+                    ):
+                        ui.label("Fork movement").classes("dn-setting-subgroup-title")
+                        container = ui.element("div").classes("dn-mapping-settings-grid")
+            elif category == "advanced" and advanced_container is not None:
                 container = advanced_container
             else:
                 container = (
@@ -999,6 +1173,7 @@ def _render_route_setting_groups(
                         "dn-setting-group dn-mapping-settings-theme"
                         + (" dn-mapping-settings-theme-untitled" if category == "domain" else "")
                         + (" dn-mapping-settings-advanced" if category == "advanced" else "")
+                        + (" dn-mapping-settings-fitting" if category == "fitting" else "")
                     )
                     .mark(f"mapping-settings-{category}")
                 )
@@ -1007,15 +1182,20 @@ def _render_route_setting_groups(
                         ui.label(_SETTING_CATEGORY_LABELS.get(category, category.title())).classes(
                             "dn-setting-group-title"
                         )
-                    if category == "advanced":
+                    if category in {"advanced", "fitting"}:
                         container = ui.element("div").classes("dn-mapping-settings-grid")
             with container:
                 for setting in category_settings:
                     parent_key = {"space_fit_step": "fit_step", "space_maxiter": "maxiter"}.get(setting.key)
                     inherited = controls[parent_key].control.value if parent_key in controls else None
                     controls[setting.key] = _render_setting(
-                        setting, on_change, direct=category == "advanced", inherited=inherited,
+                        setting, on_change, direct=category in {"advanced", "fork_movement"}, inherited=inherited,
                     )
+            if category == "fitting" and location == "settings":
+                with container:
+                    controls.update(_render_fit_parameter_rows(
+                        route, parameter_settings + settings, input_forms or {}, input_controls, on_change,
+                    ))
     def bind_inherited(child: _SettingControl, parent: _SettingControl) -> None:
         def follow_parent() -> None:
             untouched = child.control.value in (None, "", child.automatic_value)
@@ -1030,7 +1210,7 @@ def _render_route_setting_groups(
         if child is not None and parent is not None and child.automatic:
             bind_inherited(child, parent)
     if route.method in {
-        "timing_and_speed_to_firing_rate", "timing_to_firing_constant_fork_speed",
+        "timing_and_speed_to_initiation_rate", "timing_to_firing_constant_fork_speed",
     } and "fit_step" in controls:
         automatic_step = 2.0
         custom_step = False
@@ -1044,7 +1224,7 @@ def _render_route_setting_groups(
             nonlocal automatic_step
             if custom_step:
                 return
-            # The page exposes physical density rather than per-bin probability.
+            # Stalling remains a physical rate per kb, independent of bin width.
             key = "stall_rate_per_kb" if "stall_rate_per_kb" in controls else "stall_rate"
             stall = controls.get(key)
             enabled = stall is not None and (stall.override is None or stall.override.value)
@@ -1058,7 +1238,7 @@ def _render_route_setting_groups(
                 if controls[key].override is not None:
                     controls[key].override.on_value_change(sync_spatial_firing_step)
         sync_spatial_firing_step()
-    if route.target == "firing_rate" and "spacetime_update" in controls:
+    if route.target == "initiation_rate" and "spacetime_update" in controls:
         def sync_firing_update_controls() -> None:
             mixed = controls["spacetime_update"].control.value == "mixed"
             for key, active in {
@@ -1067,6 +1247,9 @@ def _render_route_setting_groups(
                 "temporal_sim_number": not mixed,
             }.items():
                 if key in controls:
+                    if "sim_number" in key:
+                        stall = controls.get("stall_rate_per_kb") or controls.get("stall_rate")
+                        active = active and stall is not None and float(stall.control.value or 0.) > 0
                     controls[key].active = active
                     holder = controls[key].holder
                     if holder is not None:
@@ -1183,7 +1366,10 @@ def _mapping_output_file_token(result: MappingResult, output_key: str) -> str:
     if output_key.startswith(_COMPARISON_PREFIX):
         source_key = output_key.removeprefix(_COMPARISON_PREFIX).removesuffix("_fit")
         return f"{output_file_token(source_key)}-cmp"
-    return output_file_token(_resolved_output_key(result, output_key))
+    actual = _resolved_output_key(result, output_key)
+    suffix = dependence_file_suffix(result.output_forms.get(actual, result.output_form))
+    token = output_file_token(actual)
+    return token.removesuffix(f"-{suffix}") if suffix else token
 
 
 def _mapping_raw_default_filename(
@@ -1197,9 +1383,11 @@ def _mapping_raw_default_filename(
     comparison = output_key.startswith(_COMPARISON_PREFIX)
     output_stem = _mapping_output_file_token(named.result, output_key)
     base = f"{RMAP_FILE_PREFIX}_{identity_stem}"
+    suffix = mapping_output_dependence_suffix(named.result, output_key if comparison else actual_output)
     if not comparison and actual_output == named.result.primary_output:
-        return base
-    return f"{base}_{_mapping_export_stem(output_stem, 1)}"
+        return f"{base}_{suffix}" if suffix else base
+    stem = f"{base}_{_mapping_export_stem(output_stem, 1)}"
+    return f"{stem}_{suffix}" if suffix else stem
 
 
 def _mapping_raw_preference(
@@ -1253,8 +1441,8 @@ def _read_setting(live: _SettingControl) -> Any:
         raise KeyError(setting.key)
     if setting.key == "err_threshold":
         floor = _read_number(live.control, setting.label)
-        if not math.isfinite(floor) or not 0 < floor <= 1:
-            raise ValueError(f"{setting.label} must be greater than zero and at most 1.")
+        if not math.isfinite(floor) or floor <= 0:
+            raise ValueError(f"{setting.label} must be greater than zero.")
         return -math.log10(floor)
     if setting.kind == "boolean":
         return bool(value)
@@ -1266,6 +1454,10 @@ def _read_setting(live: _SettingControl) -> Any:
     if setting.kind == "number":
         return _read_number(live.control, setting.label)
     if setting.kind in {"number_pair", "number_list"}:
+        if setting.key in {"rate_bounds", "speed_bounds", "firing_bounds"} and isinstance(value, str) and value.startswith("["):
+            value = json.loads(value)
+        if setting.key in {"rate_bounds", "speed_bounds", "firing_bounds"} and isinstance(value, (tuple, list)):
+            return tuple(None if item is None else float(item) for item in value)
         parts = [part for part in str(value or "").replace(",", " ").split() if part]
         if setting.kind == "number_pair" and len(parts) != 2:
             raise ValueError(f"{setting.label} must contain exactly two numbers.")
@@ -1904,7 +2096,7 @@ def _render_multiple_constant_input(
                         ui.number(
                             value=retained.values_by_key[row_key],
                             min=0,
-                            step=0.001 if input_spec.key == "firing_rate" else 0.1,
+                            step=0.001 if input_spec.key == "initiation_rate" else 0.1,
                         )
                         .props("dense")
                         .classes("dn-field dn-mapping-constant-value")
@@ -2041,7 +2233,7 @@ def _render_mapping_input(
                 if "scalar" in available_forms:
                     mode_options = {"scalar": "Constant", **mode_options}
                     if _friendly_input_key(input_spec.key) in {
-                        "firing_rate",
+                        "initiation_rate",
                         "fork_speed",
                     }:
                         mode_options = {
@@ -2056,7 +2248,7 @@ def _render_mapping_input(
                     for form in available_forms
                 }
                 if available_forms == ("scalar",) and _friendly_input_key(input_spec.key) in {
-                    "firing_rate",
+                    "initiation_rate",
                     "fork_speed",
                 }:
                     mode_options = {
@@ -2124,7 +2316,7 @@ def _render_mapping_input(
                                 label=label,
                                 value=_scalar_default(input_spec),
                                 min=0,
-                                step=0.001 if input_spec.key == "firing_rate" else 0.1,
+                                step=0.001 if input_spec.key == "initiation_rate" else 0.1,
                             )
                             .props("dense")
                             .classes("dn-field")
@@ -2251,7 +2443,7 @@ def _mapping_whole_region_end(
 ) -> float | None:
     """Read the shortest spatial extent from inspected metadata, without parsing data."""
 
-    lengths: list[int] = []
+    extents: list[float] = []
     for live in inputs.values():
         if live.override is not None and not bool(live.override.value):
             continue
@@ -2262,9 +2454,8 @@ def _mapping_whole_region_end(
             if named is not None:
                 axis = named.result.x_axis
                 if axis.size:
-                    lengths.append(int(axis.size))
-                    if axis.size > 1:
-                        resolution_x = float(axis[1] - axis[0])
+                    step = float(axis[1] - axis[0]) if axis.size > 1 else 1.0
+                    extents.append(float(axis[-1]) + step)
             continue
         if form not in {"x", "xt"}:
             continue
@@ -2290,10 +2481,12 @@ def _mapping_whole_region_end(
                 else shape[0]
             )
             if size > 0:
-                lengths.append(int(size))
-    if not lengths or not math.isfinite(resolution_x) or resolution_x <= 0:
+                # Ordinary array uploads use a native spacing of 1 kb. The
+                # destination resolution must never stretch their extent.
+                extents.append(float(size))
+    if not extents:
         return None
-    end = min(lengths) * resolution_x
+    end = min(extents)
     return end if math.isfinite(end) else None
 
 
@@ -2452,7 +2645,7 @@ async def _read_mapping_input_async(
         }
         cache_key = ("track", inspection_key, tuple(track_kwargs.items()))
         if materialized_cache.get("key") == cache_key:
-            return materialized_cache["value"], use_region_window
+            return materialized_cache["value"], use_region_window or whole_genome
         if len(inspections) == 1:
             values = await run.io_bound(
                 materialize_track_upload,
@@ -2466,7 +2659,7 @@ async def _read_mapping_input_async(
                 **track_kwargs,
             )
         materialized_cache.update(key=cache_key, value=values)
-        return values, use_region_window
+        return values, use_region_window or whole_genome
     columns: list[str | None] = []
     array_keys: list[str | None] = []
     for inspection in inspections:
@@ -2948,6 +3141,7 @@ def render(_navigate: Callable[[str], None]) -> None:
     running = False
     page_activity = current_page_activity()
     active_cancel: Event | None = None
+    mapping_filter_controls = None
     restored_entry = consume_cached_workflow("mapping")
     restored_result = restored_entry.payload if restored_entry is not None else None
     latest_result: MappingResult | None = (
@@ -3046,17 +3240,18 @@ def render(_navigate: Callable[[str], None]) -> None:
                         with ui.column().classes("dn-setting-group dn-mapping-request-group"):
                             dependence_control = (
                                 ui.select(
-                                    _select_options(
-                                        selected_target.dependences,
-                                        _DEPENDENCE_LABELS,
-                                    ),
+                                    {dep: _mapping_dependence_label(selected_target.key, dep)
+                                     for dep in selected_target.dependences},
                                     value=selected_dependence,
-                                    label="Dependence",
+                                    label="Quantity" if selected_target.key in {"initiation_events", "coalescence_events"} else "Dependence",
                                 )
                                 .props("dense options-dense")
                                 .classes("dn-field")
                                 .mark("mapping-target-form")
                             )
+                            field_hint(dependence_control, FIELD_HINTS[
+                                "Quantity" if selected_target.key in {"initiation_events", "coalescence_events"} else "Dependence"
+                            ])
                             if len(selected_target.dependences) == 1:
                                 dependence_control.disable()
 
@@ -3100,7 +3295,7 @@ def render(_navigate: Callable[[str], None]) -> None:
                             )
                             calculation_control = (
                                 ui.select(
-                                    {key: key.capitalize() for key in calculation_state},
+                                    {key: "Automatic" if key == "simulation" else key.capitalize() for key in calculation_state},
                                     value=next(iter(calculation_state)),
                                     label="Calculation",
                                 )
@@ -3117,6 +3312,11 @@ def render(_navigate: Callable[[str], None]) -> None:
 
                     def sync_target_shape(route: MappingRoute, *, retain: bool = False) -> None:
                         shapes = route.shapes_for(selected_forms)
+                        filtered_free = (mapping_filter_controls is not None and mapping_filter_controls.controls['enabled'].value
+                            and (mapping_filter_controls.controls['selection'].value != 'profile' or mapping_filter_controls.profile is not None)
+                            and route.target == 'initiation_rate' and route.output_dependence in {'time', 'spacetime'})
+                        if filtered_free:
+                            shapes = ('free',)
                         previous = target_shape_control.value if retain else None
                         target_shape_control.options = {
                             shape: shape.replace("_", " ").title() for shape in shapes
@@ -3128,16 +3328,14 @@ def render(_navigate: Callable[[str], None]) -> None:
                         else:
                             target_shape_control.value = shapes[0] if shapes else None
                         target_shape_control.update()
-                        target_shape_container.set_visibility(len(shapes) > 1)
+                        target_shape_control.set_enabled(not filtered_free)
+                        target_shape_container.set_visibility(len(shapes) > 1 or filtered_free)
 
                     def sync_preview_selection(route: MappingRoute) -> None:
                         invalidate_mapping_result()
                         if latest_result is not None:
                             return
-                        mapping_stats["Dependence"].text = _DEPENDENCE_LABELS.get(
-                            str(dependence_control.value),
-                            str(dependence_control.value).replace("_", " ").title(),
-                        )
+                        mapping_stats["Dependence"].text = _mapping_dependence_label(str(target_control.value), str(dependence_control.value))
                         mapping_stats["Dependence"].update()
                         outputs = _preview_outputs(route)
                         previous_output = str(preview_output.value or "")
@@ -3165,6 +3363,8 @@ def render(_navigate: Callable[[str], None]) -> None:
                         render_region_settings.refresh()
                         render_mapping_settings.refresh()
                         sync_preview_selection(route)
+                        if mapping_filter_controls is not None:
+                            sync_mapping_filter()
 
                     def sync_calculation(
                         family: MappingRouteFamily,
@@ -3184,7 +3384,7 @@ def render(_navigate: Callable[[str], None]) -> None:
                         synchronizing_calculation = True
                         try:
                             calculation_control.set_options(
-                                {key: key.capitalize() for key in calculation_state},
+                                {key: "Automatic" if key == "simulation" else key.capitalize() for key in calculation_state},
                                 value=choice,
                             )
                             calculation_control.set_visibility(len(calculation_state) > 1)
@@ -3443,10 +3643,12 @@ def render(_navigate: Callable[[str], None]) -> None:
                         if target_control.value is None:
                             return
                         target = mapping_target(str(target_control.value))
-                        dependence_control.options = _select_options(
-                            target.dependences,
-                            _DEPENDENCE_LABELS,
+                        dependence_control.options = {dep: _mapping_dependence_label(target.key, dep)
+                                                      for dep in target.dependences}
+                        dependence_control._props["label"] = (
+                            "Quantity" if target.key in {"initiation_events", "coalescence_events"} else "Dependence"
                         )
+                        field_hint(dependence_control, FIELD_HINTS[dependence_control._props["label"]])
                         dependence_control.value = target.default_dependence
                         dependence_control.update()
                         if len(target.dependences) == 1:
@@ -3471,7 +3673,7 @@ def render(_navigate: Callable[[str], None]) -> None:
                 with expansion("Region", icon="straighten"):
                     with ui.element("div").classes("dn-mapping-region-scope"):
                         whole_region = (
-                            ui.checkbox("Whole region", value=False)
+                            ui.switch("Whole region", value=False)
                             .classes("dn-mapping-whole-region")
                             .mark("mapping-whole-region")
                         )
@@ -3480,6 +3682,12 @@ def render(_navigate: Callable[[str], None]) -> None:
                             .classes("dn-mapping-periodic-slot")
                             .mark("mapping-periodic-slot")
                         )
+                        show_plot = (
+                            ui.switch("Show plot", value=True)
+                            .classes("dn-mapping-show-plot")
+                            .mark("mapping-show-plot")
+                        )
+                        show_plot.on_value_change(lambda: render_latest_result())
                     with (
                         ui.element("div")
                         .classes("dn-mapping-window-grid")
@@ -3547,13 +3755,13 @@ def render(_navigate: Callable[[str], None]) -> None:
                                     target_shape=str(target_shape_control.value or ""),
                                     input_forms=selected_forms,
                                     on_change=scientific_setting_changed,
+                                    filtered=mapping_filter_controls is not None and bool(mapping_filter_controls.controls['enabled'].value),
                                 )
                             )
                         periodic = region_setting_controls.get("perQ")
                         if periodic is not None and periodic.holder is not None:
                             periodic.holder.move(periodic_slot)
-                        # Bin width describes the uploaded data, so input-form
-                        # changes must not reset it and shift Start/End indices.
+                        # Keep the requested fit grid when input forms change.
                         if (
                             "resolution" in region_setting_controls
                             and "value" in retained_spatial_resolution
@@ -3596,19 +3804,13 @@ def render(_navigate: Callable[[str], None]) -> None:
                                 .classes("dn-field")
                                 .mark("mapping-region-missing")
                             )
-                            show_plot = (
-                                ui.checkbox("Show plot", value=True)
-                                .classes("dn-mapping-setting-checkbox dn-mapping-show-plot")
-                                .mark("mapping-show-plot")
-                            )
-                            show_plot.on_value_change(lambda: render_latest_result())
 
                     @ui.refreshable
                     def render_mapping_settings() -> None:
                         route = selected_route_state["route"]
                         mapping_setting_controls.clear()
                         for child in tuple(advanced_fields.default_slot.children):
-                            if child not in (_region_missing, show_plot):
+                            if child is not _region_missing:
                                 child.delete()
                         with (
                             ui.element("div")
@@ -3620,6 +3822,7 @@ def render(_navigate: Callable[[str], None]) -> None:
                                     route,
                                     location="settings",
                                     input_forms=selected_forms,
+                                    filtered=mapping_filter_controls is not None and bool(mapping_filter_controls.controls['enabled'].value),
                                     target_shape=(
                                         str(target_shape_control.value)
                                         if target_shape_control.value is not None
@@ -3627,9 +3830,9 @@ def render(_navigate: Callable[[str], None]) -> None:
                                     ),
                                     on_change=scientific_setting_changed,
                                     advanced_container=advanced_fields,
+                                    input_controls=mapping_input_controls,
                                 )
                             )
-                        show_plot.move(advanced_fields)
                         _region_missing.move(
                             advanced_fields,
                             target_index=1 if "error" in mapping_setting_controls else 0,
@@ -3644,6 +3847,65 @@ def render(_navigate: Callable[[str], None]) -> None:
 
                     with primary_settings:
                         render_mapping_settings()
+
+                filter_syncing = False
+                filter_speed_mode = False
+
+                def sync_mapping_filter() -> None:
+                    nonlocal filter_syncing, filter_speed_mode
+                    if mapping_filter_controls is None or filter_syncing:
+                        return
+                    filter_syncing = True
+                    try:
+                        controls = mapping_filter_controls.controls
+                        route = selected_route_state['route']
+                        relative = controls['relative_to']
+                        options = {item.key: item.label for item in route.inputs if not item.prepared_result_only}
+                        previous = relative.value
+                        if relative.options != options:
+                            relative.set_options(options, value=previous if previous in options else next(iter(options), None))
+                        active_filter = controls['enabled'].value and (controls['selection'].value != 'profile' or mapping_filter_controls.profile is not None)
+                        if active_filter:
+                            dependence = compatible_filter_dependence(
+                                route.output_dependence, selected_forms.get(relative.value, 'scalar'), controls['selection'].value,
+                            )
+                            if dependence != route.output_dependence:
+                                old_keys = {item.key for item in route.inputs}
+                                dependence_control.set_value(dependence)
+                                families = _mapping_route_families_for_ui(str(target_control.value), dependence)
+                                family = next((item for item in families if {spec.key for spec in item.inputs} == old_keys), None)
+                                if family is not None:
+                                    route_control.set_value(family.key)
+                                route = selected_route_state['route']
+                            old_shape = target_shape_control.value
+                            sync_target_shape(route, retain=True)
+                            if target_shape_control.value != old_shape:
+                                render_mapping_settings.refresh()
+                        else:
+                            old_shape = target_shape_control.value
+                            sync_target_shape(route, retain=True)
+                            if target_shape_control.value != old_shape:
+                                render_mapping_settings.refresh()
+                        speed_mode = bool(active_filter and route.target == 'fork_speed'
+                                          and any(item.key == 'replication_timing' for item in route.inputs))
+                        if speed_mode != filter_speed_mode:
+                            filter_speed_mode = speed_mode
+                            render_region_settings.refresh()
+                            render_mapping_settings.refresh()
+                        invalidate_mapping_result()
+                    finally:
+                        filter_syncing = False
+
+                mapping_filter_controls = DataFilterControls(
+                    sync_mapping_filter, marker_prefix='mapping-filter',
+                    allow_export=True, allow_complement=True, profile_units='bp',
+                    align_modulation_from_start=True,
+                    relative_options={item.key: item.label for item in selected_route_state['route'].inputs if not item.prepared_result_only},
+                    on_change=sync_mapping_filter,
+                    header=lambda: ui.label('Selected target values are transformed once, then held fixed during fitting.').classes('dn-upload-formats'),
+                )
+                field_hint(mapping_filter_controls.controls['relative_to'], 'Input whose values select the frozen target regions.')
+                field_hint(mapping_filter_controls.controls['enabled'], 'Transform initial target values and freeze them throughout fitting.')
 
                 def render_mapping_code_menu() -> None:
                     ui.menu_item(
@@ -4040,9 +4302,58 @@ def render(_navigate: Callable[[str], None]) -> None:
                     )
 
                 with raw_controls.extra_slot:
+                    filter_layout_preferences = {}
+
+                    @ui.refreshable
+                    def render_filter_files() -> None:
+                        _page, _pages, first, stop = _mapping_raw_page_bounds(len(latest_results), int(batch_raw_page['value']))
+                        for named in latest_results[first:stop]:
+                            if 'filter_positions' not in named.result.outputs:
+                                continue
+                            ui.label('Filter positions' + (f' · {_mapping_display_name(named)}' if len(latest_results) > 1 else '')).classes('dn-setting-group-title')
+                            handlers = {}
+                            preference = _mapping_raw_preference(mapping_raw_preferences, named, 'filter_positions')
+                            controls = raw_output_file_row(
+                                file_name=preference.file_name,
+                                default_type=preference.file_type, default_compress=preference.compress, reserve_remove_space=True,
+                                on_open=lambda _controls, destination, handlers=handlers: handlers['download'](open_in=destination),
+                                markers={'row': f'mapping-filter-raw-{named.key}', 'download': f'mapping-filter-download-{named.key}'},
+                                extra_classes='dn-mapping-filter-raw-row',
+                            )
+                            with controls.row:
+                                layout = ui.select({'positions': 'Position list', 'intervals': 'Genomic intervals'},
+                                                   value=filter_layout_preferences.get(named.key, 'positions'), label='Layout').props('dense options-dense').classes('dn-field dn-mapping-filter-layout')
+                            layout.move(controls.file_type.parent_slot.parent, target_index=1)
+                            def remember(*, controls=controls, preference=preference, layout=layout, key=named.key):
+                                preference.file_name = str(controls.file_name.value or '')
+                                preference.customized = preference.file_name != preference.automatic_name
+                                preference.file_type = str(controls.file_type.value or 'TSV')
+                                preference.compress = bool(controls.compress.value)
+                                filter_layout_preferences[key] = layout.value
+                            for control in (controls.file_name, controls.file_type, controls.compress, layout):
+                                control.on_value_change(remember)
+
+                            async def download_filter_file(*, open_in=None, named=named, controls=controls, layout=layout):
+                                try:
+                                    artifact = await run.io_bound(
+                                        build_mapping_raw_export, named.result, 'filter_positions', controls.file_type.value,
+                                        filename=controls.file_name.value,
+                                        compression=get_export_settings().raw_compression if controls.compress.value else 'none',
+                                        filter_layout=layout.value,
+                                    )
+                                    if open_in is not None:
+                                        await open_raw_artifact(artifact, open_in, _navigate, preferred_input='filter_positions')
+                                    else:
+                                        ui.download(artifact.data, artifact.filename, artifact.media_type)
+                                except (ValueError, RuntimeError, TypeError) as exc:
+                                    notify(str(exc), type='negative')
+
+                            controls.download_button.on_click(download_filter_file)
+                            handlers['download'] = download_filter_file
 
                     @ui.refreshable
                     def render_batch_raw_files() -> None:
+                        render_filter_files.refresh()
                         multiple = len(latest_results) > 1
                         single = len(latest_results) == 1
                         raw_controls.row.set_visibility(single)
@@ -4191,6 +4502,7 @@ def render(_navigate: Callable[[str], None]) -> None:
                                 )
 
                     render_batch_raw_files()
+                    render_filter_files()
 
                 def remove_mapping_result(result_key: str) -> None:
                     """Remove one completed result and reconcile the live batch preview."""
@@ -4302,12 +4614,9 @@ def render(_navigate: Callable[[str], None]) -> None:
                         preview_output.enable()
                     preview_output.update()
                     primary = np.asarray(latest_result.outputs[latest_result.primary_output])
-                    mapping_stats["Dependence"].text = _DEPENDENCE_LABELS.get(
-                        latest_result.output_dependence,
-                        latest_result.output_dependence.replace("_", " ").title(),
-                    )
+                    mapping_stats["Dependence"].text = _mapping_dependence_label(latest_result.target_key, latest_result.output_dependence)
                     mapping_stats["Points"].text = f"{primary.size:,}"
-                    mapping_stats["Method"].text = _mapping_method_name(latest_result.method)
+                    mapping_stats["Method"].text = _mapping_method_name(latest_result.method, latest_result.assumptions)
                     for value in mapping_stats.values():
                         value.update()
                     apply_preview_output()
@@ -4366,6 +4675,8 @@ def render(_navigate: Callable[[str], None]) -> None:
                     render_dataset_selector.refresh()
 
                 def resolved_plot_type() -> str:
+                    if preview_output.value == _ALL_PLOTS_KEY:
+                        return "Line"
                     output_key = str(
                         preview_output.value
                         or (latest_result.primary_output if latest_result else initial_output_key)
@@ -4407,7 +4718,7 @@ def render(_navigate: Callable[[str], None]) -> None:
                         len(latest_results) > 1
                         and str(preview_layout.value or "Combined") == "Combined"
                     )
-                    multiple_curves = comparison_curves or combined_batch
+                    multiple_curves = comparison_curves or combined_batch or output_key == _ALL_PLOTS_KEY
                     actual_output_key = (
                         _resolved_output_key(latest_result, output_key)
                         if latest_result is not None
@@ -4428,6 +4739,8 @@ def render(_navigate: Callable[[str], None]) -> None:
                         plot_type=plot_type,
                         multiple_curves=multiple_curves,
                         allow_histogram=(
+                            output_key != _ALL_PLOTS_KEY
+                            and
                             output_form not in {"t", "xt"}
                             and actual_output_key != "fit_history"
                             and not comparison_curves
@@ -4457,7 +4770,7 @@ def render(_navigate: Callable[[str], None]) -> None:
                 def populate_automatic_y_limits(*, redraw: bool = True) -> None:
                     nonlocal updating_y_limits, y_limits_automatic
                     y_limits_automatic = True
-                    if latest_result is None:
+                    if latest_result is None or preview_output.value == _ALL_PLOTS_KEY:
                         return
                     if not plotting_settings_ready(
                         plot_settings,
@@ -4592,17 +4905,20 @@ def render(_navigate: Callable[[str], None]) -> None:
                     }.values():
                         freeze(live.control)
                         freeze(live.override)
+                    mapping_filter_controls.set_locked(True)
                     return frozen
 
                 def restore_scientific_controls(frozen: list[Any]) -> None:
+                    mapping_filter_controls.set_locked(False)
                     for control in frozen:
                         if is_data_upload(control):
                             set_data_upload_locked(control, False)
                         else:
                             control.enable()
 
-                async def download_plot(file_format: str) -> None:
-                    if latest_result is None or result_chart is None:
+                async def download_plot(file_format: str, *, chart=None, selected_output=None) -> None:
+                    capture_chart = chart or result_chart
+                    if latest_result is None or capture_chart is None:
                         notify("Run Mapping before downloading a plot.", type="warning")
                         return
                     try:
@@ -4615,12 +4931,12 @@ def render(_navigate: Callable[[str], None]) -> None:
                         }
                         if capture_format == "png":
                             capture_options["pixelRatio"] = pixel_ratio
-                        data_uri = await result_chart.run_chart_method(
+                        data_uri = await capture_chart.run_chart_method(
                             "getDataURL",
                             capture_options,
                             timeout=10,
                         )
-                        output_key = str(preview_output.value or latest_result.primary_output)
+                        output_key = str(selected_output or preview_output.value or latest_result.primary_output)
                         active_named = next(
                             (
                                 item
@@ -4932,6 +5248,10 @@ def render(_navigate: Callable[[str], None]) -> None:
                             method=selected_route_state["route"].method,
                             target_shape=(str(target_shape_control.value) if target_shape_control.value is not None else None),
                             settings=setting_values(),
+                            fit_filter=MappingFilterSettings(
+                                mapping_filter_controls.snapshot(), mapping_filter_controls.controls['relative_to'].value,
+                                bool(mapping_filter_controls.controls['export'].value),
+                            ),
                             setting_controls={**region_setting_controls, **mapping_setting_controls},
                             inputs=mapping_input_controls,
                             read_input=_read_mapping_input,
@@ -4940,6 +5260,8 @@ def render(_navigate: Callable[[str], None]) -> None:
                                 "end_kb": _read_number(region_end, "Region end"),
                                 "whole_genome": bool(whole_region.value),
                                 "missing_policy": str(_region_missing.value or "error"),
+                                "source_resolution_x": 1.0,
+                                "initiation_rate_per_bin": True,
                             },
                             combination_mode=str(mapping_combination_mode.get("value", "pairwise")),
                             raw_export={
@@ -4989,6 +5311,7 @@ def render(_navigate: Callable[[str], None]) -> None:
                     nonlocal result_chart
                     statistics_export.refresh()
                     result_slot.visible = bool(show_plot.value)
+                    plot_settings.surface.visible = bool(show_plot.value)
                     if not show_plot.value:
                         result_chart = None
                         result_slot.clear()
@@ -5009,7 +5332,35 @@ def render(_navigate: Callable[[str], None]) -> None:
                     with result_slot:
                         try:
                             plot_kwargs = current_mapping_plot_settings()
-                            if len(latest_results) > 1 and str(preview_layout.value) == "Combined":
+                            if preview_output.value == _ALL_PLOTS_KEY:
+                                for index, key in enumerate(_all_mapping_plot_outputs(latest_result)):
+                                    form = latest_result.output_forms.get(key, "x")
+                                    label = _result_preview_outputs(latest_result).get(key, key)
+                                    ui.label(label.removesuffix(" (target)")).classes("dn-setting-group-title")
+                                    arguments = {**plot_kwargs, "output_key": key,
+                                        "plot_type": "Heatmap" if form in {"t", "xt"} else "Line",
+                                        "title": label, "series_label": label.removesuffix(" (target)"),
+                                        "x_label": "Position (kb)",
+                                        "y_label": "Time (min)" if form in {"t", "xt"} else label.removesuffix(" (target)"),
+                                        "y_limits": None, "aspect_ratio": 2.5 if form in {"t", "xt"} else plot_kwargs["aspect_ratio"],
+                                    }
+                                    shown = _mapping_constant_profile(latest_result, key)
+                                    options = _mapping_plot_options(shown, **arguments)
+                                    holder = {}
+                                    async def save_chart(fmt, selected=key, reference=holder):
+                                        await download_plot(fmt, chart=reference["chart"], selected_output=selected)
+                                    chart = render_preview_chart(options, title=label,
+                                        marker="mapping-result-plot" if index == 0 else f"mapping-all-plot-{index}",
+                                        on_download=save_chart)
+                                    holder["chart"] = chart
+                                    settings = replace(plot_settings)
+                                    object.__setattr__(settings, "_sync_navigation_controls", False)
+                                    object.__setattr__(settings, "_navigation", plot_settings._stacked_navigation.setdefault(
+                                        key, type(plot_settings._navigation)()))
+                                    chart.attach_settings(settings)
+                                    if result_chart is None:
+                                        result_chart = chart
+                            elif len(latest_results) > 1 and str(preview_layout.value) == "Combined":
                                 options = _combined_mapping_plot_options(
                                     latest_results,
                                     colors=mapping_batch_colors,
@@ -5025,11 +5376,13 @@ def render(_navigate: Callable[[str], None]) -> None:
                                 )
                             else:
                                 result_chart = _render_mapping_result(
-                                    latest_result,
+                                    _mapping_constant_profile(latest_result, str(preview_output.value))
+                                    if view.value == "Circular" else latest_result,
                                     **plot_kwargs,
                                     on_download=download_plot,
                                 )
-                            result_chart.attach_settings(plot_settings)
+                            if preview_output.value != _ALL_PLOTS_KEY:
+                                result_chart.attach_settings(plot_settings)
                         except (RuntimeError, TypeError, ValueError) as exc:
                             notify(str(exc), type="negative")
                             preview_plot("Output unavailable", kind="mapping")
@@ -5089,15 +5442,16 @@ def render(_navigate: Callable[[str], None]) -> None:
                         selected_resolution = float(
                             1.0 if resolution_value is None else resolution_value
                         )
-                        # Bin any accompanying genomic tracks on the retained
-                        # result's intrinsic grid, before service validation.
-                        for live in mapping_input_controls.values():
-                            if live.surface.get("prepared_only"):
-                                bundle = _read_mapping_input(live)
-                                source_axis = np.asarray(bundle["x_array"], dtype=float)
-                                if source_axis.size > 1:
-                                    selected_resolution = float(source_axis[1] - source_axis[0])
-                                break
+                        if "resolution" not in region_setting_controls:
+                            # Bundle-only reductions inherit their coordinates;
+                            # there is no destination grid for the user to edit.
+                            for live in mapping_input_controls.values():
+                                if live.surface.get("prepared_only"):
+                                    bundle = _read_mapping_input(live)
+                                    axis = np.asarray(bundle["x_array"], dtype=float)
+                                    if axis.size > 1:
+                                        selected_resolution = float(axis[1] - axis[0])
+                                    break
                         use_whole_region = bool(whole_region.value)
 
                         async def read_input(
@@ -5196,6 +5550,13 @@ def render(_navigate: Callable[[str], None]) -> None:
                                         ),
                                         whole_genome=use_whole_region,
                                         prewindowed_inputs=frozenset(prewindowed_inputs),
+                                        source_resolution_x=1.0,
+                                        initiation_rate_per_bin=True,
+                                        fit_filter=MappingFilterSettings(
+                                            mapping_filter_controls.snapshot(),
+                                            mapping_filter_controls.controls['relative_to'].value,
+                                            bool(mapping_filter_controls.controls['export'].value),
+                                        ),
                                     ),
                                 )
                             )
@@ -5219,12 +5580,19 @@ def render(_navigate: Callable[[str], None]) -> None:
                             # Use validated, binned extents for genomic tracks
                             # and other inputs whose upload metadata is incomplete.
                             ends = [
-                                checked.spatial_size * checked.resolution_x
+                                checked.end_kb if checked.end_kb is not None
+                                else checked.start_kb + checked.spatial_size * checked.resolution_x
                                 for checked in prepared_calls
                                 if checked.spatial_size > 0
                             ]
                             if ends and region_end.value != min(ends):
                                 region_end.set_value(min(ends))
+                            starts = [
+                                checked.start_kb for checked in prepared_calls
+                                if checked.spatial_size > 0
+                            ]
+                            if starts and region_start.value != min(starts):
+                                region_start.set_value(min(starts))
 
                         staged_results: list[_NamedMappingResult] = []
                         total_requests = len(requests)
@@ -5328,12 +5696,11 @@ def render(_navigate: Callable[[str], None]) -> None:
                         apply_preview_output()
 
                         primary = np.asarray(result.outputs[result.primary_output])
-                        mapping_stats["Dependence"].text = _DEPENDENCE_LABELS.get(
-                            result.output_dependence,
-                            result.output_dependence.replace("_", " ").title(),
-                        )
+                        for warning in dict.fromkeys(warning for item in latest_results for warning in item.result.diagnostics.get('filter_warnings', ())):
+                            notify(warning, type='warning')
+                        mapping_stats["Dependence"].text = _mapping_dependence_label(result.target_key, result.output_dependence)
                         mapping_stats["Points"].text = f"{primary.size:,}"
-                        mapping_stats["Method"].text = _mapping_method_name(route.method)
+                        mapping_stats["Method"].text = _mapping_method_name(route.method, result.assumptions)
                         for value in mapping_stats.values():
                             value.update()
                         stats_container.visible = True
@@ -5436,6 +5803,11 @@ def render(_navigate: Callable[[str], None]) -> None:
                         page_activity.finish("mapping", page_run, success=completed_successfully)
 
                 def apply_preview_output() -> None:
+                    if preview_output.value == _ALL_PLOTS_KEY:
+                        view.enable()
+                        preview_title.value = "Inputs and target"
+                        sync_plot_controls()
+                        return
                     """Keep preview presentation and raw export tied to the actual output."""
 
                     output_key = str(preview_output.value)
@@ -5499,7 +5871,7 @@ def render(_navigate: Callable[[str], None]) -> None:
                     preview_title.value = output_label
                     view.value = "Default"
                     if comparison_source_key is not None:
-                        view.disable()
+                        view.enable()
                         preview_x_label.value = (
                             "Time (min)" if comparison_form == "t" else "Position (kb)"
                         )
@@ -5694,12 +6066,9 @@ def render(_navigate: Callable[[str], None]) -> None:
                     restored_primary = np.asarray(
                         latest_result.outputs[latest_result.primary_output]
                     )
-                    mapping_stats["Dependence"].text = _DEPENDENCE_LABELS.get(
-                        latest_result.output_dependence,
-                        latest_result.output_dependence.replace("_", " ").title(),
-                    )
+                    mapping_stats["Dependence"].text = _mapping_dependence_label(latest_result.target_key, latest_result.output_dependence)
                     mapping_stats["Points"].text = f"{restored_primary.size:,}"
-                    mapping_stats["Method"].text = _mapping_method_name(latest_result.method)
+                    mapping_stats["Method"].text = _mapping_method_name(latest_result.method, latest_result.assumptions)
                     for value in mapping_stats.values():
                         value.update()
                     stats_container.visible = True

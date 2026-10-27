@@ -26,8 +26,8 @@ from types import TracebackType
 from typing import Any, NamedTuple
 from urllib.parse import quote, unquote, urljoin, urlsplit, urlunsplit
 
-DEFAULT_MAX_BYTES = 64 * 1024 * 1024
-ABSOLUTE_MAX_BYTES = 128 * 1024 * 1024
+DEFAULT_MAX_BYTES = 512 * 1024 * 1024
+ABSOLUTE_MAX_BYTES = 512 * 1024 * 1024
 DEFAULT_TIMEOUT_SECONDS = 20.0
 DEFAULT_MAX_REDIRECTS = 4
 

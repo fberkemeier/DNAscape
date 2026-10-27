@@ -36,7 +36,7 @@ from .mapping_catalog import DataForm, mapping_route, mapping_target
 from .result_naming import safe_filename_stem, unique_compact_export_stems
 from .uploads import UploadInspection, inspect_upload, materialize_upload
 
-_SCALAR_UNITS = {"firing_rate": "min\u207b\u00b9 kb\u207b\u00b9", "fork_speed": "kb/min"}
+_SCALAR_UNITS = {"initiation_rate": "min\u207b\u00b9 per bin", "fork_speed": "kb/min"}
 _MAX_MAPPING_CASES = 50_000
 
 @dataclass(frozen=True, slots=True)
@@ -361,7 +361,7 @@ def _track_options(
         "interpolation": str(controls.get("interpolation") or "none"),
         "smooth_window": controls.get("smooth_window", 1),
         "normalize": str(controls.get("normalize") or "none"),
-    }, use_region_window
+    }, use_region_window or whole_genome
 
 
 def _prepare_recipe_input(
@@ -496,7 +496,11 @@ def prepare_mapping_recipe(
     """
     check_cancelled = cancel or (lambda: None)
     check_cancelled()
+    from dnascape._terminology import canonical_recipe
+    recipe = canonical_recipe(recipe)
     root = Path(base_path)
+    from .mapping_filter import mapping_filter_from_recipe
+    fit_filter = mapping_filter_from_recipe(recipe.get('filter'), root)
     route = mapping_route(str(recipe["method"]))
     settings = dict(recipe.get("settings", {}))
     for key, override in recipe.get("setting_overrides", {}).items():
@@ -519,7 +523,11 @@ def prepare_mapping_recipe(
         check_cancelled()
         prepared_values[key] = _load_prepared_input(source, root)
         axis = np.asarray(prepared_values[key].get("x_array", ()), dtype=float)
-        if axis.size > 1:
+        if axis.size > 1 and (
+            settings.get("resolution") is None
+            or region.get("source_resolution_x") is None
+            or not any(setting.key == "resolution" for setting in route.settings)
+        ):
             resolution_x = float(axis[1] - axis[0])
     whole_genome = bool(region.get("whole_genome", False))
     labels = {item.key: item.label for item in route.inputs}
@@ -557,6 +565,9 @@ def prepare_mapping_recipe(
             resolution_t=_optional_number(settings.get("resolution_time"), "Temporal resolution"),
             whole_genome=whole_genome,
             prewindowed_inputs=frozenset(item.key for item, index in selected if item.prewindowed[index]),
+            source_resolution_x=_optional_number(region.get("source_resolution_x"), "Source resolution"),
+            initiation_rate_per_bin=bool(region.get("initiation_rate_per_bin", False)),
+            fit_filter=fit_filter,
         )))
     return tuple(requests)
 

@@ -10,9 +10,9 @@ Call
 
    from dnascape import rmap
 
-   firing_rate = rmap(
+   initiation_rate = rmap(
        source={"replication_timing": timing, "fork_speed": 1.4},
-       target="firing_rate",
+       target="initiation_rate",
        assumptions={"resolution_x": 1.0, "target_form": "space"},
    )
 
@@ -21,8 +21,8 @@ Single-source form:
 .. code-block:: python
 
    timing_pred = rmap(
-       source="firing_rate",
-       data=firing_rate,
+       source="initiation_rate",
+       data=initiation_rate,
        target="replication_timing",
        assumptions={
            "fork_speed": 1.4,
@@ -41,12 +41,12 @@ Inspect the installed route table:
 .. code-block:: python
 
    rmap.targets()
-   rmap.requirements(target="firing_rate")
+   rmap.requirements(target="initiation_rate")
    rmap.requirements(target="fork_speed", detail=True)
 
 Common targets:
 
-* ``firing_rate``
+* ``initiation_rate``
 * ``fork_speed``
 * ``replication_timing``
 * ``fork_directionality``
@@ -59,14 +59,14 @@ Common targets:
 * ``completion_time``
 * ``num_origins``
 
-Timing To Firing
-----------------
+Timing To Initiation Rate
+-------------------------
 
 .. code-block:: python
 
-   firing_rate = rmap(
+   initiation_rate = rmap(
        source={"replication_timing": timing, "fork_speed": 1.4},
-       target="firing_rate",
+       target="initiation_rate",
        assumptions={
            "resolution_x": 1.0,
            "resolution_t": 2.0,
@@ -82,17 +82,17 @@ Timing To Firing
 
 .. figure:: _static/img/mapped_firing_placeholder.svg
    :width: 760
-   :alt: Placeholder for mapped firing-rate profile
+   :alt: Placeholder for mapped initiation-rate profile
 
-   Placeholder for mapped firing rate.
+   Placeholder for mapped initiation rate.
 
-Firing To Timing
-----------------
+Initiation Rate To Timing
+-------------------------
 
 .. code-block:: python
 
    timing_pred = rmap(
-       source={"firing_rate": firing_rate, "fork_speed": 1.4},
+       source={"initiation_rate": initiation_rate, "fork_speed": 1.4},
        target="replication_timing",
        assumptions={
            "resolution_x": 1.0,
@@ -122,7 +122,7 @@ Timing To Speed
 .. code-block:: python
 
    fork_speed_x = rmap(
-       source={"replication_timing": timing, "firing_rate": firing_rate},
+       source={"replication_timing": timing, "initiation_rate": initiation_rate},
        target="fork_speed",
        assumptions={
            "resolution_x": 1.0,
@@ -160,7 +160,7 @@ Space-Time Features
    time_grid = np.arange(0, 240 + 2, 2)
 
    fraction_xt = rmap(
-       source={"firing_rate": firing_rate, "fork_speed": 1.4},
+       source={"initiation_rate": initiation_rate, "fork_speed": 1.4},
        target="replicated_fraction_xt",
        assumptions={
            "resolution_x": 1.0,
@@ -170,7 +170,7 @@ Space-Time Features
    )
 
    fork_densities = rmap(
-       source={"firing_rate": firing_rate, "fork_speed": 1.4},
+       source={"initiation_rate": initiation_rate, "fork_speed": 1.4},
        target="fork_densities_xt",
        assumptions={
            "resolution_x": 1.0,
@@ -185,7 +185,7 @@ App Page
 Mapping exposes focused ``rmap`` routes.
 
 Inputs
-   Numeric timing, firing-rate, fork-speed, or directionality tables; optional
+   Numeric timing, initiation-rate, fork-speed, or directionality tables; optional
    constants.
 
 Controls

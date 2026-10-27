@@ -21,7 +21,7 @@ Sequence
    * - ``examples/0-quickstart.ipynb``
      - First ``rmap`` and ``rsim`` workflow.
      - Bundled timing data.
-     - Firing rate, timing, simulation plots.
+     - Initiation rate, timing, simulation plots.
    * - ``examples/1-data_management.ipynb``
      - Data loading and export.
      - Tables, arrays, bundled data.
@@ -32,7 +32,7 @@ Sequence
      - Mapped features and comparisons.
    * - ``examples/3-simulation.ipynb``
      - ``rsim`` controls and outputs.
-     - Firing and fork speed.
+     - Initiation rate and fork speed.
      - Timing, efficiency, fork counts, heatmaps.
    * - ``examples/4-neat_examples.ipynb``
      - Small focused examples.
@@ -66,5 +66,5 @@ Figures
 -------
 
 Current docs use placeholders. Good replacements: app screenshots, mapped
-firing profiles, RFD comparisons, heatmaps, and observed-versus-predicted
+initiation-rate profiles, RFD comparisons, heatmaps, and observed-versus-predicted
 plots from the notebooks.

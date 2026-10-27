@@ -34,7 +34,7 @@ class WeibullMappingTests(unittest.TestCase):
 
         self.assertTrue(np.allclose(fields["predicted_timing"], survival_timing))
         self.assertFalse(np.allclose(fields["predicted_timing"], replicated_integral))
-        self.assertGreaterEqual(float(np.nanmin(fields["firing_rate"])), 1e-12)
+        self.assertGreaterEqual(float(np.nanmin(fields["initiation_rate"])), 1e-12)
 
     def test_spacetime_weibull_fit_recovers_synthetic_timing(self):
         n = 24
@@ -56,7 +56,7 @@ class WeibullMappingTests(unittest.TestCase):
                 "replication_timing": synthetic["predicted_timing"],
                 "fork_speed": fork_speed,
             },
-            target="firing_rate",
+            target="initiation_rate",
             assumptions={
                 "target_form": "spacetime",
                 "target_shape": "weibull",
@@ -99,7 +99,7 @@ class WeibullMappingTests(unittest.TestCase):
                         "replication_timing": synthetic["predicted_timing"],
                         "fork_speed": fork_speed,
                     },
-                    target="firing_rate",
+                    target="initiation_rate",
                     assumptions={
                         **common,
                         "target_form": target_form,
@@ -132,7 +132,7 @@ class WeibullMappingTests(unittest.TestCase):
                 "replication_timing": synthetic["predicted_timing"],
                 "fork_speed": fork_speed,
             },
-            target="firing_rate",
+            target="initiation_rate",
             assumptions={
                 "target_form": "spacetime",
                 "target_shape": "weibull",

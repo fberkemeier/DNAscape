@@ -1,4 +1,4 @@
-"""Positive circular curvature regularization for fitted firing-rate fields."""
+"""Positive circular curvature regularization for fitted initiation-rate fields."""
 
 import numpy as np
 
@@ -34,14 +34,14 @@ class PeriodicFiringSmoother:
     def __call__(self, values, *, axis=-1, floor=1e-15):
         rates = np.asarray(values, dtype=float)
         if rates.ndim < 1 or not -rates.ndim <= axis < rates.ndim:
-            raise ValueError("Periodic firing rates require a spatial array axis.")
+            raise ValueError("Periodic initiation rates require a spatial array axis.")
         axis %= rates.ndim
         if rates.shape[axis] != self.size:
-            raise ValueError("Periodic firing rates must match the observed spatial grid.")
+            raise ValueError("Periodic initiation rates must match the observed spatial grid.")
         if np.any(~np.isfinite(rates)) or np.any(rates < 0):
-            raise ValueError("Periodic firing rates must contain finite nonnegative values.")
+            raise ValueError("Periodic initiation rates must contain finite nonnegative values.")
         if not np.isfinite(floor) or floor < 0:
-            raise ValueError("The firing-rate floor must be finite and nonnegative.")
+            raise ValueError("The initiation-rate floor must be finite and nonnegative.")
         if self.size == 1:
             return np.maximum(rates, float(floor))
         minimum = max(float(floor), 1e-80)

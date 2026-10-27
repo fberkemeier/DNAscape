@@ -16,7 +16,7 @@ from nicegui.testing.user import UserInteraction
 from app.main import index
 from app.mapping_service import MappingRequest, MappingResult
 
-_ROUTE = "firing_rate--space--replication_timing-and-fork_speed"
+_ROUTE = "initiation_rate--space--replication_timing-and-fork_speed"
 
 
 def _mapped_result(request: MappingRequest) -> MappingResult:
@@ -24,13 +24,13 @@ def _mapped_result(request: MappingRequest) -> MappingResult:
     return MappingResult(
         target=request.route.target,
         target_key=request.route.target_key,
-        target_label="Firing rate",
+        target_label="Initiation rate",
         method=request.route.method,
         output_form="x",
         output_dependence="space",
-        primary_output="firing_rate",
-        outputs={"firing_rate": values},
-        output_forms={"firing_rate": "x"},
+        primary_output="initiation_rate",
+        outputs={"initiation_rate": values},
+        output_forms={"initiation_rate": "x"},
         x_axis=np.arange(values.size, dtype=float),
         time_axis=np.asarray([], dtype=float),
         region_labels=(),

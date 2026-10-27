@@ -63,6 +63,7 @@ def snapshot_mapping_code(
     combination_mode: str,
     raw_export: Mapping[str, Any],
     plotting: Mapping[str, Any],
+    fit_filter=None,
 ) -> MappingCodeSnapshot:
     """Read widgets synchronously, before archive work yields to the UI.
 
@@ -119,14 +120,24 @@ def snapshot_mapping_code(
                 item["track"] = {key: _value(control) for key, control in track.items()}
         input_recipes[key] = item
 
+    def setting_value(key, live):
+        if key in settings:
+            return settings[key]
+        value = _value(live.control)
+        if key == "err_threshold" and value not in (None, ""):
+            return -math.log10(float(value))
+        return value
+
     overrides = {
         key: {
             "enabled": bool(_value(live.override)) if live.override is not None else key in settings,
-            "value": _value(live.control),
+            "value": setting_value(key, live),
         }
         for key, live in setting_controls.items()
         if live.active and (live.override is not None or getattr(live, "automatic", False))
     }
+    from dnascape.workflows.mapping_filter import mapping_filter_recipe
+    filter_recipe = mapping_filter_recipe(fit_filter, members)
     recipe = _literal({
         "method": method,
         "target_shape": target_shape,
@@ -135,6 +146,7 @@ def snapshot_mapping_code(
         "region": dict(region),
         "combination_mode": combination_mode,
         "inputs": input_recipes,
+        **({'filter': filter_recipe} if filter_recipe is not None else {}),
     })
     input_bytes = sum(
         len(data) if isinstance(data, bytes) else sum(array.nbytes for array in data.values())

@@ -45,7 +45,9 @@ def timing_mse_gradient(
             fast_shift_add(neighbourhood, padded, -distance, perQ=False)
         next_exponent = exponent + dt * neighbourhood
         next_survival = np.exp(-next_exponent)
-        timing += (survival - next_survival) / np.clip(neighbourhood, 1e-80, None)
+        increment = (survival - next_survival) / np.clip(neighbourhood, 1e-80, None)
+        increment[neighbourhood == 0] = survival[neighbourhood == 0] * dt
+        timing += increment
         exponent, survival = next_exponent, next_survival
 
     fitted = timing[output_slice].copy()
@@ -62,8 +64,10 @@ def timing_mse_gradient(
         q = dt * neighbourhood
         previous_exponent = np.maximum(exponent - q, 0.0)
         previous_survival = np.exp(-previous_exponent)
-        term = (previous_survival - survival) / neighbourhood
-        derivative = (dt * survival - term) / neighbourhood
+        term = np.divide(previous_survival - survival, neighbourhood,
+                         out=previous_survival * dt, where=neighbourhood > 0)
+        derivative = np.divide(dt * survival - term, neighbourhood,
+                               out=np.zeros_like(term), where=neighbourhood > 0)
         # Avoid subtraction of nearly equal terms in the U derivative.
         small = q < 1e-4
         qs = q[small]

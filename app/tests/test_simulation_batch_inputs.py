@@ -23,7 +23,7 @@ def _result_for(request: ConstantSimulationRequest) -> ConstantSimulationResult:
         np.ceil((request.region_end_kb - request.region_start_kb) / request.resolution_x)
     )
     position = request.region_start_kb + np.arange(bins, dtype=float) * request.resolution_x
-    firing = np.asarray(request.firing_rate, dtype=float).reshape(-1)
+    firing = np.asarray(request.initiation_rate, dtype=float).reshape(-1)
     timing = (
         np.full(bins, float(firing[0]) * 10.0)
         if firing.size == 1
@@ -69,22 +69,22 @@ def test_simulation_accepts_different_spatial_lengths_per_paired_dataset(
             await user.open("/")
             user.find(marker="nav-simulation").click()
             await user.should_see("Simulate DNA replication")
-            _select(user, "source-firing-rate-mode").set_value("profile")
+            _select(user, "source-initiation-rate-mode").set_value("profile")
             _select(user, "source-fork-speed-mode").set_value("profile")
 
-            firing_upload = _upload(user, "source-firing-rate-upload")
+            firing_upload = _upload(user, "source-initiation-rate-upload")
             speed_upload = _upload(user, "source-fork-speed-upload")
             await firing_upload.handle_uploads(
                 [
                     Upload.SmallFileUpload(
                         "short.csv",
                         "text/csv",
-                        b"firing_rate\n0.1\n0.2\n0.3\n",
+                        b"initiation_rate\n0.1\n0.2\n0.3\n",
                     ),
                     Upload.SmallFileUpload(
                         "long.csv",
                         "text/csv",
-                        b"firing_rate\n0.1\n0.2\n0.3\n0.4\n0.5\n",
+                        b"initiation_rate\n0.1\n0.2\n0.3\n0.4\n0.5\n",
                     ),
                 ]
             )
@@ -102,21 +102,21 @@ def test_simulation_accepts_different_spatial_lengths_per_paired_dataset(
                     ),
                 ]
             )
-            for factor in ("firing-rate", "fork-speed"):
+            for factor in ("initiation-rate", "fork-speed"):
                 marker = f"source-{factor}-detected-data"
                 await user.should_see(marker=marker, retries=60)
                 with user.scope(marker=marker):
                     await user.should_see("Files: 2", retries=60)
             # A sole unambiguous signal is selected automatically and needs no
             # redundant value-column field.
-            await user.should_not_see(marker="source-firing-rate-value-column")
+            await user.should_not_see(marker="source-initiation-rate-value-column")
             await user.should_not_see(marker="source-fork-speed-value-column")
 
             user.find(marker="action-simulate").click()
             await user.should_see("2 datasets complete", retries=60)
 
             assert [request.region_end_kb for request in requests] == pytest.approx([3.0, 5.0])
-            assert [np.asarray(request.firing_rate).size for request in requests] == [3, 5]
+            assert [np.asarray(request.initiation_rate).size for request in requests] == [3, 5]
             assert [np.asarray(request.fork_speed).size for request in requests] == [3, 5]
             layout = _select(user, "simulation-presentation")
             assert layout.options == ["Combined", "Individual"]
@@ -151,11 +151,11 @@ def test_simulation_pairs_and_broadcasts_multiple_constants(
             user.find(marker="nav-simulation").click()
             await user.should_see("Simulate DNA replication")
 
-            firing_mode = _select(user, "source-firing-rate-mode")
+            firing_mode = _select(user, "source-initiation-rate-mode")
             firing_mode.set_value("constants")
-            await user.should_see(marker="source-firing-rate-constant-2")
-            user.find(marker="source-firing-rate-constant-add").click()
-            await user.should_see(marker="source-firing-rate-constant-3")
+            await user.should_see(marker="source-initiation-rate-constant-2")
+            user.find(marker="source-initiation-rate-constant-add").click()
+            await user.should_see(marker="source-initiation-rate-constant-3")
             for constant_index, value in enumerate(
                 (0.01, 0.02, 0.03),
                 start=1,
@@ -163,7 +163,7 @@ def test_simulation_pairs_and_broadcasts_multiple_constants(
                 next(
                     iter(
                         user.find(
-                            marker=f"source-firing-rate-constant-{constant_index}"
+                            marker=f"source-initiation-rate-constant-{constant_index}"
                         ).elements
                     )
                 ).set_value(value)
@@ -174,7 +174,7 @@ def test_simulation_pairs_and_broadcasts_multiple_constants(
             user.find(marker="action-simulate").click()
             await user.should_see("3 datasets complete", retries=60)
 
-            assert [request.firing_rate for request in requests] == pytest.approx(
+            assert [request.initiation_rate for request in requests] == pytest.approx(
                 [0.01, 0.02, 0.03]
             )
             assert [request.fork_speed for request in requests] == pytest.approx(
@@ -216,12 +216,12 @@ def test_simulation_rejects_a_spatial_mismatch_inside_one_pair(
             await user.open("/")
             user.find(marker="nav-simulation").click()
             await user.should_see("Simulate DNA replication")
-            _select(user, "source-firing-rate-mode").set_value("profile")
+            _select(user, "source-initiation-rate-mode").set_value("profile")
             _select(user, "source-fork-speed-mode").set_value("profile")
-            await _upload(user, "source-firing-rate-upload").handle_uploads(
+            await _upload(user, "source-initiation-rate-upload").handle_uploads(
                 [
                     Upload.SmallFileUpload(
-                        "sample.csv", "text/csv", b"firing_rate\n0.1\n0.2\n0.3\n"
+                        "sample.csv", "text/csv", b"initiation_rate\n0.1\n0.2\n0.3\n"
                     )
                 ]
             )
@@ -242,19 +242,22 @@ def test_simulation_rejects_a_spatial_mismatch_inside_one_pair(
 
 
 @pytest.mark.parametrize("spacetime", [False, True])
-def test_simulation_preserves_edited_end_and_trims_spatial_profiles(
+def test_simulation_preserves_edited_end_and_resamples_spatial_profiles(
     monkeypatch: pytest.MonkeyPatch, spacetime: bool,
 ) -> None:
     from app.pages import simulation as simulation_page
 
     requests: list[ConstantSimulationRequest] = []
     real_run = simulation_page.run_constant_simulation
+    results: list[ConstantSimulationResult] = []
     firing = np.full((6, 4), 0.1) if spacetime else np.arange(1, 7, dtype=float) / 10
     speed = np.full((1, 4), 1.4) if spacetime else np.arange(1, 7, dtype=float)
 
     def record_run(request: ConstantSimulationRequest, report: Any, cancel: Any):
         requests.append(request)
-        return real_run(request, report, cancel)
+        result = real_run(request, report, cancel)
+        results.append(result)
+        return result
 
     monkeypatch.setattr(simulation_page, "run_constant_simulation", record_run)
 
@@ -264,7 +267,7 @@ def test_simulation_preserves_edited_end_and_trims_spatial_profiles(
             user.find(marker="nav-simulation").click()
             await user.should_see("Simulate DNA replication", retries=60)
             assert user.client is not None
-            for factor, values in (("firing-rate", firing), ("fork-speed", speed)):
+            for factor, values in (("initiation-rate", firing), ("fork-speed", speed)):
                 with user.client:
                     _select(user, f"source-{factor}-mode").set_value("profile")
                 await user.should_see(marker=f"source-{factor}-upload")
@@ -278,19 +281,27 @@ def test_simulation_preserves_edited_end_and_trims_spatial_profiles(
             end = cast(Number, next(iter(user.find(marker="simulation-region-end").elements)))
             with user.client:
                 resolution.set_value(0.1)
-            assert end.value == pytest.approx(0.6)
+            assert end.value == pytest.approx(6.)
             with user.client:
-                end.set_value(0.3)
+                end.set_value(3.)
+                resolution.set_value(.5)
+            assert end.value == pytest.approx(3.)
+            with user.client:
+                resolution.set_value(.1)
+            assert end.value == pytest.approx(3.)
 
             user.find(marker="action-simulate").click()
             await user.should_see(marker="simulation-result-plot", retries=60)
             await user.should_not_see(marker="simulation-error")
-            assert end.value == pytest.approx(0.3)
+            assert end.value == pytest.approx(3.)
             assert len(requests) == 1
-            assert requests[0].region_end_kb == pytest.approx(0.3)
-            np.testing.assert_array_equal(requests[0].firing_rate, firing[:3])
-            np.testing.assert_array_equal(requests[0].fork_speed, speed if spacetime else speed[:3])
+            assert requests[0].region_end_kb == pytest.approx(3.)
+            np.testing.assert_array_equal(requests[0].initiation_rate, firing)
+            np.testing.assert_array_equal(requests[0].fork_speed, speed)
+            expected_firing = np.full((30, 4), .1) if spacetime else np.arange(30)*.01 + .1
+            np.testing.assert_allclose(results[0].outputs["input:initiation_rate"], expected_firing)
+            np.testing.assert_allclose(results[0].position_kb, np.arange(30)*.1)
             chart = cast(EChart, next(iter(user.find(marker="simulation-result-plot").elements)))
-            assert len(chart.options["series"][0]["data"]) == 3
+            assert len(chart.options["series"][0]["data"]) == 30
 
     asyncio.run(scenario())

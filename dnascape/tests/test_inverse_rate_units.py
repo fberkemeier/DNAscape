@@ -17,7 +17,7 @@ def test_static_inverse_recovers_physical_density_at_multiple_resolutions(resolu
     )
     result = rmap(
         {"replication_timing": timing, "fork_speed": 1.4},
-        "firing_rate",
+        "initiation_rate",
         assumptions={
             "target_form": form,
             "resolution": resolution,
@@ -29,11 +29,11 @@ def test_static_inverse_recovers_physical_density_at_multiple_resolutions(resolu
     )
     np.testing.assert_allclose(result["values"], density, rtol=2e-4)
     np.testing.assert_allclose(result["replication_timing_fit"], timing, rtol=2e-4)
-    assert result["firing_rate_units"] == "min^-1 kb^-1"
+    assert result["initiation_rate_units"] == "min^-1 kb^-1"
     # The assumed-speed public alias uses the same density boundary.
     alias = rmap(
         {"replication_timing": timing},
-        "firing_rate",
+        "initiation_rate",
         assumptions={
             "fork_speed": 1.4,
             "target_form": form,
@@ -51,7 +51,7 @@ def test_inverse_rate_bounds_are_physical_densities(resolution):
     timing = np.full(16, 12.0)
     result = rmap(
         {"replication_timing": timing, "fork_speed": 1.4},
-        "firing_rate",
+        "initiation_rate",
         assumptions={
             "target_form": "constant",
             "resolution": resolution,
@@ -121,16 +121,17 @@ def test_free_firing_density_conversion_retains_exact_best_prediction(
     )
     expected = function(timing, fork_speed=1.4, **options)
     calls = []
-    original = fitting.rsim
+    original = fitting._mapping_prediction
 
     def track(**kwargs):
-        calls.append(kwargs)
+        if np.asarray(kwargs["initiation_rate"]).ndim == 2 and np.asarray(kwargs["initiation_rate"]).shape[1] > 1:
+            calls.append(kwargs)
         return original(**kwargs)
 
-    monkeypatch.setattr(fitting, "rsim", track)
+    monkeypatch.setattr(fitting, "_mapping_prediction", track)
     result = rmap(
         {"replication_timing": timing, "fork_speed": 1.4},
-        "firing_rate",
+        "initiation_rate",
         assumptions={**options, "target_form": form},
         return_info=True,
     )
@@ -142,7 +143,7 @@ def test_free_firing_density_conversion_retains_exact_best_prediction(
         np.mean((result["replication_timing_fit"] - timing) ** 2)
     )
     assert len(calls) == 1, (
-        "The best-field prediction should be reused without an extra simulation."
+        "The best-field prediction should be reused without an extra solve."
     )
 
 
@@ -152,7 +153,7 @@ def test_free_nonuniform_output_reports_prediction_of_returned_density():
     speed = np.asarray([[1.0, 1.5, 2.0, 1.8, 1.2]])
     result = rmap(
         {"replication_timing": timing, "fork_speed": speed},
-        "firing_rate",
+        "initiation_rate",
         assumptions={
             "target_form": "time",
             "target_shape": "free",
@@ -171,8 +172,9 @@ def test_free_nonuniform_output_reports_prediction_of_returned_density():
     )
     assert result["values"].shape == (1, len(axis))
     uniform = np.arange(0.0, 30.1, 3.0)
-    predicted = fitting.rsim(
-        firing_rate=np.interp(uniform, axis, result["values"][0])[None, :] * 2,
+    predicted = fitting._mapping_prediction(
+        timing_reference=timing,
+        initiation_rate=np.interp(uniform, axis, result["values"][0])[None, :] * 2,
         fork_speed=np.interp(uniform, axis, speed[0])[None, :],
         n_bins=12,
         resolution_space=2.0,

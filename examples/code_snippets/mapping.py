@@ -24,7 +24,7 @@ OUTPUT_DIRECTORY = HERE / "outputs"
 # Mapping controls. Positions/resolution are in kb; times are in minutes.
 # Files are relative to this script. Edit paths, selected columns/array keys,
 # input forms, constants, regions, solver settings and enabled overrides here.
-MAPPING = {'method': 'timing_and_speed_to_firing_rate',
+MAPPING = {'method': 'timing_and_speed_to_initiation_rate',
  'target_shape': None,
  'settings': {'resolution': 1.0,
               'perQ': False,
@@ -75,8 +75,8 @@ MAPPING = {'method': 'timing_and_speed_to_firing_rate',
 # Use output="primary" to select the route's primary output. Formats:
 # TSV, TXT, CSV, NPY, NPV, NPZ. Compression: none, gzip, zip, 7z, xz.
 EXPORT_RAW = True
-RAW_EXPORT = {'output': 'firing_rate',
- 'filename': 'rmap_fr',
+RAW_EXPORT = {'output': 'initiation_rate',
+ 'filename': 'rmap_ir',
  'file_format': 'TSV',
  'compress': False,
  'compression': 'gzip',
@@ -86,15 +86,15 @@ RAW_EXPORT = {'output': 'firing_rate',
 # Plotting is optional. The HTML preserves the app's ECharts plot settings.
 # It works without NiceGUI. Change output/view, axes, colours and layout here.
 PLOT = False
-PLOTTING = {'output': 'firing_rate',
+PLOTTING = {'output': 'initiation_rate',
  'layout': 'Combined',
  'view': 'Default',
  'name_style': 'short',
  'settings': {'normalization': 'None',
-              'title': 'Firing rate',
-              'series_label': 'Firing rate',
+              'title': 'Initiation rate',
+              'series_label': 'Initiation rate',
               'x_label': 'Position (kb)',
-              'y_label': 'Firing rate',
+              'y_label': 'Initiation rate',
               'color': '#2c7f77',
               'secondary_color': '#b03412',
               'palette': 'viridis',

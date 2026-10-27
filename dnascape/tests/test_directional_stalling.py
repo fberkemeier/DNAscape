@@ -34,7 +34,7 @@ def test_shared_stalls_use_the_same_positions_and_recovery_delays_in_both_direct
         firing = np.zeros(4)
         firing[origin] = 1.
         results.append(engine.simulate_replication(
-            firing_rate=firing, fork_speed=1., rng=FixedStalls(), stall_rate=.5,
+            initiation_rate=firing, fork_speed=1., rng=FixedStalls(), stall_rate=.5,
             tau=2., stall_shared_directions=shared, max_rep_time=None,
         )[3])
     np.testing.assert_array_equal(results[0], [0, 3, 4, 5])
@@ -46,7 +46,7 @@ def test_shared_permanent_obstacle_blocks_either_direction_at_the_same_position(
         firing = np.zeros(4)
         firing[origin] = 1.
         result = engine.simulate_replication(
-            firing_rate=firing, fork_speed=1., rng=FixedStalls(), stall_rate=.5,
+            initiation_rate=firing, fork_speed=1., rng=FixedStalls(), stall_rate=.5,
             tau=np.inf, stall_shared_directions=True, max_rep_time=None,
         )
         np.testing.assert_array_equal(result[3], expected)
@@ -54,7 +54,7 @@ def test_shared_permanent_obstacle_blocks_either_direction_at_the_same_position(
 
 @pytest.mark.parametrize("geometry", ["linear", "periodic"])
 def test_shared_stalls_are_reproducible_and_support_structured_and_physical_inputs(geometry):
-    source = dict(firing_rate=np.linspace(.02, .1, 20), fork_speed=1.4)
+    source = dict(initiation_rate=np.linspace(.02, .1, 20), fork_speed=1.4)
     assumptions = dict(sim_number=4, seed=64, geometry=geometry, tau=2., verbose=False,
                        stall_shared_directions=True, stall_rate_per_kb=.17, resolution_x=2.)
     first = rsim(source=source, assumptions=assumptions)
@@ -66,7 +66,7 @@ def test_shared_stalls_are_reproducible_and_support_structured_and_physical_inpu
 
 
 def test_shared_switch_has_no_effect_without_stalling_and_default_keeps_independent_stalls():
-    arguments = dict(firing_rate=.03, fork_speed=1.4, n_bins=20, sim_number=4, seed=123, verbose=False)
+    arguments = dict(initiation_rate=.03, fork_speed=1.4, n_bins=20, sim_number=4, seed=123, verbose=False)
     baseline = rsim(**arguments)
     shared = rsim(**arguments, stall_shared_directions=True)
     np.testing.assert_array_equal(baseline["rep_times_per_sim"], shared["rep_times_per_sim"])
@@ -78,4 +78,4 @@ def test_shared_switch_has_no_effect_without_stalling_and_default_keeps_independ
 @pytest.mark.parametrize("invalid", ["shared", None, 1])
 def test_invalid_directional_stalling_mode_has_a_clear_error(invalid):
     with pytest.raises(ValueError, match="stall_shared_directions"):
-        rsim(firing_rate=.1, n_bins=4, verbose=False, stall_shared_directions=invalid)
+        rsim(initiation_rate=.1, n_bins=4, verbose=False, stall_shared_directions=invalid)

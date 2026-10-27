@@ -38,8 +38,8 @@ class _TrackUpload:
 def _deterministic_request(**changes: Any) -> MappingRequest:
     values: dict[str, Any] = {
         "route": mapping_route("firing_and_speed_to_timing_deterministic"),
-        "inputs": {"firing_rate": 0.001, "fork_speed": 1.4},
-        "input_forms": {"firing_rate": "scalar", "fork_speed": "scalar"},
+        "inputs": {"initiation_rate": 0.001, "fork_speed": 1.4},
+        "input_forms": {"initiation_rate": "scalar", "fork_speed": "scalar"},
         "region_start_kb": 20.0,
         "region_end_kb": 24.0,
         "resolution_x": 1.0,
@@ -120,23 +120,24 @@ def test_directionality_speed_route_exposes_complete_preview_and_exports() -> No
     np.testing.assert_array_equal(comparison.fitted, result.outputs["replication_timing_fit"])
     assert tuple(_result_preview_outputs(result)) == (
         "fork_speed",
-        "replication_timing_fit",
         "input:replication_timing",
         "input:fork_directionality",
+        "replication_timing_fit",
         "comparison:replication_timing_fit",
+        "all_plots",
         "residual",
         "fit_history",
     )
 
     target_export = build_mapping_raw_export(result, "fork_speed", "tsv")
-    assert target_export.filename == "rmap_fs.tsv"
+    assert target_export.filename == "rmap_fs_x.tsv"
     assert target_export.data.decode().splitlines()[0] == "fork_speed"
     comparison_export = build_mapping_comparison_raw_export(
         result,
         "replication_timing_fit",
         "csv",
     )
-    assert comparison_export.filename == "rmap_rt-cmp.csv"
+    assert comparison_export.filename == "rmap_rt-cmp_x.csv"
     assert comparison_export.data.decode().splitlines()[0] == "position_kb,observed,fitted"
 
 
@@ -157,9 +158,9 @@ def test_time_target_keeps_the_uploaded_chromosome_axis(
             route=route,
             inputs={
                 "replication_timing": np.arange(14, dtype=float),
-                "firing_rate": 0.001,
+                "initiation_rate": 0.001,
             },
-            input_forms={"replication_timing": "x", "firing_rate": "scalar"},
+            input_forms={"replication_timing": "x", "initiation_rate": "scalar"},
             region_start_kb=10.0,
             region_end_kb=14.0,
             resolution_x=1.0,
@@ -176,27 +177,27 @@ def test_optional_feature_assumption_is_omitted_until_overridden() -> None:
     route = mapping_route("firing_to_timing_deterministic")
     base = MappingRequest(
         route=route,
-        inputs={"firing_rate": np.full(4, 0.001)},
-        input_forms={"firing_rate": "x"},
+        inputs={"initiation_rate": np.full(4, 0.001)},
+        input_forms={"initiation_rate": "x"},
         region_start_kb=0,
         region_end_kb=4,
         resolution_x=1,
     )
     prepared = validate_mapping_request(base)
-    assert prepared.source.keys() == {"firing_rate"}
+    assert prepared.source.keys() == {"initiation_rate"}
     assert "fork_speed" not in prepared.assumptions
 
     overridden = validate_mapping_request(
         MappingRequest(
             route=route,
-            inputs={"firing_rate": np.full(4, 0.001), "fork_speed": 1.8},
-            input_forms={"firing_rate": "x", "fork_speed": "scalar"},
+            inputs={"initiation_rate": np.full(4, 0.001), "fork_speed": 1.8},
+            input_forms={"initiation_rate": "x", "fork_speed": "scalar"},
             region_start_kb=0,
             region_end_kb=4,
             resolution_x=1,
         )
     )
-    assert overridden.source.keys() == {"firing_rate"}
+    assert overridden.source.keys() == {"initiation_rate"}
     assert overridden.assumptions["fork_speed"] == 1.8
 
 
@@ -210,7 +211,7 @@ def test_request_rejects_inactive_settings_left_over_from_another_shape(
     with pytest.raises(ValueError, match="does not accept setting"):
         validate_mapping_request(
             MappingRequest(
-                route=mapping_route("timing_and_speed_to_time_firing_rate"),
+                route=mapping_route("timing_and_speed_to_time_initiation_rate"),
                 inputs={"replication_timing": np.arange(4) + 10.0, "fork_speed": 1.4},
                 input_forms={"replication_timing": "x", "fork_speed": "scalar"},
                 target_shape=target_shape,
@@ -226,7 +227,7 @@ def test_request_accepts_weibull_with_time_dependent_speed_even_for_square_grids
     speed = np.full((1 if speed_form == "t" else 4, 4), 1.4)
     prepared = validate_mapping_request(
         MappingRequest(
-            route=mapping_route("timing_and_speed_to_time_firing_rate"),
+            route=mapping_route("timing_and_speed_to_time_initiation_rate"),
             inputs={"replication_timing": np.arange(4) + 10.0, "fork_speed": speed},
             input_forms={"replication_timing": "x", "fork_speed": speed_form},
             target_shape="weibull",
@@ -246,8 +247,8 @@ def test_request_accepts_new_periodic_forward_routes(method: str) -> None:
     prepared = validate_mapping_request(
         MappingRequest(
             route=mapping_route(method),
-            inputs={"firing_rate": 0.01, "fork_speed": 1.4},
-            input_forms={"firing_rate": "scalar", "fork_speed": "scalar"},
+            inputs={"initiation_rate": 0.01, "fork_speed": 1.4},
+            input_forms={"initiation_rate": "scalar", "fork_speed": "scalar"},
             settings={"perQ": True},
             region_end_kb=4,
         )
@@ -264,13 +265,14 @@ def test_prepared_bundle_preserves_nonzero_origin_resolution_and_time_axis(
     right = np.tile([0.1, 0.2, 0.4, 0.8], (4, 1))
     left = np.full((4, 4), 0.2)
     bundle = {
+        "replicated_fraction_xt": right,
         "right_fork_density_xt": right,
         "left_fork_density_xt": left,
         "time_grid": times,
         "x_array": axis,
     }
     request = MappingRequest(
-        route=mapping_route("fork_density_bundle_to_directionality_time_integrated"),
+        route=mapping_route("fork_density_bundle_to_replicated_fraction_xt_extraction"),
         inputs={"fork_densities_xt": bundle},
         input_forms={"fork_densities_xt": "bundle"},
         region_start_kb=22.5,
@@ -288,10 +290,8 @@ def test_prepared_bundle_preserves_nonzero_origin_resolution_and_time_axis(
     assert retained["right_fork_density_xt"].shape == (len(expected_x), 4)
 
     result = run_mapping(request)
-    right_integral = np.trapezoid(right[0], x=times)
-    left_integral = np.trapezoid(left[0], x=times)
-    expected_rfd = (right_integral - left_integral) / (right_integral + left_integral)
-    np.testing.assert_allclose(result.outputs["fork_directionality"], expected_rfd)
+    expected = right if whole_region else right[1:3]
+    np.testing.assert_allclose(result.outputs["replicated_fraction_xt"], expected)
     np.testing.assert_array_equal(result.x_axis, expected_x)
 
 
@@ -299,9 +299,10 @@ def test_request_rejects_an_explicit_time_axis_conflicting_with_a_prepared_bundl
     with pytest.raises(ValueError, match="does not match the prepared result"):
         validate_mapping_request(
             MappingRequest(
-                route=mapping_route("fork_density_bundle_to_directionality_time_integrated"),
+                route=mapping_route("fork_density_bundle_to_replicated_fraction_xt_extraction"),
                 inputs={
                     "fork_densities_xt": {
+                        "replicated_fraction_xt": np.ones((3, 3)),
                         "right_fork_density_xt": np.ones((3, 3)),
                         "left_fork_density_xt": np.ones((3, 3)),
                         "time_grid": np.asarray([0.0, 1.0, 3.0]),
@@ -358,7 +359,7 @@ def test_free_spacetime_firing_is_unavailable_before_dispatch() -> None:
     ):
         validate_mapping_request(
             MappingRequest(
-                route=mapping_route("timing_and_speed_to_spacetime_firing_rate"),
+                route=mapping_route("timing_and_speed_to_spacetime_initiation_rate"),
                 inputs={"replication_timing": np.arange(4) + 10.0, "fork_speed": 1.4},
                 input_forms={"replication_timing": "x", "fork_speed": "scalar"},
                 target_shape="free",
@@ -393,41 +394,40 @@ def test_periodic_geometry_is_normalized_to_rmap_perq(
         return {"values": np.arange(4, dtype=float)}
 
     monkeypatch.setattr(dnascape, "rmap", fake_rmap)
-    route = mapping_route("firing_and_speed_to_timing_simulation")
+    route = mapping_route("firing_and_speed_to_directionality_deterministic")
     result = run_mapping(
         MappingRequest(
             route=route,
             inputs={
-                "firing_rate": np.full(4, 0.001),
+                "initiation_rate": np.full(4, 0.001),
                 "fork_speed": 1.4,
             },
-            input_forms={"firing_rate": "x", "fork_speed": "scalar"},
-            settings={"geometry": "periodic"},
+            input_forms={"initiation_rate": "x", "fork_speed": "scalar"},
+            settings={"perQ": True},
             region_start_kb=0,
             region_end_kb=4,
             resolution_x=1,
         )
     )
 
-    assert captured["assumptions"]["geometry"] == "periodic"
     assert captured["assumptions"]["perQ"] is True
     assert result.assumptions["perQ"] is True
 
 
 def test_prevalidated_read_only_upload_is_not_copied_during_preparation() -> None:
-    firing_rate = np.linspace(0.001, 0.004, 4)
-    firing_rate.setflags(write=False)
+    initiation_rate = np.linspace(0.001, 0.004, 4)
+    initiation_rate.setflags(write=False)
     prepared = validate_mapping_request(
         _deterministic_request(
-            inputs={"firing_rate": firing_rate, "fork_speed": 1.4},
-            input_forms={"firing_rate": "x", "fork_speed": "scalar"},
+            inputs={"initiation_rate": initiation_rate, "fork_speed": 1.4},
+            input_forms={"initiation_rate": "x", "fork_speed": "scalar"},
             region_start_kb=0,
             region_end_kb=4,
         )
     )
 
-    normalized = prepared.source["firing_rate"]
-    assert np.shares_memory(normalized, firing_rate)
+    normalized = prepared.source["initiation_rate"]
+    assert np.shares_memory(normalized, initiation_rate)
     assert normalized.flags.writeable is False
 
 
@@ -436,21 +436,21 @@ def test_selected_region_is_cropped_before_rmap(monkeypatch: pytest.MonkeyPatch)
 
     def fake_rmap(**kwargs: Any) -> dict[str, Any]:
         captured.update(kwargs)
-        firing_rate = np.asarray(kwargs["source"]["firing_rate"], dtype=float)
-        return {"values": np.full(firing_rate.size, 7.0)}
+        initiation_rate = np.asarray(kwargs["source"]["initiation_rate"], dtype=float)
+        return {"values": np.full(initiation_rate.size, 7.0)}
 
     monkeypatch.setattr(dnascape, "rmap", fake_rmap)
     source = np.arange(20, dtype=float) + 0.001
     result = run_mapping(
         _deterministic_request(
-            inputs={"firing_rate": source, "fork_speed": 1.4},
-            input_forms={"firing_rate": "x", "fork_speed": "scalar"},
+            inputs={"initiation_rate": source, "fork_speed": 1.4},
+            input_forms={"initiation_rate": "x", "fork_speed": "scalar"},
             region_start_kb=5,
             region_end_kb=9,
         )
     )
 
-    np.testing.assert_array_equal(captured["source"]["firing_rate"], source[5:9])
+    np.testing.assert_array_equal(captured["source"]["initiation_rate"], source[5:9])
     assert captured["assumptions"]["n_bins"] == 4
     assert captured["assumptions"]["interval_kb"] == (5.0, 9.0)
     np.testing.assert_array_equal(result.x_axis, [5.0, 6.0, 7.0, 8.0])
@@ -463,22 +463,22 @@ def test_whole_genome_maps_the_full_array_and_ignores_region_fields(
 
     def fake_rmap(**kwargs: Any) -> dict[str, Any]:
         captured.update(kwargs)
-        firing_rate = np.asarray(kwargs["source"]["firing_rate"], dtype=float)
-        return {"values": np.full(firing_rate.size, 7.0)}
+        initiation_rate = np.asarray(kwargs["source"]["initiation_rate"], dtype=float)
+        return {"values": np.full(initiation_rate.size, 7.0)}
 
     monkeypatch.setattr(dnascape, "rmap", fake_rmap)
     source = np.arange(20, dtype=float) + 0.001
     result = run_mapping(
         _deterministic_request(
-            inputs={"firing_rate": source, "fork_speed": 1.4},
-            input_forms={"firing_rate": "x", "fork_speed": "scalar"},
+            inputs={"initiation_rate": source, "fork_speed": 1.4},
+            input_forms={"initiation_rate": "x", "fork_speed": "scalar"},
             region_start_kb=50,
             region_end_kb=10,
             whole_genome=True,
         )
     )
 
-    np.testing.assert_array_equal(captured["source"]["firing_rate"], source)
+    np.testing.assert_array_equal(captured["source"]["initiation_rate"], source)
     assert captured["assumptions"]["n_bins"] == 20
     np.testing.assert_array_equal(result.x_axis, np.arange(20, dtype=float))
 
@@ -489,7 +489,7 @@ def test_whole_genome_requires_a_spatial_input_to_define_its_length() -> None:
 
 
 def test_real_constant_firing_fit_sets_exact_target_form() -> None:
-    route = mapping_route("timing_and_speed_to_constant_firing_rate")
+    route = mapping_route("timing_and_speed_to_constant_initiation_rate")
     result = run_mapping(
         MappingRequest(
             route=route,
@@ -511,8 +511,8 @@ def test_real_constant_firing_fit_sets_exact_target_form() -> None:
     assert result.output_dependence == "constant"
     assert result.assumptions["target_form"] == "constant"
     assert result.assumptions["n_bins"] == 4
-    assert result.outputs["firing_rate"].shape == (1,)
-    assert np.isfinite(result.outputs["firing_rate"][0])
+    assert result.outputs["initiation_rate"].shape == (1,)
+    assert np.isfinite(result.outputs["initiation_rate"][0])
     comparison = result.comparisons["replication_timing_fit"]
     np.testing.assert_array_equal(comparison.observed, [8.0, 9.0, 10.0, 9.0])
     np.testing.assert_array_equal(
@@ -522,7 +522,7 @@ def test_real_constant_firing_fit_sets_exact_target_form() -> None:
 
 
 def test_real_spatial_firing_fit_exposes_the_observed_profile_comparison() -> None:
-    route = mapping_route("timing_and_speed_to_firing_rate")
+    route = mapping_route("timing_and_speed_to_initiation_rate")
     observed = np.asarray([8.0, 9.0, 10.0, 9.0])
     result = run_mapping(
         MappingRequest(
@@ -564,9 +564,9 @@ def _input_value(key: str, form: DataForm) -> Any:
 
 
 def _fake_values(route: MappingRoute) -> Any:
-    if route.method == "timing_and_speed_to_spacetime_firing_rate":
+    if route.method == "timing_and_speed_to_spacetime_initiation_rate":
         return {
-            "firing_rate": np.ones((4, 3)),
+            "initiation_rate": np.ones((4, 3)),
             "replication_timing_fit": np.arange(4, dtype=float),
             "fit_history": np.asarray([2.0, 1.0]),
             "time_grid": np.asarray([0.0, 5.0, 10.0]),
@@ -646,13 +646,13 @@ def test_every_public_exact_route_is_generically_dispatched_with_role_split(
             assert call["assumptions"]["target_form"] == route.output_dependence
 
     assert len(calls) == len(by_method)
-    assert len(by_method) >= 79
+    assert len(by_method) == 71
 
 
 def test_bundle_and_fit_metadata_are_exposed_with_member_forms_and_axes(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    route = mapping_route("timing_and_speed_to_spacetime_firing_rate")
+    route = mapping_route("timing_and_speed_to_spacetime_initiation_rate")
 
     def fake_rmap(**_kwargs: Any) -> dict[str, Any]:
         return {
@@ -674,8 +674,8 @@ def test_bundle_and_fit_metadata_are_exposed_with_member_forms_and_axes(
         )
     )
 
-    assert result.primary_output == "firing_rate"
-    assert result.output_forms["firing_rate"] == "xt"
+    assert result.primary_output == "initiation_rate"
+    assert result.output_forms["initiation_rate"] == "xt"
     assert result.output_forms["replication_timing_fit"] == "x"
     assert result.output_forms["fit_history"] == "supplied"
     assert result.output_forms["residual"] == "x"
@@ -737,8 +737,8 @@ def test_spatial_speed_fit_leaves_preparation_and_reports_optimizer_progress(
     result = run_mapping(
         MappingRequest(
             route=route,
-            inputs={"replication_timing": np.arange(10.0, 14.0), "firing_rate": 0.001},
-            input_forms={"replication_timing": "x", "firing_rate": "scalar"},
+            inputs={"replication_timing": np.arange(10.0, 14.0), "initiation_rate": 0.001},
+            input_forms={"replication_timing": "x", "initiation_rate": "scalar"},
             resolution_x=1.0,
         ),
         lambda value, message: progress.append((value, message)),
@@ -845,8 +845,8 @@ def test_oversized_input_rejects_before_float_copy(monkeypatch: pytest.MonkeyPat
     with pytest.raises(ValueError, match="interactive limits"):
         validate_mapping_request(
             _deterministic_request(
-                inputs={"firing_rate": np.ones(3), "fork_speed": 1.4},
-                input_forms={"firing_rate": "x", "fork_speed": "scalar"},
+                inputs={"initiation_rate": np.ones(3), "fork_speed": 1.4},
+                input_forms={"initiation_rate": "x", "fork_speed": "scalar"},
                 region_start_kb=0,
                 region_end_kb=3,
             )
@@ -854,13 +854,13 @@ def test_oversized_input_rejects_before_float_copy(monkeypatch: pytest.MonkeyPat
 
 
 def test_mapping_accepts_fifty_thousand_simulations_but_not_more() -> None:
-    route = mapping_route("firing_and_speed_to_timing_simulation")
+    route = mapping_route("timing_and_speed_to_initiation_rate")
 
     def request(simulations: int) -> MappingRequest:
         return MappingRequest(
             route=route,
-            inputs={"firing_rate": 0.001, "fork_speed": 1.4},
-            input_forms={"firing_rate": "scalar", "fork_speed": "scalar"},
+            inputs={"replication_timing": np.ones(4)*20., "fork_speed": 1.4},
+            input_forms={"replication_timing": "x", "fork_speed": "scalar"},
             settings={"sim_number": simulations},
             region_start_kb=0,
             region_end_kb=4,
@@ -873,7 +873,7 @@ def test_mapping_accepts_fifty_thousand_simulations_but_not_more() -> None:
 
 
 def test_mapping_fit_iterations_are_not_arbitrarily_capped() -> None:
-    route = mapping_route("timing_and_speed_to_constant_firing_rate")
+    route = mapping_route("timing_and_speed_to_constant_initiation_rate")
     prepared = validate_mapping_request(
         MappingRequest(
             route=route,
@@ -892,54 +892,9 @@ def test_mapping_fit_iterations_are_not_arbitrarily_capped() -> None:
     assert prepared.assumptions["maxiter"] == 50_000
 
 
-def test_iod_mapping_is_standard_output_with_bounded_app_retention() -> None:
-    route = mapping_route("firing_and_speed_to_inter_origin_distance_simulation")
-    prepared = validate_mapping_request(
-        MappingRequest(
-            route=route,
-            inputs={"firing_rate": 0.001, "fork_speed": 1.4},
-            input_forms={"firing_rate": "scalar", "fork_speed": "scalar"},
-            settings={"sim_number": 10},
-            region_start_kb=0,
-            region_end_kb=4,
-            resolution_x=1,
-        )
-    )
-
-    assert (
-        prepared.assumptions["retain_inter_origin_distances_limit"]
-        == mapping_service.MAX_MAPPING_IOD_SAMPLES
-    )
-
-
-def test_iod_mapping_preserves_total_count_and_truncation_metadata(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    route = mapping_route("firing_and_speed_to_inter_origin_distance_simulation")
-
-    def fake_rmap(**_kwargs: Any) -> dict[str, Any]:
-        return {
-            "values": np.asarray([1.0, 2.0, 3.0]),
-            "inter_origin_distance_count": 12,
-            "inter_origin_distances_truncated": True,
-        }
-
-    monkeypatch.setattr(dnascape, "rmap", fake_rmap)
-    result = run_mapping(
-        MappingRequest(
-            route=route,
-            inputs={"firing_rate": 0.001, "fork_speed": 1.4},
-            input_forms={"firing_rate": "scalar", "fork_speed": "scalar"},
-            settings={"sim_number": 10},
-            region_start_kb=0,
-            region_end_kb=4,
-            resolution_x=1,
-        )
-    )
-
-    assert result.inter_origin_distance_count == 12
-    assert result.inter_origin_distances_truncated is True
-    np.testing.assert_array_equal(result.outputs[result.primary_output], [1.0, 2.0, 3.0])
+def test_simulation_only_mapping_requests_are_no_longer_offered() -> None:
+    with pytest.raises(KeyError):
+        mapping_route("firing_and_speed_to_inter_origin_distance_simulation")
 
 
 def test_mixed_length_whole_region_uses_the_shortest_length_from_zero() -> None:
@@ -952,8 +907,8 @@ def test_mixed_length_whole_region_uses_the_shortest_length_from_zero() -> None:
             route=route,
             # Deliberately supply the shorter input first: mapping coordinates
             # must be chosen by length rather than dictionary order.
-            inputs={"firing_rate": local_firing, "replication_timing": timing},
-            input_forms={"firing_rate": "x", "replication_timing": "x"},
+            inputs={"initiation_rate": local_firing, "replication_timing": timing},
+            input_forms={"initiation_rate": "x", "replication_timing": "x"},
             region_start_kb=12,
             region_end_kb=28,
             resolution_x=1,
@@ -962,7 +917,7 @@ def test_mixed_length_whole_region_uses_the_shortest_length_from_zero() -> None:
     )
 
     np.testing.assert_array_equal(prepared.source["replication_timing"], timing[:10])
-    np.testing.assert_array_equal(prepared.source["firing_rate"], local_firing)
+    np.testing.assert_array_equal(prepared.source["initiation_rate"], local_firing)
     assert prepared.start_kb == 0
     assert prepared.spatial_size == 10
 
@@ -975,8 +930,8 @@ def test_mixed_length_inputs_keep_a_narrower_requested_window() -> None:
     prepared = validate_mapping_request(
         MappingRequest(
             route=route,
-            inputs={"replication_timing": timing, "firing_rate": local_firing},
-            input_forms={"replication_timing": "x", "firing_rate": "x"},
+            inputs={"replication_timing": timing, "initiation_rate": local_firing},
+            input_forms={"replication_timing": "x", "initiation_rate": "x"},
             region_start_kb=12,
             region_end_kb=18,
             resolution_x=1,
@@ -984,7 +939,7 @@ def test_mixed_length_inputs_keep_a_narrower_requested_window() -> None:
     )
 
     np.testing.assert_array_equal(prepared.source["replication_timing"], timing[12:18])
-    np.testing.assert_array_equal(prepared.source["firing_rate"], local_firing[:6])
+    np.testing.assert_array_equal(prepared.source["initiation_rate"], local_firing[:6])
     assert prepared.start_kb == 12
     assert prepared.spatial_size == 6
 
@@ -1005,8 +960,8 @@ def test_mixed_length_alignment_reaches_rmap_at_the_reference_location(
     result = run_mapping(
         MappingRequest(
             route=route,
-            inputs={"replication_timing": timing, "firing_rate": local_firing},
-            input_forms={"replication_timing": "x", "firing_rate": "x"},
+            inputs={"replication_timing": timing, "initiation_rate": local_firing},
+            input_forms={"replication_timing": "x", "initiation_rate": "x"},
             region_start_kb=12,
             region_end_kb=22,
             resolution_x=1,
@@ -1014,15 +969,15 @@ def test_mixed_length_alignment_reaches_rmap_at_the_reference_location(
     )
 
     np.testing.assert_array_equal(captured["source"]["replication_timing"], timing[12:22])
-    np.testing.assert_array_equal(captured["source"]["firing_rate"], local_firing)
+    np.testing.assert_array_equal(captured["source"]["initiation_rate"], local_firing)
     assert len(captured["source"]["replication_timing"]) == 10
     np.testing.assert_array_equal(result.x_axis, np.arange(12, 22, dtype=float))
 
 
 def test_region_errors_name_the_reference_profile_and_entered_bounds() -> None:
     route = mapping_route("timing_and_firing_to_spatial_fork_speed")
-    inputs = {"replication_timing": np.ones(30), "firing_rate": np.ones(10)}
-    forms: dict[str, DataForm] = {"replication_timing": "x", "firing_rate": "x"}
+    inputs = {"replication_timing": np.ones(30), "initiation_rate": np.ones(10)}
+    forms: dict[str, DataForm] = {"replication_timing": "x", "initiation_rate": "x"}
 
     with pytest.raises(
         ValueError,
@@ -1067,11 +1022,11 @@ def test_overlapping_mapping_runs_fail_fast() -> None:
 def test_unknown_setting_and_wrong_exact_form_fail_before_rmap() -> None:
     with pytest.raises(ValueError, match="does not accept setting"):
         validate_mapping_request(_deterministic_request(settings={"not_an_option": 1}))
-    with pytest.raises(ValueError, match="does not accept 't'"):
+    with pytest.raises(ValueError, match="does not accept 'bundle'"):
         validate_mapping_request(
             _deterministic_request(
-                inputs={"firing_rate": np.ones(3), "fork_speed": 1.4},
-                input_forms={"firing_rate": "t", "fork_speed": "scalar"},
+                inputs={"initiation_rate": np.ones(3), "fork_speed": 1.4},
+                input_forms={"initiation_rate": "bundle", "fork_speed": "scalar"},
             )
         )
 

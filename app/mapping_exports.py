@@ -15,6 +15,7 @@ from dnascape.workflows.mapping_exports import (
     SelectedMappingOutput as SelectedMappingOutput,
     build_mapping_comparison_raw_export as build_mapping_comparison_raw_export,
     build_mapping_raw_export as build_mapping_raw_export,
+    mapping_output_dependence_suffix as mapping_output_dependence_suffix,
     select_mapping_output as select_mapping_output,
 )
 

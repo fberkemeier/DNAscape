@@ -56,6 +56,54 @@ def _report_progress(value, message):
         report(float(value), str(message))
 
 
+@contextmanager
+def measured_work(total=1, label="Mapping"):
+    """Observe a long first evaluation without changing the calculation."""
+    previous = getattr(_PROGRESS_STATE, "work", None)
+    previous_range = getattr(_PROGRESS_STATE, "work_range", (0., 1.))
+    _PROGRESS_STATE.work_range = (0., 1.)
+    _PROGRESS_STATE.work = None
+    if total is not None and callable(getattr(_PROGRESS_STATE, "report", None)):
+        started = time.perf_counter()
+        _PROGRESS_STATE.work = [started, started, max(1, int(total)), str(label), 0.]
+    try:
+        yield
+    finally:
+        _PROGRESS_STATE.work = previous
+        _PROGRESS_STATE.work_range = previous_range
+
+
+@contextmanager
+def measured_work_phase(start, end):
+    """Assign nested forward/gradient work its share of one evaluation."""
+    previous = getattr(_PROGRESS_STATE, "work_range", (0., 1.))
+    low, high = previous
+    _PROGRESS_STATE.work_range = (low + (high - low) * start, low + (high - low) * end)
+    try:
+        yield
+    finally:
+        _PROGRESS_STATE.work_range = previous
+
+
+def report_measured_work(fraction):
+    work = getattr(_PROGRESS_STATE, "work", None)
+    if work is None:
+        return
+    now = time.perf_counter()
+    started, last, total, label = work[:4]
+    fraction = min(1., max(0., float(fraction)))
+    low, high = getattr(_PROGRESS_STATE, "work_range", (0., 1.))
+    fraction = low + (high - low) * fraction
+    if fraction <= work[4] or now - started < .25 or (fraction < 1 and now - last < .25):
+        return
+    work[1] = now
+    work[4] = fraction
+    completed = fraction / total
+    remaining = (now - started) * (1 - completed) / completed
+    _report_progress(.04 + .90 * completed,
+                     f"{label}... initial prediction {fraction:.0%} - ETA {hms(np.ceil(remaining))}")
+
+
 def _fit_progress_enabled(verbose=False):
     """Keep silent workflow fits observable without enabling console output."""
     return bool(verbose) or (

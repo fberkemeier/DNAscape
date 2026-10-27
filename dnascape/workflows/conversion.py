@@ -853,6 +853,7 @@ def _preview(
     table: Any = None,
     max_points: int | None = None,
     preserve_peaks: bool = False,
+    preserve_position_origin: bool = False,
 ) -> DataPreview | None:
     """Build a bounded display series without retaining prepared full arrays."""
 
@@ -911,7 +912,7 @@ def _preview(
             candidate = coordinates.get(name)
             if candidate is not None and np.asarray(candidate).size == series.size:
                 x_values = np.asarray(candidate, dtype=float).reshape(-1)
-                if name == "position_kb" and x_values.size:
+                if name == "position_kb" and x_values.size and not preserve_position_origin:
                     # Preview converted profiles from their first bin start.
                     x_values = x_values - x_values[0]
                 x_label = name.replace("_", " ").title()
@@ -2353,7 +2354,7 @@ def convert_data(
                     request.inspection.track_kind in {"peaks", "intervals"}
                     or (
                         request.inspection.source_format == "bedgraph"
-                        and request.biological_role == "firing_rate"
+                        and request.biological_role == "initiation_rate"
                     )
                 ),
             )
@@ -2425,6 +2426,7 @@ def convert_data(
                 labels=(request.value_name,) if repliseq_prepared is not None else result_labels,
                 table=None if repliseq_prepared is not None else raw_result.get("table"),
                 coordinates=repliseq_prepared.coordinates if repliseq_prepared is not None else prepared_plain.coordinates if prepared_plain is not None else None,
+                preserve_position_origin=request.profile_binning,
             )
             _check_cancelled(cancel)
 

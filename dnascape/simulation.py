@@ -9,15 +9,17 @@ import weakref
 
 import numpy as np
 
-from .utils import check_cancelled, etaf
+from .utils import check_cancelled, etaf, report_measured_work
 
 _SOURCE_ALIASES = {
-    "firing": "firing_rate",
-    "origin_rate": "firing_rate",
-    "ori_rate": "firing_rate",
-    "initiation": "firing_rate",
-    "initiation_rate": "firing_rate",
-    "fr": "firing_rate",
+    "firing_rate": "initiation_rate",  # Read older structured inputs.
+    "fr": "initiation_rate",
+    "firing": "initiation_rate",
+    "origin_rate": "initiation_rate",
+    "ori_rate": "initiation_rate",
+    "initiation": "initiation_rate",
+    "initiation_rate": "initiation_rate",
+    "ir": "initiation_rate",
     "fork_speeds": "fork_speed",
     "speed": "fork_speed",
     "v": "fork_speed",
@@ -75,7 +77,7 @@ def _n_bins_from_interval(resolution_space, genome_length=None, interval_kb=None
 
 
 def _resolve_n_bins(
-    firing_rate,
+    initiation_rate,
     fork_speed,
     n_bins=None,
     resolution_space=1.0,
@@ -104,7 +106,7 @@ def _resolve_n_bins(
             return
         raise ValueError(f"{name} must be scalar, (n,), (1,T), (n,1), or (n,T).")
 
-    add_candidate(firing_rate, "firing_rate")
+    add_candidate(initiation_rate, "initiation_rate")
     add_candidate(fork_speed, "fork_speed")
     interval_n = _n_bins_from_interval(
         resolution_space,
@@ -247,28 +249,34 @@ def _validated_stall_shared_directions(value):
     return bool(value)
 
 
-def _normalise_firing_rate(firing_rate=None, ori_rate=None, initiation_rate=None):
+def _legacy_initiation_input(options):
+    value = options.pop("firing_rate", None)
+    if options:
+        raise TypeError(f"Unexpected simulation argument: {next(iter(options))!r}.")
+    return value
+
+
+def _normalise_initiation_rate(initiation_rate=None, ori_rate=None, legacy_rate=None):
     supplied = [
         name
         for name, value in (
-            ("firing_rate", firing_rate),
-            ("ori_rate", ori_rate),
             ("initiation_rate", initiation_rate),
+            ("ori_rate", ori_rate),
+            ("legacy_rate", legacy_rate),
         )
         if value is not None
     ]
     if len(supplied) > 1:
         raise ValueError(
-            "Pass only one firing-rate argument. Use firing_rate as the preferred name; "
-            "ori_rate and initiation_rate are compatibility aliases."
+            "Pass initiation rate only once, using initiation_rate."
         )
-    if firing_rate is not None:
-        return firing_rate
-    if ori_rate is not None:
-        return ori_rate
     if initiation_rate is not None:
         return initiation_rate
-    raise ValueError("A firing_rate input is required.")
+    if ori_rate is not None:
+        return ori_rate
+    if legacy_rate is not None:
+        return legacy_rate
+    raise ValueError("An initiation_rate input is required.")
 
 
 def _validated_time_grid(time_grid, *, required=False):
@@ -413,7 +421,7 @@ def _replicon_lengths(src, arrival_times, fired_idx, resolution_space, max_rep_t
 
 
 def simulate_replication(
-    firing_rate=None,
+    initiation_rate=None,
     fork_speed=1.4,
     resolution_space=1.0,
     resolution_time=5.0,
@@ -435,7 +443,6 @@ def simulate_replication(
     genome_length=None,
     interval_kb=None,
     ori_rate=None,
-    initiation_rate=None,
     _firing_cumulative_hazard=None,
     _prepared_firing_field=None,
     _prepared_inverse_speed_field=None,
@@ -443,10 +450,11 @@ def simulate_replication(
     _compute_inter_origin_distances=True,
     fork_speed_std=0.0,
     stall_shared_directions=False,
+    **legacy_kwargs,
 ):
     """Run one stochastic replication simulation.
 
-    ``firing_rate`` and ``fork_speed`` may be scalar, spatial ``(n,)``,
+    ``initiation_rate`` and ``fork_speed`` may be scalar, spatial ``(n,)``,
     time-only ``(1, T)``, or space-time ``(n, T)`` fields. If neither input
     contains a spatial axis, pass ``n_bins``, ``genome_length``, or
     ``interval_kb``. ``stall_rate_per_kb`` is a physical stall density and is
@@ -487,13 +495,13 @@ def simulate_replication(
         if not np.isfinite(max_rep_time) or max_rep_time <= 0:
             raise ValueError("max_rep_time must be finite and positive, or None.")
 
-    firing_rate = _normalise_firing_rate(
-        firing_rate=firing_rate,
-        ori_rate=ori_rate,
+    initiation_rate = _normalise_initiation_rate(
         initiation_rate=initiation_rate,
+        ori_rate=ori_rate,
+        legacy_rate=_legacy_initiation_input(legacy_kwargs),
     )
     n = _resolve_n_bins(
-        firing_rate,
+        initiation_rate,
         fork_speed,
         n_bins=n_bins,
         resolution_space=resolution_space,
@@ -502,7 +510,7 @@ def simulate_replication(
     )
 
     if _prepared_firing_field is None:
-        I_kind, I_val, _TI = _as_rate_field(firing_rate, "firing_rate", n_bins=n)
+        I_kind, I_val, _TI = _as_rate_field(initiation_rate, "initiation_rate", n_bins=n)
     else:
         I_kind, I_val, _TI = _prepared_firing_field
 
@@ -633,6 +641,8 @@ def simulate_replication(
                 remaining = resolution_space
                 row = _row_for_time(current)
                 while True:
+                    if row % 256 == 0:
+                        check_cancelled()
                     speed = stochastic_speed(row, k_to, samples)
                     if row == Tv - 1:
                         return current - t_here + remaining / speed
@@ -672,7 +682,7 @@ def simulate_replication(
             else np.cumsum(rates_t * resolution_time)
         )
         if H.shape != rates_t.shape:
-            raise ValueError("Prepared firing cumulative hazard does not match firing_rate.")
+            raise ValueError("Prepared firing cumulative hazard does not match initiation_rate.")
         hit = target <= H[-1] if H.size else np.zeros(n, dtype=bool)
         if np.any(hit):
             kh = np.flatnonzero(hit).astype(np.int64, copy=False)
@@ -697,7 +707,7 @@ def simulate_replication(
             else np.cumsum(rates_xt * resolution_time, axis=0)
         )
         if H.shape != rates_xt.shape:
-            raise ValueError("Prepared firing cumulative hazard does not match firing_rate.")
+            raise ValueError("Prepared firing cumulative hazard does not match initiation_rate.")
         ge = H >= target[None, :]
         hit = ge.any(axis=0)
         j = np.argmax(ge, axis=0).astype(np.int64, copy=False)
@@ -715,7 +725,7 @@ def simulate_replication(
             frac = np.clip(frac, 0.0, 1.0)
             t0[kh] = (jh.astype(float) + frac) * resolution_time
     else:
-        raise RuntimeError(f"Unknown prepared firing-rate field kind: {I_kind!r}.")
+        raise RuntimeError(f"Unknown prepared initiation-rate field kind: {I_kind!r}.")
 
     # firing-factor gating (unchanged)
     use_factors = ffiring_nr is not None
@@ -894,18 +904,23 @@ def simulate_replication(
         t = t0
 
     # propagation with prev
+    check_cancelled()
     if not perQ:
         g = np.empty(n, float)
         src = np.empty(n, np.int32)
         prev = np.full(n, -1, np.int32)
         g[0], src[0], prev[0] = t[0], 0, 0
         for k in range(1, n):
+            if k % 1024 == 0:
+                check_cancelled()
             cand = g[k - 1] + _edge_forward(g[k - 1], k)
             if t[k] <= cand:
                 g[k], src[k], prev[k] = t[k], k, k
             else:
                 g[k], src[k], prev[k] = cand, src[k - 1], k - 1
         for k in range(n - 2, -1, -1):
+            if k % 1024 == 0:
+                check_cancelled()
             cand = g[k + 1] + _edge_backward(g[k + 1], k)
             if cand < g[k]:
                 g[k], src[k], prev[k] = cand, src[k + 1], k + 1
@@ -916,7 +931,11 @@ def simulate_replication(
         visited = np.zeros(n, bool)
         pq = [(g[i], i) for i in range(n) if np.isfinite(g[i])]
         heapq.heapify(pq)
+        propagation_steps = 0
         while pq:
+            if propagation_steps % 1024 == 0:
+                check_cancelled()
+            propagation_steps += 1
             time_u, u = heapq.heappop(pq)
             if visited[u] or time_u > g[u]:
                 continue
@@ -1094,7 +1113,7 @@ def simulate_replication(
     )
 
 def rsim(
-    firing_rate=None,
+    initiation_rate=None,
     fork_speed=1.4,
     sim_number=1,
     resolution_space=1.0,
@@ -1121,7 +1140,6 @@ def rsim(
     genome_length=None,
     interval_kb=None,
     ori_rate=None,
-    initiation_rate=None,
     geometry=None,
     resolution=None,
     source=None,
@@ -1134,17 +1152,18 @@ def rsim(
     fork_speed_std=0.0,
     retain_replicon_lengths_limit=None,
     stall_shared_directions=False,
+    **legacy_kwargs,
 ):
     """Run replicate stochastic simulations and return averaged features.
 
-    ``firing_rate`` is the preferred name for origin-initiation propensity.
-    ``ori_rate`` and ``initiation_rate`` are accepted as compatibility aliases.
-    Firing rate and fork speed support four field forms: scalar, ``(n,)``,
+    ``initiation_rate`` describes the rate of origin firing.
+    ``ori_rate`` is accepted as a compatibility alias.
+    Initiation rate and fork speed support four field forms: scalar, ``(n,)``,
     ``(1, T)``, and ``(n, T)``. If both kinetic inputs lack a spatial axis,
     pass ``n_bins``, ``genome_length``, or ``interval_kb``.
 
     For consistency with ``rmap``, kinetic inputs can also be supplied as
-    ``source={"firing_rate": ..., "fork_speed": ...}``, while simulation
+    ``source={"initiation_rate": ..., "fork_speed": ...}``, while simulation
     settings can be supplied through ``assumptions={...}``. Prefer
     ``stall_rate_per_kb`` for resolution-independent physical inputs;
     ``stall_rate`` is retained as the legacy probability per spatial bin.
@@ -1162,7 +1181,7 @@ def rsim(
     between both fork directions; False preserves independent directional stalls.
     """
     params = {
-        "firing_rate": firing_rate,
+        "initiation_rate": initiation_rate,
         "fork_speed": fork_speed,
         "fork_speed_std": fork_speed_std,
         "sim_number": sim_number,
@@ -1192,7 +1211,7 @@ def rsim(
         "genome_length": genome_length,
         "interval_kb": interval_kb,
         "ori_rate": ori_rate,
-        "initiation_rate": initiation_rate,
+        "_legacy_rate": _legacy_initiation_input(legacy_kwargs),
         "geometry": geometry,
         "resolution": resolution,
         "retain_rep_times_per_sim": retain_rep_times_per_sim,
@@ -1204,43 +1223,43 @@ def rsim(
 
     if source is not None:
         if not isinstance(source, dict):
-            raise ValueError("rsim source must be a dictionary with firing_rate and/or fork_speed.")
-        allowed_source = {"firing_rate", "fork_speed"}
+            raise ValueError("rsim source must be a dictionary with initiation_rate and/or fork_speed.")
+        allowed_source = {"initiation_rate", "fork_speed"}
         for key, value in source.items():
             name = _normalise_structured_key(key, _SOURCE_ALIASES)
             if name not in allowed_source:
                 raise ValueError(
-                    "rsim source only accepts kinetic inputs: firing_rate and fork_speed."
+                    "rsim source only accepts kinetic inputs: initiation_rate and fork_speed."
                 )
-            if name == "firing_rate" and (
-                params["firing_rate"] is not None
+            if name == "initiation_rate" and (
+                params["initiation_rate"] is not None
                 or params["ori_rate"] is not None
-                or params["initiation_rate"] is not None
+                or params["_legacy_rate"] is not None
             ):
-                raise ValueError("Pass firing_rate either directly or in source, not both.")
+                raise ValueError("Pass initiation_rate either directly or in source, not both.")
             params[name] = value
 
     if assumptions is not None:
         if not isinstance(assumptions, dict):
             raise ValueError("rsim assumptions must be a dictionary.")
         source_only = {
-            "firing_rate",
+            "initiation_rate",
             "fork_speed",
             "ori_rate",
-            "initiation_rate",
+            "_legacy_rate",
         }
         allowed_assumptions = set(params) - source_only
         for key, value in assumptions.items():
             name = _normalise_structured_key(key, _ASSUMPTION_ALIASES)
             if name in source_only:
                 raise ValueError(
-                    "Put kinetic inputs such as firing_rate and fork_speed in source, not assumptions."
+                    "Put kinetic inputs such as initiation_rate and fork_speed in source, not assumptions."
                 )
             if name not in allowed_assumptions:
                 raise ValueError(f"Unknown rsim assumption: {key!r}.")
             params[name] = value
 
-    firing_rate = params["firing_rate"]
+    initiation_rate = params["initiation_rate"]
     fork_speed = params["fork_speed"]
     fork_speed_std = _validated_fork_speed_std(params["fork_speed_std"])
     sim_number = params["sim_number"]
@@ -1270,7 +1289,6 @@ def rsim(
     genome_length = params["genome_length"]
     interval_kb = params["interval_kb"]
     ori_rate = params["ori_rate"]
-    initiation_rate = params["initiation_rate"]
     geometry = params["geometry"]
     resolution = params["resolution"]
     retain_rep_times_per_sim = bool(params["retain_rep_times_per_sim"])
@@ -1284,10 +1302,10 @@ def rsim(
     if time_stats_densQ is not None:
         time_stats_xtQ = bool(time_stats_densQ)
 
-    firing_rate = _normalise_firing_rate(
-        firing_rate=firing_rate,
-        ori_rate=ori_rate,
+    initiation_rate = _normalise_initiation_rate(
         initiation_rate=initiation_rate,
+        ori_rate=ori_rate,
+        legacy_rate=params["_legacy_rate"],
     )
 
     if resolution is not None:
@@ -1335,7 +1353,7 @@ def rsim(
             raise ValueError("geometry must be 'linear' or 'periodic'.")
 
     n = _resolve_n_bins(
-        firing_rate,
+        initiation_rate,
         fork_speed,
         n_bins=n_bins,
         resolution_space=resolution_space,
@@ -1482,8 +1500,8 @@ def rsim(
     start_time = time.time()
 
     prepared_firing_field = _as_rate_field(
-        firing_rate,
-        "firing_rate",
+        initiation_rate,
+        "initiation_rate",
         n_bins=n,
     )
     firing_kind, firing_values, _ = prepared_firing_field
@@ -1528,7 +1546,7 @@ def rsim(
             src,
             prev,
         ) = simulate_replication(
-            firing_rate=firing_rate,
+            initiation_rate=initiation_rate,
             fork_speed=fork_speed,
             resolution_space=resolution_space,
             resolution_time=resolution_time,
@@ -1722,6 +1740,7 @@ def rsim(
                         if np.any(Lm):
                             _range_add(sum_left_moving_fork_density_xt, cols0[Lm], j0[Lm], j1[Lm])
 
+        report_measured_work(i / sim_number)
         if verbose and (i % print_every == 0 or i == sim_number):
             etaf(it=i, maxiter=int(sim_number), start_time=start_time, label="rsim")
 
@@ -1863,7 +1882,7 @@ def rsim(
 
 
 _RSIM_INPUT_DESCRIPTIONS = {
-    "firing_rate": (
+    "initiation_rate": (
         "Origin firing or initiation propensity. Preferred direct kinetic "
         "input; accepts scalar, spatial, time-only, or space-time forms."
     ),
@@ -1946,12 +1965,12 @@ _RSIM_INPUT_DESCRIPTIONS = {
         "Genomic interval (start_kb, end_kb), also used to infer the "
         "simulated length."
     ),
-    "ori_rate": "Compatibility alias for firing_rate.",
-    "initiation_rate": "Compatibility alias for firing_rate.",
+    "ori_rate": "Compatibility alias for initiation_rate.",
+    "initiation_rate": "Compatibility alias for initiation_rate.",
     "geometry": "String geometry selector, usually linear or periodic.",
     "resolution": "Alias for resolution_space.",
     "source": (
-        "Dictionary input style, usually containing firing_rate and fork_speed; "
+        "Dictionary input style, usually containing initiation_rate and fork_speed; "
         "mirrors rmap."
     ),
     "assumptions": (
