@@ -250,6 +250,7 @@ const echarts = {init(_surface, _theme, initOptions) {
   const chart = {
     renderer: initOptions.renderer,
     setOption(options) {this.options = options;},
+    getOption() {return {...this.options};},
     getDataURL(options) {this.capture = options; return 'data:image/mock';},
     getWidth() {return 800;}, getHeight() {return 400;}, resize() {}, dispose() {this.disposed = true;},
   };
@@ -266,7 +267,7 @@ console.log(JSON.stringify({
   tooltip: charts[0].options.tooltip.valueFormatter(1.234),
   renderers: charts.map(chart => chart.renderer),
   captures: charts.map(chart => chart.capture),
-  sharedOptions: charts[0].options === charts[1].options,
+  matchingOptions: JSON.stringify(charts[0].options) === JSON.stringify(charts[1].options),
   vectorDisposed: charts[1].disposed,
   downloads,
 }));
@@ -280,7 +281,7 @@ console.log(JSON.stringify({
     assert observed["renderers"] == ["canvas", "svg"]
     assert observed["captures"][0] == {"type": "png", "pixelRatio": expected_ratio, "backgroundColor": "#fff"}
     assert observed["captures"][1] == {"type": "svg", "backgroundColor": "#fff"}
-    assert observed["sharedOptions"] is True
+    assert observed["matchingOptions"] is True
     assert observed["vectorDisposed"] is True
     assert observed["downloads"] == ["mapped.png", "mapped.svg"]
 

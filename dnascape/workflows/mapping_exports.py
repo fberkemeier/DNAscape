@@ -138,11 +138,11 @@ def build_mapping_raw_export(
     selected = select_mapping_output(result, output_key)
     if output_key == 'filter_positions':
         if filter_layout not in {'positions', 'intervals'}:
-            raise ValueError('Choose a position list or genomic intervals for the filter.')
+            raise ValueError('Choose a position list or genomic intervals for the mask.')
         values = (np.asarray(result.diagnostics.get('filter_intervals')) if filter_layout == 'intervals'
                   else selected.values)
         if values.size > MAX_TEXT_EXPORT_VALUES:
-            raise ValueError('The filter export is too large for this format.')
+            raise ValueError('The mask export is too large for this format.')
         integers = np.rint(values).astype(np.int64)
         if normalized_format == 'npz':
             stream = io.BytesIO()

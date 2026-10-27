@@ -378,8 +378,8 @@ def test_simulation_constants_follow_counterpart_files_and_survive_middle_remova
 def test_simulation_case_cap_is_checked_before_cartesian_materialization(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    from app.pages import simulation as simulation_page
-    from app.pages.simulation import _plan_simulation_cases, _PreparedSimulationSource
+    from dnascape.workflows import simulation_recipe
+    from dnascape.workflows.simulation_recipe import _plan_simulation_cases, _PreparedSimulationSource
 
     values = tuple(float(index) for index in range(224))
     first = _PreparedSimulationSource(
@@ -396,7 +396,7 @@ def test_simulation_case_cap_is_checked_before_cartesian_materialization(
     def should_not_materialize(*_args: Any, **_kwargs: Any) -> Any:
         raise AssertionError("Cartesian indices were materialized before the cap check")
 
-    monkeypatch.setattr(simulation_page, "plan_combination_indices", should_not_materialize)
+    monkeypatch.setattr(simulation_recipe, "plan_combination_indices", should_not_materialize)
 
     with pytest.raises(ValueError, match=r"50,176 simulation runs.*50,000 combinations"):
         _plan_simulation_cases((first, second), combination_mode="all")

@@ -75,7 +75,7 @@ def test_matrix_filter_exports_unique_positions_and_do_not_leak_between_results(
     assert artifact.data == b"0\n1\n2\n"
     disabled = convert_data(DataConversionRequest(inspection=request.inspection, input_form="xt"))
     assert not disabled.filter_positions
-    with pytest.raises(ValueError, match="no applied filter"):
+    with pytest.raises(ValueError, match="no applied mask"):
         filter_positions_artifact(disabled, output_name="filter")
 
 

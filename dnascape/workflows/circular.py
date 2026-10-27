@@ -1,6 +1,8 @@
 """Circular presentation of bounded profile previews, without changing data."""
 
 from copy import deepcopy
+import math
+import json
 
 
 def _sector_renderer(inverse):
@@ -16,9 +18,56 @@ def _sector_renderer(inverse):
     )
 
 
-def circular_preview_options(options, *, layout="Rings"):
+def circular_window_parts(axis, window):
+    """Split an unwrapped circular viewport at its original coordinate seam."""
+    convert = math.log if axis.get("log", axis.get("type") == "log") else float
+    restore = math.exp if axis.get("log", axis.get("type") == "log") else float
+    lower, upper = convert(axis["min"]), convert(axis["max"])
+    start, end = map(convert, window)
+    period = upper - lower
+    if end - start >= period * (1 - 1e-9):
+        return [(axis["min"], axis["max"])]
+    first = lower + (start - lower) % period
+    last = first + end - start
+    if last <= upper + period * 1e-12:
+        return [(restore(first), restore(min(last, upper)))]
+    return [(restore(first), axis["max"]), (axis["min"], restore(lower + last - upper))]
+
+
+def circular_camera(polars, axis, window):
+    """Magnify an arc in place, keeping its full-circle angular coordinates."""
+    base = deepcopy(polars)
+    lower, upper = axis["min"], axis["max"]
+    convert = math.log if axis.get("type") == "log" else float
+    full_lower, full_upper = convert(lower), convert(upper)
+    first, last = (convert(value) for value in window)
+    if math.isclose(last-first, full_upper-full_lower, rel_tol=1e-9):
+        return base
+    fractions = [(first-full_lower)/(full_upper-full_lower), (last-full_lower)/(full_upper-full_lower)]
+    if axis.get("inverse"):
+        fractions = [1-value for value in fractions[::-1]]
+    start, end = fractions
+    samples = [start, end] + [value/4 for value in range(math.floor(start*4), math.ceil(end*4)+1) if start <= value/4 <= end]
+    radii = [float(value.rstrip("%"))/100 for polar in base for value in polar["radius"]]
+    points = [(radius*math.sin(2*math.pi*f), -radius*math.cos(2*math.pi*f)) for radius in (min(radii),max(radii)) for f in samples]
+    xs, ys = zip(*points)
+    scale = min(200., max(1., min(1.72/max(max(xs)-min(xs),1e-9), 1.6/max(max(ys)-min(ys),1e-9))))
+    center = [50-25*(min(xs)+max(xs))*scale, 50-25*(min(ys)+max(ys))*scale]
+    for polar in base:
+        polar["center"] = [f"{value:.12g}%" for value in center]
+        polar["radius"] = [f"{float(value.rstrip('%'))*scale:.12g}%" for value in polar["radius"]]
+    return base
+
+
+def circular_preview_options(options, *, layout="Rings", track_height=8., inner_radius=64.):
     if options.get("dnascapePlotType") == "Heatmap":
         raise ValueError("Circular view is available for profiles, not heatmaps.")
+    track_height = float(track_height)
+    if not math.isfinite(track_height) or not 1 <= track_height <= 24:
+        raise ValueError("Track height must be between 1 and 24 percent.")
+    inner_radius = float(inner_radius)
+    if not math.isfinite(inner_radius) or not 0 <= inner_radius <= 78:
+        raise ValueError("Inner radius must be between 0 and 78 percent.")
     x_axes = options.get("xAxis", {})
     y_axes = options.get("yAxis", {})
     x = x_axes[0] if isinstance(x_axes, list) else x_axes
@@ -26,7 +75,7 @@ def circular_preview_options(options, *, layout="Rings"):
     histogram = options.get("dnascapePlotType") == "Histogram"
     options["series"] = [s for s in options.get("series", []) if not s.get("dnascapeCircularMask")]
     curves = [s for s in options.get("series", [])
-              if (s.get("type") == "line" or (histogram and s.get("type") == "custom" and not s.get("silent")))
+              if (s.get("type") in {"line", "scatter"} or (histogram and s.get("type") == "custom" and not s.get("silent")))
               and len(s.get("dnascapeCircularSourceData", s.get("data", [])))]
     if not curves:
         return options
@@ -35,64 +84,114 @@ def circular_preview_options(options, *, layout="Rings"):
         "x": deepcopy(x_axes if isinstance(x_axes, list) else [x_axes]),
         "y": deepcopy(y_axes if isinstance(y_axes, list) else [y_axes]),
     })
+    if "dnascapeNavigation" not in options:
+        axes = {}
+        for dimension, specifications in (("x", x_axes), ("y", y_axes)):
+            for index, axis in enumerate(specifications if isinstance(specifications, list) else [specifications]):
+                axes[("secondary_" if index else "") + dimension] = dict(
+                    dimension=dimension, index=index, min=axis["min"], max=axis["max"],
+                    log=axis.get("type") == "log", inverse=bool(axis.get("inverse")),
+                )
+        options["dnascapeNavigation"] = dict(context=json.dumps(axes, sort_keys=True), axes=axes, token=0, sequence=0, polar=True, heatmap=False)
     options["dnascapeCircular"] = True
+    for axis in options["dnascapeNavigation"]["axes"].values():
+        if axis["dimension"] == "x":
+            axis["circular"] = True
     options["dnascapeAspectRatio"] = 1.
     options["dataZoom"] = []
-    options["tooltip"] = {**options.get("tooltip", {}), "trigger": "item", "axisPointer": {"show": False, "type": "none"}}
-    options["axisPointer"] = {"show": False, "link": []}
+    tooltip = options.get("tooltip", {})
+    hover = bool(tooltip.get("show"))
+    pointer = {**tooltip.get("axisPointer", {}), "show": False, "type": "none", "snap": True}
+    options["tooltip"] = {**tooltip, "trigger": "item", "triggerOn": "none", "axisPointer": pointer}
+    options["axisPointer"] = {"show": False, "triggerOn": "none"}
+    options["dnascapeCircularDatasetCount"] = len({(curve.get("dnascapeCircularGroup", index), curve.get("xAxisIndex", 0), curve.get("yAxisIndex", 0)) for index,curve in enumerate(curves)})
     rings = layout == "Rings" and len(curves) > 1
-    independent_axes = len(styles["x"]) > 1 or len(styles["y"]) > 1
-    tracks = len(curves) if rings or independent_axes else 1
+    groups, group_indices, curve_tracks = [], {}, []
+    for index, curve in enumerate(curves):
+        key = (curve.get("dnascapeCircularGroup", index) if rings else "overlay",
+               curve.get("xAxisIndex", 0), curve.get("yAxisIndex", 0))
+        if key not in group_indices:
+            group_indices[key] = len(groups)
+            groups.append(curve)
+        curve_tracks.append(group_indices[key])
+    tracks = len(groups)
+    radial_tracks = tracks if rings else 1
+    gap = min(2., 10./radial_tracks, (80.-inner_radius)/(2*radial_tracks))
+    height = min(track_height, (80.-inner_radius-gap*(radial_tracks-1))/radial_tracks)
+    options["dnascapeCircularTrackHeight"] = track_height
+    options["dnascapeCircularInnerRadius"] = inner_radius
+    legend = options.get("legend")
+    if isinstance(legend, dict) and legend.get("show"):
+        # Preserve the selected corner independently of the circular viewport.
+        # Keep the compact scrolling row and the circle's centred geometry.
+        left = legend.get("left") is not None
+        bottom = legend.get("bottom") is not None
+        legend.update(type="scroll", orient="horizontal", left=8 if left else None, right=None if left else 8,
+                      top=None if bottom else 2, bottom=2 if bottom else None, width=None, height=None, padding=[2, 4], itemWidth=18, itemHeight=10,
+                      tooltip={"show": True},
+                      textStyle={**legend.get("textStyle", {}), "width": 110, "overflow": "truncate"})
     options["polar"], options["angleAxis"], options["radiusAxis"] = [], [], []
     for index in range(tracks):
-        gap = min(3., 20./tracks)
-        width = 70./tracks
-        inner = 9. + index*width if rings else 8.
-        outer = 9. + (index+1)*width - gap if rings else 78.
+        inner = inner_radius + index*(height+gap) if rings else inner_radius
+        outer = inner+height
         options["polar"].append({"center": ["50%", "50%"], "radius": [f"{inner}%", f"{outer}%"]})
-        curve = curves[index] if tracks > 1 else curves[0]
+        curve = groups[index]
         xi, yi = curve.get("xAxisIndex", 0), curve.get("yAxisIndex", 0)
         current_x = x_axes[xi] if isinstance(x_axes, list) else x_axes
         current_y = y_axes[yi] if isinstance(y_axes, list) else y_axes
         angle = deepcopy(styles["x"][xi])
-        angle.update(min=current_x.get("min"), max=current_x.get("max"), interval=None)
+        source_key = "x" if xi == 0 else "secondary_x"
+        domain = options.get("dnascapeNavigation", {}).get("axes", {}).get(source_key, {})
+        angle.update(min=domain.get("min", styles["x"][xi].get("min")), max=domain.get("max", styles["x"][xi].get("max")), interval=None)
+        angle["inverse"] = bool(current_x.get("inverse"))
         angle["dnascapeSourceAxis"] = "x" if xi == 0 else "secondary_x"
         angle.update(polarIndex=index, startAngle=90, clockwise=True, name="", show=True)
         angle.pop("position", None)
         angle["axisLabel"] = {**angle.get("axisLabel", {}), "show": index == tracks-1,
                               "showMaxLabel": False, "hideOverlap": True, "fontSize": 10}
         angle["axisLine"] = {**angle.get("axisLine", {}), "show": True}
-        angle["axisPointer"] = {"show": False}
+        ticks = None
+        if angle.get("type") != "log" and (current_x["min"] != angle["min"] or current_x["max"] != angle["max"]):
+            from .preview import _aligned_axis_ticks
+            ticks = sorted({tick for part in circular_window_parts(angle, [current_x["min"], current_x["max"]])
+                            for tick in _aligned_axis_ticks(*part, log_axis=False)})
+        for part in ("axisLabel", "axisTick", "splitLine"):
+            angle[part] = {**angle.get(part, {}), "customValues": ticks}
+        angle["axisPointer"] = {**deepcopy(pointer), "show": False}
         radius = deepcopy(styles["y"][yi])
         radius.update(min=current_y.get("min"), max=current_y.get("max"), interval=None)
+        radius["inverse"] = bool(current_y.get("inverse"))
         radius["dnascapeSourceAxis"] = "y" if yi == 0 else "secondary_y"
-        radius.update(polarIndex=index, name="", show=True, splitNumber=2)
+        radius.update(polarIndex=index, name="", show=True, splitNumber=1)
         radius.pop("position", None)
         radius["axisPointer"] = {"show": False}
         radius["axisLabel"] = {**radius.get("axisLabel", {}), "show": True,
-                               "hideOverlap": True, "fontSize": 9}
+                               "hideOverlap": True, "fontSize": 8, "margin": 3}
+        for part in ("axisLabel", "axisTick", "splitLine"):
+            radius[part] = {**radius.get(part, {}), "customValues": None}
         if rings:
-            radius["axisLabel"]["color"] = curves[index].get("lineStyle", {}).get("color", "#777")
+            radius["axisLabel"]["color"] = curve.get("lineStyle", {}).get("color", "#777")
         options["angleAxis"].append(angle)
         options["radiusAxis"].append(radius)
     for index, series in enumerate(curves):
-        polar_index = index if tracks > 1 else 0
+        polar_index = curve_tracks[index]
         current_x, current_y = options["angleAxis"][polar_index], options["radiusAxis"][polar_index]
         series.update(coordinateSystem="polar", polarIndex=polar_index,
                       encode={"angle": [0, 1], "radius": [2, 3]} if series.get("type") == "custom" else {"angle": 0, "radius": 1}, clip=True)
         source = series.get("dnascapeCircularSourceData", series.get("data", []))
         series["dnascapeCircularSourceData"] = source
-        # Angular axes wrap out-of-view coordinates around the circle. Filter
-        # only the rendered samples; retain the source for panning/refinement.
-        lower, upper = current_x.get("min"), current_x.get("max")
+        # The angular domain stays fixed while the camera magnifies the arc.
+        # Keep surrounding samples so curves continue to the frame edges,
+        # rather than stopping at the narrower selected angular interval.
         if series.get("type") == "custom":
-            series["data"] = [[max(point[0], lower), min(point[1], upper), *point[2:]]
-                              for point in source if point[1] > lower and point[0] < upper]
+            series["data"] = list(source)
             series[":renderItem"] = _sector_renderer(bool(current_x.get("inverse")))
         else:
             series["data"] = [point for point in source if isinstance(point, (list, tuple)) and len(point) >= 2
-                              and point[0] is not None and lower <= point[0] <= upper]
-            series.update(showSymbol=True, symbolSize=2, emphasis={**series.get("emphasis", {}), "scale": 3})
+                              and point[0] is not None]
+            series.update(showSymbol=series.get("type") == "scatter",
+                          symbolSize=6,
+                          emphasis={**series.get("emphasis", {}), "disabled": True})
         if series.get("markArea"):
             source = series.setdefault("dnascapeCircularMaskSource", series["markArea"].get("data", []))
             mask, mask_source = [], []
@@ -100,12 +199,11 @@ def circular_preview_options(options, *, layout="Rings"):
                 start, end = interval[0].get("xAxis"), interval[1].get("xAxis")
                 if start is not None and end is not None:
                     mask_source.append([start, end, current_y["max"], current_y["min"]])
-                    if end > lower and start < upper:
-                        mask.append([max(start, lower), min(end, upper), current_y["max"], current_y["min"]])
+                    mask.append([start, end, current_y["max"], current_y["min"]])
             series["markArea"] = {**series["markArea"], "data": []}
             if mask_source:
                 options["series"].append({"type": "custom", "coordinateSystem": "polar",
-                    "polarIndex": polar_index, "name": interval[0].get("name", "Filter"),
+                    "polarIndex": polar_index, "name": interval[0].get("name", "Mask"),
                     "dnascapeCircularMask": True, "silent": True, "z": 0,
                     "dnascapeCircularMaskSourceData": mask_source,
                     "encode": {"angle": [0, 1], "radius": [2, 3]}, "data": mask,
@@ -118,10 +216,14 @@ def circular_preview_options(options, *, layout="Rings"):
         source = series.get("dnascapeCircularSourceData", series.get("data", []))
         if not source or not isinstance(source[0], (list, tuple)) or len(source[0]) != 6:
             continue
-        series.update(coordinateSystem="polar", polarIndex=0,
+        key = (series.get("dnascapeCircularGroup") if rings else "overlay",
+               series.get("xAxisIndex", 0), series.get("yAxisIndex", 0))
+        track = group_indices.get(key, 0)
+        angle = options["angleAxis"][track]
+        series.update(coordinateSystem="polar", polarIndex=track, clip=True,
                       encode={"angle": [0, 3], "radius": [1, 2, 4, 5]})
         series["dnascapeCircularSourceData"] = source
-        series["data"] = [segment for segment in source if x["min"] <= segment[0] and segment[3] <= x["max"]]
+        series["data"] = [segment for segment in source if angle["min"] <= segment[0] and segment[3] <= angle["max"]]
         series[":renderItem"] = (
             "(params,api)=>({type:'polygon',shape:{points:["
             "api.coord([api.value(1),api.value(0)]),api.coord([api.value(4),api.value(3)]),"
@@ -129,14 +231,21 @@ def circular_preview_options(options, *, layout="Rings"):
         )
     for axes in (x_axes, y_axes):
         for axis in axes if isinstance(axes, list) else [axes]:
-            axis.update(show=False, name="")
+            axis.update(show=False, name="", axisPointer={"show": False, "label": {"show": False}})
             for part in ("axisLine", "axisTick", "axisLabel", "splitLine"):
                 axis[part] = {**axis.get(part, {}), "show": False}
+    options["dnascapeCircularBasePolar"] = deepcopy(options["polar"])
+    options["polar"] = circular_camera(options["polar"], options["angleAxis"][0], [x["min"], x["max"]])
     label = " · ".join(text for text in options["dnascapeCircularLabels"] if text)
     graphic = options.get("graphic", [])
     graphic = graphic if isinstance(graphic, list) else [graphic]
-    options["graphic"] = [g for g in graphic if g.get("id") != "dn-circular-axis-label"] + [{
+    options["graphic"] = [g for g in graphic if g.get("id") not in {"dn-circular-axis-label", "dn-circular-frame"}] + [{
+        "id": "dn-circular-frame", "type": "rect", "invisible": True, "silent": True,
+        "shape": {"x": 0, "y": 0, "width": 0, "height": 0, "dnascapeCircularFrame": True},
+    }, {
         "id": "dn-circular-axis-label", "type": "text", "left": "center", "bottom": 10,
-        "silent": True, "style": {"text": label, "fontSize": 11, "fill": "#777"},
+        "silent": True, "scaleX": 1, "scaleY": 1, "rotation": 0,
+        "style": {"text": label, "font": "11px sans-serif", "fontSize": 11,
+                  "fontFamily": "sans-serif", "fontWeight": "normal", "fontStyle": "normal", "fill": "#777"},
     }]
     return options

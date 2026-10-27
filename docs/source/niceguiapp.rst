@@ -43,7 +43,7 @@ Data Manager
    for tables containing several chromosomes in rows. Supplied coordinates are
    retained. Otherwise, **Source start (bp)** and **Source resolution (bp)** define
    the original grid, initially 0 bp and 1,000 bp. Start, End, output bin size and
-   aggregation apply before value processing, data transforms and filtering.
+   aggregation apply before value processing, data transforms and region transforms.
    **Apply configuration** bypasses these steps when off. With multiple sources,
    untouched region limits use each source's full extent.
    The ENCODE K562 Repli-seq example uses ``hgdownload.gi.ucsc.edu``.
@@ -103,23 +103,40 @@ Data Manager
    zooming reveals more detail in the converted data. Generated files remain
    available in Cached Files for the browser tab.
 
-   **Filter**, below Configure, starts collapsed with **Apply filter** off.
-   It edits the converted values after Configure. Its default selection is
+   **Region transforms**, below Configure, starts collapsed with **Apply transform** off.
+   It edits values after Configure and **Data transforms**. A mask defines where
+   changes apply, and the transform defines what happens there. Its default selection is
    values below zero, replaced with zero. Other selections include values
    above/below a threshold, within or outside an inclusive interval, a threshold at a distance
    above the converted minimum or below its maximum, NaN regions, an uploaded
-   genomic positions/intervals, and the whole region. An absent filter upload
+   genomic positions/intervals, and the whole region. An absent mask upload
    leaves the data unchanged. Upload one column of positions or two columns of
    half-open interval starts and ends; the layout is detected automatically.
-   **Coordinates**, beside the upload, chooses kb (default) or bp. Intervals
+   **Coordinates**, beside the upload, chooses bp (default) or kb. Intervals
    select overlapping source regions; optional chromosome labels restrict the
-   selection. **Export filter**, beside **Apply filter** in Controls, adds one export row beneath the
+   selection. **Export mask**, beside **Apply transform** in Controls, adds one export row beneath the
    selected raw-data file, with a position-list or genomic-interval choice
    beside its file type.
+   **Export mask** can be selected in advance while **Apply transform** is off;
+   mask output is produced only when the transform is applied.
+   A mask row's **Open in** action sends it directly to **Region transforms**
+   on the chosen page, selects **Upload profile** and uses bp coordinates.
+   Simulation asks whether it is an initiation-rate or fork-speed mask.
+   Other raw files opened in Mapping offer **Target**, **Route** and **Input**,
+   with **Dependence** where relevant. These choices are applied when an input
+   is selected; cancelling preserves the current Mapping configuration.
 
-   Filter controls remain editable while **Apply filter** is unchecked. In
-   **Plot settings → Guides**, enable **Filter** to shade the applied selection
-   in grey. With **Legend** enabled, name both the signal and filter. Plot
+   **Select regions / define mask** groups the selection controls. Choose
+   **Upload profile** to upload coordinates, or **Position ranges** to enter
+   intervals such as ``(1000,2000), (4000,5000)`` directly. The interval field
+   grows as text wraps and has its own **Coordinates** selector, defaulting to bp.
+   Starts are included, ends excluded, and an empty field applies no mask.
+   **Invert mask** selects
+   the complement within the configured Start/End region.
+
+   Region transform controls remain editable while **Apply transform** is off. In
+   **Plot settings → Guides**, enable **Mask** to shade the applied selection
+   in grey. With **Legend** enabled, name both the signal and mask. Plot
    previews refresh up to 1,000 native curve points within the visible window by default
    after zooming or panning. Detail is prefetched beyond the visible area, and
    small pans reuse the buffered samples. A coarse full-region overview remains
@@ -133,12 +150,12 @@ Data Manager
    region, interpolation from surrounding endpoints (linear, smooth PCHIP,
    nearest, previous, or next), Gaussian noise, matching a minimum or maximum,
    multiplication, and addition. Reference extrema come from the converted
-   profile before filtering, including or excluding selected regions.
+   profile before the region transform, including or excluding selected regions.
    Gaussian noise accepts a standard deviation and optional random seed.
    Interpolation at an edge uses the nearest available endpoint and requires
    at least one unselected finite value. Chromosomes and space-time columns
    are processed independently, retaining their grid. Previews and every raw
-   export format use the filtered result, including any new NaNs.
+   export format use the transformed result, including any new NaNs.
 
    **Modulate with profile** accepts gene annotations or signals such as RNA-seq,
    ATAC-seq and ChIP-seq. Its editable Python/NumPy formula defaults to
@@ -147,7 +164,7 @@ Data Manager
    beginning without resampling or broadcasting. Different sizes, coordinates
    or chromosomes produce a yellow warning; only the overlapping samples are
    combined and unmatched source values remain unchanged. Formula reductions
-   use that overlap, while only selected filter regions are replaced.
+   use that overlap, while only positions within the mask are replaced.
    Errors preserve the previous generated result. Previews and raw downloads
    use the same modulated result.
 
@@ -231,16 +248,33 @@ Mapping
    profile's length. Prepared profiles retain their bin width and shorter position
    axes align to Start. Downloaded Mapping code follows the same rules.
 
-   Enable **Dev Mode** in Settings and use **Code** to download the current
-   Mapping configuration as Python or a runnable ZIP. The ZIP includes original
-   inputs, the current DNAscape package source and dependency requirements.
-   Extract it, install ``requirements.txt``, and run ``python mapping.py`` with
-   Python 3.10 or newer; alternatively use ``uv run mapping.py``.
-   Edit ``MAPPING`` for inputs and scientific settings and ``RAW_EXPORT`` for
-   output selection, filenames, formats, compression and individual batch
-   choices. Plotting is optional: set ``PLOT = True`` and edit ``PLOTTING`` to
-   generate the same ECharts views as standalone HTML with PNG/SVG downloads.
-   Exporting code does not start Mapping or replace its results.
+   Enable **Developer mode** in Settings and use **Code** to download a single
+   ``mapping.py`` file. Edit ``MAPPING`` for inputs and scientific settings and
+   ``RAW_EXPORT`` for output selection, filenames, formats, compression and batch
+   choices. Exporting code does not start Mapping or replace its results.
+
+Developer code downloads
+   **Code** is also available on Data Manager, Simulation and Analysis
+   (Plotting), producing ``data_manager.py``, ``simulation.py`` and
+   ``plotting.py``. Each script contains the current source selections and
+   applicable processing/export settings. Data Manager includes per-source
+   configuration, transform formulas and region transforms; Simulation includes batch
+   inputs, movement, stalls, firing factors, tracking and separate input masks and transforms;
+   Plotting includes smoothing, transformations, correlation reports and all
+   combined/separate chart settings.
+
+   Install the matching DNAscape checkout with Python 3.10 or newer. The scripts
+   use ``dnascape.workflows`` and do not import the app or NiceGUI. Put the
+   original files listed in the script in ``inputs/`` beside it, or edit
+   ``INPUT_DIRECTORY``. Filenames and column/array selections are preserved;
+   prepared Mapping data are included directly. ``OUTPUT_DIRECTORY`` defaults
+   to ``outputs/`` beside the script, regardless of the working directory.
+
+   Only Plotting includes plot generation, writing standalone HTML with PNG/SVG
+   download controls; the HTML loads a pinned ECharts renderer when opened.
+   The other scripts export their data and enabled supplemental files without
+   rendering charts. A stochastic recipe with seed ``None`` produces a fresh
+   realization. Downloading code never starts the corresponding page workflow.
 
 Simulation
    Run bounded constant or uploaded initiation-rate and fork-speed fields through ``rsim``.
@@ -314,7 +348,7 @@ Simulation
    This section also contains **Controls font size** and **Preview points**.
    The point budget defaults to 1,000 per curve in the visible range, with
    100–10,000 supported. Applying it updates mounted previews without resetting
-   their zoom window. Plot settings default to an aspect ratio of 3, edited
+   their zoom window. Plot settings default to an aspect ratio of 2.5, edited
    beside **View** in **Style**. **Fill** shades below or above curves and KDEs
    using a light version of each curve's colour, within the displayed Y limits.
    Application restart and
@@ -341,18 +375,36 @@ Simulation
    **Smoothness** scales Scott's bandwidth, with 1 as the default and larger
    values producing smoother curves.
 
-   All previews support dragging to pan within the default axis bounds. Hold
+   Cartesian previews support dragging to pan within the default axis bounds. Hold
    left Ctrl and scroll to zoom X and Y together, or hold left Ctrl and drag
-   horizontally to select a shaded region and zoom only X. The axis fields
+   horizontally to select a shaded region and zoom only X. Heatmaps instead
+   select an X/Y box. The axis fields
    and plot downloads reflect the current view. Axis reset arrows restore
    the default ranges. Legends default to the top right; fit-to-window and
    download buttons appear at the bottom right above the X axis. Both axis
    lines remain visible while zoomed in. Zooming refines curves and heatmaps
-   from the underlying data to reveal detail in the visible region. **Hover boxes** in Guides
+   from the underlying data to reveal detail in the visible region. **Hover** in Guides
    toggles floating value readouts, dashed guides, and coloured tracking points
    on curves. Floating boxes contain only Y values, or Z for heatmaps; axis
    readouts use the DNAscape theme colour. Heatmaps show both X and Y guides.
    Clear an axis-label field to remove its plot title.
+   **Circular** view locks the aspect ratio to 1. **Track height (%)**, down to
+   1%, and **Inner radius (%)** control the tracks and central opening.
+   **Combine** appears for multiple datasets and overlays them instead of using
+   separate rings. A mean, its standard deviation and individual simulation
+   profiles share one track and scale. Left Ctrl and scrolling magnifies the
+   view; Left Ctrl and dragging magnifies the smaller arc while preserving its
+   original angular position, including across zero. Normal dragging pans
+   around the circle.
+   Hovering inside the central opening also draws a dashed radial guide from
+   the centre, one position readout beside the highlighted point, and matching curve points.
+   Floating boxes contain only coloured signal values. The legend stays fixed
+   in the selected corner during zooming. **Legend position** defaults to Top right
+   and also offers Top left, Bottom right and Bottom left. Exported HTML uses
+   the same navigation and hover controls.
+   Intrinsic simulation distributions,
+   including S-phase duration, origins per replicate and inter-origin or replicon
+   lengths, use Histogram or Boxplot views instead.
    Logarithmic axes omit zero and negative samples and start at the smallest
    positive native value. Explicit zero or negative axis minima produce an
    error instead of silently changing the selected bounds.
@@ -370,7 +422,7 @@ Analysis
    after zooming. These sections are hidden when the layout is Separate.
 
    **Enable analysis** is off by default. Turning it on changes **Plot** to
-   **Analyse** and reveals Spearman, Pearson, Kendall tau, and smoothing controls.
+   **Analyse** and reveals Spearman, Pearson, and Kendall tau controls.
    The **Analysis report** below the plotting settings combines the methods in
    one table, with a grouped heading for each correlation above its dataset
    columns. **Show p-values** adds two-sided, unadjusted p-values beneath the
@@ -378,23 +430,24 @@ Analysis
    editable report name, File type, a download arrow, and a cross to clear the
    preview while retaining uploaded data. Downloads default to CSV, with TSV
    also available, and include all coefficients, paired sample counts, and
-   optional p-values. Disabling analysis hides its controls and report and
-   bypasses smoothing when plotting.
+   optional p-values. Disabling analysis hides its correlation controls and report.
 
-   **Data transformations**, immediately below Analysis, is collapsed and off
-   by default and also works when analysis is disabled. Choose one dataset or
-   all selected profiles, then select the regions and operation. The default
-   fills missing samples by linear interpolation. Other operations include
-   replacement, arithmetic, noise, and modulation with an uploaded profile of
-   matching dimensions and, when provided, matching coordinates. The formula
-   editor accepts Python/NumPy expressions using **source** and **profile**;
-   **convolve** and **smooth** are also available. Only selected regions change.
+   **Data transforms** and **Region transforms** follow Data Manager's controls.
+   Both are collapsed and off by default, work independently of **Enable analysis**,
+   and have a **Dataset** menu for one dataset or all datasets. Data transforms
+   offers Python/NumPy formulas using **source**, or **source1**, **source2**, etc.
+   with **Combine**, followed by smoothing, value scaling and inversion.
+   Region transforms defines a mask and edits only its selected samples. The
+   default replaces negative values with zero. **Keep original profiles** retains
+   the profiles before the regional edit beside their transformed versions.
 
-   Transformations apply after smoothing and before plotting and correlations.
-   **Keep original profiles** adds transformed curves beside the original
-   curves. Each run starts from the uploaded data, preserving the uploads and
-   avoiding repeated application. Transformed profiles appear in **Raw data**
-   with TSV, TXT, CSV, and NPZ exports, optional compression, and **Open in**.
+   **Analysis on mask only**, below the other Region transforms switches, limits
+   the selected datasets' correlations and distribution statistics to masked
+   samples. Comparisons use overlapping finite samples without shifting their
+   indices. Curve plots and raw profile exports retain the complete arrays.
+   **Export mask** adds a positions/intervals download in Raw data, with integer
+   coordinates and TSV, TXT, CSV or NPZ formats. The exported Python script
+   reproduces these settings. Every run starts from the uploads.
 
    Each selected dataset has independent Off, Moving average, or Gaussian
    smoothing controls. Smoothing applies to both plots and correlations on

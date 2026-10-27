@@ -85,7 +85,7 @@ def test_physical_stall_rate_is_forwarded_to_rsim_without_legacy_probability(
 
 
 def test_mapping_catalog_exposes_only_the_physical_stall_rate_control() -> None:
-    simulation = mapping_route("firing_and_speed_to_timing_simulation")
+    simulation = mapping_route("timing_and_speed_to_initiation_rate")
     setting_keys = {setting.key for setting in simulation.user_settings}
 
     assert "stall_rate_per_kb" in simulation.optional_assumptions

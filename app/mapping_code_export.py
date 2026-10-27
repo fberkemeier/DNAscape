@@ -2,14 +2,10 @@
 
 from __future__ import annotations
 
-import io
 import math
 import pprint
-import zipfile
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass
-from importlib import metadata
-from pathlib import Path, PurePath
 from typing import Any
 
 import numpy as np
@@ -23,7 +19,6 @@ MAX_CODE_INPUT_BYTES = 256 * 1024 * 1024
 class MappingCodeSnapshot:
     recipe: dict[str, Any]
     raw_export: dict[str, Any]
-    plotting: dict[str, Any]
     files: tuple[tuple[str, bytes | Mapping[str, np.ndarray]], ...]
 
 
@@ -38,7 +33,7 @@ def _literal(value: Any) -> Any:
     if isinstance(value, np.generic):
         return _literal(value.item())
     if isinstance(value, Mapping):
-        return {str(key): _literal(item) for key, item in value.items()}
+        return {None if key is None else str(key): _literal(item) for key, item in value.items()}
     if isinstance(value, (tuple, list)):
         return [_literal(item) for item in value]
     if isinstance(value, float) and not math.isfinite(value):
@@ -62,15 +57,16 @@ def snapshot_mapping_code(
     region: Mapping[str, Any],
     combination_mode: str,
     raw_export: Mapping[str, Any],
-    plotting: Mapping[str, Any],
     fit_filter=None,
 ) -> MappingCodeSnapshot:
-    """Read widgets synchronously, before archive work yields to the UI.
+    """Read widgets synchronously, before background export yields to the UI.
 
     Original uploads are retained so changing regions, columns or track
     processing in the downloaded script actually rereads the original data.
     """
     members: list[tuple[str, bytes | Mapping[str, np.ndarray]]] = []
+    from app.code_export import CodeInputs
+    retained_inputs = CodeInputs()
     input_recipes: dict[str, Any] = {}
     for index, (key, live) in enumerate(inputs.items(), start=1):
         form = str(_value(live.form))
@@ -82,7 +78,7 @@ def snapshot_mapping_code(
             item["prepared_path"] = None
             if enabled:
                 bundle = read_input(live)
-                path = f"inputs/{index:02d}-prepared.npz"
+                path = f"prepared-{index:02d}.npz"
                 # Completed workflow arrays are immutable. Retain their
                 # references here and compress them in the export worker.
                 members.append((path, dict(bundle)))
@@ -102,9 +98,10 @@ def snapshot_mapping_code(
             item["mode"] = "upload"
             selections = surface.get("selection_values", {})
             files: list[dict[str, Any]] = []
-            for file_index, inspection in enumerate(surface.get("inspections", ()), start=1):
-                name = PurePath(inspection.name.replace("\\", "/")).name
-                path = f"inputs/{index:02d}-{file_index:02d}-{name}"
+            if enabled and not surface.get("inspections"):
+                raise ValueError(f"Upload {key.replace('_', ' ')} data before exporting code.")
+            for inspection in surface.get("inspections", ()):
+                path = retained_inputs.upload(inspection)
                 members.append((path, bytes(inspection.content)))
                 selected = selections.get(inspection.name, {})
                 files.append({
@@ -136,8 +133,11 @@ def snapshot_mapping_code(
         for key, live in setting_controls.items()
         if live.active and (live.override is not None or getattr(live, "automatic", False))
     }
-    from dnascape.workflows.mapping_filter import mapping_filter_recipe
-    filter_recipe = mapping_filter_recipe(fit_filter, members)
+    from dnascape.workflows.code_recipes import encode_settings
+    filter_recipe = (encode_settings(fit_filter, upload=retained_inputs.upload)
+                     if fit_filter is not None and fit_filter.regions.enabled else None)
+    known_paths = {path for path, _data in members}
+    members.extend((path, data) for path, data in retained_inputs.files.items() if path not in known_paths)
     recipe = _literal({
         "method": method,
         "target_shape": target_shape,
@@ -149,157 +149,55 @@ def snapshot_mapping_code(
         **({'filter': filter_recipe} if filter_recipe is not None else {}),
     })
     input_bytes = sum(
-        len(data) if isinstance(data, bytes) else sum(array.nbytes for array in data.values())
+        0 if isinstance(data, bytes) else sum(array.nbytes for array in data.values())
         for _path, data in members
     )
     if input_bytes > MAX_CODE_INPUT_BYTES:
         raise ValueError("Mapping code inputs exceed the 256 MB download limit.")
-    return MappingCodeSnapshot(recipe, _literal(raw_export), _literal(plotting), tuple(members))
-
-
-def _requirements(snapshot: MappingCodeSnapshot) -> tuple[str, ...]:
-    names = ["numpy", "pandas", "scipy", "matplotlib"]
-    if any(
-        file.get("source_format") == "bigwig"
-        for item in snapshot.recipe["inputs"].values()
-        for file in item.get("files", ())
-    ):
-        # The app prefers pybigtools, with pyBigWig as a compatible fallback.
-        for name in ("pybigtools", "pyBigWig"):
-            try:
-                metadata.version(name)
-            except metadata.PackageNotFoundError:
-                continue
-            names.append(name)
-            break
-    exports = [snapshot.raw_export, *snapshot.raw_export.get("per_dataset", {}).values()]
-    if any(item.get("compression") == "7z" for item in exports):
-        names.append("py7zr")
-    requirements = []
-    for name in names:
-        try:
-            requirements.append(f"{name}=={metadata.version(name)}")
-        except metadata.PackageNotFoundError:
-            requirements.append(name)
-    return tuple(requirements)
+    return MappingCodeSnapshot(recipe, _literal(raw_export), tuple(members))
 
 
 def build_mapping_python(snapshot: MappingCodeSnapshot) -> ExportArtifact:
-    """Generate Python with explicit editable controls and optional plotting."""
-    requirements = _requirements(snapshot)
-    dependency_lines = "\n".join(f"#     {requirement!r}," for requirement in requirements)
-    def format_value(value: Any) -> str:
-        return pprint.pformat(value, width=95, sort_dicts=False)
-    script = f'''# DNAscape Mapping: edit the controls below, then run this file.
-# Extract the runnable bundle first; it contains the inputs and DNAscape source.
-# Run: python mapping.py   (after installing requirements.txt)
-# Or:  uv run mapping.py
-# /// script
-# requires-python = ">=3.10"
-# dependencies = [
-{dependency_lines}
-# ]
-# ///
+    """One concise script with editable source and destination directories."""
+    from copy import deepcopy
+    from dnascape.workflows.code_recipes import encode_settings
+    recipe = deepcopy(snapshot.recipe)
+    prepared = {path: data for path, data in snapshot.files if not isinstance(data, bytes)}
+    for source in recipe["inputs"].values():
+        if source.get("mode") == "prepared" and source.get("prepared_path") in prepared:
+            source["prepared_values"] = encode_settings(prepared[source["prepared_path"]], upload=lambda _source: None)
+    inputs = "\n".join(f"#   {path!r}" for path, data in snapshot.files if isinstance(data, bytes))
+    source = f'''# DNAscape Mapping: run with this version of DNAscape installed.
+# Run: python mapping.py
+# Place the original files under INPUT_DIRECTORY:
+{inputs or "#   No external files: constants/prepared data are included below."}
 
 from pathlib import Path
-from math import inf
+from math import inf, nan
 
 from dnascape.workflows.mapping_recipe import run_mapping_recipe
-from dnascape.workflows.recipe_exports import save_mapping_outputs, plot_mapping_outputs
+from dnascape.workflows.recipe_exports import save_mapping_outputs
 
 HERE = Path(__file__).resolve().parent
+INPUT_DIRECTORY = HERE / "inputs"
 OUTPUT_DIRECTORY = HERE / "outputs"
 
-# Mapping controls. Positions/resolution are in kb; times are in minutes.
-# Files are relative to this script. Edit paths, selected columns/array keys,
-# input forms, constants, regions, solver settings and enabled overrides here.
-MAPPING = {format_value(snapshot.recipe)}
+# Positions and resolution are in kb; time is in minutes. Edit input paths,
+# columns/arrays, constants, region, fitting settings and region transforms here.
+MAPPING = {pprint.pformat(recipe, width=95, sort_dicts=False)}
 
-# Raw data controls: output, filename, format, compression and batch overrides.
-# Use output="primary" to select the route's primary output. Formats:
-# TSV, TXT, CSV, NPZ. Compression: none, gzip, zip, 7z, xz.
-EXPORT_RAW = True
-RAW_EXPORT = {format_value(snapshot.raw_export)}
+# Select the output, filename, TSV/TXT/CSV/NPZ format and compression.
+RAW_EXPORT = {pprint.pformat(snapshot.raw_export, width=95, sort_dicts=False)}
 
-# Plotting is optional. The HTML preserves the app's ECharts plot settings.
-# It works without NiceGUI. Change output/view, axes, colours and layout here.
-PLOT = False
-PLOTTING = {format_value(snapshot.plotting)}
 
 def main():
-    results = run_mapping_recipe(MAPPING, base_path=HERE)
-    if EXPORT_RAW:
-        for path in save_mapping_outputs(results, RAW_EXPORT, directory=OUTPUT_DIRECTORY):
-            print(f"Saved {{path}}")
-    if PLOT:
-        for path in plot_mapping_outputs(results, PLOTTING, directory=OUTPUT_DIRECTORY,
-                                         echarts_path=HERE / "echarts.min.js"):
-            print(f"Saved {{path}}")
+    results = run_mapping_recipe(MAPPING, base_path=INPUT_DIRECTORY)
+    for path in save_mapping_outputs(results, RAW_EXPORT, directory=OUTPUT_DIRECTORY):
+        print(f"Saved {{path}}")
+    return results
+
 
 if __name__ == "__main__":
     main()
 '''
-    return ExportArtifact(script.encode("utf-8"), "mapping.py", "text/x-python; charset=utf-8")
-
-
-def build_mapping_code_bundle(snapshot: MappingCodeSnapshot) -> ExportArtifact:
-    """Bundle the actual local package, original inputs and a short script."""
-    import dnascape.workflows as workflows
-
-    package_root = Path(workflows.__file__).resolve().parent.parent
-    script = build_mapping_python(snapshot)
-    requirements = _requirements(snapshot)
-    readme = """DNAscape Mapping code
-
-Extract this entire archive, then run:
-    python -m pip install -r requirements.txt
-    python mapping.py
-
-Alternatively, with uv installed:
-    uv run mapping.py
-
-Edit MAPPING, RAW_EXPORT and PLOTTING in mapping.py. Raw export is enabled;
-plotting is optional (set PLOT = True). Outputs go into outputs/ by default.
-The inputs/ folder contains the original uploads or a prepared result bundle.
-Changing input paths, columns, regions or processing rereads those inputs.
-The dnascape/ folder contains the actual package source used to create this
-download, including local changes. It does not require the NiceGUI app.
-Dependencies are pinned to the exporting environment. Installing them needs
-internet access initially. The package source and inputs are already included.
-Optional plots embed the supplied ECharts runtime; if no compatible runtime
-was available when exporting, their HTML loads ECharts from a pinned CDN URL.
-
-Stochastic routes with seed=None produce a new realization on each run. Set a
-fixed seed in the route settings to make repeated runs reproducible.
-"""
-    stream = io.BytesIO()
-    with zipfile.ZipFile(stream, "w", compression=zipfile.ZIP_DEFLATED) as archive:
-        archive.writestr(script.filename, script.data)
-        archive.writestr("requirements.txt", "\n".join(requirements) + "\n")
-        archive.writestr("README.txt", readme)
-        for path, data in snapshot.files:
-            if isinstance(data, bytes):
-                archive.writestr(path, data)
-            else:
-                prepared = io.BytesIO()
-                np.savez_compressed(prepared, **data)
-                archive.writestr(path, prepared.getvalue())
-        for path in sorted(package_root.rglob("*")):
-            if not path.is_file() or "__pycache__" in path.parts or "tests" in path.relative_to(package_root).parts:
-                continue
-            if path.suffix.casefold() in {".py", ".c", ".so", ".pyd", ".dll"}:
-                archive.write(path, "dnascape/" + path.relative_to(package_root).as_posix())
-        license_path = package_root.parent / "LICENSE"
-        if license_path.is_file():
-            archive.write(license_path, "LICENSE")
-        # Reuse the exact runtime already installed with the app for offline
-        # optional plots. Generation itself never downloads JavaScript.
-        try:
-            import nicegui
-            from dnascape.workflows.plotting import prepare_echarts_runtime
-            runtime = Path(nicegui.__file__).resolve().parent / "elements" / "echart" / "dist" / "index.js"
-            if runtime.is_file():
-                archive.writestr("echarts.min.js", prepare_echarts_runtime(runtime))
-        except (ImportError, OSError, ValueError):
-            pass
-    return ExportArtifact(stream.getvalue(), "mapping_code.zip", "application/zip")
+    return ExportArtifact(source.encode("utf-8"), "mapping.py", "text/x-python; charset=utf-8")

@@ -14,7 +14,10 @@ import numpy as np
 from scipy.optimize import OptimizeResult, least_squares
 
 from .mapping import _interp_time_rows
-from .utils import _fit_progress_enabled, _report_progress, check_cancelled, etaferr
+from .utils import (
+    _fit_progress_enabled, _report_progress, check_cancelled, etaferr,
+    initial_prediction, measured_work, report_measured_work,
+)
 
 _FORMS = {"scalar": "constant", "x": "space", "t": "time", "xt": "spacetime"}
 
@@ -103,9 +106,10 @@ class _Field:
         return values.T.copy()
 
 
+@initial_prediction
 def _mean_field_timing(
     firing, speed, time_grid, resolution, perQ, fields=None, parameters=None,
-    *, progress=None, use_native=True,
+    *, progress=report_measured_work, use_native=True,
     fork_integrals=None,
 ):
     """Match mapping.map_fork_densities_xt while propagating exact tangents.
@@ -409,7 +413,7 @@ def fit_timing_fork_speed(
                         np.clip(local_speed, *speed_bounds),
                         period=observed.size if perQ else None,
                     )
-    _report_progress(.04, "Preparing kinetic fields...")
+    _report_progress(.04, "Mapping... Initial prediction 0% - Preparing kinetic fields")
     first = _make_field(
         "space",
         initiation_rate,
@@ -478,19 +482,23 @@ def fit_timing_fork_speed(
         if "parameters" in cache and np.array_equal(parameters, cache["parameters"]):
             return cache["residual"], cache["jacobian"]
         evaluation = len(history) + 1
-        label = "Fitting fork speed"
+        label = "Mapping"
 
         def report_step(fraction):
+            if evaluation == 1:
+                report_measured_work(fraction)
+                return
             _report_progress(
                 .04 + .90 * (evaluation - 1 + fraction) / max(int(maxiter), 1),
                 f"{label}... evaluation {evaluation}/{max(int(maxiter), 1)} ({fraction:.0%})",
             )
 
-        report_step(0.)
-        firing, speed = (field.evaluate(parameters) for field in fields)
-        prediction, jacobian, completion = _mean_field_timing(
-            firing, speed, t, resolution, perQ, fields, parameters, progress=report_step,
-        )
+        with measured_work(max(int(maxiter), 1) if evaluation == 1 else None):
+            report_step(0.)
+            firing, speed = (field.evaluate(parameters) for field in fields)
+            prediction, jacobian, completion = _mean_field_timing(
+                firing, speed, t, resolution, perQ, fields, parameters, progress=report_step,
+            )
         prediction += anchor
         residual = prediction[valid] - observed[valid]
         mse = float(np.mean(residual**2))

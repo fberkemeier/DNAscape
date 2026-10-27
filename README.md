@@ -10,7 +10,7 @@ DNAscape is a local browser app for preparing, mapping, simulating, visualising,
 
 ## What you can do
 
-- **Prepare data:** import tables, NumPy profiles, bedGraph, or BigWig tracks; select genomic regions; bin, smooth, rescale, invert, or filter values; and export DNAscape-ready profiles.
+- **Prepare data:** import tables, NumPy profiles, bedGraph, or BigWig tracks; bin, smooth, rescale or invert values; apply region transforms within a mask; and export DNAscape-ready profiles.
 - **Map replication features:** infer supported kinetic targets from one or more compatible input profiles or constant values.
 - **Run simulations:** simulate replication from initiation-rate and fork-speed profiles or constants, compare datasets, and inspect standard or detailed outputs.
 - **Plot and analyse data:** compare multiple profiles, smooth each dataset independently, export plots, and calculate Pearson, Spearman, and Kendall tau correlations. Download all selected correlation matrices and paired sample counts in one CSV or TSV report.
@@ -80,13 +80,15 @@ Open [http://127.0.0.1:8080](http://127.0.0.1:8080) in your browser. Keep the te
 2. Keep the default constant inputs and select **Simulate**.
 3. Explore the generated outputs and plotting settings in the Preview panel.
 
-Simulation's **Region** includes **Whole region**, **Periodic** and **Show plot** switches. Whole region uses the genomic extent of an uploaded initiation-rate or fork-speed profile. **Filter** can edit initiation rate, fork speed, or both independently, after selecting and resampling the region. Original uploads are preserved. Each filter has its own region selection, transform and optional position/interval export. Plot settings provide separate filter guides and names. Gaussian filter noise uses its own seed when supplied, otherwise the simulation seed when fixed.
+Simulation's **Region** includes **Whole region**, **Periodic** and **Show plot** switches. Whole region uses the genomic extent of an uploaded initiation-rate or fork-speed profile. **Region transforms** can edit initiation rate, fork speed, or both independently, after selecting and resampling the region. Each input has its own mask, transform and optional position/interval export. Plot settings provide separate mask guides and names. Gaussian noise uses the transform's seed when supplied, otherwise the simulation seed when fixed. Original uploads are preserved.
 
 To try a file-based workflow, open **Data Manager** and use the bundled example at `examples/data/example/replication_timing_hESC.csv`.
 
 ## Managing data
 
 Use **Data Manager** to turn a Repli-seq BigWig track into a replication-timing profile. This example prepares 1 kb bins with timings from **30 to 500 minutes**, spanning approximately eight hours.
+
+The **Region transforms** section defines a mask of selected positions and applies an operation within it. **Invert mask** selects the complement within Start/End; **Export mask** downloads the selected positions or intervals. Configure and **Data transforms** run before these regional operations.
 
 1. In **Data**, upload or drag in a BigWig file. Alternatively, open **Link**, select **Example: ENCODE Repli-seq (bigWig) - K562**, then click **Inspect**. You can also paste your own public BigWig URL and inspect it.
 2. In **Configure**, set **Prepare as** to **Replication timing**. Under **Region & binning**, choose **One chromosome**, select the chromosome and Start/End coordinates, set **Bin size (bp)** to **1000**, and keep **Aggregation** at **Mean**.
@@ -104,7 +106,7 @@ Mapping offers deterministic observables. Directionality accepts timing plus for
 
 For **Initiation events** and **Coalescence events**, **Quantity** selects **Density (events/kb)**, integrated over the computed time window, or **Rate density (events/kb/min)**. These expected event densities retain their counts; they are not normalized probability distributions. With unreplicated fraction `s = 1-f`, the rates are `j_i = I*s` and `j_c = 2*v*rho_right*rho_left/s` for symmetric fork speeds, following [Gauthier, Norio and Bechhoefer (2012), Eqs. 1–6](https://doi.org/10.1371/journal.pone.0032053). Both forward outputs use the same deterministic transport solution for full space–time initiation-rate and speed profiles. The solver evolves conditional fork densities `g = rho/s` and `-log(s)` to avoid division near completion, with second-order spatial transport and adaptive time integration. Integrated densities are accumulated during the solve, independently of the displayed time samples. Spatial refinement reduces the remaining discretization error. The terminology follows the unnormalized event densities in [Baker and Bechhoefer (2014), Section II.A](https://doi.org/10.1103/PhysRevE.89.032703).
 
-Mapping's **Filter** selects regions relative to a supplied input, or from uploaded positions or intervals. It applies the same transforms as Data Manager to the initial fitted target, then holds those values fixed in every fitting step. Inputs remain unchanged. Regional constraints automatically select a compatible spatial or space–time target; time-resolved firing uses a free profile so the frozen regions can obey their own constraints. Constrained fork-speed fits use the existing deterministic mean-field solver with exact sensitivities and expose its control points, smoothness and convergence tolerance in Mapping settings. Frozen values override fit bounds locally and must remain valid kinetic values (non-negative initiation rates or positive fork speeds). Filter positions can be exported separately, and runnable Mapping downloads include auxiliary filter and modulation profiles.
+The **Region transforms** section in Mapping defines a mask relative to a supplied input, or from uploaded positions or intervals. It applies the same transforms as Data Manager to the initial fitted target within that mask, then holds those values fixed in every fitting step. Inputs remain unchanged. Regional constraints automatically select a compatible spatial or space–time target; time-resolved firing uses a free profile so the frozen regions can obey their own constraints. Constrained fork-speed fits use the existing deterministic mean-field solver with exact sensitivities and expose its control points, smoothness and convergence tolerance in Mapping settings. Frozen values override fit bounds locally and must remain valid kinetic values (non-negative initiation rates or positive fork speeds). Mask positions can be exported separately, and runnable Mapping downloads include auxiliary mask and modulation profiles.
 
 ## Comparing and analysing data
 

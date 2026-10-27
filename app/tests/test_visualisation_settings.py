@@ -28,7 +28,7 @@ def test_visualisation_settings_update_existing_preview_and_zoom(monkeypatch):
             user.find(marker="nav-plotting").click()
             def control(marker):
                 return next(item for item in user.client.elements.values() if marker in item._markers and not item.is_deleted)
-            assert control("plotting-aspect-ratio").value == 3
+            assert control("plotting-aspect-ratio").value == 2.5
             values = np.sin(np.arange(10001.) / 100)
             payload = ("signal\n" + "\n".join(map(str, values))).encode()
             await control("plotting-data-upload").handle_uploads([Upload.SmallFileUpload("profile.tsv", "text/plain", payload)])

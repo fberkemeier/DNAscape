@@ -1895,7 +1895,7 @@ def run_mapping(
     """Run one exact ``rmap`` route with progress and cancellation plumbing."""
 
     from dnascape import rmap
-    from dnascape.utils import progress_context
+    from dnascape.utils import mapping_progress, progress_context
 
     reporting_enabled = report is not None
     report = report or (lambda _value, _message: None)
@@ -1918,6 +1918,8 @@ def run_mapping(
             text = str(message)
             if text.casefold().startswith("rmap"):
                 text = f"Mapping{text[4:]}"
+            elif text.startswith("Fitting ") and "..." in text:
+                text = "Mapping..." + text.split("...", 1)[1]
             report(numeric, text)
 
         def retain_fit_mse(
@@ -1939,7 +1941,7 @@ def run_mapping(
         if prepared.fit_filter.regions.enabled:
             reference_key = prepared.fit_filter.relative_to
             if prepared.fit_filter.regions.selection not in {'profile', 'all'} and reference_key not in prepared.input_forms:
-                raise ValueError('Choose the input used to select filter regions.')
+                raise ValueError('Choose the input used to define the mask.')
             reference = prepared.source.get(reference_key, prepared.assumptions.get(reference_key, 0.))
             constraint = MappingFitConstraint(
                 prepared.fit_filter, target=prepared.route.target, form=prepared.route.output_form,
@@ -1962,7 +1964,7 @@ def run_mapping(
                 else:
                     count = 1
                 if prepared.spatial_size * count > MAX_GRID_CELLS:
-                    raise ValueError('The filtered space–time target is too large. Increase the spatial or time resolution.')
+                    raise ValueError('The transformed space–time target is too large. Increase the spatial or time resolution.')
         if prepared.initiation_rate_per_bin:
             # Public rmap accepts rates per kb; the page and rsim accept rates
             # per spatial bin. Convert at this boundary only. Fork speed stays
@@ -2006,7 +2008,7 @@ def run_mapping(
             cancel=cancel,
             suppress_output=True,
             metric_report=retain_fit_mse,
-        ):
+        ), mapping_progress(execution_assumptions):
             from dnascape._fit_constraints import fit_constraint_context
             with fit_constraint_context(constraint):
                 if constraint is not None and prepared.route.target == 'fork_speed' and 'replication_timing' in execution_source:

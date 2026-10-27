@@ -9,7 +9,6 @@ import lzma
 import re
 import subprocess
 import sys
-import zipfile
 from dataclasses import replace
 from pathlib import Path
 from types import SimpleNamespace
@@ -20,7 +19,6 @@ import pytest
 
 from app.mapping_code_export import (
     MappingCodeSnapshot,
-    build_mapping_code_bundle,
     build_mapping_python,
     snapshot_mapping_code,
 )
@@ -64,7 +62,6 @@ def _snapshot() -> MappingCodeSnapshot:
         combination_mode="pairwise",
         raw_export={"output": "primary", "filename": "my_result", "file_format": "NPZ",
                     "compress": True, "compression": "xz", "name_style": "short", "per_dataset": {}},
-        plotting={"output": "primary", "layout": "Individual", "settings": _plot_settings(), "colors": []},
     )
 
 
@@ -80,8 +77,9 @@ def test_snapshot_keeps_original_inputs_selections_and_disabled_overrides() -> N
     assert snapshot.raw_export["file_format"] == "NPZ"
     assert snapshot.raw_export["compression"] == "xz"
     script = build_mapping_python(snapshot).data.decode("utf-8")
-    assert "PLOT = False" in script
-    assert "EXPORT_RAW = True" in script
+    assert 'INPUT_DIRECTORY = HERE / "inputs"' in script
+    assert 'OUTPUT_DIRECTORY = HERE / "outputs"' in script
+    assert "plot_mapping_outputs" not in script
     assert "from dnascape.workflows.mapping_recipe import run_mapping_recipe" in script
     assert "def rmap" not in script
 
@@ -96,7 +94,7 @@ def test_snapshot_keeps_automatic_advanced_fields_editable_without_enabling_them
             ) for key, value in {"space_maxiter": 25, "space_fit_step": 1.0, "error": .02}.items()
         },
         inputs={}, read_input=lambda _: None, region={}, combination_mode="pairwise",
-        raw_export={}, plotting={},
+        raw_export={},
     )
     assert snapshot.recipe["settings"] == {"maxiter": 25, "fit_step": 1.0, "error": .02}
     assert snapshot.recipe["setting_overrides"] == {
@@ -115,43 +113,97 @@ def test_fit_rows_export_native_values_including_logarithmic_floor_and_partial_b
                           for key, value in {"err_threshold": "1e-12", "rate_bounds": '["1e-12", null]',
                                              "initial_initiation_rate": .002}.items()},
         inputs={}, read_input=lambda _: None, region={}, combination_mode="pairwise",
-        raw_export={}, plotting={},
+        raw_export={},
     )
     assert snapshot.recipe["setting_overrides"]["err_threshold"]["value"] == 12.
     assert snapshot.recipe["setting_overrides"]["rate_bounds"]["value"] == [1e-12, None]
     assert snapshot.recipe["setting_overrides"]["initial_initiation_rate"]["value"] == .002
 
 
-def test_runnable_bundle_executes_its_own_package_and_inputs_without_web_imports(tmp_path: Path) -> None:
+def test_single_python_mapping_keeps_frozen_filter_and_exports_intervals(tmp_path):
+    import runpy
+    from dnascape.workflows.filtering import DataFilterSettings, FilterProfile
+    from dnascape.workflows.mapping_filter import MappingFilterSettings
+    inspection = inspect_upload("timing.tsv", b"timing\n10\n11\n12\n11\n10\n9\n8\n9\n", expected_form="x")
+    snapshot = snapshot_mapping_code(
+        method="timing_and_speed_to_initiation_rate", target_shape="space",
+        settings={"maxiter": 2, "refine_edge_kb": 0., "initial_initiation_rate": .001}, setting_controls={},
+        inputs={"replication_timing": SimpleNamespace(form=SimpleNamespace(value="x"), override=None,
+            surface={"inspections": [inspection], "selection_values": {}}),
+            "fork_speed": SimpleNamespace(form=SimpleNamespace(value="scalar"), override=None,
+                surface={"scalar": SimpleNamespace(value=1.4)})},
+        read_input=lambda _live: None,
+        region={"start_kb": 0., "end_kb": 8., "source_resolution_x": 1., "initiation_rate_per_bin": True},
+        combination_mode="pairwise", raw_export=dict(output="primary", file_format="NPZ", filename="fitted",
+            filter_exports={"mapping-case-1": dict(filename="selected", file_format="NPZ", layout="intervals")}),
+        fit_filter=MappingFilterSettings(DataFilterSettings(enabled=True, selection="profile",
+            profile=FilterProfile(np.array([1000., 2000.]), layout="positions", units="bp"),
+            action="replace", value=.02), "replication_timing", True),
+    )
+    artifact = build_mapping_python(snapshot)
+    (tmp_path / artifact.filename).write_bytes(artifact.data)
+    (tmp_path / "inputs").mkdir()
+    for name, data in snapshot.files:
+        (tmp_path / "inputs" / name).write_bytes(data)
+    runpy.run_path(str(tmp_path / artifact.filename), run_name="__main__")
+    with np.load(tmp_path / "outputs" / "fitted.npz") as data:
+        np.testing.assert_array_equal(data["values"][1:3], [.02, .02])
+    with np.load(tmp_path / "outputs" / "selected.npz") as data:
+        np.testing.assert_array_equal(data["intervals"], [[1000, 3000]])
+
+
+def test_prepared_mapping_inputs_are_embedded_only_when_building_python(tmp_path):
+    import runpy
+    from app.mapping_catalog import mapping_route
+    bundle = dict(x_array=np.array([10., 12., 14.]), time_grid=np.array([0., 1.]),
+        right_fork_density_xt=np.ones((3, 2)), left_fork_density_xt=np.ones((3, 2)),
+        replicated_fraction_xt=np.full((3, 2), .5))
+    method = "fork_density_bundle_to_coalescence_events_xt_mean_field"
+    route = mapping_route(method)
+    key = next(item.key for item in route.inputs if item.prepared_result_only)
+    snapshot = snapshot_mapping_code(method=method, target_shape=None, settings={}, setting_controls={},
+        inputs={key: SimpleNamespace(form=SimpleNamespace(value="bundle"), override=None,
+                    surface={"prepared_only": True}),
+                "fork_speed": SimpleNamespace(form=SimpleNamespace(value="scalar"), override=None,
+                    surface={"scalar": SimpleNamespace(value=1.4)})},
+        read_input=lambda _live: bundle, region=dict(start_kb=10., end_kb=16.), combination_mode="pairwise",
+        raw_export=dict(output="primary", filename="events", file_format="NPZ"))
+    assert "prepared_values" not in snapshot.recipe["inputs"][key]
+    assert snapshot.files[0][1]["x_array"] is bundle["x_array"]
+    artifact = build_mapping_python(snapshot)
+    path = tmp_path / artifact.filename
+    path.write_bytes(artifact.data)
+    namespace = runpy.run_path(str(path))
+    assert "prepared_values" in namespace["MAPPING"]["inputs"][key]
+    namespace["main"]()
+    assert (tmp_path / "outputs" / "events.npz").is_file()
+
+
+def test_mapping_python_executes_against_installed_package_without_web_imports(tmp_path: Path) -> None:
     snapshot = _snapshot()
-    artifact = build_mapping_code_bundle(snapshot)
-    with zipfile.ZipFile(io.BytesIO(artifact.data)) as archive:
-        assert "dnascape/workflows/mapping_recipe.py" in archive.namelist()
-        assert not any(name.startswith("app/") for name in archive.namelist())
-        archive.extractall(tmp_path)
+    script = build_mapping_python(snapshot)
+    (tmp_path / script.filename).write_bytes(script.data)
+    for name, data in snapshot.files:
+        path = tmp_path / "inputs" / name
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_bytes(data)
     runner = """
-import importlib.abc
-import pathlib
-import runpy
-import sys
+import importlib.abc, pathlib, runpy, sys
+sys.path.insert(0, sys.argv[1])
 class RejectWebImports(importlib.abc.MetaPathFinder):
     def find_spec(self, fullname, path=None, target=None):
         if fullname.split('.')[0] in {'app', 'nicegui'}:
             raise AssertionError('Unexpected web dependency: ' + fullname)
 sys.meta_path.insert(0, RejectWebImports())
-folder = pathlib.Path(sys.argv[1])
-sys.path.insert(0, str(folder))
-runpy.run_path(str(folder / 'mapping.py'), run_name='__main__')
-import dnascape
-assert pathlib.Path(dnascape.__file__).is_relative_to(folder)
+runpy.run_path(str(pathlib.Path(sys.argv[2]) / 'mapping.py'), run_name='__main__')
 """
-    completed = subprocess.run([sys.executable, "-c", runner, str(tmp_path)], cwd=tmp_path,
-                               capture_output=True, text=True, check=False)
+    completed = subprocess.run([sys.executable, "-c", runner, str(Path(__file__).resolve().parents[2]), str(tmp_path)],
+                               cwd=tmp_path, capture_output=True, text=True, timeout=30)
     assert completed.returncode == 0, completed.stdout + completed.stderr
     generated = tmp_path / "outputs" / "my_result.npz.xz"
     assert generated.is_file()
     assert not tuple((tmp_path / "outputs").glob("*.html"))
-    expected = run_mapping_recipe(snapshot.recipe, base_path=tmp_path)[0].result
+    expected = run_mapping_recipe(snapshot.recipe, base_path=tmp_path / "inputs")[0].result
     with np.load(io.BytesIO(lzma.decompress(generated.read_bytes())), allow_pickle=False) as data:
         np.testing.assert_array_equal(data["values"], expected.outputs["replication_timing"])
         np.testing.assert_array_equal(data["position_kb"], expected.x_axis)
@@ -200,9 +252,10 @@ def test_raw_batch_settings_remain_independent_and_optional_plot_matches_page(tm
     }, directory=tmp_path / "automatic")
     assert automatic[0].stem == _mapping_raw_default_filename(comparison, "comparison:replication_timing_fit")
 
-    plots = plot_mapping_outputs(results[:1], snapshot.plotting, directory=tmp_path / "outputs")
+    plotting = {"output": "primary", "layout": "Individual", "settings": _plot_settings(), "colors": []}
+    plots = plot_mapping_outputs(results[:1], plotting, directory=tmp_path / "outputs")
     expected_specification = mapping_plot_options(
-        results[0].result, output_key=results[0].result.primary_output, **snapshot.plotting["settings"],
+        results[0].result, output_key=results[0].result.primary_output, **plotting["settings"],
     )
     html = plots[0].read_text(encoding="utf-8")
     specification = re.search(r"const specification = (.*);\n", html)
@@ -211,8 +264,24 @@ def test_raw_batch_settings_remain_independent_and_optional_plot_matches_page(tm
     assert '"color": "#2596be"' in specification[1]
 
 
+def test_mapping_recipe_statistics_follow_the_individually_selected_dataset(tmp_path):
+    import csv
+    snapshot = _snapshot()
+    for name, content in snapshot.files:
+        (tmp_path / name).write_bytes(content)
+    snapshot.recipe["inputs"]["fork_speed"].update(mode="constants", values=[1., 2.])
+    results = run_mapping_recipe(snapshot.recipe, base_path=tmp_path)
+    save_mapping_outputs(results, dict(output="primary", file_format="NPZ", statistics=dict(
+        filename="selected_statistics", file_format="tsv", dataset_index=1, labels=["Selected dataset"])),
+        directory=tmp_path / "outputs")
+    with (tmp_path / "outputs" / "selected_statistics.tsv").open() as stream:
+        rows = list(csv.DictReader(stream, delimiter="\t"))
+    assert len(rows) == 1 and rows[0]["dataset"] == "Selected dataset"
+    assert float(rows[0]["mean"]) == pytest.approx(np.mean(results[1].result.outputs[results[1].result.primary_output]))
+
+
 @pytest.mark.parametrize("target", ["initiation_rate", "fork_speed"])
-def test_mapping_code_menu_downloads_current_controls_without_running_map(
+def test_mapping_code_downloads_python_directly_without_running_map(
     monkeypatch: pytest.MonkeyPatch, target: str,
 ) -> None:
     from nicegui.elements.upload import Upload
@@ -274,7 +343,6 @@ def test_mapping_code_menu_downloads_current_controls_without_running_map(
             status = control("mapping-status").text
             button = control("action-map")
             user.find(marker="action-code").click()
-            user.find(marker="mapping-code-download-python").click()
             download = await user.download.next(timeout=10.0)
             assert len(user.download.http_responses) == len(snapshots) == 1, user.notify.messages
             snapshot = snapshots[0]
@@ -289,8 +357,8 @@ def test_mapping_code_menu_downloads_current_controls_without_running_map(
             assert snapshot.raw_export["file_format"] == "CSV"
             assert snapshot.raw_export["compress"] is False
             assert snapshot.raw_export["compression"] == "xz"
-            assert snapshot.plotting["settings"]["x_label"] == "Genomic position"
-            assert "PLOT = False" in download.content.decode("utf-8")
+            assert "plot_mapping_outputs" not in download.content.decode("utf-8")
+            await user.should_not_see(marker="mapping-code-download-bundle")
             assert control("mapping-status").text == status
             assert control("action-map") is button
             assert button.text == "Map" and button.enabled

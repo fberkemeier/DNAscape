@@ -12,7 +12,7 @@ from scipy.integrate import solve_ivp
 from ._forward_mapping import fraction_field
 from .inverse import _compact_space_time_field
 from .mapping import _fraction_time_axis, _resolve_n_bins_from_fields
-from .utils import check_cancelled, report_measured_work
+from .utils import check_cancelled, initial_prediction, measured_work_phase, report_measured_work
 
 
 def _conditional_transport(density, velocity, dx, periodic, direction):
@@ -43,6 +43,7 @@ def _conditional_transport(density, velocity, dx, periodic, direction):
     return (flux-incoming)/dx
 
 
+@initial_prediction
 def kinetic_event_densities(firing, speed, *, unreplicated_floor=1e-12, cfl=.8, **options):
     """Solve the common source/sink system, including cumulative event counts.
 
@@ -61,6 +62,7 @@ def kinetic_event_densities(firing, speed, *, unreplicated_floor=1e-12, cfl=.8, 
     dx, dt = float(options.get("resolution", 1.)), float(options.get("resolution_time", 5.))
     if not np.isfinite(dx) or dx <= 0:
         raise ValueError("Spatial resolution must be finite and positive.")
+    clock_share = 0. if options.get("time_grid") is not None else .25
     if options.get("time_grid") is not None:
         # A supplied clock needs no separate replication-fraction solve.
         n = _resolve_n_bins_from_fields(firing, speed, n_bins=options.get("n_bins"),
@@ -73,7 +75,8 @@ def kinetic_event_densities(firing, speed, *, unreplicated_floor=1e-12, cfl=.8, 
         if len(clock) > 100_000 or n*len(clock) > 64_000_000:
             raise ValueError("The computed time domain is too large. Increase the spatial or temporal resolution.")
     else:
-        clock, fraction = fraction_field(firing, speed, **options)
+        with measured_work_phase(0., clock_share):
+            clock, fraction = fraction_field(firing, speed, **options)
         n = fraction.shape[0]
         del fraction
     rates = _compact_space_time_field(firing, len(clock), n, clock, dt, "initiation_rate")
@@ -101,6 +104,7 @@ def kinetic_event_densities(firing, speed, *, unreplicated_floor=1e-12, cfl=.8, 
         if end > start:
             def rhs(time, values):
                 check_cancelled()
+                report_measured_work(clock_share + (1. - clock_share) * time / max(float(clock[-1]), 1e-30))
                 weight = (time - start) / (end - start)
                 rate = (1. - weight) * rate0 + weight * rate1
                 velocity = (1. - weight) * speed0 + weight * speed1
@@ -123,7 +127,7 @@ def kinetic_event_densities(firing, speed, *, unreplicated_floor=1e-12, cfl=.8, 
         if index == 0:
             baseline = state[3*n:].copy()
         previous = float(end)
-        report_measured_work((index + 1) / len(clock))
+        report_measured_work(clock_share + (1. - clock_share) * float(end) / max(float(clock[-1]), 1e-30))
     return {
         "time_grid": clock,
         "initiation_events_xt": initiation,

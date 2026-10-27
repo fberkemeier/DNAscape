@@ -1,4 +1,4 @@
-"""Simulation-only filter guides, with independent names and zoom refinement."""
+"""Simulation-only mask guides, with independent names and zoom refinement."""
 
 from dnascape.workflows.simulation_filters import FILTER_LABELS
 
@@ -32,7 +32,7 @@ def add_simulation_filter_guides(options, results, controls, *, kind, time_end):
             continue
         name = str(controls.filter_guide_names[key].value or '').strip() or FILTER_LABELS[key]
         if any(series.get('name') == name for series in options.get('series', ())):
-            name += ' (filter)'
+            name += ' (mask)'
         color, fill = colors[key]
         options.setdefault('series', []).append({
             'name': name, 'type': 'line', 'data': [], 'silent': True, 'showSymbol': False,

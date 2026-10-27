@@ -33,9 +33,11 @@
     if (Array.isArray(options.series)) {
       result.series = options.series.map(series => ({
         ...series,
-        lineStyle: themedStyle(series.lineStyle, accent),
-        itemStyle: themedStyle(series.itemStyle, accent),
-        areaStyle: themedStyle(series.areaStyle, accent),
+        // A data-only gesture patch must not introduce undefined style keys:
+        // ECharts interprets those as resets to its default palette and width.
+        ...('lineStyle' in series && {lineStyle: themedStyle(series.lineStyle, accent)}),
+        ...('itemStyle' in series && {itemStyle: themedStyle(series.itemStyle, accent)}),
+        ...('areaStyle' in series && {areaStyle: themedStyle(series.areaStyle, accent)}),
         // Custom bars need the element-level flag too; the series setting
         // alone does not disable their native mouse emphasis.
         ...(series.type === 'custom' && series.emphasis?.disabled && typeof series.renderItem === 'function' && {

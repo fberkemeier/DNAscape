@@ -71,9 +71,8 @@ def index() -> None:
     ui.add_body_html(
         "<script>" + read_asset_text(STYLE_PATH.parent / "brand_theme.js") + "</script>"
     )
-    ui.add_body_html(
-        "<script>" + read_asset_text(STYLE_PATH.parent / "plot_navigation.js") + "</script>"
-    )
+    from dnascape.workflows.plotting import plot_navigation_script
+    ui.add_body_html("<script>" + plot_navigation_script() + "</script>")
     ui.add_body_html(
         "<script>window.dnascapeFieldHintLabels=" + json.dumps(FIELD_HINTS) + ";"
         + read_asset_text(STYLE_PATH.parent / "field_hints.js") + "</script>"
@@ -422,6 +421,9 @@ def index() -> None:
     def cycle_theme() -> None:
         """Cycle System -> Light -> Dark without losing automatic mode."""
 
+        # Theme refresh removes the item before its separate auto-close event
+        # can arrive from the browser, so close the persistent menu first.
+        app_menu.close()
         if dark_mode.value is None:
             dark_mode.disable()
         elif dark_mode.value is False:
@@ -669,7 +671,7 @@ def index() -> None:
                 .props('anchor="bottom right" self="top right"')
                 .classes("dn-app-menu")
                 .mark("app-menu")
-            ):
+            ) as app_menu:
                 render_app_menu_items()
 
     with ui.column().classes("dn-page-host"):

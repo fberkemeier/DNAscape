@@ -2,7 +2,7 @@
 
 import numpy as np
 
-from .utils import check_cancelled, fast_shift_add, interp_nans, logistic, report_measured_work, smoothf
+from .utils import check_cancelled, fast_shift_add, initial_prediction, interp_nans, logistic, report_measured_work, smoothf
 
 
 def _normalise_resolution_x(resolution=1.0, resolution_x=None):
@@ -225,8 +225,9 @@ def _replicated_fraction_static_kinetics(x, time_grid, initiation_rate_x, fork_s
 
     center = integrated_cdf(travel)
     rows = []
-    for time in time_grid:
+    for index, time in enumerate(time_grid):
         check_cancelled()
+        report_measured_work(index / time_grid.size)
         rows.append(integrated_cdf(travel + time) - 2. * center + integrated_cdf(travel - time))
     return np.maximum(rows, 0.)
 
@@ -242,6 +243,7 @@ def _replicated_fraction_constant_speed(x, time_grid, initiation_rate_xt, fork_s
         for k in range(n):
             if k % 32 == 0:
                 check_cancelled()
+                report_measured_work((n * (n - 1) + 2 * k) / (time_grid.size * (time_grid.size - 1)))
             dt = time_grid[k + 1] - time_grid[k]
             tau_mid = 0.5 * (time_grid[k + 1] + time_grid[k])
             radius = fork_speed * (time_grid[n] - tau_mid)
@@ -271,6 +273,7 @@ def _replicated_fraction_time_speed(x, time_grid, initiation_rate_xt, fork_speed
         for k in range(n):
             if k % 32 == 0:
                 check_cancelled()
+                report_measured_work((n * (n - 1) + 2 * k) / (time_grid.size * (time_grid.size - 1)))
             dt = time_grid[k + 1] - time_grid[k]
             midpoint = .5 * (C[k] + C[k + 1])
             radius = max(C[n] - midpoint, 0.0)
@@ -279,6 +282,7 @@ def _replicated_fraction_time_speed(x, time_grid, initiation_rate_xt, fork_speed
     return A
 
 
+@initial_prediction
 def _static_firing_timing_time_speed(source_x, source_cdf, target_x, time_grid, speed):
     """Integrate survival at observation sites while retaining every source origin.
 
@@ -297,6 +301,9 @@ def _static_firing_timing_time_speed(source_x, source_cdf, target_x, time_grid, 
         check_cancelled()
         volume = np.zeros(len(target_x))
         for interval in range(index):
+            if interval % 32 == 0:
+                check_cancelled()
+                report_measured_work((index * (index - 1) + 2 * interval) / (len(time_grid) * (len(time_grid) - 1)))
             radius = travel[index] - midpoint[interval]
             volume += dt[interval] * _integrate_cdf_between(
                 source_cdf, source_x, target_x - radius, target_x + radius)
@@ -336,6 +343,7 @@ def _replicated_fraction_general_speed(x, time_grid, initiation_rate_xt, fork_sp
         for k in range(n - 1, -1, -1):
             if k % 32 == 0:
                 check_cancelled()
+                report_measured_work((n * (n - 1) + 2 * (n - 1 - k)) / (time_grid.size * (time_grid.size - 1)))
             dt = time_grid[k + 1] - time_grid[k]
             tau_hi = time_grid[k + 1]
             left_mid = step(left, tau_hi, -0.5 * dt, sign=1.0)
@@ -347,6 +355,7 @@ def _replicated_fraction_general_speed(x, time_grid, initiation_rate_xt, fork_sp
     return A
 
 
+@initial_prediction
 def map_replicated_fraction_xt(
     initiation_rate,
     fork_speed=1.4,
@@ -413,6 +422,8 @@ def map_replicated_fraction_xt(
             mass = 0.5 * (rates[:-1] + rates[1:]) * dt
             volume = np.zeros(integration_t.size)
             for index in range(1, integration_t.size):
+                check_cancelled()
+                report_measured_work(index * (index - 1) / (integration_t.size * (integration_t.size - 1)))
                 width = np.minimum(2 * (distance[index] - midpoint_distance[:index]), length)
                 volume[index] = np.dot(width, mass[:index])
             if leading:
@@ -449,6 +460,7 @@ def map_replicated_fraction_xt(
         A = np.zeros_like(I)
         for index in range(1, t.size):
             check_cancelled()
+            report_measured_work(index / t.size)
             radius = v[0, 0] * (index - .5) * (t[1] - t[0])
             A[index] = A[index - 1] + (t[1] - t[0]) * _integrate_cdf_between(cdf, x, x - radius, x + radius)
     elif v_raw.size == 1:
@@ -471,6 +483,7 @@ def map_replicated_fraction(*args, **kwargs):
     return np.nanmean(map_replicated_fraction_xt(*args, **kwargs), axis=0)
 
 
+@initial_prediction
 def map_fork_densities_xt(
     initiation_rate,
     fork_speed=1.4,
@@ -557,6 +570,9 @@ def map_fork_densities_xt(
         dt = interval / n_substeps
 
         for substep in range(n_substeps):
+            if substep % 32 == 0:
+                check_cancelled()
+                report_measured_work((time_index - 1 + substep / n_substeps) / (t.size - 1))
             weight = (substep + 0.5) / n_substeps
             initiation = (
                 (1.0 - weight) * I[time_index - 1]
@@ -1111,6 +1127,7 @@ def _constant_firing_timing(rate, speed_per_bin, n, radius, perQ):
     return expand()
 
 
+@initial_prediction
 def map_firing_timing(
     initiation_rate,
     fork_speed=1.4,
@@ -1244,6 +1261,7 @@ def map_firing_timing(
 
     return y
 
+@initial_prediction
 def map_timing_directionality(
     timing,
     fork_speed=1.4,
@@ -1281,6 +1299,7 @@ def map_timing_directionality(
     return rfd
 
 
+@initial_prediction
 def map_timing_directionality_fork_speed(
     timing,
     fork_directionality,
@@ -1384,6 +1403,7 @@ def map_timing_directionality_fork_speed(
     )
 
 
+@initial_prediction
 def map_directionality_timing(
     rfd,
     fork_speed=1.4,

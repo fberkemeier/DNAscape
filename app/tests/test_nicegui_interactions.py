@@ -348,7 +348,7 @@ def test_scientific_data_sections_share_the_outline_data_symbol() -> None:
             for slug, heading, expected_icons in (
                 ("mapping", "Map replication kinetic landscapes", 2),
                 ("simulation", "Simulate DNA replication", 2),
-                ("plotting", "Explore DNAscape data", 1),
+                ("plotting", "Explore DNAscape data", 2),
             ):
                 user.find(marker=f"nav-{slug}").click()
                 await user.should_see(heading)
@@ -470,7 +470,7 @@ def test_scientific_pages_share_expansion_and_action_dock_hooks() -> None:
             expansion_by_label = {
                 expansion._props.get("label"): expansion for expansion in expansions
             }
-            assert set(expansion_by_label) == {"Data", "Analysis", "Plot settings"}
+            assert set(expansion_by_label) == {"Data", "Analysis", "Data transformations", "Plot settings", "Raw data"}
             plotting_settings = expansion_by_label["Plot settings"]
             assert "dn-preview-settings-section" in plotting_settings._classes
             assert "dn-expansion" in plotting_settings._classes
@@ -1503,10 +1503,7 @@ def test_scientific_previews_start_with_guidance_and_share_download_sections() -
             user.find(marker="nav-plotting").click()
             await user.should_see(marker="preview-guidance")
             await user.should_see("No plot yet")
-            assert all(
-                expansion._props.get("label") != "Raw data"
-                for expansion in user.find(kind=Expansion).elements
-            )
+            assert any(expansion._props.get("label") == "Raw data" for expansion in user.find(kind=Expansion).elements)
             await user.should_not_see(marker="plot-toolbar")
 
     asyncio.run(scenario())
@@ -1756,10 +1753,7 @@ def test_scientific_controls_use_compact_mode_selects_and_keep_primary_actions_d
             assert plotting_uploader._props.get("multiple") is True
             await user.should_see(marker="plotting-settings")
             await user.should_not_see("Region")
-            assert all(
-                expansion._props.get("label") != "Raw data"
-                for expansion in user.find(kind=Expansion).elements
-            )
+            assert any(expansion._props.get("label") == "Raw data" for expansion in user.find(kind=Expansion).elements)
             await user.should_see(marker="scientific-action-dock")
             await user.should_see(marker="action-plot")
 
@@ -1861,7 +1855,7 @@ def test_plot_controls_only_show_options_relevant_to_the_selected_view() -> None
             ):
                 await user.should_not_see(marker=marker)
             view = cast(Select, next(iter(user.find(marker="plotting-view").elements)))
-            assert view.options == ["Default", "Histogram", "Boxplot"]
+            assert view.options == ["Default", "Circular", "Histogram", "Boxplot"]
             assert user.client is not None
             with user.client:
                 view.set_value("Histogram")
@@ -1969,7 +1963,7 @@ def test_plot_controls_only_show_options_relevant_to_the_selected_view() -> None
                 Select,
                 next(iter(user.find(marker="simulation-view").elements)),
             )
-            assert view.options == ["Default", "Histogram"]
+            assert view.options == ["Default", "Circular", "Histogram"]
             assert "Time array" not in view.options
 
     asyncio.run(scenario())
@@ -2315,7 +2309,7 @@ def test_detailed_simulation_switch_exposes_xt_plot_and_live_downloads(
             assert line_chart.options["series"][0]["symbol"] == "circle"
             assert line_chart.options["series"][0]["showSymbol"] is False
             assert line_chart.options["series"][0]["showSymbol"] is False
-            assert line_chart.options["xAxis"]["splitLine"]["show"] is True
+            assert line_chart.options["xAxis"]["splitLine"]["show"] is False
             assert line_chart.options["legend"]["right"] == 28
             assert line_chart.options["grid"]["right"] == 24
             assert line_chart.options["grid"]["left"] >= line_chart.options["yAxis"][
@@ -2329,7 +2323,7 @@ def test_detailed_simulation_switch_exposes_xt_plot_and_live_downloads(
                 Select,
                 next(iter(user.find(marker="simulation-view").elements)),
             )
-            assert view.options == ["Default", "Histogram"]
+            assert view.options == ["Default", "Circular", "Histogram"]
             assert view.value == "Default"
             user.find(marker="action-download-plot").click()
             user.find(marker="download-plot-svg").click()
@@ -2370,8 +2364,8 @@ def test_detailed_simulation_switch_exposes_xt_plot_and_live_downloads(
             assert styled_chart.options["series"][0]["symbol"] == "circle"
             assert styled_chart.options["series"][0]["showSymbol"] is False
             assert styled_chart.options["series"][0]["showSymbol"] is False
-            assert styled_chart.options["xAxis"]["splitLine"]["show"] is False
-            assert styled_chart.options["yAxis"]["splitLine"]["show"] is False
+            assert styled_chart.options["xAxis"]["splitLine"]["show"] is True
+            assert styled_chart.options["yAxis"]["splitLine"]["show"] is True
 
             await user.should_see(marker="simulation-ensemble-profile-options")
             user.find(marker="simulation-show-individual-profiles").click()
@@ -2650,6 +2644,8 @@ def test_detailed_simulation_switch_exposes_xt_plot_and_live_downloads(
                 assert (current.options[key]["min"], current.options[key]["max"]) == original
             assert len(requests) == 1
 
+            # Axis edits rebuild the chart; exports must match the current one.
+            chart = cast(EChart, next(iter(user.find(marker="simulation-result-plot").elements)))
             user.find(marker="action-download-plot").click()
             user.find(marker="download-plot-svg").click()
             for _ in range(30):

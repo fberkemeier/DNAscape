@@ -66,3 +66,15 @@ def test_rate_normalization_preserves_case_sensitive_mapping_settings():
     from dnascape.routing import _canonical_assumption
     assert _canonical_assumption("T0") == "T0"
     assert _canonical_assumption("initial_firing_rate") == "initial_initiation_rate"
+
+
+def test_simulation_input_documentation_lists_real_parameters_and_origin_firing():
+    import inspect
+    table=rsim.input().set_index("argument")
+    expected={name for name,p in inspect.signature(rsim).parameters.items()
+              if p.kind not in {inspect.Parameter.VAR_KEYWORD,inspect.Parameter.VAR_POSITIONAL}}
+    assert set(table.index)==expected
+    assert table.index.is_unique
+    description=table.loc["initiation_rate","description"]
+    assert "Origin firing" in description
+    assert "Compatibility alias" not in description

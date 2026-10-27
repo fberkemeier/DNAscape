@@ -43,7 +43,7 @@ _PUBLIC_BY_MODULE = {
         "inspect_data_source",
         "prepare_data",
     ),
-    "filtering": ("DataFilterSettings", "FilterProfile", "apply_data_filter"),
+    "filtering": ("DataFilterSettings", "FilterProfile", "apply_data_filter", "parse_position_ranges"),
     "modulation": ("ProfileModulationSettings", "ModulationProfile"),
     "formulas": ("evaluate_formula",),
     "uploads": (
@@ -69,6 +69,9 @@ _PUBLIC_BY_MODULE = {
         "plot_mapping_outputs",
         "save_mapping_outputs",
     ),
+    "code_recipes": ("run_data_manager_recipe",),
+    "simulation_recipe": ("prepare_simulation_recipe", "run_simulation_recipe"),
+    "analysis_recipe": ("prepare_analysis_recipe", "run_plotting_recipe"),
     "plotting": (
         "combined_mapping_plot_options",
         "mapping_plot_options",
@@ -78,6 +81,9 @@ _PUBLIC_BY_MODULE = {
 
 _SUBMODULES = (
     "batch",
+    "code_recipes",
+    "simulation_recipe",
+    "analysis_recipe",
     "bigwig",
     "conversion",
     "exports",

@@ -125,7 +125,7 @@ def resolve_modulation(settings: ProfileModulationSettings) -> ProfileModulation
 
 
 def read_modulation_profiles(inspection: UploadInspection, *, column=None, array_key=None):
-    # Imported here because these coordinate readers are shared with Filter.
+    # Imported here because these coordinate readers are shared with Region transforms.
     from dnascape.workflows.filtering import _upload_table, profile_coordinates
 
     if inspection.source_format not in {"csv", "tsv", "txt", "npy", "npz"}:

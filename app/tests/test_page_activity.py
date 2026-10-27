@@ -248,11 +248,11 @@ def test_plotting_completion_with_page_preservation_off(
     started, release = threading.Event(), threading.Event()
     collect = plotting._collect_plot_series
 
-    def blocked_collect(sources: Any) -> Any:
+    def blocked_collect(sources: Any, **kwargs: Any) -> Any:
         started.set()
         if not release.wait(10):
             raise TimeoutError("test did not release plot preparation")
-        return collect(sources)
+        return collect(sources, **kwargs)
 
     monkeypatch.setattr(plotting, "_collect_plot_series", blocked_collect)
     settings = get_export_settings()

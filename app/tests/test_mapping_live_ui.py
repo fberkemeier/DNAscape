@@ -437,7 +437,7 @@ def test_mapping_batch_runs_all_files_tabs_exports_and_preserves_previous_result
                 next(iter(user.find(marker="mapping-preview-output").elements)),
             )
             assert layout.value == "Combined"
-            assert tuple(output.options) == ("initiation_rate", "input:replication_timing")
+            assert tuple(output.options) == ("initiation_rate", "input:replication_timing", "input:fork_speed", "all_plots")
 
             # Histograms share one binning configuration and may be overlaid
             # just like line profiles. Individual selection remains available.
@@ -532,7 +532,7 @@ def test_mapping_batch_runs_all_files_tabs_exports_and_preserves_previous_result
             await asyncio.sleep(0)
             # Dataset selection must retain the submit-time output
             # intersection; result-specific outputs cannot leak into a batch.
-            assert tuple(output.options) == ("initiation_rate", "input:replication_timing")
+            assert tuple(output.options) == ("initiation_rate", "input:replication_timing", "input:fork_speed", "all_plots")
 
             user.find(marker="mapping-download-all-raw").click()
             for _ in range(40):
@@ -2221,7 +2221,8 @@ def test_fit_comparison_is_selectable_in_the_live_mapping_output(
                 next(iter(user.find(marker="mapping-result-plot").elements)),
             )
             assert view.value == "Default"
-            assert not view.enabled
+            assert view.enabled
+            assert "Circular" in view.options
             assert [series["name"] for series in chart.options["series"]] == [
                 "Observed",
                 "Fitted",

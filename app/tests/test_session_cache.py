@@ -274,7 +274,7 @@ def test_filter_sort_remove_and_clear_are_functional(monkeypatch) -> None:
         detail="Fork speed",
     )
 
-    assert cache.list_entries("generated", query="firing") == [plot]
+    assert cache.list_entries("generated", query="initiation") == [plot]
     assert cache.list_entries("generated", kind="plot") == [plot]
     assert [entry.name for entry in cache.list_entries("generated", sort="largest")] == [
         "large.png",

@@ -60,7 +60,6 @@ from app.mapping_catalog import (
     mapping_targets,
 )
 from app.mapping_code_export import (
-    build_mapping_code_bundle,
     build_mapping_python,
     snapshot_mapping_code,
 )
@@ -222,7 +221,6 @@ _COMPARISON_PREFIX = "comparison:"
 _FIT_DIAGNOSTIC_KEY = "fit_diagnostic"
 _MSE_DIAGNOSTIC_KEY = "mse_diagnostic"
 _ALL_PLOTS_KEY = "all_plots"
-_PLOT_TYPES = ["Line", "Heatmap", "Histogram", "Boxplot"]
 _BATCH_COLOURS = (
     "#b03412",
     "#2596be",
@@ -3313,7 +3311,7 @@ def render(_navigate: Callable[[str], None]) -> None:
                     def sync_target_shape(route: MappingRoute, *, retain: bool = False) -> None:
                         shapes = route.shapes_for(selected_forms)
                         filtered_free = (mapping_filter_controls is not None and mapping_filter_controls.controls['enabled'].value
-                            and (mapping_filter_controls.controls['selection'].value != 'profile' or mapping_filter_controls.profile is not None)
+                            and mapping_filter_controls.selection_ready
                             and route.target == 'initiation_rate' and route.output_dependence in {'time', 'spacetime'})
                         if filtered_free:
                             shapes = ('free',)
@@ -3692,7 +3690,7 @@ def render(_navigate: Callable[[str], None]) -> None:
                         ui.element("div")
                         .classes("dn-mapping-window-grid")
                         .mark("mapping-spatial-window")
-                    ):
+                    ) as spatial_window:
                         region_start = (
                             ui.number(label="Start (kb)", value=0.0, min=0.0, step=1.0)
                             .props("dense")
@@ -3709,6 +3707,16 @@ def render(_navigate: Callable[[str], None]) -> None:
                             .props("dense")
                             .classes("dn-field")
                             .mark("mapping-region-end")
+                        )
+                        resolution_slot = (
+                            ui.element("div")
+                            .classes("w-full min-w-0")
+                            .mark("mapping-resolution-slot")
+                        )
+                        time_resolution_slot = (
+                            ui.element("div")
+                            .classes("w-full min-w-0")
+                            .mark("mapping-time-resolution-slot")
                         )
 
                     def sync_whole_region_bounds() -> None:
@@ -3742,6 +3750,8 @@ def render(_navigate: Callable[[str], None]) -> None:
                                 region_setting_controls["resolution"].control.value
                             )
                         periodic_slot.clear()
+                        resolution_slot.clear()
+                        time_resolution_slot.clear()
                         region_setting_controls.clear()
                         with (
                             ui.element("div")
@@ -3761,6 +3771,18 @@ def render(_navigate: Callable[[str], None]) -> None:
                         periodic = region_setting_controls.get("perQ")
                         if periodic is not None and periodic.holder is not None:
                             periodic.holder.move(periodic_slot)
+                        resolution = region_setting_controls.get("resolution")
+                        if resolution is not None and resolution.holder is not None:
+                            resolution.holder.move(resolution_slot)
+                        time_resolution = region_setting_controls.get("resolution_time")
+                        has_time_resolution = time_resolution is not None and time_resolution.holder is not None
+                        time_resolution_slot.set_visibility(has_time_resolution)
+                        spatial_window.classes(
+                            add="dn-mapping-window-time" if has_time_resolution else "",
+                            remove="" if has_time_resolution else "dn-mapping-window-time",
+                        )
+                        if time_resolution is not None and time_resolution.holder is not None:
+                            time_resolution.holder.move(time_resolution_slot)
                         # Keep the requested fit grid when input forms change.
                         if (
                             "resolution" in region_setting_controls
@@ -3864,7 +3886,7 @@ def render(_navigate: Callable[[str], None]) -> None:
                         previous = relative.value
                         if relative.options != options:
                             relative.set_options(options, value=previous if previous in options else next(iter(options), None))
-                        active_filter = controls['enabled'].value and (controls['selection'].value != 'profile' or mapping_filter_controls.profile is not None)
+                        active_filter = controls['enabled'].value and mapping_filter_controls.selection_ready
                         if active_filter:
                             dependence = compatible_filter_dependence(
                                 route.output_dependence, selected_forms.get(relative.value, 'scalar'), controls['selection'].value,
@@ -3907,17 +3929,7 @@ def render(_navigate: Callable[[str], None]) -> None:
                 field_hint(mapping_filter_controls.controls['relative_to'], 'Input whose values select the frozen target regions.')
                 field_hint(mapping_filter_controls.controls['enabled'], 'Transform initial target values and freeze them throughout fitting.')
 
-                def render_mapping_code_menu() -> None:
-                    ui.menu_item(
-                        "Download runnable code (.zip)",
-                        on_click=lambda: download_mapping_code(bundle=True),
-                    ).mark("mapping-code-download-bundle")
-                    ui.menu_item(
-                        "Download Python script (.py)",
-                        on_click=lambda: download_mapping_code(bundle=False),
-                    ).mark("mapping-code-download-python")
-
-                with action_dock(code_menu=render_mapping_code_menu):
+                with action_dock(on_code=lambda: download_mapping_code()):
                     map_button = (
                         workflow_action_button("Map", symbol="mapping")
                         .props("no-caps")
@@ -4310,7 +4322,7 @@ def render(_navigate: Callable[[str], None]) -> None:
                         for named in latest_results[first:stop]:
                             if 'filter_positions' not in named.result.outputs:
                                 continue
-                            ui.label('Filter positions' + (f' · {_mapping_display_name(named)}' if len(latest_results) > 1 else '')).classes('dn-setting-group-title')
+                            ui.label('Mask positions' + (f' · {_mapping_display_name(named)}' if len(latest_results) > 1 else '')).classes('dn-setting-group-title')
                             handlers = {}
                             preference = _mapping_raw_preference(mapping_raw_preferences, named, 'filter_positions')
                             controls = raw_output_file_row(
@@ -5226,13 +5238,16 @@ def render(_navigate: Callable[[str], None]) -> None:
                         ),
                     )
 
-                async def download_mapping_code(*, bundle: bool) -> None:
+                async def download_mapping_code() -> None:
                     """Export current controls without starting or changing Mapping."""
-                    if running:
-                        notify("Wait for Mapping to finish before exporting code.", type="warning")
+                    from app.code_export import filter_code_settings, statistics_code_settings
+                    if running or mapping_filter_controls.loading:
+                        notify("Wait for the data operation to finish before exporting code.", type="warning")
                         return
                     try:
                         output_key = str(preview_output.value or initial_output_key)
+                        if output_key == _ALL_PLOTS_KEY:
+                            output_key = "primary"
                         preferences = {
                             key: {
                                 "output": selected_output,
@@ -5244,12 +5259,16 @@ def render(_navigate: Callable[[str], None]) -> None:
                             for (key, selected_output), preference in mapping_raw_preferences.items()
                             if selected_output == output_key
                         }
+                        statistics = statistics_code_settings(plot_settings)
+                        if statistics is not None and str(preview_layout.value) != "Combined":
+                            statistics["dataset_index"] = next((index for index, named in enumerate(latest_results)
+                                                               if named.result is latest_result), 0)
                         snapshot = snapshot_mapping_code(
                             method=selected_route_state["route"].method,
                             target_shape=(str(target_shape_control.value) if target_shape_control.value is not None else None),
                             settings=setting_values(),
                             fit_filter=MappingFilterSettings(
-                                mapping_filter_controls.snapshot(), mapping_filter_controls.controls['relative_to'].value,
+                                filter_code_settings(mapping_filter_controls), mapping_filter_controls.controls['relative_to'].value,
                                 bool(mapping_filter_controls.controls['export'].value),
                             ),
                             setting_controls={**region_setting_controls, **mapping_setting_controls},
@@ -5272,34 +5291,17 @@ def render(_navigate: Callable[[str], None]) -> None:
                                 "compression": get_export_settings().raw_compression,
                                 "name_style": get_export_settings().result_name_style,
                                 "per_dataset": preferences,
-                            },
-                            plotting={
-                                "show_plot": bool(show_plot.value),
-                                "output": output_key,
-                                "layout": str(preview_layout.value or "Combined"),
-                                "view": str(view.value or "Default"),
-                                "name_style": get_export_settings().result_name_style,
-                                "settings": {
-                                    key: value for key, value in current_mapping_plot_settings().items()
-                                    if key not in {"output_key", "plot_type"}
+                                "statistics": statistics,
+                                "filter_exports": {
+                                    key: dict(filename=preference.file_name, file_format=preference.file_type,
+                                              compress=preference.compress, compression=get_export_settings().raw_compression,
+                                              layout=filter_layout_preferences.get(key, "positions"))
+                                    for (key, selected), preference in mapping_raw_preferences.items() if selected == "filter_positions"
                                 },
-                                "colors": [
-                                    {"dataset": key, "output": output, "series": series, "color": color}
-                                    for (key, output, series), color in mapping_batch_colors.items()
-                                ],
-                                "line_types": [
-                                    {"dataset": key, "output": output, "series": series, "line_type": line_type}
-                                    for (key, output, series), line_type in mapping_batch_line_types.items()
-                                ],
-                                "curve_names": [
-                                    {"dataset": key, "output": output, "series": series, "name": name}
-                                    for (key, output, series), name in mapping_batch_names.items()
-                                ],
-                                "plot_export_dpi": get_export_settings().plot_dpi,
                             },
                         )
                         artifact = await run.io_bound(
-                            build_mapping_code_bundle if bundle else build_mapping_python, snapshot,
+                            build_mapping_python, snapshot,
                         )
                         if artifact is None:
                             raise RuntimeError("Code export stopped before returning a file.")
@@ -6145,23 +6147,107 @@ def render(_navigate: Callable[[str], None]) -> None:
                     refresh_mapping_page,
                 )
 
-                def raw_input_targets():
-                    async def receive(key, files):
-                        if running:
-                            raise ValueError("Stop Mapping before adding input data.")
-                        live = mapping_input_controls[key]
-                        if live.override is not None:
-                            live.override.set_value(True)
-                        mode = live.surface.get("mode")
-                        if mode is not None:
-                            mode.set_value("profile")
+                async def receive_mapping_raw_files(files):
+                    if running:
+                        raise ValueError("Stop Mapping before adding input data.")
+                    # Stage the destination choices in the dialog. Cancelling
+                    # must leave the page's current route and uploads intact.
+                    with ui.dialog() as dialog, ui.card().classes("dn-settings-dialog dn-raw-open-dialog"):
+                        with ui.row().classes("dn-settings-dialog-head"):
+                            ui.label("Open in Mapping").classes("dn-panel-title")
+                            ui.space()
+                            ui.button(icon="close", on_click=lambda: dialog.submit(None)).props('flat round dense aria-label="Cancel opening data"')
+                        with ui.column().classes("dn-settings-section w-full"):
+                            destination_target = ui.select({target.key: target.label for target in targets},
+                                value=target_control.value, label="Target").props("dense options-dense").classes("dn-field").mark("raw-open-mapping-target")
+                            current_target = mapping_target(str(target_control.value))
+                            destination_dependence = ui.select({dep: _mapping_dependence_label(current_target.key, dep) for dep in current_target.dependences},
+                                value=dependence_control.value, label="Dependence").props("dense options-dense").classes("dn-field").mark("raw-open-mapping-dependence")
+                            destination_dependence.set_visibility(len(current_target.dependences) > 1)
+                            field_hint(destination_target, "Choose the quantity to map.")
+                            field_hint(destination_dependence, "Choose the target's dependence.")
+                            destination_route = ui.select(dict(route_control.options), value=route_control.value,
+                                label="Route").props("dense options-dense").classes("dn-field").mark("raw-open-mapping-route")
+                            field_hint(destination_route, "Choose the inputs used for Mapping.")
+                            ui.label("Input").classes("dn-setting-group-title")
+
+                            @ui.refreshable
+                            def render_destination_inputs():
+                                if not destination_route.value:
+                                    ui.label("This target has no profile input.").classes("dn-upload-formats")
+                                    return
+                                family = _route_family(str(destination_route.value))
+                                inputs = [item for item in family.inputs if item.allows_upload and any(form in {"x", "t", "xt"} for form in family.allowed_forms(item.key))]
+                                if not inputs:
+                                    ui.label("This route has no profile input.").classes("dn-upload-formats")
+                                for item in inputs:
+                                    ui.button(item.label, on_click=lambda _event, key=item.key: dialog.submit((
+                                        destination_target.value, destination_dependence.value, destination_route.value, key,
+                                    ))).props("flat no-caps").classes("dn-raw-open-input").mark(f"raw-open-input-{item.key}")
+                            render_destination_inputs()
+
+                            async def refresh_destination_inputs():
+                                if not dialog.is_deleted:
+                                    await render_destination_inputs.refresh()
+
+                            async def sync_destination_routes():
+                                families = _mapping_route_families_for_ui(str(destination_target.value), str(destination_dependence.value))
+                                options = _route_options(families)
+                                destination_route.set_options(options, value=destination_route.value if destination_route.value in options else next(iter(options), None))
+                                await refresh_destination_inputs()
+
+                            async def sync_destination_target():
+                                target = mapping_target(str(destination_target.value))
+                                destination_dependence.set_options({dep: _mapping_dependence_label(target.key, dep) for dep in target.dependences}, value=target.default_dependence)
+                                destination_dependence.set_visibility(len(target.dependences) > 1)
+                                await sync_destination_routes()
+                            destination_target.on_value_change(sync_destination_target)
+                            destination_dependence.on_value_change(sync_destination_routes)
+                            destination_route.on_value_change(refresh_destination_inputs)
+                    try:
+                        selected = await dialog
+                    finally:
+                        dialog.delete()
+                    if selected is None:
+                        return
+                    if running:
+                        raise ValueError("Stop Mapping before adding input data.")
+                    target_key, dependence, family_key, key = selected
+                    target_control.set_value(target_key)
+                    for _ in range(4):
+                        await asyncio.sleep(0)
+                    dependence_control.set_value(dependence)
+                    for _ in range(4):
+                        await asyncio.sleep(0)
+                    if family_key not in route_control.options:
+                        raise ValueError("Choose an available Mapping route for this target.")
+                    route_control.set_value(family_key)
+                    for _ in range(4):
+                        await asyncio.sleep(0)
+                    live = mapping_input_controls[key]
+                    if live.override is not None:
+                        live.override.set_value(True)
                         for _ in range(4):
                             await asyncio.sleep(0)
-                        await append_raw_uploads(lambda: mapping_input_controls[key].surface.get("uploader"), files)
-                    return tuple(
-                        RawInputTarget(key, live.spec.label, lambda files, key=key: receive(key, files))
-                        for key, live in mapping_input_controls.items()
-                        if live.spec.allows_upload and any(form in {"x", "t", "xt"} for form in live.spec.forms)
+                    mode = live.surface.get("mode")
+                    if mode is not None:
+                        mode.set_value("profile")
+                    for _ in range(40):
+                        await asyncio.sleep(0)
+                        uploader = mapping_input_controls[key].surface.get("uploader")
+                        if uploader is not None and not uploader.is_deleted:
+                            break
+                    await append_raw_uploads(lambda: mapping_input_controls[key].surface.get("uploader"), files)
+
+                async def receive_mapping_mask(files):
+                    if running:
+                        raise ValueError("Stop Mapping before adding a mask.")
+                    await mapping_filter_controls.receive_mask(files)
+
+                def raw_input_targets():
+                    return (
+                        RawInputTarget("mapping-input", "Mapping input", receive_mapping_raw_files),
+                        RawInputTarget("filter_positions", "Region transforms", receive_mapping_mask, kind="mask"),
                     )
 
                 current_session_cache().register_input_targets("mapping", raw_input_targets)

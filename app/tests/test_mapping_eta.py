@@ -91,7 +91,7 @@ def test_first_forward_prediction_reports_eta_before_an_iteration_finishes(monke
         with utils.measured_work(total=11):
             now[0] = 1.
             utils.report_measured_work(.1)
-            assert updates and "initial prediction 10%" in updates[-1][1]
+            assert updates and "Initial prediction 10%" in updates[-1][1]
             assert "ETA 00:01:49" in updates[-1][1]
             assert .04 < updates[-1][0] < .05
             eta = MappingEta(clock=lambda: now[0])
@@ -116,7 +116,7 @@ def test_earlier_eta_leaves_the_fit_numerically_identical(monkeypatch):
     messages = []
     with utils.progress_context(report=lambda _fraction, text: messages.append(text), suppress_output=True):
         actual = fitting.map_timing_firing(observed, maxiter=1, neighbourhood_range=128, refine_edge_kb=0, verbose=False)
-    assert any("initial prediction" in message and "ETA" in message for message in messages)
+    assert any("Initial prediction" in message and "ETA" in message for message in messages)
     np.testing.assert_array_equal(actual, expected)
 
 
@@ -134,7 +134,7 @@ def test_stochastic_prediction_progress_preserves_the_seeded_ensemble(monkeypatc
     with utils.progress_context(report=lambda _fraction, text: messages.append(text), suppress_output=True):
         with utils.measured_work(total=5):
             actual = rsim(**options)
-    assert any("initial prediction" in text for text in messages)
+    assert any("Initial prediction" in text for text in messages)
     for key in ("replication_timing", "origin_efficiency", "fork_directionality"):
         np.testing.assert_array_equal(actual[key], expected[key])
 
@@ -161,7 +161,7 @@ def test_first_weibull_evaluation_reports_eta_for_every_dependence(monkeypatch, 
     updates = []
     with utils.progress_context(report=lambda fraction, text: updates.append((fraction, text)), suppress_output=True):
         actual = fitting._fit_weibull_survival_firing(observed, **options)
-    assert any("initial prediction" in text and "ETA" in text for _, text in updates)
+    assert any("Initial prediction" in text and "ETA" in text for _, text in updates)
     np.testing.assert_array_equal(actual, expected)
     assert updates[-1][1].split(" - ")[1] == "ETA 00:00:00"
 
@@ -186,3 +186,89 @@ def test_weibull_eta_counts_accepted_iterations_instead_of_line_search_trials(mo
         fitting._fit_weibull_survival_firing(np.full(18, 20.), 1.4, target_form="spacetime",
             maxiter=3, perQ=True, time_grid=np.arange(0., 61., 5.))
     assert "4/4" in updates[-1][1]
+
+
+@pytest.mark.parametrize("kernel", ["timing", "fraction", "events"])
+@pytest.mark.parametrize("periodic", [False, True])
+@pytest.mark.parametrize("rate_form", ["scalar", "x", "t", "xt"])
+@pytest.mark.parametrize("speed_form", ["scalar", "x", "t", "xt"])
+def test_forward_initial_eta_covers_variable_kinetic_dependences(
+    monkeypatch, kernel, periodic, rate_form, speed_form,
+):
+    """Observe actual nonuniform calculations, not just constant test matrices."""
+    import numpy as np
+    from dnascape import fitting, inverse, utils
+    from dnascape._event_densities import kinetic_event_densities
+    from dnascape.mapping import map_replicated_fraction_xt
+
+    n = 72
+    clock = np.arange(0., 61., 5.)
+    x = np.linspace(0., 2. * np.pi, n)
+
+    def field(base, form):
+        spatial = 1. + .1 * np.sin(x)
+        temporal = 1. + .1 * np.sin(clock / 20.)
+        return {"scalar": base, "x": base * spatial,
+                "t": base * temporal[None, :],
+                "xt": base * spatial[:, None] * temporal[None, :]}[form]
+
+    rate, speed = field(.002, rate_form), field(1.4, speed_form)
+    options = dict(time_grid=clock, n_bins=n, perQ=periodic)
+
+    def predict():
+        if kernel == "timing":
+            return fitting._mapping_prediction(initiation_rate=rate, fork_speed=speed, **options)
+        if kernel == "events":
+            return kinetic_event_densities(rate, speed, **options)
+        return {"fraction": map_replicated_fraction_xt(rate, speed, **options)}
+
+    expected = predict()
+    now = [0.]
+
+    def tick():
+        now[0] += .3
+        return now[0]
+
+    monkeypatch.setattr(utils.time, "perf_counter", tick)
+    monkeypatch.setattr(inverse, "perf_counter", tick)
+    updates = []
+    with utils.progress_context(report=lambda value, text: updates.append((value, text)), suppress_output=True):
+        with utils.mapping_progress({"maxiter": 4}):
+            actual = predict()
+    assert updates[0][1] == "Mapping... Initial prediction 0%"
+    assert any("Initial prediction" in text and "ETA" in text for _, text in updates)
+    # Analytic homogeneous circles finish in one vector operation. Other
+    # predictions must expose measured work before that prediction finishes.
+    if kernel != "fraction" or rate_form != "scalar" or speed_form != "scalar" or not periodic:
+        assert any("ETA" in text and "100%" not in text for _, text in updates)
+    for key in expected:
+        np.testing.assert_array_equal(actual[key], expected[key])
+
+
+def test_first_prediction_scope_is_shared_and_restored_after_failure(monkeypatch):
+    from dnascape import utils
+    now = [0.]
+    monkeypatch.setattr(utils.time, "perf_counter", lambda: now[0])
+    updates = []
+
+    @utils.initial_prediction
+    def predict(fail=False):
+        now[0] += 1.
+        utils.report_measured_work(.5)
+        if fail:
+            raise ValueError("Interrupted prediction")
+
+    with utils.progress_context(report=lambda value, text: updates.append((value, text))):
+        with pytest.raises(ValueError, match="Interrupted prediction"):
+            with utils.mapping_progress({"maxiter": 4}):
+                with utils.mapping_progress({"maxiter": 99}):
+                    predict(fail=True)
+        assert "ETA 00:00:09" in updates[-1][1]
+        before = len(updates)
+        utils.report_measured_work(.75)
+        assert len(updates) == before
+        with utils.mapping_progress({"maxiter": 4}):
+            predict()
+            before = len(updates)
+            predict()
+            assert len(updates) == before

@@ -28,6 +28,7 @@ class RawInputTarget:
     key: str
     label: str
     receive: Callable[[tuple[ExportArtifact, ...]], Awaitable[None]]
+    kind: str = "data"
 
 
 def unpack_raw_artifact(artifact: ExportArtifact) -> tuple[ExportArtifact, ...]:
@@ -63,7 +64,8 @@ async def open_raw_artifact(
         # callbacks rooted in the client rather than that disposable slot.
         with ui.context.client:
             navigate(destination)
-            targets = tuple(current_session_cache().input_targets(destination))
+            kind = "mask" if preferred_input == "filter_positions" else "data"
+            targets = tuple(item for item in current_session_cache().input_targets(destination) if item.kind == kind)
             if not targets:
                 raise ValueError("The selected page has no available file input.")
             preferred_input = preferred_input.removesuffix("_xt") if preferred_input else None
@@ -73,7 +75,7 @@ async def open_raw_artifact(
             if target is None:
                 with ui.dialog() as dialog, ui.card().classes("dn-settings-dialog dn-raw-open-dialog"):
                     with ui.row().classes("dn-settings-dialog-head"):
-                        ui.label("Choose input").classes("dn-panel-title")
+                        ui.label("Choose region transform" if kind == "mask" else "Choose input").classes("dn-panel-title")
                         ui.space()
                         ui.button(icon="close", on_click=lambda: dialog.submit(None)).props('flat round dense aria-label="Cancel opening data"')
                     with ui.column().classes("dn-settings-section"):

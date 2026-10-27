@@ -508,7 +508,7 @@ def test_simulation_summary_and_raw_download_css_preserve_alignment() -> None:
     assert controls["padding"].split()[0] == preview["padding"].split()[0]
 
     summary = _css_declarations(styles, ".dn-stat-grid.dn-simulation-summary-grid")
-    assert summary["grid-template-columns"] == ("minmax(10rem, 1.4fr) repeat(4, minmax(0, 1fr))")
+    assert summary["grid-template-columns"] == ("minmax(13rem, 1.6fr) repeat(4, minmax(0, 1fr))")
     run_stats = _css_declarations(
         styles,
         ".dn-simulation-summary-grid > .dn-simulation-run-stats",

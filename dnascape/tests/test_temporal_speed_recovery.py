@@ -60,7 +60,7 @@ def test_speed_fit_updates_time_and_keeps_the_actual_forward_timing(firing_form,
     assert info["fit_mse"] < initial_mse
     if speed_form == "time":
         assert info["fit_mse"] < 1e-3
-    budget = 10 if speed_form == "time" else 20
+    budget = info.get("fit_progress_total", 10 if speed_form == "time" else 20)
     assert metrics and all(0 <= metric[1] <= metric[2] == budget for metric in metrics)
     assert all(np.isfinite(metric[3]) for metric in metrics)
     np.testing.assert_array_equal(firing, before)

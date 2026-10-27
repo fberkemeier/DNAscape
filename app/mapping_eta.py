@@ -23,7 +23,8 @@ class MappingEta:
 
     Solver ETA describes its current stage. A batch estimate based on completed
     cases is identified separately because cases need not cost the same amount.
-    Quiet routes remain explicitly unestimated until a case has completed.
+    Every route reports its initial prediction. A numeric estimate starts only
+    once prediction work has been measured.
     """
 
     def __init__(self, *, clock: Callable[[], float] = perf_counter) -> None:

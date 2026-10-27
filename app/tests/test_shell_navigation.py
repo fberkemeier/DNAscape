@@ -378,3 +378,26 @@ def test_browser_launch_is_opt_in(monkeypatch: pytest.MonkeyPatch) -> None:
     assert _show_browser() is False
     monkeypatch.setenv("DNASCAPE_APP_SHOW", "true")
     assert _show_browser() is True
+
+
+def test_theme_action_closes_menu_before_refresh_removes_its_auto_close_listener() -> None:
+    async def scenario() -> None:
+        async with user_simulation(index) as user:
+            await user.open("/")
+            menu = next(iter(user.find(marker="app-menu").elements))
+            action = next(iter(user.find(marker="menu-theme").elements))
+            primary_click = next(
+                listener for listener in action._event_listeners.values()
+                if listener.type == "click"
+            )
+            with user.client:
+                menu.open()
+                # Browser sends each listener as a separate event. Theme refresh
+                # deletes this item before its second auto-close event arrives.
+                action._handle_event({"listener_id": primary_click.id, "args": []})
+            for _ in range(6):
+                await asyncio.sleep(0)
+            assert action.is_deleted
+            assert menu.value is False
+
+    asyncio.run(scenario())

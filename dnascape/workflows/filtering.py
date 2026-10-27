@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import gzip
 import io
+import re
 import zlib
 from collections.abc import Callable
 from dataclasses import dataclass, field, replace
@@ -23,7 +24,8 @@ FILTER_SELECTIONS = {
     "minimum": "Threshold from minimum",
     "maximum": "Threshold from maximum",
     "nan": "Missing values (NaN)",
-    "profile": "Filter profile or positions",
+    "ranges": "Position ranges",
+    "profile": "Upload profile",
     "all": "Whole region",
 }
 FILTER_ACTIONS = {
@@ -75,6 +77,7 @@ class DataFilterSettings:
     upload: UploadInspection | None = field(default=None, repr=False, compare=False)
     profile_layout: str = "mask"
     profile_units: str = "bp"
+    position_ranges: str = ""
     profile_column: str | None = None
     profile_array_key: str | None = None
     modulation: ProfileModulationSettings = field(default_factory=ProfileModulationSettings)
@@ -165,30 +168,59 @@ def _finite(value: float, label: str) -> float:
     return result
 
 
+def parse_position_ranges(text: str, *, units: str = "bp") -> FilterProfile | None:
+    """Read comma-separated (start, end) intervals without evaluating code."""
+    _choice(units, {"bp", "kb", "index"}, "mask coordinates")
+    if not isinstance(text, str):
+        raise ValueError("Enter position ranges as (1000,2000), (4000,5000).")
+    if len(text) > 65536:
+        raise ValueError("Position ranges are too long; use Upload profile instead.")
+    text = text.strip()
+    if not text:
+        return None
+    number = r"[+-]?(?:\d+(?:\.\d*)?|\.\d+)(?:[eE][+-]?\d+)?"
+    pair = re.compile(rf"\(\s*({number})\s*,\s*({number})\s*\)")
+    ranges, end = [], 0
+    for match in pair.finditer(text):
+        separator = text[end:match.start()].strip()
+        if separator != ("," if ranges else ""):
+            raise ValueError("Enter position ranges as (1000,2000), (4000,5000).")
+        ranges.append((float(match[1]), float(match[2])))
+        end = match.end()
+    if not ranges or text[end:].strip() not in {"", ","}:
+        raise ValueError("Enter position ranges as (1000,2000), (4000,5000).")
+    profile = FilterProfile(np.asarray(ranges, dtype=float), layout="intervals", units=units)
+    _validate_profile(profile)
+    return profile
+
+
 def resolve_filter(settings: DataFilterSettings) -> DataFilterSettings:
     """Validate active fields only and materialize an optional uploaded mask once."""
     if not settings.enabled:
         return settings
-    _choice(settings.selection, FILTER_SELECTIONS, "filter selection")
+    _choice(settings.selection, FILTER_SELECTIONS, "mask selection")
+    if settings.selection == "ranges":
+        settings = replace(settings, selection="profile", upload=None, profile_layout="intervals",
+                           profile=parse_position_ranges(settings.position_ranges, units=settings.profile_units))
     if settings.selection == "profile" and settings.profile is None and settings.upload is None:
         return replace(settings, enabled=False)
-    _choice(settings.action, FILTER_ACTIONS, "filter operation")
+    _choice(settings.action, FILTER_ACTIONS, "region transform operation")
     changes = {}
     if settings.action == "modulate":
         changes["modulation"] = resolve_modulation(settings.modulation)
     if settings.selection in {"threshold", "minimum", "maximum"}:
         _choice(settings.comparison, {"below", "above"}, "threshold comparison")
-        changes["threshold"] = _finite(settings.threshold, "Filter threshold")
+        changes["threshold"] = _finite(settings.threshold, "Mask threshold")
         if settings.selection != "threshold" and changes["threshold"] < 0:
             raise ValueError("Distance from the minimum or maximum must be non-negative.")
     if settings.selection == "between":
         _choice(settings.between_mode, {"within", "outside"}, "threshold range")
-        changes.update(lower=_finite(settings.lower, "Lower filter threshold"),
-                       upper=_finite(settings.upper, "Upper filter threshold"))
+        changes.update(lower=_finite(settings.lower, "Lower mask threshold"),
+                       upper=_finite(settings.upper, "Upper mask threshold"))
         if changes["lower"] > changes["upper"]:
-            raise ValueError("Lower filter threshold cannot exceed the upper threshold.")
+            raise ValueError("Lower mask threshold cannot exceed the upper threshold.")
     if settings.action in {"replace", "multiply", "add"}:
-        changes["value"] = _finite(settings.value, "Filter value")
+        changes["value"] = _finite(settings.value, "Transform value")
     if settings.action == "noise":
         changes["standard_deviation"] = _finite(settings.standard_deviation, "Noise standard deviation")
         if changes["standard_deviation"] < 0:
@@ -202,12 +234,12 @@ def resolve_filter(settings: DataFilterSettings) -> DataFilterSettings:
                 raise ValueError("Random seed must be a non-negative integer.")
             changes["seed"] = seed
     if settings.action == "interpolate":
-        _choice(settings.interpolation, FILTER_INTERPOLATIONS, "filter interpolation")
+        _choice(settings.interpolation, FILTER_INTERPOLATIONS, "region transform interpolation")
     if settings.action in {"minimum", "maximum"}:
         _choice(settings.reference, {"outside", "all"}, "reference region")
     if settings.selection == "profile":
-        _choice(settings.profile_layout, FILTER_PROFILE_LAYOUTS, "filter profile format")
-        _choice(settings.profile_units, {"bp", "kb", "index"}, "filter coordinates")
+        _choice(settings.profile_layout, FILTER_PROFILE_LAYOUTS, "mask profile format")
+        _choice(settings.profile_units, {"bp", "kb", "index"}, "mask coordinates")
         if settings.upload is not None:
             changes.update(profile=read_filter_profile(
                 settings.upload, layout=settings.profile_layout, units=settings.profile_units,
@@ -220,20 +252,20 @@ def resolve_filter(settings: DataFilterSettings) -> DataFilterSettings:
 
 
 def _validate_profile(profile: FilterProfile) -> None:
-    _choice(profile.layout, FILTER_PROFILE_LAYOUTS, "filter profile format")
-    _choice(profile.units, {"bp", "kb", "index"}, "filter coordinates")
+    _choice(profile.layout, FILTER_PROFILE_LAYOUTS, "mask profile format")
+    _choice(profile.units, {"bp", "kb", "index"}, "mask coordinates")
     values = np.asarray(profile.values, dtype=float)
     if profile.layout == "intervals":
         if values.ndim != 2 or values.shape[1] != 2:
-            raise ValueError("Filter intervals require start and end columns.")
+            raise ValueError("Mask intervals require start and end columns.")
         if not np.isfinite(values).all() or np.any(values[:, 0] >= values[:, 1]) or np.any(values < 0):
-            raise ValueError("Filter intervals need finite, non-negative starts and larger ends.")
+            raise ValueError("Mask intervals need finite, non-negative starts and larger ends.")
     elif values.ndim != 1:
-        raise ValueError("A filter profile or position list must be one-dimensional.")
+        raise ValueError("A mask profile or position list must be one-dimensional.")
     elif np.isinf(values).any() or (profile.layout == "positions" and (np.isnan(values).any() or np.any(values < 0))):
-        raise ValueError("Filter positions must be finite and non-negative; mask values cannot be infinite.")
+        raise ValueError("Mask positions must be finite and non-negative; mask values cannot be infinite.")
     if profile.chromosomes is not None and len(profile.chromosomes) != len(values):
-        raise ValueError("Filter chromosome labels must match the number of positions.")
+        raise ValueError("Mask chromosome labels must match the number of positions.")
 
 
 def read_filter_profile(
@@ -261,12 +293,12 @@ def read_filter_profile(
             start = next((names[name] for name in ("start", "start_bp", "start_kb") if name in names), numeric[0] if numeric else None)
             end = next((names[name] for name in ("end", "end_bp", "end_kb") if name in names), numeric[1] if len(numeric) > 1 else None)
             if start is None or end is None:
-                raise ValueError("Filter intervals require start and end columns.")
+                raise ValueError("Mask intervals require start and end columns.")
             values = table[[start, end]].to_numpy(dtype=float)
         else:
             position = next((names[name] for name in ("position_bp", "position_kb", "position", "pos", "start") if name in names), numeric[0] if numeric else None)
             if position is None:
-                raise ValueError("The filter needs a numeric position column.")
+                raise ValueError("The mask needs a numeric position column.")
             values = table[position].to_numpy(dtype=float)
     profile = FilterProfile(np.asarray(values, dtype=float), layout, units, chromosomes)
     _validate_profile(profile)
@@ -357,7 +389,7 @@ def profile_chromosome(inspection: UploadInspection) -> str | None:
         return None
     values = _upload_table(inspection, [columns[0]])[columns[0]].astype(str).unique()
     if len(values) != 1:
-        raise ValueError("Use a genomic track or a chromosome-specific profile for a chromosome-labelled filter.")
+        raise ValueError("Use a genomic track or a chromosome-specific profile for a chromosome-labelled mask.")
     return str(values[0])
 
 
@@ -368,11 +400,11 @@ def _profile_mask(profile: FilterProfile | None, length: int, positions, interva
     values = np.asarray(profile.values, dtype=float)
     if profile.chromosomes is not None:
         if chromosome is None:
-            raise ValueError("A chromosome-labelled filter requires a chromosome-specific converted profile.")
+            raise ValueError("A chromosome-labelled mask requires a chromosome-specific converted profile.")
         values = values[np.asarray(profile.chromosomes) == chromosome]
     if profile.layout == "mask":
         if values.size != length:
-            raise ValueError("The filter mask must have one value for each converted bin. Use a position list for a different grid.")
+            raise ValueError("The mask must have one value for each converted bin. Use a position list for a different grid.")
         return np.isfinite(values) & (values != 0)
     if profile.units == "index":
         coordinates = np.arange(length, dtype=float)
@@ -384,12 +416,12 @@ def _profile_mask(profile: FilterProfile | None, length: int, positions, interva
         bins = intervals
         values = values / (1000. if profile.units == "bp" else 1.)
     if coordinates.shape != (length,) or not np.isfinite(coordinates).all() or np.any(np.diff(coordinates) <= 0):
-        raise ValueError("Coordinate filtering requires finite, increasing positions in the converted profile.")
+        raise ValueError("Coordinate masks require finite, increasing positions in the converted profile.")
     if bins is not None:
         bins = np.asarray(bins, dtype=float)
         if (bins.shape != (length, 2) or not np.isfinite(bins).all() or np.any(bins[:, 0] >= bins[:, 1])
                 or np.any(bins[1:, 0] < bins[:-1, 1])):
-            raise ValueError("Coordinate filtering requires ordered, non-overlapping converted bins.")
+            raise ValueError("Coordinate masks require ordered, non-overlapping converted bins.")
     if profile.layout == "positions":
         if bins is not None:
             indices = np.searchsorted(bins[:, 0], values, side="right") - 1
@@ -545,7 +577,7 @@ def apply_data_filter(
                 else:
                     output[selected] += settings.value
         if np.isinf(output).any():
-            raise ValueError("The filter operation produced infinite values. Reduce its value or noise standard deviation.")
+            raise ValueError("The region transform produced infinite values. Reduce its value or noise standard deviation.")
     if cancel is not None:
         cancel()
     return result

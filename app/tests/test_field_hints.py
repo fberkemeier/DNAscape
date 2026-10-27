@@ -28,6 +28,7 @@ def test_hover_text_is_brief_and_covers_all_mapping_settings():
         assert "\n" not in text
     assert ExportSettings().show_field_hints is True
     assert ExportSettings().show_help is False
+    assert "origin firing" in FIELD_HINTS["Initiation rate"]
 
 
 @pytest.mark.parametrize("initial", [True, False])

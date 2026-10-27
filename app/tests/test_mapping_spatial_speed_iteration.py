@@ -30,8 +30,8 @@ def test_actual_route_reports_iterations_and_preserves_requested_region(capsys):
         _request().inputs["replication_timing"][32:64],
     )
     messages = [message for _, message in progress]
-    assert "Fitting fork speed... iteration 0/2" in messages
-    assert "Fitting fork speed... iteration 2/2" in messages
+    assert "Mapping... iteration 0/2" in messages
+    assert "Mapping... iteration 2/2" in messages
     assert messages[-1] == "Mapping complete"
     values = [value for value, _ in progress]
     assert values == sorted(values)
@@ -48,7 +48,7 @@ def test_cancelling_at_first_iteration_releases_the_app_for_another_mapping():
 
     def report(value, message):
         nonlocal stop
-        if message == "Fitting fork speed... iteration 0/2":
+        if message == "Mapping... iteration 0/2":
             stop = True
 
     def cancel():

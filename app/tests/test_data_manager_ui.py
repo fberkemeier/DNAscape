@@ -21,6 +21,7 @@ from nicegui.elements.label import Label
 from nicegui.elements.number import Number
 from nicegui.elements.progress import LinearProgress
 from nicegui.elements.select import Select
+from nicegui.elements.switch import Switch
 from nicegui.elements.tabs import Tabs
 from nicegui.elements.upload import Upload
 from nicegui.testing import user_simulation
@@ -188,13 +189,13 @@ def test_generated_plot_settings_update_preview_and_export_without_changing_data
             await user.should_see(marker="data-manager-preview-chart", retries=80)
             await user.should_see("Plot settings")
             await user.should_see("Raw data")
-            assert control("data-manager-plot-aspect-ratio").value == 3.0
-            assert options()["dnascapeAspectRatio"] == 3.0
+            assert control("data-manager-plot-aspect-ratio").value == 2.5
+            assert options()["dnascapeAspectRatio"] == 2.5
             with user.client:
                 control("data-manager-plot-aspect-ratio").set_value(2.0)
             assert options()["dnascapeAspectRatio"] == 2.0
             user.find(marker="data-manager-plot-reset-aspect-ratio").click()
-            assert options()["dnascapeAspectRatio"] == 3.0
+            assert options()["dnascapeAspectRatio"] == 2.5
             settings = control("data-manager-plot-preview-settings")
             # Shared settings follow the plot and precede every generated row.
             container = control("data-manager-result-container")
@@ -787,14 +788,20 @@ def test_bedgraph_reveals_track_polishing_controls_and_defaults_to_plain_tsv() -
             assert smoothing.parent_slot is not None
             assert smoothing.parent_slot.parent is smoothing_column
             assert interpolation.parent_slot is not None
-            assert interpolation.parent_slot.parent is smoothing_column
+            assert interpolation.parent_slot.parent is missing_column
             assert value_scaling.parent_slot is not None
             assert value_scaling.parent_slot.parent is scaling_column
-            assert values_grid.default_slot.children[:3] == [
-                missing_column,
-                smoothing_column,
-                scaling_column,
-            ]
+            transform_grid = next(
+                iter(user.find(marker="data-manager-transform-values").elements)
+            )
+            assert transform_grid.default_slot.children[:2] == [smoothing_column, scaling_column]
+            transform_section = next(iter(user.find(marker="data-manager-transform").elements))
+            ancestor = transform_grid
+            while ancestor.parent_slot is not None and ancestor is not transform_section:
+                ancestor = ancestor.parent_slot.parent
+            assert ancestor is transform_section
+            content = transform_grid.parent_slot.parent.parent_slot.parent
+            assert content.default_slot.children[-1] is transform_grid.parent_slot.parent
             smoothing.set_value("moving_average")
             await user.should_see(marker="data-manager-smooth-window")
             smooth_window = cast(
@@ -819,7 +826,8 @@ def test_bedgraph_reveals_track_polishing_controls_and_defaults_to_plain_tsv() -
             await user.should_not_see(marker="data-manager-target-interval")
             await user.should_see(marker="data-manager-interval-invert")
             invert = next(iter(user.find(marker="data-manager-interval-invert").elements))
-            assert invert.parent_slot.parent is scaling_column
+            assert invert.parent_slot.parent is transform_grid
+            assert transform_grid.default_slot.children == [smoothing_column, scaling_column, invert]
             multiplier_fields = next(
                 iter(user.find(marker="data-manager-multiplier-fields").elements)
             )
@@ -845,7 +853,7 @@ def test_bedgraph_reveals_track_polishing_controls_and_defaults_to_plain_tsv() -
                 iter(user.find(marker="data-manager-threshold-fields").elements)
             )
             assert threshold_fields.parent_slot is not None
-            assert threshold_fields.parent_slot.parent is missing_column
+            assert threshold_fields.parent_slot.parent is values_grid
             threshold_max.set_value(10)
 
             bin_size = cast(
@@ -868,14 +876,14 @@ def test_bedgraph_reveals_track_polishing_controls_and_defaults_to_plain_tsv() -
                 next(iter(user.find(marker="data-manager-decimal-places").elements)),
             )
             assert decimal_places.value == 6
-            assert decimal_places.parent_slot.parent is missing_column
-            assert missing_column.default_slot.children[0] is decimal_places
-            assert missing_column.default_slot.children[1] is missing
-            assert missing.parent_slot.children.index(missing) < missing.parent_slot.children.index(threshold_fields)
+            assert decimal_places.parent_slot.parent is values_grid
+            assert values_grid.default_slot.children == [decimal_places, missing_column, threshold_fields]
+            assert missing_column.default_slot.children[0] is missing
+            assert threshold_fields.default_slot.children[1] is threshold_max
             await user.should_not_see(marker="data-manager-gzip")
 
             preview_toggle = cast(
-                Checkbox,
+                Switch,
                 next(iter(user.find(marker="data-manager-preview-toggle").elements)),
             )
             assert preview_toggle.value is True
@@ -1115,9 +1123,13 @@ def test_configure_starts_with_prepare_as_and_preserves_uploaded_filename_toolti
             )
             assert feature.parent_slot is not None
             assert feature.parent_slot.parent is config_grid
-            assert config_grid.default_slot.children[0] is feature
+            assert config_grid.default_slot.children == [feature]
             preview = next(iter(user.find(marker="data-manager-preview-toggle").elements))
-            assert config_grid.default_slot.children[1] is preview
+            actions = next(iter(user.find(marker="data-manager-configuration-actions").elements))
+            apply_configuration = next(iter(user.find(marker="data-manager-apply-configuration").elements))
+            assert isinstance(preview, Switch)
+            assert preview.parent_slot.parent is actions
+            assert actions.default_slot.children[:2] == [apply_configuration, preview]
             assert preview.text == "Show plot"
             await user.should_not_see("Output", kind=Label)
             await user.should_not_see(marker="data-manager-genome-build")

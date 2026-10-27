@@ -66,15 +66,6 @@ _AXIS_MARGIN_FRACTION = 0.04
 
 # Keep hover text consistent even when ECharts would otherwise expose the full
 # binary representation of a floating-point value.
-_TOOLTIP_VALUE_FORMATTER = (
-    "value => { const n = Number(value); if (!Number.isFinite(n)) return value; "
-    "return n !== 0 && Math.abs(n) < 0.01 ? n.toExponential(2) : n.toFixed(2); }"
-)
-_TOOLTIP_POINTER_FORMATTER = (
-    "params => { const n = Number(params.value); "
-    "return Number.isFinite(n) ? n.toFixed(2) : params.value; }"
-)
-
 CURVE_TYPES = {"solid": "Solid", "dashed": "Dashed", "dotted": "Dotted", "dashdot": "Dash-dot"}
 
 
@@ -1518,6 +1509,25 @@ def _combined_preview_options(
     return options
 
 
+def set_heatmap_colorbar_label(options: dict[str, Any], label: str | None = None) -> None:
+    """Edit the colour-scale title without replacing its numeric endpoints.
+
+    A blank field restores the quantity name (including any supplied units).
+    The logarithmic-scale annotation belongs to the scale and stays visible
+    when its title is edited.
+    """
+    metadata = options.get("dnascapeColorbar", {})
+    for item in options.get("graphic", []):
+        if item.get("id") != "dn-colorbar-label":
+            continue
+        title = str(label or metadata.get("label", "")).strip()
+        if not title:
+            title = str(metadata.get("label", ""))
+        if metadata.get("log") and not title.endswith("(log scale)"):
+            title += " (log scale)"
+        item["style"]["text"] = title
+
+
 def _build_preview_plot_options(
     *,
     plot_type: str,
@@ -1580,6 +1590,12 @@ def _build_preview_plot_options(
         if bands:
             raise ValueError("Separate axes and distribution plots do not support filled bands.")
         return _combined_preview_options(lines, arguments)
+    if values is None and len(lines) == 1 and plot_type in {"Histogram", "Boxplot"}:
+        # A single named profile is the same valid input as multiple profiles.
+        # Do not require callers to duplicate its samples in ``values``.
+        values = lines[0].y
+        series_label = series_label or lines[0].name
+        color = lines[0].color
     title_options = {"show": False, "text": title}
     if aspect_ratio is not None:
         aspect_ratio = _positive_finite(aspect_ratio)
@@ -1676,7 +1692,8 @@ def _build_preview_plot_options(
             tick_lower=heatmap_tick_lower,
             tick_upper=heatmap_tick_upper,
         )
-        colorbar_label = (series_label or title).strip() or "Value"
+        colorbar_quantity = (series_label or title).strip() or "Value"
+        colorbar_label = colorbar_quantity
         if log_z:
             colorbar_label = f"{colorbar_label} (log scale)"
         display_minimum = 10.0**z_minimum if log_z else z_minimum
@@ -1872,6 +1889,7 @@ def _build_preview_plot_options(
             "animation": False,
             "dnascapeAspectRatio": aspect_ratio,
             "dnascapePlotType": "Heatmap",
+            "dnascapeColorbar": {"label": colorbar_quantity, "log": bool(log_z)},
             "dnascapeDefaultAxes": {
                 "x": [x_data_minimum, x_data_maximum],
                 "y": [y_data_minimum, y_data_maximum],
@@ -1881,6 +1899,7 @@ def _build_preview_plot_options(
             "graphic": (
                 [
                     {
+                        "id": "dn-colorbar-label",
                         "type": "text",
                         "right": 1 + max(12, len(_compact_tick(display_maximum)) * 6, len(_compact_tick(display_minimum)) * 6) / 2,
                         "top": "middle",

@@ -3,22 +3,32 @@
 from nicegui import ui
 
 class DataTransformControls:
-    def __init__(self, sources):
+    def __init__(self, sources, *, value_controls=None, marker_prefix="data-manager-transform",
+                 source_label="Source", header=None, on_change=None):
         self.sources = sources
+        self.marker_prefix = marker_prefix
+        self.source_label = source_label
+        self.on_change = on_change or (lambda: None)
         self.formulas = {}
         self.combined_formula = None
         self.fields = []
         with ui.expansion("Data transforms", icon="functions", value=False).props(
             "dense"
-        ).classes("dn-expansion").mark("data-manager-transform"):
-            with ui.column().classes("dn-expansion-content w-full"):
+        ).classes("dn-expansion").mark(marker_prefix):
+            with ui.column().classes("dn-expansion-content w-full") as content:
                 with ui.row().classes("dn-inline-actions"):
-                    self.enabled = ui.switch("Apply transform", value=False).mark("data-manager-transform-enabled")
-                    self.combine = ui.switch("Combine", value=False).mark("data-manager-transform-combine")
+                    self.enabled = ui.switch("Apply transform", value=False).mark(f"{marker_prefix}-enabled")
+                    self.combine = ui.switch("Combine", value=False).mark(f"{marker_prefix}-combine")
+                if header is not None:
+                    header()
                 self.hint = ui.label().classes("dn-upload-formats")
                 self._render = ui.refreshable(self._render_fields)
                 self._render()
+                if value_controls is not None:
+                    value_controls.move(content)
         self.combine.on_value_change(self.refresh)
+        self.enabled.on_value_change(self.on_change)
+        self.combine.on_value_change(self.on_change)
         self.refresh()
 
     @property
@@ -44,6 +54,8 @@ class DataTransformControls:
             if combine else
             "Python / NumPy syntax. Use source for each signal, e.g. source / np.mean(source). Runs after Configure."
         )
+        if self.source_label != "Source":
+            self.hint.set_text(self.hint.text.replace("Runs after Configure.", "Keeps the dataset shape."))
         if sources and None in self.formulas:
             self.formulas.setdefault(sources[0][0], self.formulas.pop(None))
         if combine:
@@ -52,19 +64,21 @@ class DataTransformControls:
                 formula = " + ".join(f"source{i}" for i in range(1, len(sources) + 1))
             field = ui.textarea("Combined transform formula", value=formula).props(
                 "dense autogrow rows=2 spellcheck=false"
-            ).classes("dn-field dn-formula-input").mark("data-manager-transform-combined-formula")
+            ).classes("dn-field dn-formula-input").mark(f"{self.marker_prefix}-combined-formula")
             field.on_value_change(lambda event: setattr(self, "combined_formula", event.value))
+            field.on_value_change(self.on_change)
             self.fields.append(field)
         else:
             for index, (source_id, _name) in enumerate(sources or [(None, "")], 1):
                 label = (
-                    "Source transform formula" if len(sources) <= 1
-                    else f"Source {index} transform formula"
+                    f"{self.source_label} transform formula" if len(sources) <= 1
+                    else f"{self.source_label} {index} transform formula"
                 )
                 field = ui.textarea(label, value=self.formulas.get(source_id, "source")).props(
                     "dense autogrow rows=2 spellcheck=false"
-                ).classes("dn-field dn-formula-input").mark(f"data-manager-transform-formula-{index}")
+                ).classes("dn-field dn-formula-input").mark(f"{self.marker_prefix}-formula-{index}")
                 field.on_value_change(lambda event, key=source_id: self.formulas.__setitem__(key, event.value))
+                field.on_value_change(self.on_change)
                 self.fields.append(field)
 
     def set_locked(self, locked):

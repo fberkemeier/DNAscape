@@ -283,7 +283,7 @@ class DataConversionResult:
 
 @dataclass(frozen=True, slots=True)
 class FilterPositionGroup:
-    """Compressed native positions selected before a filter changes values."""
+    """Compressed native positions selected before a region transform changes values."""
 
     data: bytes = field(repr=False)
     coordinate: str = "bin_index"
@@ -304,9 +304,9 @@ def filter_positions_artifact(
     Interval endpoints retain the source extents, including partial final regions.
     """
     if not result.filter_positions:
-        raise ValueError("This result has no applied filter to export.")
+        raise ValueError("This result has no applied mask to export.")
     if layout not in {"positions", "intervals"}:
-        raise ValueError("Choose a position list or genomic intervals for the filter.")
+        raise ValueError("Choose a position list or genomic intervals for the mask.")
     groups = result.filter_positions
     arrays = []
     for group in groups:
@@ -345,7 +345,7 @@ def filter_positions_artifact(
             if layout == "intervals" else "".join(f"{position}\n" for position in positions)
         ).encode()
     else:
-        raise ValueError("Choose TSV, TXT, CSV or NPZ for filter positions.")
+        raise ValueError("Choose TSV, TXT, CSV or NPZ for mask positions.")
     if gzip_output:
         payload = gzip.compress(payload, mtime=0)
     filename = safe_export_filename(output_name, target_format, default_stem="filter_positions", gzip_output=gzip_output)
@@ -597,7 +597,7 @@ def _normalized_request(request: DataConversionRequest) -> DataConversionRequest
         raise ValueError("Choose a numeric profile before applying a data transform to a full table.")
     data_filter = resolve_filter(request.data_filter)
     if data_filter.enabled and input_form in {"scalar", "table"}:
-        raise ValueError("Filtering requires a profile. Choose a numeric profile rather than a constant or full table.")
+        raise ValueError("Region transforms require a numeric profile, rather than a constant or full table.")
     chromosome_scope = _choice(
         request.chromosome_scope,
         "chromosome scope",
@@ -2153,7 +2153,7 @@ def convert_combined_data(
     requests: tuple[DataConversionRequest, ...], formula: str, *, output_name="rdata_combined",
     progress=False, cancel=None,
 ) -> DataConversionResult:
-    """Configure aligned sources once, combine them, then apply one final filter."""
+    """Configure aligned sources, combine them, then apply region transforms."""
     from dnascape.workflows.formulas import evaluate_formula
     if len(requests) < 2:
         raise ValueError("Combine requires at least two data sources.")

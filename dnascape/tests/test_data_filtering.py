@@ -351,7 +351,7 @@ def test_shapes_are_preserved_and_nan_selection_follows_configure_missing_values
 
 
 @pytest.mark.parametrize("options,message", [
-    (dict(selection="between", lower=5, upper=1), "Lower filter threshold"),
+    (dict(selection="between", lower=5, upper=1), "Lower mask threshold"),
     (dict(selection="maximum", threshold=-1), "non-negative"),
     (dict(action="noise", standard_deviation=-1), "standard deviation"),
     (dict(action="noise", seed=1.5), "Random seed"),

@@ -548,7 +548,7 @@ def test_mouse_gestures_in_real_echarts_previews(tmp_path):
         '<script src="echarts.js"></script>'
         f'<script>window.navigationCases={json.dumps(cases)};</script>'
         f'<script src="{(root / "app/static/brand_theme.js").as_uri()}"></script>'
-        f'<script src="{(root / "app/static/plot_navigation.js").as_uri()}"></script>'
+        f'<script src="{(root / "dnascape/workflows/plot_navigation.js").as_uri()}"></script>'
         f'<script src="{(root / "app/tests/fixtures/plot_navigation_probe.js").as_uri()}"></script>'
         '</body></html>', encoding="utf-8",
     )

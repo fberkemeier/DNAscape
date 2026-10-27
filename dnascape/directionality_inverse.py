@@ -8,7 +8,7 @@ import numpy as np
 from scipy.optimize import least_squares
 from scipy.sparse.linalg import LinearOperator
 
-from .utils import _progress_update, check_cancelled
+from .utils import _progress_update, check_cancelled, measured_work
 
 
 def integrated_directionality(increments, *, periodic=False, centered=False):
@@ -101,7 +101,8 @@ def fit_spatial_directionality_speed(
     def residual(speed):
         nonlocal evaluations
         check_cancelled()
-        timing_residual = integrate(forcing / edges(speed)) - observed
+        with measured_work(max_evaluations if evaluations == 0 else None):
+            timing_residual = integrate(forcing / edges(speed)) - observed
         evaluations += 1
         elapsed = time.perf_counter() - started
         _progress_update(

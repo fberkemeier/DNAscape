@@ -117,6 +117,9 @@ class ReplicationCone:
             position_right = self.x.copy()
             for interval in range(output_index - 1, -1, -1):
                 check_cancelled()
+                report_measured_work(
+                    (output_index * (output_index - 1) + 2 * (output_index - 1 - interval))
+                    / (self.t.size * (self.t.size - 1)))
                 position_left = self._advance(position_left, interval, 1.0, 0.5, -1.0)
                 position_right = self._advance(position_right, interval, 1.0, 0.5, 1.0)
                 left[interval] = position_left

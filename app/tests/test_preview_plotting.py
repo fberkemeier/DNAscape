@@ -357,6 +357,29 @@ def _heatmap_options(**overrides: Any) -> dict[str, Any]:
     return build_preview_plot_options(**{**settings, **overrides})
 
 
+@pytest.mark.parametrize("log_z", [False, True])
+def test_editable_colourbar_title_preserves_scale_endpoints_and_units(log_z):
+    from copy import deepcopy
+    from dnascape.workflows.analysis_recipe import apply_profile_presentation
+    from dnascape.workflows.preview import set_heatmap_colorbar_label
+
+    options = _heatmap_options(show_colorbar=True, log_z=log_z,
+                               series_label="Initiation rate (min\u207b\u00b9)")
+    scale = deepcopy(options["visualMap"])
+    title = next(item for item in options["graphic"] if item.get("id") == "dn-colorbar-label")
+    placement = {key: title[key] for key in ("right", "top", "rotation")}
+    for label in ("Hi (min\u207b\u00b9)", "", "   "):
+        set_heatmap_colorbar_label(options, label)
+        expected = label.strip() or "Initiation rate (min\u207b\u00b9)"
+        assert title["style"]["text"] == expected + (" (log scale)" if log_z else "")
+        assert options["visualMap"] == scale
+        assert {key: title[key] for key in placement} == placement
+    # Downloaded Python/HTML plots use the same title as the live preview.
+    apply_profile_presentation(options, {"z_axis_label": "Exported (min\u207b\u00b9)"})
+    assert title["style"]["text"] == "Exported (min\u207b\u00b9)" + (" (log scale)" if log_z else "")
+    assert options["visualMap"] == scale
+
+
 @pytest.mark.parametrize("invert", (False, True))
 @pytest.mark.parametrize("logarithmic", (False, True))
 def test_heatmap_automatic_axes_meet_the_raster_edges_without_margins(

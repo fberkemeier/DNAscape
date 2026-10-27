@@ -32,7 +32,7 @@ def test_analysis_switch_combined_report_p_values_download_and_clear(monkeypatch
             assert control("analysis-enabled").value is False
             assert control("analysis-action-label").text == "Plot"
             await user.should_not_see("Analysis report")
-            for marker in ("analysis-spearman", "analysis-show-p-values", "analysis-smoothing-method-1"):
+            for marker in ("analysis-spearman", "analysis-show-p-values"):
                 await user.should_not_see(marker=marker)
             await control("plotting-data-upload").handle_uploads([
                 Upload.SmallFileUpload("a.csv", "text/csv", b"position,A\n0,1\n1,3\n2,2\n3,5\n4,4\n"),
@@ -40,7 +40,8 @@ def test_analysis_switch_combined_report_p_values_download_and_clear(monkeypatch
                 Upload.SmallFileUpload("c.csv", "text/csv", b"position,C\n0,5\n1,3\n2,4\n3,1\n4,2\n"),
             ])
             await user.should_see(marker="plotting-detected-data-3", retries=60)
-            await user.should_not_see(marker="analysis-smoothing-method-1")
+            user.find(marker="analysis-data-transform").click()
+            await user.should_see(marker="analysis-smoothing-method-1")
             user.find(marker="action-plot").click()
             try:
                 await user.should_see(marker="plotting-result-plot", retries=60)
@@ -105,6 +106,7 @@ def test_analysis_switch_combined_report_p_values_download_and_clear(monkeypatch
                                        pearsonr([1, 3, 2, 5, 4], [2, 6, 4, 10, 8]).pvalue, rtol=1e-10, atol=0)
             with user.client:
                 control("analysis-kendall").set_value(False)
+                control("analysis-data-transform-enabled").set_value(True)
                 control("analysis-smoothing-method-1").set_value("moving_average")
                 control("analysis-smoothing-window-1").set_value(3)
             await user.should_not_see(marker="analysis-report-table")
@@ -121,8 +123,9 @@ def test_analysis_switch_combined_report_p_values_download_and_clear(monkeypatch
             assert table.rows[0]["pearson_1"] == f"{expected:.3f}"
             with user.client:
                 control("analysis-enabled").set_value(False)
+                control("analysis-data-transform-enabled").set_value(False)
             assert control("analysis-action-label").text == "Plot"
-            for marker in ("analysis-report-table", "analysis-spearman", "analysis-smoothing-method-1", "analysis-show-p-values"):
+            for marker in ("analysis-report-table", "analysis-spearman", "analysis-show-p-values"):
                 await user.should_not_see(marker=marker)
             previous_chart_id = control("plotting-result-plot").id
             user.find(marker="action-plot").click()
@@ -133,6 +136,7 @@ def test_analysis_switch_combined_report_p_values_download_and_clear(monkeypatch
             np.testing.assert_allclose(np.asarray(control("plotting-result-plot").options["series"][0]["data"])[:, 1], [1, 3, 2, 5, 4])
             with user.client:
                 control("analysis-enabled").set_value(True)
+                control("analysis-data-transform-enabled").set_value(True)
             assert control("analysis-smoothing-method-1").value == "moving_average"
             user.find(marker="action-analyse").click()
             await user.should_see(marker="analysis-clear-preview", retries=60)
@@ -168,7 +172,9 @@ def test_analysis_can_stop_and_clear_navigation_activity(monkeypatch) -> None:
             user.find(marker="nav-plotting").click()
             upload = next(iter(user.find(marker="plotting-data-upload").elements))
             await upload.handle_uploads([Upload.SmallFileUpload("data.csv", "text/csv", b"value\n1\n2\n3\n")])
-            await user.should_not_see(marker="analysis-smoothing-method-1")
+            await user.should_see(marker="plotting-detected-data-1", retries=60)
+            user.find(marker="analysis-data-transform").click()
+            await user.should_see(marker="analysis-smoothing-method-1")
             enabled = next(iter(user.find(marker="analysis-enabled").elements))
             assert user.client is not None
             with user.client:

@@ -35,13 +35,11 @@ from .mapping import (
     map_origin_efficiency,
     map_probability_density_profile,
     map_probability_density_xt,
-    map_replicated_fraction,
-    map_replicated_fraction_xt,
     map_timing_directionality,
     map_timing_directionality_fork_speed,
 )
 from .simulation import rsim
-from .utils import smoothf
+from .utils import mapping_progress, smoothf
 
 __all__ = ["MappingSpec", "DataTypeMapper", "rmap"]
 
@@ -787,7 +785,6 @@ _REPLICATED_FRACTION_OPTIONS = (
     "interval_kb",
     "perQ",
 )
-_REPLICATED_FRACTION_WITH_SPEED_OPTIONS = _REPLICATED_FRACTION_OPTIONS + ("fork_speed",)
 
 
 def map_firing_and_speed_to_replicated_fraction_xt(source, **kwargs):
@@ -1203,27 +1200,6 @@ _TIMING_TO_GENERAL_FIRING_OPTIONS = _TIMING_TO_SPATIAL_FIRING_OPTIONS | {
     "refine_seed",
     "refine_verbose",
     "floor",
-}
-
-_TIMING_TO_CONSTANT_SPEED_OPTIONS = {
-    "target_shape",
-    "resolution",
-    "resolution_time",
-    "time_grid",
-    "T0",
-    "neighbourhood_range",
-    "fit_step",
-    "maxiter",
-    "error",
-    "sim_number",
-    "speed_bounds",
-    "initial_fork_speed",
-    "refine_edge_kb",
-    "refine_seed",
-    "verbose",
-    "print_every",
-    "perQ",
-    "n_bins",
 }
 
 _TIMING_TO_SPATIAL_SPEED_OPTIONS = {
@@ -2667,7 +2643,8 @@ class DataTypeMapper:
             if len(spec.source) == 1
             else dict(source_data)
         )
-        values = spec.func(payload, **self._function_kwargs(spec, assumptions))
+        with mapping_progress(assumptions):
+            values = spec.func(payload, **self._function_kwargs(spec, assumptions))
 
         if return_info:
             info = {

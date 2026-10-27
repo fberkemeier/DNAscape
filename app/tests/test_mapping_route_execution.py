@@ -83,7 +83,9 @@ def _small_request(
 
 @pytest.mark.parametrize("route", mapping_routes(), ids=lambda route: route.method)
 def test_every_catalog_route_executes_real_science(route: MappingRoute) -> None:
-    result = run_mapping(_small_request(route))
+    updates = []
+    result = run_mapping(_small_request(route), report=lambda value, text: updates.append((value, text)))
+    _assert_initial_progress(updates)
 
     assert result.method == route.method
     assert result.target == route.target
@@ -126,10 +128,22 @@ def _additional_route_cases() -> list[tuple[MappingRoute, dict[str, DataForm], s
 def test_supported_input_forms_and_target_shapes_execute(
     route: MappingRoute, forms: dict[str, DataForm], shape: str | None
 ) -> None:
-    result = run_mapping(_small_request(route, forms, shape))
+    updates = []
+    result = run_mapping(_small_request(route, forms, shape), report=lambda value, text: updates.append((value, text)))
+    _assert_initial_progress(updates)
     values = result.outputs[result.primary_output]
     assert np.isfinite(values).sum() + result.diagnostics.get("unidentifiable_count", 0) == values.size
     assert result.method == route.method
+
+
+def _assert_initial_progress(updates):
+    """Every public route starts the same first-prediction stage before MSE."""
+    messages = [text for _, text in updates]
+    first = messages.index("Mapping... Initial prediction 0%")
+    assert all("MSE" not in text for text in messages[:first])
+    assert messages[-1] == "Mapping complete"
+    assert [value for value, _ in updates] == sorted(value for value, _ in updates)
+    assert not any(text.startswith(("Rmap", "Fitting ")) for text in messages)
 
 
 @pytest.mark.parametrize("method", ["directionality_and_speed_to_timing", "directionality_to_timing"])

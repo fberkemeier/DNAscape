@@ -186,6 +186,9 @@ def test_mapping_raw_actions_use_the_chosen_row_and_match_or_choose_an_input(mon
                 rows = [item for item in user.client.elements.values() if "dn-raw-output-row" in item._classes and not item.is_deleted and item.visible]
                 if datasets == 2:
                     rows = [row for row in rows if "dn-mapping-batch-raw-row" in row._classes]
+                # Collapsed input-export sections remain mounted; count only
+                # rows whose complete ancestor chain is visible.
+                rows = [row for row in rows if all(parent.visible for parent in row.ancestors())]
                 if len(rows) >= datasets:
                     break
             assert len(rows) == datasets

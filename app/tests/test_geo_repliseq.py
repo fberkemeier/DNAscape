@@ -196,6 +196,9 @@ def test_geo_matrix_upload_and_public_link_can_be_converted_in_data_manager(
                 await asyncio.sleep(0.05)
             assert len(results) == 2
             await user.should_see("Complete in", retries=60)
-            assert results[1].shape == (3, 16)
+            # Configuration defaults to the selected chromosome, chr1.
+            assert results[1].shape == (2, 16)
+            matrix = pd.read_csv(io.BytesIO(results[1].artifact.data), sep="\t")
+            np.testing.assert_allclose(matrix.to_numpy(), np.nan_to_num(expected[:2]))
 
     asyncio.run(scenario())

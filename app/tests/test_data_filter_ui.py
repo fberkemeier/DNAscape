@@ -37,10 +37,16 @@ def test_filter_defaults_visibility_uploaded_mask_and_post_configure_results(mon
                 return next(item for item in user.client.elements.values() if f"data-manager-{name}" in item._markers and not item.is_deleted)
             async def converted(expected):
                 count = len(results)
+                previous_chart = next((item for item in user.client.elements.values()
+                                       if "data-manager-preview-chart" in item._markers and not item.is_deleted), None)
                 user.find(marker="action-convert").click()
                 for _ in range(150):
                     await asyncio.sleep(.02)
-                    if len(results) > count and control("filter-enabled").enabled:
+                    chart_ready = not np.isfinite(expected).any() or any(
+                        "data-manager-preview-chart" in item._markers and not item.is_deleted
+                        and item is not previous_chart for item in user.client.elements.values()
+                    )
+                    if len(results) > count and control("filter-enabled").enabled and chart_ready:
                         break
                 assert len(results) == count + 1, messages
                 np.testing.assert_equal(results[-1].preview.values, expected)

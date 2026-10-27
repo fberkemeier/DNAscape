@@ -29,24 +29,28 @@ def test_export_filter_is_independent_of_shading_and_downloads_native_positions(
                             if f"data-manager-{name}" in item._markers and not item.is_deleted)
 
             assert not control("filter-export").value
-            assert not control("filter-export").enabled
+            assert control("filter-export").enabled
             assert control("filter-export").visible
             assert control("filter-export").parent_slot is control("filter-enabled").parent_slot
             assert not any("data-manager-plot-export-filter" in item._markers
                            for item in user.client.elements.values())
             assert not control("plot-show-filter").visible
+            user.find(marker="data-manager-filter").click()
+            user.find(marker="data-manager-filter-export").click()
+            assert control("filter-export").value
+            assert not control("filter-enabled").value
             await control("upload").handle_uploads([Upload.SmallFileUpload("signal.tsv", "text/plain", b"signal\n1\n-2\n3\n-4\n")])
             await user.should_see("Array size: 4", retries=60)
-            user.find(marker="data-manager-filter").click()
-            user.find(marker="data-manager-filter-enabled").click()
             user.find(marker="action-convert").click()
             await user.should_see(marker="data-manager-result-name-1", retries=80)
+            await user.should_not_see(marker="data-manager-filter-result-1")
+            assert not control("plot-show-filter").visible
+            user.find(marker="data-manager-filter-enabled").click()
+            user.find(marker="action-convert").click()
+            await user.should_see(marker="data-manager-filter-result-1", retries=80)
             assert not control("plot-show-filter").value
             assert control("filter-export").visible
             assert control("filter-export").parent_slot is control("filter-enabled").parent_slot
-            with user.client:
-                control("filter-export").set_value(True)
-            await user.should_see(marker="data-manager-filter-result-1")
             with user.client:
                 control("filter-result-type-1").set_value("NPZ")
                 control("filter-result-compression-1").set_value(True)
@@ -74,7 +78,13 @@ def test_export_filter_is_independent_of_shading_and_downloads_native_positions(
             with user.client:
                 control("filter-enabled").set_value(False)
             await user.should_not_see(marker="data-manager-filter-result-1")
-            assert not control("filter-export").enabled
+            assert control("filter-export").enabled
+            assert control("filter-export").value
+            user.find(marker="data-manager-filter-export").click()
+            assert not control("filter-export").value
+            user.find(marker="data-manager-filter-export").click()
+            assert control("filter-export").value
+            await user.should_not_see(marker="data-manager-filter-result-1")
             assert control("filter-export").visible
             assert not control("plot-show-filter").visible
 

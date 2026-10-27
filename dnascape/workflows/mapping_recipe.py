@@ -286,6 +286,9 @@ def _optional_number(value: Any, label: str) -> float | None:
 
 
 def _load_prepared_input(source: Mapping[str, Any], base_path: Path) -> dict[str, np.ndarray]:
+    if "prepared_values" in source:
+        from .code_recipes import restore_settings
+        return restore_settings(source["prepared_values"], input_directory=base_path)
     path = base_path / str(source["prepared_path"])
     with np.load(path, allow_pickle=False) as bundle:
         return {key: np.asarray(bundle[key]) for key in bundle.files}
@@ -380,6 +383,10 @@ def _prepare_recipe_input(
 ) -> PreparedMappingInput:
     form = cast(DataForm, str(source["form"]))
     mode = str(source.get("mode") or ("constant" if form == "scalar" else "upload"))
+    if mode == "values":
+        from .code_recipes import restore_settings
+        value = restore_settings(source["values"], input_directory=base_path)
+        return PreparedMappingInput(key, label, form, (value,), (False,), components=("Manual",))
     if mode in {"constant", "constants"}:
         raw = source.get("values", source.get("value"))
         supplied = raw if mode == "constants" else (raw,)
@@ -500,9 +507,15 @@ def prepare_mapping_recipe(
     recipe = canonical_recipe(recipe)
     root = Path(base_path)
     from .mapping_filter import mapping_filter_from_recipe
-    fit_filter = mapping_filter_from_recipe(recipe.get('filter'), root)
+    filter_recipe = recipe.get('filter')
+    if filter_recipe and '__type__' in filter_recipe:
+        from .code_recipes import restore_settings
+        fit_filter = restore_settings(filter_recipe, input_directory=root)
+    else:
+        fit_filter = mapping_filter_from_recipe(filter_recipe, root)
     route = mapping_route(str(recipe["method"]))
-    settings = dict(recipe.get("settings", {}))
+    from .code_recipes import restore_settings
+    settings = restore_settings(dict(recipe.get("settings", {})), input_directory=root)
     for key, override in recipe.get("setting_overrides", {}).items():
         if bool(override.get("enabled", False)):
             settings[key] = override.get("value")
@@ -562,7 +575,7 @@ def prepare_mapping_recipe(
             region_start_kb=start_kb,
             region_end_kb=end_kb,
             resolution_x=resolution_x,
-            resolution_t=_optional_number(settings.get("resolution_time"), "Temporal resolution"),
+            resolution_t=_optional_number(settings.get("resolution_time", region.get("resolution_t")), "Temporal resolution"),
             whole_genome=whole_genome,
             prewindowed_inputs=frozenset(item.key for item, index in selected if item.prewindowed[index]),
             source_resolution_x=_optional_number(region.get("source_resolution_x"), "Source resolution"),

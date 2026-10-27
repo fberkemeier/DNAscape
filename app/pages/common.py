@@ -289,22 +289,18 @@ def plot_toolbar(
 
 
 @contextmanager
-def action_dock(*, code_menu: Callable[[], None] | None = None) -> Iterator[None]:
+def action_dock(*, on_code: Callable[[], Any] | None = None) -> Iterator[None]:
     """Keep a workflow's primary action in a predictable card footer."""
 
     with ui.element("div").classes("dn-action-dock").mark("scientific-action-dock"):
         yield
-        code_button = (
-            ui.button("Code", icon="download", color="#2596be")
+        (
+            ui.button("Code", icon="download", color="#2596be", on_click=on_code)
             .props("no-caps")
             .classes("dn-action-primary dn-action-code")
             .mark("action-code")
             .bind_visibility_from(get_export_settings(), "dev_mode")
         )
-        if code_menu is not None:
-            with code_button:
-                with ui.menu().props('anchor="bottom right" self="top right"').mark("mapping-code-menu"):
-                    code_menu()
 
 
 def set_data_upload_locked(uploader: Any, locked: bool) -> None:
@@ -335,7 +331,7 @@ async def append_raw_uploads(get_uploader: Callable[[], Any], artifacts: Sequenc
     """Append internal files through normal inspection, without replacing names."""
     for artifact in artifacts:
         uploader = get_uploader()
-        state = _DATA_UPLOAD_STATES.get(uploader)
+        state = _DATA_UPLOAD_STATES.get(uploader) if uploader is not None else None
         if state is None or state.receive is None or uploader.is_deleted:
             raise ValueError("The selected file input is no longer available.")
         if state.locked or not uploader.enabled or state.inspecting_names:

@@ -11,6 +11,7 @@ import pytest
 import app.mapping_service as mapping_service
 import dnascape
 import dnascape.inverse as inverse
+from dnascape import utils
 from app.mapping_catalog import mapping_route
 from app.mapping_service import MappingRequest, run_mapping
 from dnascape.utils import check_cancelled, progress_context
@@ -35,6 +36,8 @@ def test_real_speed_route_reports_before_its_first_forward_evaluation(
     request = _spatial_speed_request()
     progress: list[tuple[float, str]] = []
     calls = 0
+    clock = [0.]
+    monkeypatch.setattr(utils.time, "perf_counter", lambda: clock[0])
 
     def forward(
         _firing: np.ndarray,
@@ -49,8 +52,9 @@ def test_real_speed_route_reports_before_its_first_forward_evaluation(
     ) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
         nonlocal calls
         calls += 1
-        assert messages[-1] == "Fitting fork speed... evaluation 1/1 (0%)"
-        assert "Preparing kinetic fields..." in messages
+        assert messages[-1] == "Mapping... Initial prediction 0%"
+        assert any("Preparing kinetic fields" in message for message in messages)
+        clock[0] += 1.
         progress(0.5)
         return np.asarray(request.inputs["replication_timing"]).copy(), np.zeros((8, parameters.size)), np.ones(8)
 
@@ -74,11 +78,11 @@ def test_real_speed_route_reports_before_its_first_forward_evaluation(
             )
     else:
         run_mapping(request, report=report)
-        assert messages.index("Mapping fork speed...") < messages.index("Preparing kinetic fields...")
+        assert messages.index("Mapping fork speed...") < next(i for i, message in enumerate(messages) if "Preparing kinetic fields" in message)
         assert messages[-1] == "Mapping complete"
 
     assert calls == 1
-    assert "Fitting fork speed... evaluation 1/1 (50%)" in messages
+    assert any("Initial prediction 50% - ETA" in message for message in messages)
     assert any("MSE" in message for message in messages)
     assert [value for value, _message in progress] == sorted(value for value, _message in progress)
     assert capsys.readouterr().out == ""
@@ -131,14 +135,17 @@ def test_cancellation_during_first_speed_evaluation_releases_app_lock(
     forward_calls = 0
     forward_completions = 0
     messages: list[str] = []
+    clock = [0.]
+    monkeypatch.setattr(utils.time, "perf_counter", lambda: clock[0])
 
     def report(_value: float, message: str) -> None:
         nonlocal cancellation_requested
         messages.append(message)
         if (
-            (cancel_stage == "preparing" and message == "Preparing kinetic fields...")
-            or (cancel_stage == "evaluation_start" and message.endswith("1/1 (0%)"))
-            or (cancel_stage == "evaluation_progress" and message.endswith("1/1 (50%)"))
+            (cancel_stage == "preparing" and "Preparing kinetic fields" in message)
+            or (cancel_stage == "evaluation_start" and message == "Mapping... Initial prediction 0%"
+                and any("Preparing kinetic fields" in item for item in messages))
+            or (cancel_stage == "evaluation_progress" and "Initial prediction 50%" in message)
         ):
             cancellation_requested = True
 
@@ -160,6 +167,7 @@ def test_cancellation_during_first_speed_evaluation_releases_app_lock(
         nonlocal forward_calls, forward_completions
         forward_calls += 1
         check_cancelled()
+        clock[0] += 1.
         progress(0.5)
         check_cancelled()
         forward_completions += 1
@@ -170,7 +178,7 @@ def test_cancellation_during_first_speed_evaluation_releases_app_lock(
         run_mapping(_spatial_speed_request(), report=report, cancel=cancel)
 
     assert cancellation_requested
-    assert forward_calls == (0 if cancel_stage == "preparing" else 1)
+    assert forward_calls == (1 if cancel_stage == "evaluation_progress" else 0)
     assert forward_completions == 0
     assert "Mapping complete" not in messages
     assert mapping_service._RUN_LOCK.acquire(blocking=False)

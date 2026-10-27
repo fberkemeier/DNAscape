@@ -196,39 +196,49 @@ Controls
    Accepted formats stay immediately below the upload box. Data transforms label
    each source's formula directly, with numbered sources when several are loaded.
    The **Combine** switch replaces these fields with one **Combined transform formula**.
+   **Smoothing** and **Value scaling** sit below the formulas, with **Invert**
+   beside Value scaling. Configure's **Values** row groups **Decimal places**,
+   **Missing values**, and the **Lower bound** / **Upper bound** fields.
    **Apply configuration**
    is on by default. Turn it off to preserve values, missing samples and precision
    while retaining the track region and binning required for conversion.
    **Data transforms**, collapsed and off by default, runs after Configure and
-   before Filter. Enable **Apply transform** to edit one Python/NumPy formula per
+   before **Region transforms**. Enable **Apply transform** to edit one Python/NumPy formula per
    source. With several sources, **Combine** replaces these fields with one
    formula using **source1**, **source2**, etc., and produces one plot and file.
    Array sizes and supplied coordinates must match. Formulas retain the source
    grid; scalar results fill it. NumPy arithmetic, conditional expressions,
    smoothing and convolution are available.
-   The collapsed **Filter** section below Configure is off by default. Enable
-   it to select regions by signal thresholds (including within or outside an
+   The collapsed **Region transforms** section below Configure is off by default.
+   A mask defines the positions to change; the transform defines the operation.
+   Under **Select regions / define mask**, select signal thresholds (including within or outside an
    interval), missing values, uploaded genomic positions/intervals, or the whole
-   region. Coordinate uploads detect one position column or two start/end columns
-   automatically. The compact **Coordinates** field beside the upload chooses kb
-   (default) or bp. Its default selection replaces
+   region. **Upload profile** automatically detects one position column or two
+   start/end columns. **Position ranges**, immediately before it, accepts
+   typed intervals such as ``(1000,2000), (4000,5000)`` in a growing text field.
+   Starts are included and ends excluded; its **Coordinates** defaults to bp.
+   Empty ranges apply no mask. The compact **Coordinates** field beside the upload chooses bp
+   (default) or kb. **Invert mask** selects the complement within Start/End.
+   The default region transform replaces
    converted values below zero with zero. Operations include region means,
    interpolation, replacement with a value or NaN, Gaussian noise, reference
-   minimum/maximum, multiplication, and addition. Filtering follows Configure
+   minimum/maximum, multiplication, and addition. Region transforms follow Configure
    and Data transforms, preserving bin positions; previews and downloads contain the edited data.
-   Filter options remain editable with **Apply filter** off. In **Plot settings →
-   Guides**, **Filter** highlights the applied filter's selected regions in light
-   grey, using the selection before any filter edits. With **Legend** enabled,
-   name the signal and filter separately. Shading follows zoom detail and does
+   Region transform options remain editable with **Apply transform** off. In **Plot settings →
+   Guides**, **Mask** highlights the selected regions in light
+   grey, using the mask defined before the transform. With **Legend** enabled,
+   name the signal and mask separately. Shading follows zoom detail and does
    not change the exported data. Line previews refresh up to 1,000 native points by default
    from the visible window after zooming or panning.
    In Histogram view, **Export statistics** in Guides adds the selected file's
    mean, median and population standard deviation to Raw data, independently of
    displaying Statistics. The file supports TSV, TXT, CSV, NPZ and compression,
    retains its settings per generated file, and is included in Download all.
-   **Export filter**, next to **Apply filter** in Controls, adds a raw-data download of
+   **Export mask**, next to **Apply transform** in Controls, adds a raw-data download of
    the selected positions before edits, independently of preview sampling. One
-   filter export row appears beneath the currently selected raw-data file.
+   mask export row appears beneath the currently selected raw-data file.
+   **Export mask** remains selectable with **Apply transform** off, but produces
+   output only when the transform is applied.
    **Export as**, beside **File type**, chooses a position list or merged genomic
    intervals. Text exports are headerless; NPZ stores a positions or intervals
    array. Genomic coordinates use integer base pairs and intervals include the

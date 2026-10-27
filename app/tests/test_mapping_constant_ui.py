@@ -192,7 +192,8 @@ def test_mapping_constants_pairwise_and_all_combinations_are_deterministic(
             ]
             output = next(iter(user.find(marker="mapping-preview-output").elements))
             assert output.options["input:replication_timing"] == "Replication timing (input)"
-            assert "input:fork_speed" not in output.options
+            assert output.options["input:fork_speed"] == "Fork speed (input)"
+            assert "all_plots" in output.options
             await user.should_see(marker="mapping-dataset-name-1", retries=30)
             name = next(iter(user.find(marker="mapping-dataset-name-1").elements))
             default_name = name.value

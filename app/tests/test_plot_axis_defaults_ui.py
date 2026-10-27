@@ -46,10 +46,15 @@ def test_displayed_axis_defaults_custom_limits_and_reset(form: str) -> None:
                 assert "Circular" not in control("view").options
                 assert control("show-grid").value is False
                 await user.should_not_see(marker="plotting-reverse-order")
+                original_scale = list(options()["visualMap"]["text"])
                 with user.client:
-                    control("z-axis-label").set_value("Initiation rate")
+                    control("z-axis-label").set_value("Initiation rate (min\u207b\u00b9)")
                 await asyncio.sleep(0)
-                assert options()["visualMap"]["text"][0] == "Initiation rate"
+                assert options()["visualMap"]["text"] == original_scale
+                bar_title = next(item for item in options()["graphic"] if item.get("id") == "dn-colorbar-label")
+                assert bar_title["style"]["text"] == "Initiation rate (min\u207b\u00b9)"
+                assert "width" not in options()["visualMap"]["textStyle"]
+                assert control("z-axis-label")._props["placeholder"] == options()["dnascapeColorbar"]["label"]
                 assert control("z-minimum").value == pytest.approx(options()["visualMap"]["min"])
                 assert control("z-maximum").value == pytest.approx(options()["visualMap"]["max"])
             assert user.client is not None
@@ -88,6 +93,8 @@ def test_displayed_axis_defaults_custom_limits_and_reset(form: str) -> None:
                 with user.client:
                     control("log-z").set_value(True)
                 await asyncio.sleep(0)
+                bar_title = next(item for item in options()["graphic"] if item.get("id") == "dn-colorbar-label")
+                assert bar_title["style"]["text"] == "Initiation rate (min\u207b\u00b9) (log scale)"
                 assert control("z-minimum").value == pytest.approx(10 ** options()["visualMap"]["min"])
                 assert control("z-maximum").value == pytest.approx(10 ** options()["visualMap"]["max"])
                 original_z = control("z-maximum").value
@@ -98,6 +105,11 @@ def test_displayed_axis_defaults_custom_limits_and_reset(form: str) -> None:
                 user.find(marker="plotting-reset-z-limits").click()
                 await asyncio.sleep(0)
                 assert control("z-maximum").value == pytest.approx(original_z)
+                with user.client:
+                    control("z-axis-label").set_value("")
+                await asyncio.sleep(0)
+                bar_title = next(item for item in options()["graphic"] if item.get("id") == "dn-colorbar-label")
+                assert bar_title["style"]["text"] == options()["dnascapeColorbar"]["label"] + " (log scale)"
 
     asyncio.run(scenario())
 

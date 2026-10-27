@@ -12,7 +12,7 @@ import zipfile
 from array import array
 from collections.abc import Callable, Mapping, Sequence
 from concurrent.futures import CancelledError
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from pathlib import PurePath
 from threading import Event, Lock
 from types import SimpleNamespace
@@ -2120,10 +2120,15 @@ def render(_navigate: Callable[[str], None]) -> None:
 
                     render_source_details()
 
+                # Keep this slot outside Configure's refreshable subtree; it is
+                # mounted below the formulas and rebuilt for each source.
+                value_transform_controls = ui.element("div").classes("w-full")
+
                 with expansion("Configure", icon="tune", expanded=True):
 
                     @ui.refreshable
                     def render_conversion_settings() -> None:
+                        value_transform_controls.clear()
                         controls.clear()
                         candidates = sources_for_mode()
                         current_source = active_source()
@@ -2135,6 +2140,11 @@ def render(_navigate: Callable[[str], None]) -> None:
                             )
                             controls["apply_configuration"].on_value_change(
                                 lambda: store_control("apply_configuration")
+                            )
+                            controls["show_preview"] = (
+                                ui.switch("Show plot", value=bool(settings["show_preview"]))
+                                .classes("dn-data-manager-preview-toggle")
+                                .mark("data-manager-preview-toggle")
                             )
                             if len(candidates) > 1:
                                 controls["apply_configuration_to_all"] = (
@@ -2258,11 +2268,6 @@ def render(_navigate: Callable[[str], None]) -> None:
                                 .classes("dn-field dn-data-manager-feature-select")
                                 .mark("data-manager-feature")
                             )
-                            controls["show_preview"] = (
-                                ui.checkbox("Show plot", value=bool(settings["show_preview"]))
-                                .classes("dn-data-manager-preview-toggle")
-                                .mark("data-manager-preview-toggle")
-                            )
                         controls["feature"].on_value_change(feature_changed)
 
                         def preview_changed() -> None:
@@ -2321,15 +2326,16 @@ def render(_navigate: Callable[[str], None]) -> None:
                                 .classes(
                                     "dn-data-manager-polishing-grid "
                                     "dn-data-manager-values-grid"
+                                    + (" dn-data-manager-values-basic" if not polishable else "")
                                 )
                                 .mark("data-manager-polishing-grid")
                             ):
+                                render_decimal_places()
                                 with (
                                     ui.element("div")
                                     .classes("dn-data-manager-polishing-column")
                                     .mark("data-manager-missing-column")
                                 ):
-                                    render_decimal_places()
                                     missing_key = "track_missing" if missing_kind == "track" else "missing_policy"
                                     controls[missing_key] = (
                                         ui.select(
@@ -2352,12 +2358,40 @@ def render(_navigate: Callable[[str], None]) -> None:
 
                                     controls[missing_key].on_value_change(missing_changed)
                                     controls["fill_value"].on_value_change(lambda: store_control("fill_value"))
-                                    if polishable:
-                                        render_bound_controls()
+                                    if missing_kind == "track":
+                                        interpolation_options = _track_interpolation_options(
+                                            current_source.inspection
+                                        )
+                                        if settings["interpolation"] not in interpolation_options:
+                                            settings["interpolation"] = "none"
+                                        controls["interpolation"] = (
+                                            ui.select(
+                                                interpolation_options,
+                                                value=settings["interpolation"],
+                                                label="Interpolation",
+                                            )
+                                            .props("dense options-dense")
+                                            .classes("dn-field")
+                                            .mark("data-manager-interpolation")
+                                        )
+                                        if len(interpolation_options) == 1:
+                                            controls["interpolation"].disable()
+                                            field_hint(controls["interpolation"], "Keep gaps between called origins as background.")
+                                        controls["interpolation"].on_value_change(
+                                            lambda: store_control("interpolation")
+                                        )
 
-                                if not polishable:
-                                    return
+                                if polishable:
+                                    render_bound_controls()
 
+                            if not polishable:
+                                return
+
+                            with value_transform_controls, (
+                                ui.element("div")
+                                .classes("dn-data-manager-polishing-grid dn-data-manager-transform-grid")
+                                .mark("data-manager-transform-values")
+                            ):
                                 with (
                                     ui.element("div")
                                     .classes("dn-data-manager-polishing-column")
@@ -2384,28 +2418,6 @@ def render(_navigate: Callable[[str], None]) -> None:
                                         .classes("dn-field")
                                         .mark("data-manager-smooth-window")
                                     )
-                                    if missing_kind == "track":
-                                        interpolation_options = _track_interpolation_options(
-                                            current_source.inspection
-                                        )
-                                        if settings["interpolation"] not in interpolation_options:
-                                            settings["interpolation"] = "none"
-                                        controls["interpolation"] = (
-                                            ui.select(
-                                                interpolation_options,
-                                                value=settings["interpolation"],
-                                                label="Interpolation",
-                                            )
-                                            .props("dense options-dense")
-                                            .classes("dn-field")
-                                            .mark("data-manager-interpolation")
-                                        )
-                                        if len(interpolation_options) == 1:
-                                            controls["interpolation"].disable()
-                                            field_hint(controls["interpolation"], "Keep gaps between called origins as background.")
-                                        controls["interpolation"].on_value_change(
-                                            lambda: store_control("interpolation")
-                                        )
 
                                 with (
                                     ui.element("div")
@@ -2466,15 +2478,15 @@ def render(_navigate: Callable[[str], None]) -> None:
                                         )
                                         field_hint(controls["rescale_min"], "Lowest value after rescaling.")
                                         field_hint(controls["rescale_max"], "Highest value after rescaling.")
-                                    controls["rescale_invert"] = (
-                                        ui.checkbox(
-                                            "Invert",
-                                            value=bool(settings["rescale_invert"]),
-                                        )
-                                        .classes("dn-data-manager-inline-toggle")
-                                        .mark("data-manager-interval-invert")
+                                controls["rescale_invert"] = (
+                                    ui.checkbox(
+                                        "Invert",
+                                        value=bool(settings["rescale_invert"]),
                                     )
-                                    field_hint(controls["rescale_invert"], "Reverse high and low signal values.")
+                                    .classes("dn-data-manager-inline-toggle")
+                                    .mark("data-manager-interval-invert")
+                                )
+                                field_hint(controls["rescale_invert"], "Reverse high and low signal values.")
 
                             smoothing_enabled = settings["smoothing_mode"] == "moving_average"
                             if smoothing_enabled and int(settings["smooth_window"] or 1) < 2:
@@ -2854,14 +2866,15 @@ def render(_navigate: Callable[[str], None]) -> None:
                     render_conversion_settings()
 
                 transform_controls = DataTransformControls(
-                    lambda: [(source.source_id, source.inspection.name) for source in sources_for_mode()]
+                    lambda: [(source.source_id, source.inspection.name) for source in sources_for_mode()],
+                    value_controls=value_transform_controls,
                 )
                 filter_controls = DataFilterControls(
                     set_convert_enabled, allow_export=True, allow_complement=True,
                     profile_units="bp", align_modulation_from_start=True,
                 )
 
-                with action_dock():
+                with action_dock(on_code=lambda: download_data_manager_code()):
                     convert_button = (
                         workflow_action_button("Convert", symbol="data")
                         .props("no-caps")
@@ -2963,9 +2976,9 @@ def render(_navigate: Callable[[str], None]) -> None:
                             if plot_type == "Line":
                                 options["series"][0]["data"] = _converted_preview_data(selected, log_x=bool(plot_settings.log_x.value))
                                 if plot_settings.show_filter.value and filter_applied():
-                                    name = str(plot_settings.filter_name.value or "").strip() or "Filter"
+                                    name = str(plot_settings.filter_name.value or "").strip() or "Mask"
                                     if name == options["series"][0]["name"]:
-                                        name += " (filter)"
+                                        name += " (mask)"
                                     options["series"].append({
                                         "name": name, "type": "line", "data": [], "silent": True,
                                         "showSymbol": False, "tooltip": {"show": False},
@@ -3171,14 +3184,14 @@ def render(_navigate: Callable[[str], None]) -> None:
                                         layout=preference.filter_layout,
                                     )
                                     if open_in is not None:
-                                        await open_raw_artifact(artifact, open_in, _navigate)
+                                        await open_raw_artifact(artifact, open_in, _navigate, preferred_input="filter_positions")
                                     else:
                                         ui.download(artifact.data, artifact.filename, artifact.media_type)
                                 except (OSError, RuntimeError, ValueError) as exc:
                                     notify(str(exc), type="negative")
 
                             with ui.column().classes("w-full dn-filter-export-row dn-mapping-batch-raw-item dn-data-manager-file").mark(f"data-manager-filter-result-{result_id}"):
-                                ui.label("Filter positions").classes("dn-setting-group-title")
+                                ui.label("Mask positions").classes("dn-setting-group-title")
                                 row = raw_output_file_row(
                                     file_name=preference.file_name, default_type=preference.file_type,
                                     default_compress=preference.compress,
@@ -3741,6 +3754,56 @@ def render(_navigate: Callable[[str], None]) -> None:
             )
         )
 
+    async def download_data_manager_code() -> None:
+        from app.code_export import CodeInputs, CodeSnapshot, build_python, filter_code_settings, statistics_code_settings
+
+        if conversion_running or upload_inspection_running or remote_inspections or filter_controls.loading:
+            notify("Wait for the data operation to finish before exporting code.", type="warning")
+            return
+        try:
+            requests = build_requests()
+            inputs = CodeInputs()
+            request_options = [inputs.encode(replace(
+                request, data_filter=filter_code_settings(filter_controls),
+            )) for _source, request in requests]
+            combining = transform_controls.combining
+            names = ([f"{_DATA_FILE_STEM}_combined"] if combining else
+                     [request.output_name for _source, request in requests])
+            exports = []
+            for name in names:
+                retained = next(((key, result) for key, result in converted_results
+                                 if _generated_file_stem(result) == name), None)
+                preference = generated_file_preferences.get(retained[0]) if retained else None
+                options = dict(output_name=preference.file_name if preference else name,
+                               target_format=preference.file_type.lower() if preference else "tsv",
+                               gzip_output=preference.compress if preference else False)
+                if filter_controls.controls["enabled"].value and filter_controls.controls["export"].value:
+                    filter_preference = filter_file_preferences.get(retained[0]) if retained else None
+                    options["filter"] = dict(
+                        output_name=filter_preference.file_name if filter_preference else name + "_filter_positions",
+                        target_format=filter_preference.file_type.lower() if filter_preference else "tsv",
+                        gzip_output=filter_preference.compress if filter_preference else False,
+                        layout=filter_preference.filter_layout if filter_preference else "positions",
+                    )
+                exports.append(options)
+            statistics = statistics_code_settings(plot_settings, filename=names[0] + "_statistics")
+            if statistics is not None:
+                selected = selected_generated_result()
+                statistics["source_index"] = next((index for index, name in enumerate(names)
+                    if selected is not None and _generated_file_stem(selected) == name), 0)
+            snapshot = CodeSnapshot("data_manager", dict(
+                sources=request_options, exports=exports,
+                statistics=statistics,
+                preview_points=get_export_settings().preview_points,
+                combined_formula=(transform_controls.combined_formula or
+                                  " + ".join(f"source{i}" for i in range(1, len(requests) + 1))) if combining else None,
+                combined_name=f"{_DATA_FILE_STEM}_combined",
+            ), tuple(inputs.files.items()))
+            artifact = await run.io_bound(build_python, snapshot)
+            ui.download(artifact.data, artifact.filename, artifact.media_type)
+        except (OSError, RuntimeError, TypeError, ValueError) as exc:
+            notify(str(exc), type="negative")
+
     async def convert() -> None:
         nonlocal active_cancel, conversion_running, next_result_id, selected_result_id
         if conversion_running:
@@ -3942,7 +4005,10 @@ def render(_navigate: Callable[[str], None]) -> None:
         await append_raw_uploads(lambda: source_controls["uploader"], files)
 
     current_session_cache().register_input_targets(
-        "data-management", lambda: (RawInputTarget("data", "Data", receive_raw_files),),
+        "data-management", lambda: (
+            RawInputTarget("data", "Data", receive_raw_files),
+            RawInputTarget("filter_positions", "Region transforms", filter_controls.receive_mask, kind="mask"),
+        ),
     )
 
     def refresh_data_manager_page() -> None:

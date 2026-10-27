@@ -10,10 +10,10 @@ from dataclasses import dataclass, field
 from typing import Any
 from uuid import uuid4
 
-import numpy as np
 from nicegui import run, ui
 
 from app.export_settings import get_export_settings
+from app.field_hints import field_hint
 from app.icons import RESET_ICON
 from app.notifications import notify
 
@@ -40,8 +40,6 @@ from dnascape.workflows.preview import (
     _Y_AXIS_TITLE_TICK_CLEARANCE as _Y_AXIS_TITLE_TICK_CLEARANCE,
     _PLOT_OUTER_GUTTER as _PLOT_OUTER_GUTTER,
     _AXIS_MARGIN_FRACTION as _AXIS_MARGIN_FRACTION,
-    _TOOLTIP_VALUE_FORMATTER as _TOOLTIP_VALUE_FORMATTER,
-    _TOOLTIP_POINTER_FORMATTER as _TOOLTIP_POINTER_FORMATTER,
     PreviewLine as PreviewLine,
     PreviewBand as PreviewBand,
     _finite_number as _finite_number,
@@ -84,6 +82,7 @@ from dnascape.workflows.preview import (
     _sample_heatmap as _sample_heatmap,
     _heatmap_tooltip_data as _heatmap_tooltip_data,
     build_preview_plot_options as build_preview_plot_options,
+    set_heatmap_colorbar_label,
 )
 
 
@@ -159,7 +158,10 @@ class PreviewSettingsControls:
     fill_side: Any = None
     fill_options: Any = None
     reverse_order: Any = None
-    circular_layout: Any = None
+    circular_combine: Any = None
+    circular_inner_radius: Any = None
+    circular_options: Any = None
+    circular_track_height: Any = None
     z_axis_label: Any = None
     surface: Any = None
     _sync_navigation_controls: bool = field(default=True, init=False, repr=False)
@@ -223,6 +225,15 @@ class _PreviewNavigation:
             self.source_limits.pop(axis, None)
 
 
+class _CircularRefinementWindow(tuple):
+    """Keep a seam-crossing viewport as two native-coordinate detail reads."""
+
+    def __new__(cls, arguments, parts):
+        instance = super().__new__(cls, arguments)
+        instance.parts = parts
+        return instance
+
+
 def refresh_statistics_exports(controls: PreviewSettingsControls) -> None:
     exporter = getattr(controls, "_statistics_export", None)
     if exporter is not None:
@@ -264,7 +275,10 @@ def _clamp_navigation_range(
     floor, ceiling = transform(axis["min"]), transform(axis["max"])
     start, end = transform(lower), transform(upper)
     span = min(end - start, ceiling - floor)
-    start = max(floor, min(start, ceiling - span))
+    if axis.get("circular") and span < (ceiling - floor) * (1 - 1e-9):
+        start = floor + (start - floor) % (ceiling - floor)
+    else:
+        start = max(floor, min(start, ceiling - span))
     return inverse(start), inverse(start + span)
 
 
@@ -440,13 +454,18 @@ class PreviewChartHandle:
                 legend["data"] = list(reversed(self.options["dnascapeLegendOrder"])) if reverse else list(self.options["dnascapeLegendOrder"])
             if self.settings.view.value == "Circular":
                 from dnascape.workflows.circular import circular_preview_options
-                circular_preview_options(self.options, layout=str(getattr(self.settings.circular_layout, "value", "Rings")))
+                circular_preview_options(self.options,
+                    layout="Overlay" if self.settings.circular_combine.value else "Rings",
+                    track_height=_positive_finite(getattr(self.settings.circular_track_height, "value", None)) or 8.,
+                    inner_radius=self.settings.circular_inner_radius.value if self.settings.circular_inner_radius.value is not None else 64.)
+                self.settings.circular_combine.set_visibility(self.options.get("dnascapeCircularDatasetCount", 1) > 1)
         else:
             label = str(getattr(self.settings.z_axis_label, "value", "") or "")
-            visual_map = self.options.get("visualMap")
-            if isinstance(visual_map, dict):
-                visual_map["text"] = [label, ""]
-                visual_map["textStyle"] = {**visual_map.get("textStyle", {}), "fontSize": 10, "width": 90, "overflow": "break"}
+            set_heatmap_colorbar_label(self.options, label)
+            default = self.options.get("dnascapeColorbar", {}).get("label", "")
+            if self.settings.z_axis_label._props.get("placeholder") != default:
+                self.settings.z_axis_label._props["placeholder"] = default
+                self.settings.z_axis_label.update()
 
     def _position_toolbar(self) -> None:
         if self.shell is None:
@@ -467,7 +486,7 @@ class PreviewChartHandle:
         )
         self.options["axisPointer"] = {
             **self.options.get("axisPointer", {}),
-            "show": "auto" if hover and not self.options.get("dnascapeCircular") else False,
+            "show": "auto" if hover else False,
             "triggerOn": "mousemove|click" if hover else "none",
         }
         if not hover:
@@ -478,6 +497,8 @@ class PreviewChartHandle:
             tooltip["axisPointer"] = {**pointer, "show": False, "type": "none",
                                       "label": {**pointer.get("label", {}), "show": False}}
             self.options["tooltip"] = tooltip
+            for axis in self.options.get("angleAxis", []):
+                axis["axisPointer"] = {**axis.get("axisPointer", {}), "show": False}
             for series in self.options.get("series", []):
                 series["emphasis"] = {**series.get("emphasis", {}), "disabled": True}
                 if series.get("type") == "line":
@@ -491,6 +512,9 @@ class PreviewChartHandle:
             self.options["graphic"] = [
                 item for item in self.options.get("graphic", []) if item.get("id") != "dn-histogram-guide"
             ] + [{"id": "dn-histogram-guide", "$action": "remove"}]
+        if self.options.get("dnascapeCircular"):
+            self.options["axisPointer"] = {"show": False, "triggerOn": "none"}
+            self.options["tooltip"]["triggerOn"] = "none"
         if hasattr(self.canvas, "classes"):
             if guide and guide.get("visible"):
                 self.canvas.classes(add="dn-preview-guide-visible")
@@ -520,6 +544,14 @@ class PreviewChartHandle:
 
     def _refinement_plan(self, *, force: bool = False) -> list:
         jobs = []
+        def circular_window(arguments, key):
+            axis = self._navigation.axes.get(key, {})
+            if axis.get("circular") and arguments[0] is not None:
+                from dnascape.workflows.circular import circular_window_parts
+                parts = circular_window_parts(axis, arguments[0])
+                if len(parts) > 1:
+                    return _CircularRefinementWindow(arguments, parts)
+            return arguments
         def visible_window(key: str) -> tuple[float, float] | None:
             if key in self._navigation.ranges:
                 return self._navigation.ranges[key]
@@ -545,7 +577,8 @@ class PreviewChartHandle:
                 area_window = ((visible_window(x_key), visible_window(y_key))
                                if getattr(areas, 'supports_y', False) else visible_window(x_key))
                 if areas.window != area_window:
-                    jobs.append((index, "areas", areas, area_window if getattr(areas, 'supports_y', False) else (area_window,)))
+                    arguments = area_window if getattr(areas, 'supports_y', False) else (area_window,)
+                    jobs.append((index, "areas", areas, circular_window(arguments, x_key)))
             data = series.get("dnascapeCircularSourceData", series.get("data"))
             if not callable(getattr(data, "refine", None)):
                 continue
@@ -557,7 +590,7 @@ class PreviewChartHandle:
                 continue
             if not force and self._reusable_detail(data, window, (x_key, y_key)):
                 continue
-            jobs.append((index, "data", data, window))
+            jobs.append((index, "data", data, circular_window(window, x_key)))
         return jobs
 
     def _reusable_detail(self, data: Any, window: tuple, keys: tuple) -> bool:
@@ -586,7 +619,44 @@ class PreviewChartHandle:
 
     @staticmethod
     def _compute_refinements(jobs: list) -> list:
-        return [(job, job[2].refine(*job[3])) for job in jobs]
+        from dnascape.workflows.preview import DetailedPreviewData
+
+        results = []
+        for job in jobs:
+            _index, kind, source, arguments = job
+            parts = getattr(arguments, "parts", None)
+            if parts is None:
+                results.append((job, source.refine(*arguments)))
+                continue
+            pieces = [source.refine(part, *arguments[1:]) for part in parts]
+
+            def merge(values):
+                unique = {json.dumps(item, sort_keys=True): item for value in values for item in value}
+                items = list(unique.values())
+                if kind == "data":
+                    if items and len(items[0]) == 6:
+                        # Rebuild one uncertainty strip from its native nodes;
+                        # overlapping coarse/detail quads would darken the band.
+                        nodes = {item[offset]: item[offset+1:offset+3]
+                                 for item in items for offset in (0, 3)}
+                        coordinates = sorted(nodes)
+                        items = [[a, *nodes[a], b, *nodes[b]] for a, b in zip(coordinates, coordinates[1:])]
+                    else:
+                        items.sort(key=lambda item: item[0] if item[0] is not None else -math.inf)
+                merged = DetailedPreviewData(items, source.refine)
+                if hasattr(source, "supports_y"):
+                    merged.supports_y = source.supports_y
+                return merged
+
+            if kind == "areas":
+                result = merge(pieces)
+            else:
+                result = dict(pieces[0])
+                result["data"] = merge([piece["data"] for piece in pieces])
+                if "hoverData" in result:
+                    result["hoverData"] = merge([piece.get("hoverData", []) for piece in pieces])
+            results.append((job, result))
+        return results
 
     def _install_refinements(self, results: list) -> bool:
         changed = False
@@ -622,9 +692,15 @@ class PreviewChartHandle:
         axes = _navigation_axes(self.options)
         if not axes:
             return
+        circular = (self.settings.view.value == "Circular" if self.settings is not None
+                    else bool(self.options.get("dnascapeCircular")))
+        if circular:
+            for axis in axes.values():
+                if axis["dimension"] == "x":
+                    axis["circular"] = True
         context = json.dumps([
             self.options.get("dnascapePlotType"),
-            bool(self.settings is not None and self.settings.view.value == "Circular"),
+            circular,
             {key: {name: value for name, value in axis.items() if name != "inverse"} for key, axis in axes.items()},
         ], sort_keys=True)
         if self._navigation.context != context:
@@ -654,7 +730,7 @@ class PreviewChartHandle:
         axes = self._navigation.axes
         self.options["dnascapeNavigation"] = dict(
             context=context, axes=axes, token=self._navigation.token, sequence=self._navigation.sequence,
-            polar=bool(self.settings is not None and self.settings.view.value == "Circular"),
+            polar=circular,
             heatmap=self.options.get("dnascapePlotType") == "Heatmap",
         )
         for key, values in tuple(self._navigation.ranges.items()):
@@ -752,6 +828,13 @@ class PreviewChartHandle:
         if not self._commit_navigation(payload):
             return
         self._apply_navigation()
+        if self.options.get("dnascapeCircular"):
+            # Even a fully sampled profile needs its polar axes and clipped
+            # series updated before an SVG export or a later style redraw.
+            self._apply_presentation()
+            self._apply_curve_fill()
+            self._apply_guides()
+            self._sync_canvas_options()
         if self.settings is not None and self.settings._sync_navigation_controls:
             sync_preview_axis_limits(self.settings, self.options)
         self.invalidate_export()
@@ -798,7 +881,7 @@ class PreviewChartHandle:
         elif self.options.get("dnascapePlotType") == "Heatmap" and self.settings is not None and self.settings.view.value == "Circular":
             ratio = self.settings._cartesian_aspect_ratio
         if self.shell is not None:
-            self.shell.style("max-width: 42rem; margin-inline: auto;" if self.options.get("dnascapeCircular")
+            self.shell.style("max-width: 30rem; margin-inline: auto;" if self.options.get("dnascapeCircular")
                              else "max-width: none; margin-inline: 0;")
         self.options["dnascapeAspectRatio"] = ratio
         size = "height: 360px; aspect-ratio: auto; min-height: 0;"
@@ -815,6 +898,8 @@ class PreviewChartHandle:
                 else "width: 100%; height: 100%; min-height: 0; aspect-ratio: auto; flex: 1 1 auto;"
             )
         if self.zoom_card is not None:
+            self.zoom_card.style("width: min(94vw, 42rem);" if self.options.get("dnascapeCircular")
+                                 else "width: min(94vw, 88rem);")
             self.zoom_card.style(
                 "height: auto; max-height: 90dvh !important; overflow: auto;" if ratio is not None
                 else "height: min(90dvh, 56rem); max-height: none !important; overflow: hidden;"
@@ -1244,7 +1329,10 @@ _PREVIEW_SETTING_MARKER_SUFFIXES: dict[str, str] = {
     "y_axis_label": "y-axis-label",
     "z_axis_label": "z-axis-label",
     "reverse_order": "reverse-order",
-    "circular_layout": "circular-layout",
+    "circular_options": "circular-options",
+    "circular_combine": "circular-combine",
+    "circular_inner_radius": "circular-inner-radius",
+    "circular_track_height": "circular-track-height",
     "primary_color": "primary-color",
     "secondary_color": "secondary-color",
     "heatmap_palette": "heatmap-palette",
@@ -1452,11 +1540,22 @@ def preview_settings_controls(
                             )
                         reset_aspect_ratio.tooltip("Reset to the default aspect ratio")
                 title = _PlotTitle(initial_title)
-                circular_layout = _mark(
-                    ui.select(["Rings", "Overlay"], value="Rings", label="Circular layout")
-                    .props("dense options-dense").classes("dn-field"), markers, "circular_layout",
-                )
-                circular_layout.visible = False
+                with ui.column().classes("w-full").mark(markers.get("circular_options", "circular-options")) as circular_options:
+                    with ui.element("div").classes("dn-preview-histogram-grid"):
+                        circular_track_height = _mark(
+                            ui.number(label="Track height (%)", value=8., min=1, max=24, step=1)
+                            .props("dense").classes("dn-field dn-field-compact"), markers, "circular_track_height",
+                        )
+                        circular_inner_radius = _mark(
+                            ui.number(label="Inner radius (%)", value=64., min=0, max=78, step=1)
+                            .props("dense").classes("dn-field dn-field-compact"), markers, "circular_inner_radius",
+                        )
+                    circular_combine = _mark(ui.checkbox("Combine", value=False), markers, "circular_combine")
+                    field_hint(circular_combine, "Overlay datasets on the same circular track.")
+                circular_options.visible = False
+                circular_track_height.visible = False
+                circular_inner_radius.visible = False
+                circular_combine.visible = False
                 with ui.element("div").classes("dn-preview-histogram-grid"):
                     histogram_bins = _mark(
                         ui.number(
@@ -1726,7 +1825,7 @@ def preview_settings_controls(
                 if allow_filter:
                     with ui.element("div").classes("dn-inline-actions") as filter_guide_options:
                         _mark(filter_guide_options, markers, "filter_guide_options")
-                        show_filter = _mark(ui.checkbox("Filter", value=False), markers, "show_filter")
+                        show_filter = _mark(ui.checkbox("Mask", value=False), markers, "show_filter")
                 if allow_legend_name:
                     legend_name = _mark(
                         ui.input("Legend name", value="").props('dense placeholder="Automatic"').classes("dn-field"),
@@ -1734,7 +1833,7 @@ def preview_settings_controls(
                     )
                 if allow_filter:
                     filter_name = _mark(
-                        ui.input("Filter name", value="Filter").props("dense").classes("dn-field"),
+                        ui.input("Mask name", value="Mask").props("dense").classes("dn-field"),
                         markers, "filter_name",
                     )
                 if filter_labels:
@@ -1829,7 +1928,10 @@ def preview_settings_controls(
         fill_side=fill_side,
         fill_options=fill_options,
         reverse_order=reverse_order,
-        circular_layout=circular_layout,
+        circular_combine=circular_combine,
+        circular_inner_radius=circular_inner_radius,
+        circular_options=circular_options,
+        circular_track_height=circular_track_height,
         z_axis_label=z_axis_label,
         surface=settings_surface,
         legend_name=legend_name,
@@ -1901,7 +2003,9 @@ def bind_preview_settings_updates(
         controls.aspect_ratio,
         controls.fill_side,
         controls.reverse_order,
-        controls.circular_layout,
+        controls.circular_combine,
+        controls.circular_inner_radius,
+        controls.circular_track_height,
         controls.z_axis_label,
         controls.histogram_touching,
         controls.histogram_grouped,
@@ -1985,6 +2089,7 @@ def sync_preview_settings_visibility(
     multiple_curves: bool = False,
     allow_histogram: bool = True,
     allow_boxplot: bool = False,
+    allow_circular: bool = True,
     allow_individual_profiles: bool = False,
     allow_standard_deviation: bool = False,
     filter_available: bool = False,
@@ -1997,7 +2102,7 @@ def sync_preview_settings_visibility(
     boxplot = plot_type == "Boxplot"
     line = plot_type in {"Line", "Circular"}
     view_options = ["Default"]
-    if not heatmap:
+    if not heatmap and allow_circular:
         view_options.append("Circular")
     if allow_histogram:
         view_options.append("Histogram")
@@ -2012,7 +2117,10 @@ def sync_preview_settings_visibility(
     controls.z_axis_label.visible = heatmap
     controls.reverse_order.visible = not heatmap
     circular = not heatmap and controls.view.value == "Circular"
-    controls.circular_layout.visible = circular and multiple_curves
+    controls.circular_options.visible = circular
+    controls.circular_combine.visible = circular and multiple_curves
+    controls.circular_inner_radius.visible = circular
+    controls.circular_track_height.visible = circular
     if circular and controls.aspect_ratio.enabled:
         object.__setattr__(controls, "_cartesian_aspect_ratio", _positive_finite(controls.aspect_ratio.value) or 2.5)
         controls.aspect_ratio.disable()

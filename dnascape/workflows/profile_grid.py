@@ -48,6 +48,64 @@ def spatial_profile_grid(inspection, length, *, source_bin_size=1000, source_sta
     return positions, intervals, supplied
 
 
+def _aggregate_profile_bins(matrix, intervals, starts, ends, aggregation, cancel):
+    """Reduce disjoint overlaps in bounded batches, without global prefix sums.
+
+    First/last intervals supply fractional contributions. Entire intervals
+    between them are reduced locally, avoiding both Python loops per output
+    bin and cancellation from subtracting large cumulative signal totals.
+    """
+    output = np.full((len(starts), matrix.shape[1]), np.nan)
+    widths = intervals[:, 1] - intervals[:, 0]
+    for offset in range(0, len(starts), 32_768):
+        if cancel is not None:
+            cancel()
+        stop = min(offset + 32_768, len(starts))
+        left, right = starts[offset:stop], ends[offset:stop]
+        first = np.searchsorted(intervals[:, 1], left, side="right")
+        last = np.searchsorted(intervals[:, 0], right, side="left") - 1
+        first = np.clip(first, 0, len(intervals)-1)
+        last = np.clip(last, 0, len(intervals)-1)
+        first_width = np.maximum(0., np.minimum(intervals[first, 1], right) - np.maximum(intervals[first, 0], left))
+        last_width = np.maximum(0., np.minimum(intervals[last, 1], right) - np.maximum(intervals[last, 0], left))
+        last_width[first == last] = 0.
+        interior = np.flatnonzero(last > first+1)
+        if interior.size:
+            source_start = int(first[interior[0]] + 1)
+            source_stop = int(last[interior[-1]])
+            boundaries = np.column_stack((first[interior]+1-source_start, last[interior]-source_start)).reshape(-1)
+        for column in range(matrix.shape[1]):
+            if cancel is not None and column % 8 == 0:
+                cancel()
+            a, b = matrix[first, column], matrix[last, column]
+            valid_a, valid_b = np.isfinite(a) & (first_width > 0), np.isfinite(b) & (last_width > 0)
+            if aggregation in {"mean", "sum"}:
+                wa = first_width if aggregation == "mean" else first_width / widths[first]
+                wb = last_width if aggregation == "mean" else last_width / widths[last]
+                total = np.where(valid_a, a, 0.)*wa + np.where(valid_b, b, 0.)*wb
+                weight = valid_a*wa + valid_b*wb
+                if interior.size:
+                    part = matrix[source_start:source_stop+1, column]
+                    finite = np.isfinite(part)
+                    w = widths[source_start:source_stop+1] if aggregation == "mean" else 1.
+                    total[interior] += np.add.reduceat(np.where(finite, part, 0.)*w, boundaries)[::2]
+                    weight[interior] += np.add.reduceat(finite*w, boundaries)[::2]
+                if aggregation == "mean":
+                    np.divide(total, weight, out=output[offset:stop, column], where=weight > 0)
+                else:
+                    output[offset:stop, column] = np.where(weight > 0, total, np.nan)
+            else:
+                operation = np.minimum if aggregation == "min" else np.maximum
+                fill = np.inf if aggregation == "min" else -np.inf
+                total = operation(np.where(valid_a, a, fill), np.where(valid_b, b, fill))
+                if interior.size:
+                    part = matrix[source_start:source_stop+1, column]
+                    reduced = operation.reduceat(np.where(np.isfinite(part), part, fill), boundaries)[::2]
+                    total[interior] = operation(total[interior], reduced)
+                output[offset:stop, column] = np.where(np.isfinite(total), total, np.nan)
+    return output
+
+
 def rebin_spatial_profile(values, positions, intervals, *, start=None, end=None,
                          bin_size=1000, aggregation="mean", space_time=False,
                          max_values=10_000_000, cancel=None):
@@ -77,25 +135,7 @@ def rebin_spatial_profile(values, positions, intervals, *, start=None, end=None,
         output = matrix[first:last].copy()
         x = positions[first:last].copy()
     else:
-        output = np.full((count, matrix.shape[1]), np.nan)
-        widths = intervals[:, 1] - intervals[:, 0]
-        for index, (left, right) in enumerate(zip(starts, ends)):
-            if cancel is not None and index % 1024 == 0:
-                cancel()
-            a = np.searchsorted(intervals[:, 1], left, side="right")
-            b = np.searchsorted(intervals[:, 0], right, side="left")
-            overlap = np.maximum(0, np.minimum(intervals[a:b, 1], right) - np.maximum(intervals[a:b, 0], left))
-            part = matrix[a:b]
-            valid = np.isfinite(part) & (overlap[:, None] > 0)
-            if aggregation in {"mean", "sum"}:
-                weights = overlap[:, None] if aggregation == "mean" else (overlap / widths[a:b])[:, None]
-                total = np.sum(np.where(valid, part, 0) * weights, axis=0)
-                weight = np.sum(valid * weights, axis=0)
-                output[index] = np.divide(total, weight, out=np.full(matrix.shape[1], np.nan), where=weight > 0) if aggregation == "mean" else np.where(weight > 0, total, np.nan)
-            elif part.size:
-                operation = np.min if aggregation == "min" else np.max
-                fill = np.inf if aggregation == "min" else -np.inf
-                output[index] = np.where(valid.any(axis=0), operation(np.where(valid, part, fill), axis=0), np.nan)
+        output = _aggregate_profile_bins(matrix, intervals, starts, ends, aggregation, cancel)
         x = starts
     result = output if space_time else output.reshape((-1, 1) if source.ndim == 2 and source.shape[1] == 1 else (1, -1) if source.ndim == 2 else (-1,))
     return result, x, np.column_stack((starts, ends))

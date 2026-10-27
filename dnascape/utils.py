@@ -2,6 +2,7 @@
 
 import time
 from contextlib import contextmanager
+from functools import wraps
 from threading import local
 
 import numpy as np
@@ -54,6 +55,43 @@ def _report_progress(value, message):
     report = getattr(_PROGRESS_STATE, "report", None)
     if callable(report):
         report(float(value), str(message))
+        check_cancelled()
+
+
+@contextmanager
+def mapping_progress(options):
+    """Arm one first-prediction estimate for any mapping route.
+
+    Forward kernels claim this scope when actual prediction work begins. The
+    iteration budget is only an initial estimate; measured optimizer progress
+    replaces it as soon as fitted iterations are available. Nested route
+    adapters share the scope instead of restarting its clock.
+    """
+    previous = getattr(_PROGRESS_STATE, "mapping", None)
+    if previous is not None or not callable(getattr(_PROGRESS_STATE, "report", None)):
+        yield
+        return
+    budgets = [int(value) for key, value in options.items()
+               if key.endswith("maxiter") and value is not None]
+    state = {"total": max([0, *budgets]) + 1, "claimed": False}
+    _PROGRESS_STATE.mapping = state
+    try:
+        _report_progress(.04, "Mapping... Initial prediction 0%")
+        yield
+    finally:
+        _PROGRESS_STATE.mapping = previous
+
+
+def initial_prediction(function):
+    """Measure the first forward kernel, without evaluating it an extra time."""
+    @wraps(function)
+    def observed(*args, **kwargs):
+        state = getattr(_PROGRESS_STATE, "mapping", None)
+        if state is None or state["claimed"]:
+            return function(*args, **kwargs)
+        with measured_work(state["total"]):
+            return function(*args, **kwargs)
+    return observed
 
 
 @contextmanager
@@ -66,8 +104,14 @@ def measured_work(total=1, label="Mapping"):
     if total is not None and callable(getattr(_PROGRESS_STATE, "report", None)):
         started = time.perf_counter()
         _PROGRESS_STATE.work = [started, started, max(1, int(total)), str(label), 0.]
+        state = getattr(_PROGRESS_STATE, "mapping", None)
+        if state is not None:
+            state["claimed"] = True
     try:
+        if _PROGRESS_STATE.work is not None:
+            _report_progress(.04, f"{label}... Initial prediction 0%")
         yield
+        report_measured_work(1.)
     finally:
         _PROGRESS_STATE.work = previous
         _PROGRESS_STATE.work_range = previous_range
@@ -91,7 +135,10 @@ def report_measured_work(fraction):
         return
     now = time.perf_counter()
     started, last, total, label = work[:4]
-    fraction = min(1., max(0., float(fraction)))
+    fraction = float(fraction)
+    if not np.isfinite(fraction):
+        return
+    fraction = min(1., max(0., fraction))
     low, high = getattr(_PROGRESS_STATE, "work_range", (0., 1.))
     fraction = low + (high - low) * fraction
     if fraction <= work[4] or now - started < .25 or (fraction < 1 and now - last < .25):
@@ -101,7 +148,7 @@ def report_measured_work(fraction):
     completed = fraction / total
     remaining = (now - started) * (1 - completed) / completed
     _report_progress(.04 + .90 * completed,
-                     f"{label}... initial prediction {fraction:.0%} - ETA {hms(np.ceil(remaining))}")
+                     f"{label}... Initial prediction {fraction:.0%} - ETA {hms(np.ceil(remaining))}")
 
 
 def _fit_progress_enabled(verbose=False):
@@ -138,7 +185,11 @@ def _progress_update(it, maxiter, eta_sec, label=None, err=None):
     else:
         value = 0.04 + 0.90 * fraction
         prefix = str(label or "Mapping").replace("_", " ").title()
-    text = f"{prefix}... {iteration}/{total} - ETA {hms(eta_sec)}"
+    counter = f"{iteration}/{total}"
+    if getattr(_PROGRESS_STATE, "mapping", None) is not None and normalized_label != "rsim":
+        prefix = "Mapping"
+        counter = f"iteration {counter}"
+    text = f"{prefix}... {counter} - ETA {hms(eta_sec)}"
     if err is not None:
         text += f" - MSE {float(err):.3e}"
     report(min(0.99, value), text)

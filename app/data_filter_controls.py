@@ -10,24 +10,24 @@ from nicegui import ui
 
 from app.mapping_uploads import inspect_upload_event
 from app.notifications import notify
-from app.pages.common import data_upload, set_data_upload_locked
+from app.pages.common import append_raw_uploads, data_upload, set_data_upload_locked
 from dnascape.workflows.filtering import (
     FILTER_ACTIONS, FILTER_INTERPOLATIONS, FILTER_SELECTIONS,
-    DataFilterSettings, detect_filter_profile,
+    DataFilterSettings, detect_filter_profile, parse_position_ranges,
 )
 from dnascape.workflows.modulation import ProfileModulationSettings
 
 
 class DataFilterControls:
     def __init__(
-        self, on_loading_change: Callable[[], None], *, title="Filter",
-        marker_prefix="data-manager-filter", toggle_label="Apply filter",
+        self, on_loading_change: Callable[[], None], *, title="Region transforms",
+        marker_prefix="data-manager-filter", toggle_label="Apply transform",
         default_selection="threshold", default_action="replace", header: Callable[[], None] | None = None,
         allow_export: bool = False, allow_complement: bool = False,
-        profile_units: str = "kb", align_modulation_from_start: bool = False,
+        profile_units: str = "bp", align_modulation_from_start: bool = False,
         relative_options: dict[str, str] | None = None,
         on_change: Callable[[], None] | None = None,
-        embedded: bool = False,
+        embedded: bool = False, switches_footer: Callable[[], None] | None = None,
     ) -> None:
         self.controls: dict[str, Any] = {}
         self.marker_prefix = marker_prefix
@@ -41,6 +41,7 @@ class DataFilterControls:
         self._on_loading_change = on_loading_change
         section = (ui.column().classes('dn-data-filter-embedded') if embedded else
                    ui.expansion(title, icon="filter_alt", value=False).props("dense").classes("dn-expansion"))
+        self.section = section
         with section.mark(marker_prefix):
             if embedded:
                 ui.label(title).classes('dn-setting-group-title')
@@ -50,14 +51,15 @@ class DataFilterControls:
                 with ui.row().classes("dn-inline-actions"):
                     self._mark("enabled", ui.switch(toggle_label, value=False))
                     if allow_export:
-                        self._mark("export", ui.switch("Export filter", value=False))
-                        self.controls["export"].bind_enabled_from(self.controls["enabled"], "value")
+                        self._mark("export", ui.switch("Export mask", value=False))
                     if allow_complement:
-                        self._mark("complement", ui.switch("Complement region", value=False))
+                        self._mark("complement", ui.switch("Invert mask", value=False))
+                if switches_footer is not None:
+                    switches_footer()
                 with ui.column().classes("dn-data-filter-options"):
                     if header is not None:
                         header()
-                    ui.label("Select regions").classes("dn-setting-group-title")
+                    ui.label("Select regions / define mask").classes("dn-setting-group-title")
                     self._select("selection", "Selection", FILTER_SELECTIONS, default_selection)
                     with ui.element("div").classes("dn-data-filter-grid") as threshold:
                         self._select("comparison", "Values", {"below": "Below", "above": "Above"}, "below")
@@ -66,6 +68,15 @@ class DataFilterControls:
                         self._select("between_mode", "Values", {"within": "Within", "outside": "Outside"}, "within")
                         self._number("lower", "Minimum", 0.)
                         self._number("upper", "Maximum", 1.)
+                    with ui.column().classes("dn-data-filter-profile dn-data-filter-ranges") as ranges:
+                        ui.label(
+                            "Enter (start,end), e.g. (1000,2000), (4000,5000). End excluded."
+                        ).classes("dn-upload-formats")
+                        with ui.element("div").classes("dn-data-filter-profile-input dn-data-filter-ranges-input"):
+                            self._mark("ranges", ui.textarea("Intervals", value="").props(
+                                "dense autogrow rows=1 wrap=soft spellcheck=false"
+                            ).classes("dn-field"))
+                            self._select("ranges_units", "Coordinates", {"bp": "bp", "kb": "kb"}, "bp")
                     with ui.column().classes("dn-data-filter-profile") as profile:
                         with ui.element("div").classes("dn-data-filter-profile-input"):
                             self.controls["uploader"] = data_upload(
@@ -109,6 +120,7 @@ class DataFilterControls:
                         ).classes("dn-upload-formats")
         self._threshold_group, self._between_group = threshold, between
         self._profile_group, self._noise_group = profile, noise
+        self._ranges_group = ranges
         self._modulation_group = modulation
         for key in ("selection", "action", "modulation_column", "modulation_array"):
             self.controls[key].on_value_change(self._sync)
@@ -131,10 +143,11 @@ class DataFilterControls:
     def _sync(self) -> None:
         selection, action = self.controls["selection"].value, self.controls["action"].value
         if 'relative_to' in self.controls:
-            self.controls['relative_to'].set_visibility(selection not in {'profile', 'all'})
+            self.controls['relative_to'].set_visibility(selection not in {'profile', 'ranges', 'all'})
         self._threshold_group.set_visibility(selection in {"threshold", "minimum", "maximum"})
         self._between_group.set_visibility(selection == "between")
         self._profile_group.set_visibility(selection == "profile")
+        self._ranges_group.set_visibility(selection == "ranges")
         self.controls["threshold"].props(f'label="{"Distance" if selection in {"minimum", "maximum"} else "Threshold"}"')
         for name, operation in (("replace_value", "replace"), ("factor", "multiply"), ("offset", "add"), ("interpolation", "interpolate")):
             self.controls[name].set_visibility(action == operation)
@@ -165,6 +178,21 @@ class DataFilterControls:
         self._loading_count += change
         self.loading = self._loading_count > 0
         self._on_loading_change()
+
+    async def receive_mask(self, files):
+        """Open an internal mask through the same inspector as a manual upload."""
+        from nicegui.elements.expansion import Expansion
+
+        if self.loading or not self.controls["selection"].enabled:
+            raise ValueError("Wait for the current operation to finish before adding a mask.")
+        if len(files) != 1:
+            raise ValueError("Choose one mask file for the region transform.")
+        self.controls["selection"].set_value("profile")
+        self.controls["profile_units"].set_value("bp")
+        for section in (self.section, *self.section.ancestors()):
+            if isinstance(section, Expansion):
+                section.open()
+        await append_raw_uploads(lambda: self.controls["uploader"], files)
 
     async def _uploaded(self, event):
         self._set_loading(1)
@@ -230,6 +258,7 @@ class DataFilterControls:
     def snapshot(self) -> DataFilterSettings:
         value = lambda name: self.controls[name].value
         action = value("action")
+        ranges = value("selection") == "ranges"
         return DataFilterSettings(
             enabled=bool(value("enabled")), selection=value("selection"), comparison=value("comparison"),
             threshold=value("threshold"), lower=value("lower"), upper=value("upper"), action=action,
@@ -239,10 +268,11 @@ class DataFilterControls:
             standard_deviation=value("standard_deviation"), seed=value("seed"),
             interpolation=value("interpolation"), reference=value("reference"),
             profile=(
-                replace(self.profile, units=value("profile_units")) if self.profile is not None else None
+                replace(self.profile, units=value("profile_units")) if self.profile is not None and not ranges else None
             ),
-            profile_layout=self.profile.layout if self.profile is not None else "positions",
-            profile_units=value("profile_units"),
+            profile_layout="intervals" if ranges else self.profile.layout if self.profile is not None else "positions",
+            profile_units=value("ranges_units" if ranges else "profile_units"),
+            position_ranges=str(value("ranges") or ""),
             modulation=ProfileModulationSettings(
                 operation="expression", expression=str(value("modulation_expression") or ""),
                 align_from_start=self.align_modulation_from_start,
@@ -251,3 +281,17 @@ class DataFilterControls:
                 array_key=None if value("modulation_array") == "__auto__" else value("modulation_array"),
             ),
         )
+
+    @property
+    def selection_ready(self) -> bool:
+        """Keep Mapping's target shape unchanged while interval text is incomplete."""
+        selection = self.controls["selection"].value
+        if selection == "profile":
+            return self.profile is not None
+        if selection == "ranges":
+            try:
+                return parse_position_ranges(self.controls["ranges"].value or "",
+                                             units=self.controls["ranges_units"].value) is not None
+            except ValueError:
+                return False
+        return True

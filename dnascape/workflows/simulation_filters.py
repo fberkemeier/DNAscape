@@ -11,7 +11,7 @@ from .filtering import apply_data_filter, resolve_filter
 from .uploads import _resolve_missing_values
 
 MAX_FILTER_CELLS = 16_000_000
-FILTER_LABELS = {'initiation_rate': 'Initiation-rate filter', 'fork_speed': 'Fork-speed filter'}
+FILTER_LABELS = {'initiation_rate': 'Initiation-rate mask', 'fork_speed': 'Fork-speed mask'}
 
 
 def _runs(mask):
@@ -141,7 +141,7 @@ def apply_simulation_filters(values, settings, *, start, end, resolution_x, reso
     result, selections, warnings = dict(values), {}, []
     for key, raw_settings in settings.items():
         if key not in FILTER_LABELS:
-            raise ValueError('Choose initiation rate or fork speed for the simulation filter.')
+            raise ValueError('Choose initiation rate or fork speed for the region transform.')
         cancel()
         config = resolve_filter(raw_settings)
         if not config.enabled:
@@ -158,12 +158,12 @@ def apply_simulation_filters(values, settings, *, start, end, resolution_x, reso
             source = np.full(n_bins, float(original.reshape(-1)[0]))
         elif source_temporal and config.selection == 'profile':
             if n_bins * original.shape[1] > MAX_FILTER_CELLS:
-                raise ValueError('The filtered space–time input is too large. Increase resolution or shorten the region.')
+                raise ValueError('The transformed space–time input is too large. Increase resolution or shorten the region.')
             source = np.broadcast_to(original, (n_bins, original.shape[1]))
         else:
             source = original.reshape(-1) if original.ndim == 2 and original.shape[1] == 1 else original
         if source.size > MAX_FILTER_CELLS:
-            raise ValueError('The simulation filter exceeds the input size limit.')
+            raise ValueError('The simulation mask exceeds the input size limit.')
         spatial = not (source.ndim == 2 and source.shape[0] == 1 and source.shape[1] > 1)
         positions = start + np.arange(n_bins) * resolution_x if spatial else np.arange(source.size) * resolution_t
         intervals = np.column_stack((positions, np.minimum(positions + resolution_x, end))) if spatial else None
@@ -196,7 +196,7 @@ def build_simulation_filter_export(state, key, file_format, *, filename=None, la
     from .exports import RAW_FORMATS, compressed_export_artifact, normalize_export_format, safe_export_filename
 
     if state is None or key not in state.selections or key not in state.exports:
-        raise ValueError('This input has no exported filter.')
+        raise ValueError('This input has no exported mask.')
     if layout not in {'positions', 'intervals'}:
         raise ValueError('Choose a position list or genomic intervals.')
     file_format = normalize_export_format(file_format, allowed=RAW_FORMATS)

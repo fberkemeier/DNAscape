@@ -41,8 +41,11 @@ def test_transformations_interpolate_combine_keep_originals_export_and_preserve_
             ])
             await user.should_see(marker="plotting-detected-data-2", retries=80)
             user.find(marker="analysis-transform").click()
-            assert control("analysis-transform-selection").value == "nan"
-            assert control("analysis-transform-action").value == "interpolate"
+            assert control("analysis-transform-selection").value == "threshold"
+            assert control("analysis-transform-action").value == "replace"
+            with user.client:
+                control("analysis-transform-selection").set_value("nan")
+                control("analysis-transform-action").set_value("interpolate")
             with user.client:
                 control("analysis-transform-target").set_value("1:A")
                 control("analysis-transform-enabled").set_value(True)
@@ -79,13 +82,16 @@ def test_transformations_interpolate_combine_keep_originals_export_and_preserve_
                 Upload.SmallFileUpload("short.tsv", "text/plain", b"assay\n2\n2\n"),
             ])
             await user.should_see("Profile shape: 2", retries=80)
+            await commit([[1, 2, 3], [2, 4, 3], [10, 20, 30]])
+            with user.client:
+                control("analysis-transform-modulation-expression").set_value("source[:-1]")
             user.find(marker="action-plot").click()
             for _ in range(100):
                 await asyncio.sleep(.02)
-                if messages and control("analysis-action-label").text == "Analyse":
+                if any("source shape" in message for message in messages) and control("analysis-action-label").text == "Analyse":
                     break
-            assert any("does not match" in message for message in messages)
-            np.testing.assert_equal(plotted()[1], [2, 4, 6])
+            assert any("source shape" in message for message in messages)
+            np.testing.assert_equal(plotted()[1], [2, 4, 3])
             with user.client:
                 control("analysis-transform-enabled").set_value(False)
             await commit([[1, 2, 3], [10, 20, 30]])

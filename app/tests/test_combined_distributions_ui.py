@@ -38,7 +38,7 @@ def test_combined_distributions_kde_and_independent_axes(view: str) -> None:
                 control("view").set_value(view)
             await asyncio.sleep(0)
             assert control("presentation").value == "Combined"
-            expected_type = "custom" if view == "Histogram" else "boxplot"
+            expected_type = "custom"
             assert [item["type"] for item in chart()["series"]] == [expected_type, expected_type]
             if view == "Boxplot":
                 assert [item["data"][0][0] for item in chart()["series"]] == [1, 2]
@@ -70,7 +70,7 @@ def test_combined_distributions_kde_and_independent_axes(view: str) -> None:
                     control("density").set_value(True)
                 await asyncio.sleep(0)
                 assert [item["type"] for item in chart()["series"]] == ["line", "line"]
-                assert all(len(item["data"]) == 256 for item in chart()["series"])
+                assert all(len(item["data"]) == 1000 for item in chart()["series"])
                 kde_x = np.asarray(chart()["series"][1]["data"])[:, 0]
                 assert kde_x.max() > 4000
                 assert control("x2-maximum").value == pytest.approx(chart()["xAxis"][1]["max"])

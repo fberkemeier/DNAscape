@@ -172,14 +172,10 @@ body {
   letter-spacing: 0;
 }
 
-.dn-menu-button,
-.dn-theme-button,
 .dn-app-menu-button {
   color: var(--dn-muted) !important;
 }
 
-.dn-menu-button:hover,
-.dn-theme-button:hover,
 .dn-app-menu-button:hover {
   background: var(--dn-active) !important;
   color: var(--dn-text) !important;
@@ -882,12 +878,6 @@ svg.dn-nav-outline-icon {
   vector-effect: non-scaling-stroke;
 }
 
-.dn-outline-icon .dn-icon-dot,
-.dn-nav-outline-icon .dn-icon-dot {
-  fill: currentColor;
-  stroke: none;
-}
-
 .dn-workflow-symbol {
   align-items: center;
   display: inline-flex;
@@ -1383,8 +1373,7 @@ body.body--dark .dn-nav-active {
   border-left: 0;
 }
 
-.dn-setting-group-title,
-.dn-settings-theme-title {
+.dn-setting-group-title {
   color: var(--dn-muted);
   font-size: 0.69rem;
   font-weight: 700;
@@ -1476,8 +1465,7 @@ body.body--dark .dn-nav-active {
   width: 100%;
 }
 
-.dn-setting-inline,
-.dn-option-with-field {
+.dn-setting-inline {
   align-items: center;
   display: flex;
   gap: 0.26rem;
@@ -1485,22 +1473,18 @@ body.body--dark .dn-nav-active {
   width: 100%;
 }
 
-.dn-setting-inline > .dn-field,
-.dn-option-with-field > .dn-field {
+.dn-setting-inline > .dn-field {
   flex: 1 1 auto;
   min-width: 0;
 }
 
 .dn-setting-inline > .q-checkbox,
-.dn-setting-inline > .q-toggle,
-.dn-option-with-field > .q-checkbox,
-.dn-option-with-field > .q-toggle {
+.dn-setting-inline > .q-toggle {
   flex: 0 0 auto;
   margin: 0;
 }
 
-.dn-control-card .dn-field-compact,
-.dn-control-card .dn-field-small {
+.dn-control-card .dn-field-compact {
   justify-self: start;
   max-width: 7.4rem;
   width: 100%;
@@ -1793,25 +1777,8 @@ body.body--dark .dn-nav-active {
   margin-inline-start: -0.25em;
 }
 
-.dn-analysis-smoothing-list {
-  gap: 12px;
-}
-
 .dn-analysis-smoothing-row {
   gap: 5px;
-}
-
-.dn-analysis-dataset-name {
-  font-size: 12px;
-  font-weight: 500;
-  overflow-wrap: anywhere;
-}
-
-.dn-analysis-smoothing-fields {
-  display: grid;
-  grid-template-columns: minmax(0, 1.4fr) minmax(0, 1fr);
-  gap: 8px;
-  width: 100%;
 }
 
 .dn-analysis-matrix .q-table__middle {
@@ -1985,6 +1952,14 @@ body.body--dark .dn-nav-active {
   margin-top: 0.45rem;
 }
 
+.dn-data-filter-ranges {
+  gap: 0.2rem;
+}
+
+.dn-data-filter-ranges-input > .q-field {
+  margin-top: 0;
+}
+
 .dn-data-filter-between {
   grid-template-columns: repeat(3, minmax(0, 1fr));
 }
@@ -2003,15 +1978,6 @@ body.body--dark .dn-nav-active {
   width: 100%;
 }
 
-.dn-data-filter-formula {
-  background: var(--dn-panel);
-  border-radius: 4px;
-  color: var(--dn-text);
-  font-size: 0.8rem;
-  padding: 0.5rem 0.65rem;
-  width: 100%;
-}
-
 @media (max-width: 520px) {
   .dn-data-filter-grid {
     grid-template-columns: minmax(0, 1fr);
@@ -2022,7 +1988,7 @@ body.body--dark .dn-nav-active {
   align-items: center;
   display: grid;
   gap: 0.4rem 0.55rem;
-  grid-template-columns: minmax(0, 1fr) auto;
+  grid-template-columns: minmax(0, 1fr);
   width: 100%;
 }
 
@@ -2107,8 +2073,7 @@ body.body--dark .dn-nav-active {
 }
 
 .dn-data-manager-url-help,
-.dn-data-manager-section-guidance,
-.dn-data-manager-review-guidance {
+.dn-data-manager-section-guidance {
   color: var(--dn-muted);
   font-size: 0.7rem;
   line-height: 1.45;
@@ -2155,14 +2120,6 @@ body.body--dark .dn-nav-active {
   width: 100%;
 }
 
-.dn-data-manager-preprocessing-grid {
-  align-items: start;
-  display: grid;
-  gap: 0.4rem 0.55rem;
-  grid-template-columns: repeat(3, minmax(0, 1fr));
-  width: 100%;
-}
-
 .dn-data-manager-bedgraph-column {
   max-width: 20rem;
 }
@@ -2186,6 +2143,22 @@ body.body--dark .dn-nav-active {
   gap: 0.4rem;
   min-width: 0;
   width: 100%;
+}
+
+.dn-data-manager-values-grid {
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr) minmax(0, 2fr);
+}
+
+.dn-data-manager-values-basic {
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+
+.dn-data-manager-transform-grid {
+  grid-template-columns: repeat(2, minmax(0, 1fr)) auto;
+}
+
+.dn-data-manager-transform-grid > .q-checkbox {
+  margin-top: 0.75rem;
 }
 
 .dn-data-manager-range-grid {
@@ -2288,13 +2261,6 @@ body.body--dark .dn-nav-active {
   margin-top: 0.25rem;
 }
 
-.dn-data-manager-metadata-grid {
-  display: grid;
-  gap: 0.4rem 0.55rem;
-  grid-template-columns: repeat(2, minmax(0, 1fr));
-  width: 100%;
-}
-
 .dn-workspace.dn-data-manager-workspace {
   grid-template-columns: minmax(0, 45fr) minmax(0, 55fr);
 }
@@ -2308,19 +2274,6 @@ body.body--dark .dn-nav-active {
   margin-inline-start: -0.25em;
 }
 
-.dn-data-manager-config-grid > .q-checkbox.dn-data-manager-preview-toggle {
-  align-self: center;
-}
-
-.dn-data-manager-output-name {
-  min-width: 0;
-}
-
-.dn-data-manager-compression {
-  align-self: center;
-  min-height: 2rem;
-}
-
 .dn-data-manager-preview-toggle {
   color: var(--dn-muted);
   justify-self: start;
@@ -2329,60 +2282,6 @@ body.body--dark .dn-nav-active {
 
 .dn-data-manager-setting-heading {
   margin: 0.78rem 0 0.28rem;
-}
-
-.dn-data-manager-review-guidance {
-  padding: 0.3rem 0 0.7rem;
-}
-
-.dn-data-manager-review-strip {
-  display: grid;
-  gap: 0;
-  grid-template-columns: repeat(3, minmax(0, 1fr));
-  margin: 0.15rem 0 0.7rem;
-  width: 100%;
-}
-
-.dn-data-manager-review-item {
-  align-content: start;
-  display: grid;
-  gap: 0.08rem;
-  min-width: 0;
-  padding: 0.12rem 0.65rem;
-}
-
-.dn-data-manager-review-item:first-child {
-  padding-left: 0;
-}
-
-.dn-data-manager-review-item + .dn-data-manager-review-item {
-  border-left: 1px solid color-mix(in srgb, var(--dn-line) 72%, transparent);
-}
-
-.dn-data-manager-review-label {
-  color: var(--dn-muted);
-  font-size: 0.64rem;
-  font-weight: 700;
-  text-transform: uppercase;
-}
-
-.dn-data-manager-review-value {
-  color: var(--dn-text);
-  font-size: 0.78rem;
-  font-weight: 600;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.dn-data-manager-export-heading {
-  margin-top: 0.18rem;
-}
-
-.dn-data-manager-files-heading {
-  border-top: 1px solid color-mix(in srgb, var(--dn-line) 65%, transparent);
-  margin-top: 0.85rem;
-  padding-top: 0.7rem;
 }
 
 .dn-data-manager-prepared-preview {
@@ -2582,18 +2481,10 @@ body.body--dark .dn-nav-active {
   width: 100%;
 }
 
-.dn-download-file-icon,
-.dn-data-manager-file-icon {
+.dn-download-file-icon {
   color: var(--dn-accent);
   font-size: 1.35rem;
   justify-self: center;
-}
-
-.dn-download-file-copy,
-.dn-data-manager-file-copy {
-  gap: 0.1rem !important;
-  min-width: 0;
-  width: 100%;
 }
 
 .dn-download-file-name {
@@ -2604,12 +2495,6 @@ body.body--dark .dn-nav-active {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
-}
-
-.dn-download-file-actions {
-  flex-wrap: nowrap;
-  gap: 0.08rem !important;
-  justify-self: end;
 }
 
 .dn-download-file-action {
@@ -2707,17 +2592,6 @@ body.body--dark .dn-nav-active {
   font-weight: 650;
 }
 
-.dn-source-block {
-  background: color-mix(in srgb, var(--dn-panel) 82%, var(--dn-bg));
-  border: 1px solid var(--dn-line);
-  border-radius: 7px;
-  display: flex;
-  flex-direction: column;
-  gap: 0.5rem;
-  padding: 0.78rem;
-  width: 100%;
-}
-
 /* Source inputs are deliberately flat: the expansion already supplies the
    visual grouping, so another card border only adds noise. */
 .dn-source-compact {
@@ -2769,14 +2643,6 @@ body.body--dark .dn-nav-active {
   display: flex;
   flex-direction: column;
   gap: 0.34rem;
-  min-width: 0;
-  width: 100%;
-}
-
-.dn-data-fields {
-  display: grid;
-  gap: 0.42rem 0.58rem;
-  grid-template-columns: repeat(2, minmax(0, 1fr));
   min-width: 0;
   width: 100%;
 }
@@ -2924,7 +2790,6 @@ body.body--dark .dn-nav-active {
 
 .dn-mapping-input-surface,
 .dn-mapping-upload-source,
-.dn-mapping-prepared-source,
 .dn-mapping-regions-manual,
 .dn-mapping-regions-upload {
   align-content: start;
@@ -3056,12 +2921,6 @@ body.body--dark .dn-nav-active {
   grid-column: 1 / -1;
 }
 
-.dn-mapping-import-options {
-  margin-top: 0.14rem;
-  padding-top: 0.12rem;
-  width: 100%;
-}
-
 .dn-mapping-import-summary {
   color: var(--dn-muted);
   cursor: pointer;
@@ -3069,18 +2928,6 @@ body.body--dark .dn-nav-active {
   line-height: 1.35;
   padding: 0.08rem 0;
   user-select: none;
-}
-
-.dn-mapping-import-options[open] .dn-mapping-import-summary {
-  color: var(--dn-text);
-}
-
-.dn-mapping-import-grid {
-  display: grid;
-  gap: 0.35rem 0.48rem;
-  grid-template-columns: repeat(2, minmax(0, 1fr));
-  padding-top: 0.25rem;
-  width: 100%;
 }
 
 .dn-mapping-detected-data {
@@ -3116,28 +2963,12 @@ body.body--dark .dn-nav-active {
   width: 100%;
 }
 
-.dn-mapping-detected-warning,
-.dn-mapping-upload-error {
-  font-size: 0.67rem;
-  grid-column: 1 / -1;
-  line-height: 1.35;
-}
-
-.dn-mapping-detected-warning {
-  color: var(--dn-muted);
-}
-
 .dn-mapping-run-stats {
   width: 100%;
 }
 
 .dn-mapping-progress {
   margin-top: 0.1rem;
-}
-
-.dn-mapping-plain-import-options {
-  min-width: 0;
-  width: 100%;
 }
 
 .dn-mapping-track-options {
@@ -3314,9 +3145,13 @@ body.body--dark .dn-nav-active {
 .dn-mapping-window-grid {
   display: grid;
   gap: 0.38rem 0.5rem;
-  grid-template-columns: repeat(2, minmax(0, 1fr));
+  grid-template-columns: repeat(3, minmax(0, 1fr));
   min-width: 0;
   width: 100%;
+}
+
+.dn-mapping-window-time {
+  grid-template-columns: minmax(0, 0.7fr) minmax(0, 0.7fr) minmax(0, 1.2fr) minmax(0, 1.4fr);
 }
 
 .dn-mapping-setting {
@@ -3335,17 +3170,6 @@ body.body--dark .dn-nav-active {
 .dn-mapping-setting-checkbox,
 .dn-mapping-setting-override {
   margin-left: -0.42rem;
-}
-
-.dn-mapping-fit-primary {
-  display: grid;
-  grid-template-columns: minmax(0, 10rem);
-  width: 100%;
-}
-
-.dn-mapping-weibull-settings,
-.dn-mapping-spacetime-settings {
-  width: 100%;
 }
 
 .dn-control-card .q-field--dense .q-field__control,
@@ -3379,11 +3203,6 @@ body.body--dark .dn-nav-active {
   font-size: 2.05rem;
   min-width: 2.87rem;
   width: 2.87rem;
-}
-
-.dn-source-block .dn-field-heading {
-  color: var(--dn-text);
-  letter-spacing: 0;
 }
 
 .dn-output-section {
@@ -3519,13 +3338,6 @@ body.body--dark .dn-nav-active {
   border-bottom: 0;
   min-height: 3.1rem;
   padding: 0;
-}
-
-.dn-source-grid {
-  display: grid;
-  gap: 0.38rem 0.7rem;
-  grid-template-columns: repeat(2, minmax(0, 1fr));
-  width: 100%;
 }
 
 .q-field__label,
@@ -3902,8 +3714,7 @@ body.body--dark .dn-nav-active {
   filter: brightness(1.06);
 }
 
-.dn-action-primary:focus-visible,
-.dn-primary-action:focus-visible {
+.dn-action-primary:focus-visible {
   outline: 2px solid var(--dn-accent);
   outline-offset: 2px;
 }
@@ -4013,8 +3824,7 @@ body.body--dark .dn-nav-active {
   top: -0.55rem;
 }
 
-.dn-action-dock .dn-action-primary,
-.dn-action-dock .dn-primary-action {
+.dn-action-dock .dn-action-primary {
   min-height: 2.45rem;
   width: 100%;
 }
@@ -4243,32 +4053,11 @@ body.body--dark .dn-nav-active {
   width: 100%;
 }
 
-.dn-chart-label {
-  color: var(--dn-text);
-  font-size: 0.9rem;
-  font-weight: 600;
-  margin-bottom: 0.35rem;
-}
-
 .dn-chart svg {
   display: block;
   height: 230px;
   overflow: visible;
   width: 100%;
-}
-
-.dn-line polyline {
-  fill: none;
-  stroke: var(--dn-accent);
-  stroke-linecap: round;
-  stroke-linejoin: round;
-  stroke-width: 3;
-  vector-effect: non-scaling-stroke;
-}
-
-.dn-bars rect {
-  fill: color-mix(in srgb, var(--dn-accent) 68%, var(--dn-panel));
-  rx: 2px;
 }
 
 .dn-empty-state {
@@ -4324,19 +4113,19 @@ body.body--dark .dn-nav-active {
    are visible, leaving five equally aligned grid items. */
 .dn-stat-grid.dn-simulation-summary-grid {
   align-items: stretch;
-  grid-template-columns: minmax(10rem, 1.4fr) repeat(4, minmax(0, 1fr));
+  grid-template-columns: minmax(13rem, 1.6fr) repeat(4, minmax(0, 1fr));
   margin-bottom: 0;
 }
 
 .dn-stat-grid.dn-mapping-summary-grid {
-  grid-template-columns: minmax(10rem, 1.4fr) repeat(4, minmax(0, 1fr));
+  grid-template-columns: minmax(13rem, 1.6fr) repeat(4, minmax(0, 1fr));
 }
 
 /* Batch mapping adds Layout beside Output. Method still spans the final two
    tracks, so six explicit tracks keep every summary cell on one aligned row. */
 .dn-stat-grid.dn-mapping-summary-grid.dn-mapping-summary-grid-batch {
   grid-template-columns:
-    minmax(8.5rem, 1.35fr)
+    minmax(11.5rem, 1.5fr)
     minmax(7rem, 1fr)
     repeat(2, minmax(0, 0.85fr))
     repeat(2, minmax(0, 1fr));
@@ -4548,18 +4337,6 @@ body.body--dark .dn-main-logo-frame .dn-main-logo {
   color: var(--dn-accent);
   font-size: 2.5rem;
   opacity: 0.88;
-}
-
-.dn-overview-footer {
-  align-self: center;
-  border-top: 1px solid var(--dn-line);
-  color: var(--dn-muted);
-  display: block;
-  font-size: 0.78rem;
-  margin-top: 1.35rem;
-  padding-top: 0.8rem;
-  text-align: center;
-  width: min(34rem, 100%);
 }
 
 .dn-resource-grid {
@@ -4977,29 +4754,22 @@ body.body--dark .dn-main-logo-frame .dn-main-logo {
   border-radius: 0 0 8px 8px;
 }
 
-.dn-subheading {
-  color: var(--dn-text);
-  font-size: 1.02rem;
-  font-weight: 650;
-}
-
-.dn-section-separator {
-  background: var(--dn-line) !important;
-  margin: 0.35rem 0;
-}
-
 @container dn-controls (max-width: 24rem) {
-  .dn-source-grid,
-  .dn-data-fields,
   .dn-simulation-data-grid,
   .dn-data-manager-binning-grid,
   .dn-data-manager-single-region,
-  .dn-data-manager-preprocessing-grid,
   .dn-data-manager-polishing-grid,
   .dn-data-manager-multiplier-grid,
-  .dn-data-manager-metadata-grid,
   .dn-data-manager-detected {
     grid-template-columns: 1fr;
+  }
+
+  .dn-data-manager-transform-grid {
+    grid-template-columns: minmax(0, 1fr) auto;
+  }
+
+  .dn-data-manager-transform-grid > .dn-data-manager-polishing-column:first-child {
+    grid-column: 1 / -1;
   }
 
   .dn-data-manager-aggregation {
@@ -5009,23 +4779,6 @@ body.body--dark .dn-main-logo-frame .dn-main-logo {
 
   .dn-data-manager-link-action {
     justify-self: start;
-  }
-
-  .dn-data-manager-review-strip {
-    grid-template-columns: 1fr;
-  }
-
-  .dn-data-manager-review-item {
-    padding: 0.35rem 0;
-  }
-
-  .dn-data-manager-review-item + .dn-data-manager-review-item {
-    border-left: 0;
-    border-top: 1px solid color-mix(in srgb, var(--dn-line) 58%, transparent);
-  }
-
-  .dn-data-manager-compression {
-    grid-column: 1;
   }
 
   .dn-mapping-request-grid,
@@ -5127,7 +4880,6 @@ body.body--dark .dn-main-logo-frame .dn-main-logo {
     padding-top: 0.08rem;
   }
 
-  .dn-mapping-import-grid,
   .dn-mapping-detected-file,
   .dn-mapping-track-grid,
   .dn-mapping-settings-grid,
@@ -5152,9 +4904,7 @@ body.body--dark .dn-main-logo-frame .dn-main-logo {
     grid-column: 1 / -1;
   }
 
-  .dn-mapping-detected-summary,
-  .dn-mapping-detected-warning,
-  .dn-mapping-upload-error {
+  .dn-mapping-detected-summary {
     grid-column: 1;
   }
 
@@ -5328,6 +5078,15 @@ body.body--dark .dn-main-logo-frame .dn-main-logo {
   }
 }
 
+/* With the navigation drawer open, two usable workspace columns need at least
+   946 px including page gutters. Stack before their minimum widths overflow. */
+@media (max-width: 960px) {
+  .dn-workspace,
+  .dn-workspace.dn-data-manager-workspace {
+    grid-template-columns: minmax(0, 1fr);
+  }
+}
+
 @media (max-width: 800px) {
   .dn-page-host {
     padding: 1.1rem 0.9rem 2.25rem;
@@ -5469,8 +5228,6 @@ body.body--dark .dn-main-logo-frame .dn-main-logo {
   }
 
   .dn-field-grid,
-  .dn-source-grid,
-  .dn-data-fields,
   .dn-stat-grid,
   .dn-cache-toolbar {
     grid-template-columns: 1fr;

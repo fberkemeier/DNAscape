@@ -20,7 +20,6 @@ from .preview import (
     PreviewLine,
     arrange_histogram_bins,
     automatic_y_limits,
-    build_legend_options,
     build_preview_plot_options,
     curve_dash_pattern,
     finite_values,
@@ -99,6 +98,12 @@ def _html_option_values(value: Any) -> Any:
     return value
 
 
+def plot_navigation_script() -> str:
+    """Use the same navigation and hover implementation in the app and HTML."""
+    from importlib.resources import files
+    return files("dnascape.workflows").joinpath("plot_navigation.js").read_text(encoding="utf-8")
+
+
 def write_plot_html(
     specification: Mapping[str, Any],
     path: str | Path,
@@ -125,6 +130,8 @@ def write_plot_html(
         if not np.isfinite(aspect_ratio) or aspect_ratio <= 0:
             raise ValueError("Plot aspect ratio must be a positive finite number.")
         chart_size = f"height: auto; aspect-ratio: {aspect_ratio}; min-height: 0;"
+    if specification.get("dnascapeCircular"):
+        chart_size += " max-width: 480px; margin: 0 auto;"
     destination.parent.mkdir(parents=True, exist_ok=True)
     options_json = json.dumps(
         _html_option_values(specification), ensure_ascii=True, allow_nan=False
@@ -134,8 +141,59 @@ def write_plot_html(
     else:
         embedded_source = re.sub(r"</script", r"<\\/script", echarts_source, flags=re.IGNORECASE)
         runtime_script = "<script>\n" + embedded_source + "\n</script>"
+    circular = bool(specification.get("dnascapeCircular"))
+    navigation_script = "<script>" + plot_navigation_script() + "</script>" if circular else ""
+    navigation_class = ' class="nicegui-echart dn-plot-navigation" style="position:relative"' if circular else ""
+    navigation_bootstrap = "window.getElement=()=>({chart,options,$emit:()=>{}});" if circular else ""
     safe_title = escape(str(title))
     download_name = json.dumps(destination.stem, ensure_ascii=True).replace("<", "\\u003c")
+    histogram_script = """
+    if (options.dnascapeHistogramGuides?.selectable) {
+    let histogramMenu = null;
+    const histogramGuide = options.dnascapeHistogramGuides;
+    function closeHistogramMenu() {
+      histogramMenu?.remove(); histogramMenu = null;
+    }
+    function selectHistogramDataset(index) {
+      if (!histogramGuide?.selectable || !histogramGuide.choices[index]) return;
+      histogramGuide.selected = index;
+      options.graphic = (options.graphic || []).filter(g => g.id !== 'dn-histogram-guide');
+      if (histogramGuide.visible) options.graphic.push(histogramGuide.choices[index].graphic);
+      chart.setOption({graphic: options.graphic});
+      closeHistogramMenu();
+    }
+    window.dnascapeHistogramMenu = event => {
+      if (!histogramGuide?.selectable) return;
+      closeHistogramMenu();
+      const native = event?.event?.event || event?.event || event || {};
+      const bounds = chart.getDom().getBoundingClientRect();
+      const menu = document.createElement('div');
+      menu.className = 'histogram-menu'; menu.setAttribute('role', 'listbox');
+      menu.style.left = Math.max(8, Math.min(innerWidth - 248, native.clientX ?? bounds.right - 240)) + 'px';
+      menu.style.top = Math.max(8, Math.min(innerHeight - histogramGuide.choices.length * 30 - 16,
+                                          native.clientY ?? bounds.top + 16)) + 'px';
+      histogramGuide.choices.forEach((choice, index) => {
+        const button = document.createElement('button');
+        button.type = 'button'; button.textContent = choice.name;
+        button.setAttribute('role', 'option');
+        button.setAttribute('aria-selected', index === histogramGuide.selected ? 'true' : 'false');
+        button.addEventListener('click', () => selectHistogramDataset(index));
+        menu.appendChild(button);
+      });
+      document.body.appendChild(menu); histogramMenu = menu;
+    };
+    chart.on('click', event => {
+      const index = options.series?.[event.seriesIndex]?.dnascapeDataset;
+      if (Number.isInteger(index)) selectHistogramDataset(index);
+    });
+    document.addEventListener('pointerdown', event => {
+      if (!event.target.closest?.('.histogram-menu')) closeHistogramMenu();
+    });
+    document.addEventListener('keydown', event => {
+      if (event.key === 'Escape') closeHistogramMenu();
+    });
+    }
+    """
     html = f'''<!doctype html>
 <html lang="en">
 <head>
@@ -148,11 +206,17 @@ def write_plot_html(
     #chart {{ width: 100%; {chart_size} }}
     .exports {{ display: flex; gap: 8px; margin-top: 12px; }}
     button {{ padding: 6px 12px; cursor: pointer; }}
+    .histogram-menu {{ position: fixed; z-index: 100000; min-width: 150px; max-width: 240px;
+      max-height: 60vh; overflow: auto; padding: 4px; border: 1px solid #ddd7d1;
+      border-radius: 5px; background: white; box-shadow: 0 3px 12px #0002; }}
+    .histogram-menu button {{ display: block; width: 100%; text-align: left; border: 0;
+      background: transparent; color: #625c57; font: 11px sans-serif; padding: 8px; }}
+    .histogram-menu button:hover, .histogram-menu button[aria-selected="true"] {{ background: #f5efeb; }}
   </style>
 </head>
 <body>
   <h1>{safe_title}</h1>
-  <div id="chart"></div>
+  <div id="chart"{navigation_class}></div>
   <div class="exports">
     <button id="download-png" type="button">Download PNG</button>
     <button id="download-svg" type="button">Download SVG</button>
@@ -175,6 +239,8 @@ def write_plot_html(
     const chart = echarts.init(document.getElementById('chart'), null, {{renderer: 'canvas'}});
     const options = chartOptions(specification);
     chart.setOption(options);
+    {navigation_bootstrap}
+    {histogram_script}
     window.addEventListener('resize', () => chart.resize());
     function downloadImage(url, extension) {{
       const link = document.createElement('a');
@@ -196,12 +262,18 @@ def write_plot_html(
       surface.style.height = chart.getHeight() + 'px';
       document.body.appendChild(surface);
       const vector = echarts.init(surface, null, {{renderer: 'svg'}});
-      vector.setOption(options);
+      const snapshot = chart.getOption();
+      // ECharts flattens transient hover graphics into internal parent ids.
+      // Replay the clean annotations with the current viewport and series.
+      snapshot.graphic = options.graphic;
+      vector.setOption(snapshot);
+      if (window.dnascapeClipCircularFrame?.(vector)) vector.getZr?.().refreshImmediately();
       downloadImage(vector.getDataURL({{type: 'svg', backgroundColor: '#fff'}}), 'svg');
       vector.dispose();
       surface.remove();
     }});
   </script>
+  {navigation_script}
 </body>
 </html>
 '''

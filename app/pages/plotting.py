@@ -15,6 +15,7 @@ from nicegui import run, ui
 
 from app.export_settings import get_export_settings
 from app.data_filter_controls import DataFilterControls
+from app.data_transform_controls import DataTransformControls
 from app.icons import PLOT_ICON_SVG
 from app.mapping_uploads import UploadInspection, inspect_upload_event, materialize_upload
 from app.notifications import notify
@@ -62,8 +63,9 @@ from dnascape.workflows.analysis import (
     CORRELATION_METHODS, AnalysisDataset, AnalysisReport, SmoothingSettings,
     analyse_profiles, export_correlation_report, export_profile_data, smooth_profile,
 )
-from dnascape.workflows.filtering import DataFilterSettings, apply_data_filter, profile_coordinates, resolve_filter
+from dnascape.workflows.filtering import DataFilterSettings
 from dnascape.workflows.exports import safe_export_filename
+from dnascape.workflows.analysis_transforms import analysis_values, transform_profiles, analysis_mask_artifact, profile_key
 
 _PROFILE_ACCEPT = ".csv,.tsv,.txt,.npy,.npv,.npz,.gz"
 _DEPENDENCE_LABELS = {
@@ -101,6 +103,10 @@ class _PlotSeries:
     values: np.ndarray
     full_identity: str = ""
     transformed: bool = False
+    mask: np.ndarray | None = field(default=None, repr=False, compare=False)
+    analysis_on_mask_only: bool = False
+    source: UploadInspection | None = field(default=None, repr=False, compare=False)
+    warnings: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -108,6 +114,7 @@ class _TransformationSettings:
     data_filter: DataFilterSettings
     target: tuple[int, str] | None = None
     keep_originals: bool = False
+    analysis_on_mask_only: bool = False
 
 
 @dataclass
@@ -155,7 +162,7 @@ _SEPARATE_SETTING_VALUE_FIELDS = (
     "line_width",
     "line_type",
     "show_fill", "fill_side",
-    "aspect_ratio",
+    "aspect_ratio", "circular_combine", "circular_track_height", "circular_inner_radius",
     "histogram_bins",
     "histogram_bin_size",
     "histogram_touching",
@@ -448,37 +455,31 @@ def _prepare_analysis_profiles(
     methods: Sequence[str] | None,
     cancel: Callable[[], None],
     transformations: _TransformationSettings | None = None,
+    data_transformations: dict | None = None,
 ) -> tuple[tuple[_PlotSeries, ...], AnalysisReport | None]:
     cancel()
-    transform_enabled = transformations is not None and transformations.data_filter.enabled
+    transform_enabled = (transformations is not None and transformations.data_filter.enabled) or bool(data_transformations and data_transformations.get("enabled"))
     selected = _collect_plot_series(sources, missing_policy="ignore" if methods is not None or transform_enabled else "error")
-    data_filter = resolve_filter(transformations.data_filter) if transform_enabled else None
-    if transform_enabled and transformations.target is not None and not any(item.series_id == transformations.target for item in selected):
-        raise ValueError("Choose an available dataset to transform.")
-    processed = []
+    records = []
     for item in selected:
         cancel()
-        values = smooth_profile(item.values, smoothing.get(item.series_id, SmoothingSettings()), dependence=item.form)
-        item = replace(item, values=values)
-        if data_filter is None or not data_filter.enabled or (transformations.target is not None and item.series_id != transformations.target):
-            processed.append(item)
-            continue
         source = next(source for source in sources if source.source_id == item.series_id[0])
-        length = values.size if item.form != "xt" else values.shape[0]
-        coordinates, intervals = profile_coordinates(source.inspection, length)
-        transformed = apply_data_filter(values, data_filter, positions=coordinates, intervals=intervals, cancel=cancel)
-        if transformations.keep_originals:
-            processed.append(item)
-        processed.append(replace(
-            item, values=transformed, transformed=True,
-            series_id=(-item.series_id[0], item.series_id[1]) if transformations.keep_originals else item.series_id,
-            name=f"{item.name} (transformed)" if transformations.keep_originals else item.name,
-        ))
+        records.append(dict(id=item.series_id, name=item.name, form=item.form, full_identity=item.full_identity,
+                            values=smooth_profile(item.values, smoothing.get(item.series_id, SmoothingSettings()), dependence=item.form),
+                            source=source.inspection))
+    region = (dict(settings=transformations.data_filter, target=transformations.target,
+                   keep_originals=transformations.keep_originals, analysis_on_mask_only=transformations.analysis_on_mask_only)
+              if transformations is not None else None)
+    records = transform_profiles(records, data_transforms=data_transformations, region_transforms=region, cancel=cancel)
+    processed = [_PlotSeries(series_id=item["id"], name=item["name"], form=item["form"], values=item["values"],
+                             full_identity=item.get("full_identity", ""), transformed=item.get("transformed", False),
+                             mask=item.get("mask"), analysis_on_mask_only=item.get("analysis_on_mask_only", False), source=item["source"], warnings=item.get("warnings", ()))
+                 for item in records]
     processed = _unique_series_names(processed)
     report = None
     if methods is not None:
         report = analyse_profiles(
-            [AnalysisDataset(item.name, item.values, item.form) for item in processed],
+            [AnalysisDataset(item.name, analysis_values(vars(item)), item.form) for item in processed],
             methods=methods, cancel=cancel,
         )
     cancel()
@@ -580,8 +581,10 @@ def render(_navigate: Callable[[str], None]) -> None:
     running = False
     active_cancel: Event | None = None
     latest_analysis: AnalysisReport | None = None
-    smoothing_settings: dict[tuple[int, str], SmoothingSettings] = {}
     smoothing_controls: list[Any] = []
+    value_transform_settings: dict[str, dict[str, Any]] = {}
+    data_transformation_context: dict[str, Any] = {}
+    data_transformation_controls = None
     report_file_format = {"value": "csv"}
     report_name = {"value": "analysis-report"}
     transformation_context: dict[str, Any] = {}
@@ -589,6 +592,7 @@ def render(_navigate: Callable[[str], None]) -> None:
     transformations_locked = False
     transformed_export_preferences: dict[tuple[int, str], dict[str, Any]] = {}
     statistics_export_preferences: dict[Any, StatisticsExportPreference] = {}
+    mask_export_preferences: dict[str, dict] = {}
 
     page_intro(
         "Analysis",
@@ -829,76 +833,104 @@ def render(_navigate: Callable[[str], None]) -> None:
                             control.disable()
                         show_p_values = ui.checkbox("Show p-values", value=False).mark("analysis-show-p-values")
 
-                        @ui.refreshable
-                        def render_smoothing_controls() -> None:
-                            smoothing_controls.clear()
-                            profiles = _unique_series_names([
-                                item for source in sources
-                                for item in _materialize_source(source, missing_policy="ignore")
-                            ])
-                            if not profiles:
-                                return
-                            ui.label("Smoothing").classes("dn-setting-group-title")
-                            with ui.column().classes("dn-analysis-smoothing-list w-full"):
-                                for index, item in enumerate(profiles, start=1):
-                                    settings = smoothing_settings.setdefault(item.series_id, SmoothingSettings())
-                                    with ui.column().classes("dn-analysis-smoothing-row w-full"):
-                                        ui.label(curve_names.get(item.series_id, item.name)).classes("dn-analysis-dataset-name").tooltip(item.full_identity)
-                                        with ui.element("div").classes("dn-analysis-smoothing-fields"):
-                                            method = (
-                                                ui.select({"none": "Off", "moving_average": "Moving average", "gaussian": "Gaussian"},
-                                                          value=settings.method, label="Smoothing")
-                                                .props("dense options-dense").classes("dn-field")
-                                                .mark(f"analysis-smoothing-method-{index}")
-                                            )
-                                            window = (
-                                                ui.number("Window (points)", value=settings.window, min=1, max=100001, step=2)
-                                                .props("dense").classes("dn-field")
-                                                .mark(f"analysis-smoothing-window-{index}")
-                                            )
-                                            sigma = (
-                                                ui.number("Sigma (points)", value=settings.sigma, min=0.01, max=10000, step=0.1)
-                                                .props("dense").classes("dn-field")
-                                                .mark(f"analysis-smoothing-sigma-{index}")
-                                            )
-                                        window.visible = settings.method == "moving_average"
-                                        sigma.visible = settings.method == "gaussian"
-                                        for control in (method, window, sigma):
-                                            control.set_enabled(not running)
-                                            smoothing_controls.append(control)
+                def data_transform_sources():
+                    profiles = _unique_series_names([
+                        item for source in sources for item in _materialize_source(source, missing_policy="ignore")
+                    ])
+                    target = data_transformation_context["target"].value if "target" in data_transformation_context else "all"
+                    return [item for item in profiles if target == "all" or profile_key(item.series_id) == target]
 
-                                        def smoothing_changed(
-                                            _event: Any = None, *, series_id=item.series_id,
-                                            method_control=method, window_control=window, sigma_control=sigma,
-                                        ) -> None:
-                                            smoothing_settings[series_id] = SmoothingSettings(
-                                                str(method_control.value), window_control.value, sigma_control.value,
-                                            )
-                                            window_control.set_visibility(method_control.value == "moving_average")
-                                            sigma_control.set_visibility(method_control.value == "gaussian")
-                                            invalidate_analysis_report()
+                value_controls = ui.column().classes("w-full")
+                with value_controls:
+                    @ui.refreshable
+                    def render_smoothing_controls() -> None:
+                        smoothing_controls.clear()
+                        profiles = data_transform_sources()
+                        combining = bool(data_transformation_controls and data_transformation_controls.combine.value and len(profiles) > 1)
+                        if profiles and "pending" in value_transform_settings:
+                            value_transform_settings.setdefault(profile_key(profiles[0].series_id), value_transform_settings.pop("pending"))
+                        rows = [("combined", "Combined")] if combining else [(profile_key(item.series_id), item.name) for item in profiles]
+                        for index, (key, name) in enumerate(rows or [("pending", "Dataset")], 1):
+                            settings = value_transform_settings.setdefault(key, {})
+                            smoothing = settings.get("smoothing", SmoothingSettings())
+                            with ui.column().classes("dn-analysis-smoothing-row w-full"):
+                                if len(rows) > 1:
+                                    ui.label(f"Dataset {index}").classes("dn-upload-formats")
+                                with ui.element("div").classes("dn-data-manager-polishing-grid dn-data-manager-transform-grid"):
+                                    with ui.column().classes("dn-data-manager-polishing-column"):
+                                        method = ui.select({"none": "Off", "moving_average": "Moving average", "gaussian": "Gaussian"},
+                                            value=smoothing.method, label="Smoothing").props("dense options-dense").classes("dn-field").mark(f"analysis-smoothing-method-{index}")
+                                        window = ui.number("Window (bins)", value=smoothing.window, min=1, max=100001, step=1).props("dense").classes("dn-field").mark(f"analysis-smoothing-window-{index}")
+                                        sigma = ui.number("Sigma (bins)", value=smoothing.sigma, min=.01, max=10000, step=.1).props("dense").classes("dn-field").mark(f"analysis-smoothing-sigma-{index}")
+                                    with ui.column().classes("dn-data-manager-polishing-column"):
+                                        scaling = ui.select({"none": "None", "interval": "Target interval", "multiplier": "Multiplier", "center": "Centre at zero", "zscore": "Z-score", "maxabs": "Maximum absolute value"},
+                                            value=settings.get("scaling", "none"), label="Value scaling").props("dense options-dense").classes("dn-field").mark(f"analysis-value-scaling-{index}")
+                                        multiplier = ui.number("Multiplier", value=settings.get("multiplier", 1.)).props("dense").classes("dn-field").mark(f"analysis-scale-multiplier-{index}")
+                                        with ui.element("div").classes("dn-data-manager-range-grid") as interval:
+                                            minimum = ui.number("Minimum", value=settings.get("minimum", 0.)).props("dense").classes("dn-field").mark(f"analysis-target-minimum-{index}")
+                                            maximum = ui.number("Maximum", value=settings.get("maximum", 1.)).props("dense").classes("dn-field").mark(f"analysis-target-maximum-{index}")
+                                    invert = ui.checkbox("Invert", value=settings.get("invert", False)).classes("dn-data-manager-inline-toggle").mark(f"analysis-invert-{index}")
+                                window.set_visibility(smoothing.method == "moving_average")
+                                sigma.set_visibility(smoothing.method == "gaussian")
+                                multiplier.set_visibility(scaling.value == "multiplier")
+                                interval.set_visibility(scaling.value == "interval")
+                                controls = (method, window, sigma, scaling, multiplier, minimum, maximum, invert)
+                                smoothing_controls.extend(controls)
+                                for control in controls:
+                                    control.set_enabled(not running)
 
-                                        for control in (method, window, sigma):
-                                            control.on_value_change(smoothing_changed)
+                                def changed(_event=None, *, key=key, method=method, window=window, sigma=sigma,
+                                            scaling=scaling, multiplier=multiplier, minimum=minimum, maximum=maximum, invert=invert, interval=interval):
+                                    value_transform_settings[key] = dict(smoothing=SmoothingSettings(method.value, window.value, sigma.value),
+                                        scaling=scaling.value, multiplier=multiplier.value, minimum=minimum.value, maximum=maximum.value, invert=bool(invert.value))
+                                    window.set_visibility(method.value == "moving_average")
+                                    sigma.set_visibility(method.value == "gaussian")
+                                    multiplier.set_visibility(scaling.value == "multiplier")
+                                    interval.set_visibility(scaling.value == "interval")
+                                    invalidate_analysis_report()
+                                for control in controls:
+                                    control.on_value_change(changed)
+                    render_smoothing_controls()
 
-                        render_smoothing_controls()
+                def data_transform_header():
+                    data_transformation_context["target"] = ui.select({"all": "All datasets"}, value="all", label="Dataset").props("dense options-dense").classes("dn-field").mark("analysis-data-transform-target")
+
+                def data_transform_changed():
+                    invalidate_analysis_report()
+                    render_smoothing_controls.refresh()
+                    sync_transformation_targets(refresh_data=False)
+                    sync_presentation_options()
+
+                data_transformation_controls = DataTransformControls(
+                    lambda: [(item.series_id, item.name) for item in data_transform_sources()],
+                    value_controls=value_controls, marker_prefix="analysis-data-transform", source_label="Dataset",
+                    header=data_transform_header, on_change=data_transform_changed,
+                )
+
+                def data_target_changed():
+                    data_transformation_controls.refresh()
+                    data_transform_changed()
+                data_transformation_context["target"].on_value_change(data_target_changed)
 
                 def transformation_header() -> None:
                     transformation_context["target"] = ui.select(
-                        {"all": "All selected profiles"}, value="all", label="Dataset",
+                        {"all": "All datasets"}, value="all", label="Dataset",
                     ).props("dense options-dense").classes("dn-field").mark("analysis-transform-target")
                     transformation_context["keep_originals"] = ui.checkbox(
                         "Keep original profiles", value=False,
                     ).mark("analysis-transform-keep-originals")
 
+                def transformation_switches():
+                    transformation_context["analysis_on_mask_only"] = ui.switch("Analysis on mask only", value=False).mark("analysis-transform-mask-only")
+
                 transformation_controls = DataFilterControls(
                     lambda: (invalidate_analysis_report(), sync_presentation_options()),
-                    title="Data transformations", marker_prefix="analysis-transform",
-                    toggle_label="Apply transformations", default_selection="nan", default_action="interpolate",
-                    header=transformation_header,
+                    marker_prefix="analysis-transform", header=transformation_header,
+                    switches_footer=transformation_switches, allow_export=True, allow_complement=True,
+                    profile_units="bp", align_modulation_from_start=True,
                 )
 
-                with action_dock():
+                with action_dock(on_code=lambda: download_plotting_code()):
                     plot_button = plot_action_button()
                     plot_button.mark("action-plot", "action-analyse")
                     action_label = next(child for child in plot_button.default_slot.children if "dn-action-label" in child._classes)
@@ -1128,6 +1160,34 @@ def render(_navigate: Callable[[str], None]) -> None:
                             )
                             for control, key in ((row.file_name, "name"), (row.file_type, "type"), (row.compress, "compress")):
                                 control.on_value_change(lambda event, key=key, prefs=preferences: prefs.update({key: event.value}))
+                        masks = [item for item in transformed if item.mask is not None] if transformation_controls.controls["enabled"].value and transformation_controls.controls["export"].value else []
+                        for index, item in enumerate(masks, 1):
+                            key = profile_key(item.series_id)
+                            prefs = mask_export_preferences.setdefault(key, dict(filename=compact_export_stem(item.name, fallback="profile") + "_mask_positions",
+                                file_format="TSV", compress=False, layout="positions"))
+                            with ui.column().classes("w-full dn-filter-export-row").mark(f"analysis-mask-result-{index}"):
+                                ui.label("Mask positions").classes("dn-setting-group-title")
+                                async def download_mask(controls, retained=item, preference=prefs, *, open_in=None):
+                                    try:
+                                        artifact = await run.io_bound(analysis_mask_artifact, vars(retained), **preference)
+                                        if open_in is not None:
+                                            await open_raw_artifact(artifact, open_in, _navigate, preferred_input="filter_positions")
+                                        else:
+                                            ui.download(artifact.data, artifact.filename, artifact.media_type)
+                                    except (OSError, RuntimeError, TypeError, ValueError) as exc:
+                                        notify(str(exc), type="negative")
+                                row = raw_output_file_row(file_name=prefs["filename"], default_type=prefs["file_format"], default_compress=prefs["compress"],
+                                    reserve_remove_space=True, on_download=download_mask,
+                                    on_open=lambda controls, destination, handler=download_mask: handler(controls, open_in=destination),
+                                    markers={"row": f"analysis-mask-row-{index}", "file_name": f"analysis-mask-name-{index}", "file_type": f"analysis-mask-type-{index}",
+                                             "compression": f"analysis-mask-compress-{index}", "download": f"analysis-mask-download-{index}"})
+                                fields = row.file_type.parent_slot.parent
+                                fields.classes(add="dn-filter-export-fields")
+                                with fields:
+                                    layout = ui.select({"positions": "Positions", "intervals": "Intervals"}, value=prefs["layout"], label="Export as").props("dense options-dense").classes("dn-field").mark(f"analysis-mask-layout-{index}")
+                                layout.move(fields, target_index=1)
+                                for control, name in ((row.file_name, "filename"), (row.file_type, "file_format"), (row.compress, "compress"), (layout, "layout")):
+                                    control.on_value_change(lambda event, name=name, prefs=prefs: prefs.update({name: event.value}))
                         HistogramStatisticsExport(
                             plot_settings,
                             get_chart=lambda: result_charts[0] if latest_series and result_charts and presentation.value == "Combined" else None,
@@ -1277,8 +1337,9 @@ def render(_navigate: Callable[[str], None]) -> None:
             control.set_enabled(not running)
         if transformations_locked != running:
             transformation_controls.set_locked(running)
+            data_transformation_controls.set_locked(running)
             transformations_locked = running
-        for control in transformation_context.values():
+        for control in (*transformation_context.values(), *data_transformation_context.values()):
             control.set_enabled(not running)
         if not running and transformation_controls.loading:
             plot_button.disable()
@@ -1452,18 +1513,38 @@ def render(_navigate: Callable[[str], None]) -> None:
         render_smoothing_controls.refresh()
         sync_transformation_targets()
 
-    def sync_transformation_targets() -> None:
+    def sync_transformation_targets(*, refresh_data=True) -> None:
         profiles = _unique_series_names([
             item for source in sources for item in _materialize_source(source, missing_policy="ignore")
         ])
+        data_options = {"all": "All datasets", **{profile_key(item.series_id): item.name for item in profiles}}
+        data_target = data_transformation_context["target"]
+        data_target.set_options(data_options, value=data_target.value if data_target.value in data_options else "all")
+        if refresh_data:
+            data_transformation_controls.refresh()
+            render_smoothing_controls.refresh()
+        if data_transformation_controls.combining and profiles:
+            profiles = [replace(profiles[0], series_id=(profiles[0].series_id[0], "__combined__"), name="Combined")]
         transformation_targets.clear()
-        options = {"all": "All selected profiles"}
+        options = {"all": "All datasets"}
         for item in profiles:
-            key = f"{item.series_id[0]}:{item.series_id[1]}"
+            key = profile_key(item.series_id)
             transformation_targets[key] = item.series_id
             options[key] = item.name
         target = transformation_context["target"]
-        target.set_options(options, value=target.value if target.value in options else None)
+        target.set_options(options, value=target.value if target.value in options else "all")
+
+    def data_transform_snapshot():
+        target = data_transformation_context["target"].value
+        profiles = data_transform_sources()
+        if target != "all" and not profiles:
+            raise ValueError("Choose an available dataset to transform.")
+        return dict(enabled=bool(data_transformation_controls.enabled.value),
+                    target=profiles[0].series_id if target != "all" and profiles else None,
+                    combine=bool(data_transformation_controls.combining),
+                    formulas={profile_key(item.series_id): data_transformation_controls.formulas.get(item.series_id, "source") for item in profiles},
+                    combined_formula=data_transformation_controls.combined_formula,
+                    values={key: dict(value) for key, value in value_transform_settings.items()})
 
     def dual_y_axes_active(group: Sequence[_PlotSeries], controls: Any = None) -> bool:
         active_controls = plot_settings if controls is None else controls
@@ -1604,12 +1685,16 @@ def render(_navigate: Callable[[str], None]) -> None:
         *,
         controls: Any = None,
         use_curve_styles: bool = True,
+        capture_arguments: bool = False,
     ) -> dict[str, Any]:
         active_controls = plot_settings if controls is None else controls
         first = next(iter(group), None)
         if first is None:
             raise ValueError("Upload and select at least one profile.")
         plot_type = group_plot_type(group, active_controls)
+        if plot_type in {"Histogram", "Boxplot"}:
+            group = tuple(replace(item, values=analysis_values(vars(item))) for item in group)
+            first = group[0]
         profile = np.asarray(first.values)
         values: Any = profile
         x_axis: Any = None
@@ -1627,16 +1712,16 @@ def render(_navigate: Callable[[str], None]) -> None:
                     x=np.arange(item.values.size, dtype=float),
                     y=np.asarray(item.values, dtype=float).reshape(-1),
                     color=(
-                        curve_styles[item.series_id].color
+                        curve_styles.get(item.series_id, _CurveStyle(_LINE_COLOURS[index % len(_LINE_COLOURS)])).color
                         if individual_styles
                         else str(active_controls.primary_color.value or _LINE_COLOURS[0])
                     ),
                     width=(
-                        curve_styles[item.series_id].width
+                        curve_styles.get(item.series_id, _CurveStyle(_LINE_COLOURS[index % len(_LINE_COLOURS)])).width
                         if individual_styles
                         else _numeric_value(active_controls.line_width, "Thickness")
                     ),
-                    line_type=curve_styles[item.series_id].line_type if individual_styles else None,
+                    line_type=curve_styles.get(item.series_id, _CurveStyle(_LINE_COLOURS[index % len(_LINE_COLOURS)])).line_type if individual_styles else None,
                     opacity=histogram_opacities.get(item.series_id, .6) if plot_type == "Histogram" else 1.0,
                     box_position=box_positions.get(item.series_id),
                     box_label=box_labels.get(item.series_id) or None,
@@ -1651,7 +1736,7 @@ def render(_navigate: Callable[[str], None]) -> None:
         x_label = str(active_controls.x_axis_label.value or "")
         y_label = str(active_controls.y_axis_label.value or "")
 
-        return build_preview_plot_options(
+        arguments = dict(
             plot_type=plot_type,
             title=str(active_controls.title.value or ""),
             x_label=x_label,
@@ -1720,6 +1805,7 @@ def render(_navigate: Callable[[str], None]) -> None:
             show_grid=bool(active_controls.show_grid.value),
             interactive=True,
         )
+        return arguments if capture_arguments else build_preview_plot_options(**arguments)
 
     def sync_separate_controls(
         context: _SeparatePlotContext,
@@ -2159,6 +2245,94 @@ def render(_navigate: Callable[[str], None]) -> None:
         except (RuntimeError, TypeError) as exc:
             notify(str(exc), type="negative")
 
+    async def download_plotting_code() -> None:
+        from dataclasses import fields
+        from app.code_export import CodeInputs, CodeSnapshot, build_python, filter_code_settings
+
+        if running or transformation_controls.loading:
+            notify("Wait for the data operation to finish before exporting code.", type="warning")
+            return
+        try:
+            selected = _collect_plot_series(sources, missing_policy="ignore")
+            inputs = CodeInputs()
+            profiles = []
+            for item in selected:
+                source = next(source for source in sources if source.source_id == item.series_id[0])
+                token = item.series_id[1]
+                profiles.append(dict(
+                    id=list(item.series_id), name=item.name, form=item.form,
+                    source=inputs.encode(source.inspection),
+                    column=token if not source.inspection.array_keys and token not in {_NATURAL_SELECTION, _MATRIX_SELECTION} else None,
+                    array_key=token if source.inspection.array_keys else None,
+                    smoothing=inputs.encode(SmoothingSettings()),
+                ))
+            target = transformation_context["target"].value
+            if transformation_controls.controls["enabled"].value and target != "all" and target not in transformation_targets:
+                raise ValueError("Choose an available dataset to transform.")
+            transform = dict(settings=inputs.encode(filter_code_settings(transformation_controls)),
+                             target=transformation_targets.get(target),
+                             keep_originals=bool(transformation_context["keep_originals"].value),
+                             analysis_on_mask_only=bool(transformation_context["analysis_on_mask_only"].value))
+            data_transform = data_transform_snapshot()
+            # Describe output identities without running formulas or analysis.
+            preview_series = list(selected)
+            if data_transform["enabled"]:
+                if data_transform["combine"] and len(preview_series) > 1:
+                    preview_series = [replace(preview_series[0], series_id=(preview_series[0].series_id[0], "__combined__"), name="Combined", transformed=True)]
+                else:
+                    preview_series = [replace(item, transformed=True) if data_transform["target"] is None or item.series_id == data_transform["target"] else item for item in preview_series]
+            region_series = []
+            for item in preview_series:
+                transforming = transformation_controls.controls["enabled"].value and (target == "all" or item.series_id == transformation_targets.get(target))
+                if not transforming or transform["keep_originals"]:
+                    region_series.append(item)
+                if transforming:
+                    region_series.append(replace(item, series_id=(-item.series_id[0], item.series_id[1]) if transform["keep_originals"] else item.series_id,
+                        name=item.name + " (transformed)" if transform["keep_originals"] else item.name, transformed=True))
+            preview_series = region_series
+            groups = _plot_groups(_unique_series_names(preview_series), str(presentation.value or "Combined"))
+            plots = []
+            for index, group in enumerate(groups, 1):
+                separate = presentation.value == "Separate"
+                context = next((context for context in separate_plot_contexts
+                                if context.group[0].series_id == group[0].series_id), None) if separate else None
+                active = context.controls if context is not None else plot_settings
+                arguments = plot_options(group, controls=active, use_curve_styles=not separate, capture_arguments=True)
+                curves = [{field.name: getattr(line, field.name) for field in fields(line) if field.name not in {"x", "y"}}
+                          for line in arguments.get("lines", ())]
+                for key in ("lines", "values", "x_axis", "y_axis"):
+                    arguments.pop(key, None)
+                style = {key: getattr(active, key).value for key in (
+                    "view", "show_fill", "fill_side", "reverse_order", "circular_combine", "circular_inner_radius",
+                    "circular_track_height", "z_axis_label", "show_hover")}
+                style["histogram_dataset"] = active._histogram_dataset
+                style["theme_color"] = get_export_settings().theme_color
+                specification = dict(profiles=[list(item.series_id) for item in group],
+                    arguments=arguments, curves=curves, presentation=style, filename=f"plot_{index}")
+                if active.export_histogram_statistics.value and arguments["plot_type"] == "Histogram":
+                    exporter = active._statistics_export
+                    preference = exporter.preference if exporter is not None else StatisticsExportPreference(f"plot_{index}_statistics")
+                    specification["statistics"] = dict(filename=preference.file_name,
+                        file_format=preference.file_type, compression=get_export_settings().raw_compression if preference.compress else "none")
+                plots.append(specification)
+            snapshot = CodeSnapshot("plotting", dict(
+                profiles=profiles, transformations=transform, data_transforms=inputs.encode(data_transform),
+                mask_exports={profile_key(item.series_id): mask_export_preferences.get(profile_key(item.series_id),
+                    dict(filename=compact_export_stem(item.name, fallback="profile") + "_mask_positions", file_format="TSV", compress=False, layout="positions"))
+                    for item in preview_series if item.transformed and (target == "all" or (abs(item.series_id[0]), item.series_id[1]) == transformation_targets.get(target))}
+                    if transformation_controls.controls["enabled"].value and transformation_controls.controls["export"].value else {},
+                methods=[method for method, control in correlation_controls.items() if control.value] if analysis_enabled.value else None,
+                report=dict(filename=report_name["value"], file_format=report_file_format["value"], include_p_values=bool(show_p_values.value)),
+                report_names={f"{key[0]}:{key[1]}": name for key, name in curve_names.items()},
+                data_exports={f"{key[0]}:{key[1]}": value for key, value in transformed_export_preferences.items()},
+                plots=plots, plot_dpi=get_export_settings().plot_dpi,
+                preview_points=get_export_settings().preview_points,
+            ), tuple(inputs.files.items()))
+            artifact = await run.io_bound(build_python, snapshot)
+            ui.download(artifact.data, artifact.filename, artifact.media_type)
+        except (OSError, RuntimeError, TypeError, ValueError) as exc:
+            notify(str(exc), type="negative")
+
     async def plot_profiles() -> None:
         nonlocal latest_series, latest_analysis, running, active_cancel
         if running:
@@ -2181,7 +2355,7 @@ def render(_navigate: Callable[[str], None]) -> None:
         try:
             preparation_arguments = (
                 tuple(replace(source, selection=tuple(source.selection), array_cache=dict(source.array_cache)) for source in sources),
-                dict(smoothing_settings) if analysis_enabled.value else {},
+                {},
                 tuple(method for method, control in correlation_controls.items() if control.value) if analysis_enabled.value else None,
                 check_cancelled,
             )
@@ -2192,7 +2366,12 @@ def render(_navigate: Callable[[str], None]) -> None:
                 preparation_arguments += (_TransformationSettings(
                     transformation_controls.snapshot(), transformation_targets.get(target),
                     bool(transformation_context["keep_originals"].value),
+                    bool(transformation_context["analysis_on_mask_only"].value),
                 ),)
+            if data_transformation_controls.enabled.value:
+                if len(preparation_arguments) == 4:
+                    preparation_arguments += (None,)
+                preparation_arguments += (data_transform_snapshot(),)
             result = await run.io_bound(_prepare_analysis_profiles, *preparation_arguments)
             check_cancelled()
             if result is None:
@@ -2203,6 +2382,8 @@ def render(_navigate: Callable[[str], None]) -> None:
                 raise RuntimeError("Plot preparation returned no profiles.")
             latest_series = selected
             latest_analysis = report
+            for warning in dict.fromkeys(warning for item in selected for warning in item.warnings):
+                notify(warning, type="warning")
             multiple = len(selected) > 1
             previous_styles = dict(curve_styles)
             if not multiple and first.form in {"x", "t"}:
@@ -2380,6 +2561,8 @@ def render(_navigate: Callable[[str], None]) -> None:
     for control in (*transformation_controls.controls.values(), *transformation_context.values()):
         if hasattr(control, "on_value_change"):
             control.on_value_change(invalidate_analysis_report)
+    transformation_controls.controls["export"].on_value_change(lambda: render_transformed_data.refresh())
+    transformation_controls.controls["enabled"].on_value_change(lambda: render_transformed_data.refresh())
     presentation.on_value_change(presentation_changed)
     plot_button.on_click(plot_profiles)
     sync_presentation_options()
@@ -2418,5 +2601,8 @@ def render(_navigate: Callable[[str], None]) -> None:
         await append_raw_uploads(lambda: profile_uploader, files)
 
     current_session_cache().register_input_targets(
-        "plotting", lambda: (RawInputTarget("profiles", "Data", receive_raw_files),),
+        "plotting", lambda: (
+            RawInputTarget("profiles", "Data", receive_raw_files),
+            RawInputTarget("filter_positions", "Region transforms", transformation_controls.receive_mask, kind="mask"),
+        ),
     )

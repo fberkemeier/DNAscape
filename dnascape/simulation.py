@@ -1966,7 +1966,6 @@ _RSIM_INPUT_DESCRIPTIONS = {
         "simulated length."
     ),
     "ori_rate": "Compatibility alias for initiation_rate.",
-    "initiation_rate": "Compatibility alias for initiation_rate.",
     "geometry": "String geometry selector, usually linear or periodic.",
     "resolution": "Alias for resolution_space.",
     "source": (
@@ -2253,6 +2252,8 @@ def _rsim_input():
     """Return a table describing the inputs accepted by rsim."""
     records = []
     for name, parameter in inspect.signature(rsim).parameters.items():
+        if parameter.kind in {inspect.Parameter.VAR_KEYWORD, inspect.Parameter.VAR_POSITIONAL}:
+            continue
         records.append(
             {
                 "argument": name,

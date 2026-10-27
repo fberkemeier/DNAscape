@@ -63,7 +63,7 @@ def prepare_filter_request(request):
                       if {spec.key for spec in item.inputs} == keys
                       and all(request.input_forms.get(spec.key) in spec.forms for spec in item.inputs)]
         if not candidates:
-            raise ValueError('No compatible target is available for this regional filter and these inputs.')
+            raise ValueError('No compatible target is available for this region transform and these inputs.')
         route = max(candidates, key=lambda item: SequenceMatcher(None, request.route.method, item.method).ratio())
     shape = 'free' if route.target == 'initiation_rate' and dependence in {'time', 'spacetime'} else route.default_target_shape
     active = route.active_settings(shape, request.input_forms)
@@ -88,8 +88,8 @@ def prepare_filter_request(request):
 
 
 def compatible_filter_dependence(dependence, reference_form, selection):
-    spatial = selection == 'profile' or (selection != 'all' and reference_form in {'x', 'xt'})
-    temporal = selection not in {'profile', 'all'} and reference_form in {'t', 'xt'}
+    spatial = selection in {'profile', 'ranges'} or (selection != 'all' and reference_form in {'x', 'xt'})
+    temporal = selection not in {'profile', 'ranges', 'all'} and reference_form in {'t', 'xt'}
     if dependence == 'constant':
         return 'spacetime' if spatial and temporal else 'space' if spatial else 'time' if temporal else dependence
     if dependence == 'time' and spatial or dependence == 'space' and temporal:
@@ -192,10 +192,10 @@ class MappingFitConstraint:
                 invalid = ~np.isfinite(selected) | (selected < 0 if self.target == 'initiation_rate' else selected <= 0)
                 if invalid.any():
                     domain = 'finite, non-negative initiation rates' if self.target == 'initiation_rate' else 'finite, positive fork speeds'
-                    raise ValueError(f'The Mapping filter must produce {domain}. Choose a compatible transform.')
+                    raise ValueError(f'The Mapping region transform must produce {domain}. Choose a compatible transform.')
             self.frozen = transformed
         if canonical.shape != self.frozen.shape:
-            raise ValueError('The fitted grid changed after the Mapping filter was frozen.')
+            raise ValueError('The fitted grid changed after the region transform was frozen.')
         result = np.where(self.mask, self.frozen, canonical)
         result = result.reshape((raw.T if transposed else raw).shape)
         return result.T if transposed else result

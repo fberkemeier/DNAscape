@@ -59,7 +59,7 @@ include = ["dnascape", "dnascape.*"]
 exclude = ["dnascape.tests", "dnascape.tests.*"]
 
 [tool.setuptools.package-data]
-dnascape = ["_inverse_transport.c"]
+dnascape = ["_inverse_transport.c", "workflows/*.js"]
 
 [tool.pytest.ini_options]
 testpaths = ["dnascape/tests", "app/tests"]

@@ -23,7 +23,7 @@ class StatisticsExportPreference:
 
 
 class HistogramStatisticsExport:
-    """One supplemental file, with the same controls as an exported filter."""
+    """One supplemental file, with the same controls as an exported mask."""
 
     def __init__(
         self, settings: Any, *, get_chart: Callable[[], Any], filename: str,

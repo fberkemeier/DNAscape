@@ -90,8 +90,8 @@ def test_simulation_region_switches_both_filters_guides_and_exports(monkeypatch)
             np.testing.assert_allclose(requests[-1].fork_speed, [1., 1., 1.5, 2., 2.5, 3.])
             assert set(results[-1].filter_state.selections) == {'initiation_rate', 'fork_speed'}
             await user.should_not_see(marker='simulation-result-plot')
-            await user.should_see('Initiation-rate filter positions', retries=100)
-            await user.should_see('Fork-speed filter positions', retries=100)
+            await user.should_see('Initiation-rate mask positions', retries=100)
+            await user.should_see('Fork-speed mask positions', retries=100)
             for key in ('initiation-rate', 'fork-speed'):
                 assert any(not e.is_deleted and any(m.startswith(f'simulation-{key}-filter-') and m.endswith('-raw') for m in e._markers)
                            for e in user.client.elements.values())
@@ -102,12 +102,12 @@ def test_simulation_region_switches_both_filters_guides_and_exports(monkeypatch)
                 guide('fork_speed').set_value(True)
             await asyncio.sleep(.02)
             names = [series['name'] for series in control('simulation-result-plot').options['series']]
-            assert 'Initiation-rate filter' in names and 'Fork-speed filter' in names
+            assert 'Initiation-rate mask' in names and 'Fork-speed mask' in names
             with user.client:
                 guide('initiation_rate').set_value(False)
             await asyncio.sleep(.02)
             names = [series['name'] for series in control('simulation-result-plot').options['series']]
-            assert 'Initiation-rate filter' not in names and 'Fork-speed filter' in names
+            assert 'Initiation-rate mask' not in names and 'Fork-speed mask' in names
             await value('simulation-filter-relative-to', 'fork_speed')
             await simulate()
             assert set(results[-1].filter_state.selections) == {'fork_speed'}

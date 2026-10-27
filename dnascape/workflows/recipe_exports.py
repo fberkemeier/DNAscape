@@ -8,7 +8,7 @@ from typing import Any
 
 
 def _output_key(result: Any, selected: str) -> str:
-    if selected in {"", "primary"}:
+    if selected in {"", "primary", "all_plots"}:
         return result.primary_output
     # The Mapping preview exposes these aliases for fitting diagnostics.
     from .plotting import resolved_output_key
@@ -63,12 +63,32 @@ def save_mapping_outputs(
                 named.result, _output_key(named.result, selected),
                 str(settings.get("file_format", "TSV")), filename=filename,
                 compression=compression,
+                filter_layout=str(settings.get("filter_layout", "positions")),
             )
         path = folder / artifact.filename
         if path in paths:
             raise ValueError("Several Mapping outputs use the same filename.")
         path.write_bytes(artifact.data)
         paths.append(path)
+        if "filter_positions" in named.result.outputs and selected != "filter_positions":
+            options_filter = dict(options.get("filter_exports", {}).get(named.key, {}))
+            stem = named.export_stem if options.get("name_style") == "full" else (named.short_export_stem or named.export_stem)
+            filter_name = options_filter.get("filename") or f"rmap_{stem}_filter_positions"
+            artifact = build_mapping_raw_export(named.result, "filter_positions", options_filter.get("file_format", "TSV"),
+                filename=filter_name, filter_layout=options_filter.get("layout", "positions"),
+                compression=options_filter.get("compression", "gzip") if options_filter.get("compress") else "none")
+            from .code_recipes import write_artifact
+            write_artifact(artifact, folder, paths)
+    statistics = options.get("statistics")
+    if statistics and results:
+        from .code_recipes import save_recipe_statistics
+        from .mapping_exports import select_mapping_output
+        selected_results = results
+        if statistics.get("dataset_index") is not None:
+            selected_results = (results[min(max(0, int(statistics["dataset_index"])), len(results) - 1)],)
+        datasets = [(named.name, select_mapping_output(named.result, _output_key(named.result, str(options.get("output", "primary")))).values)
+                    for named in selected_results if not statistics.get("dataset") or named.key == statistics["dataset"]]
+        save_recipe_statistics(datasets, statistics, folder, paths)
     return tuple(paths)
 
 
