@@ -46,10 +46,10 @@ Start with ``examples/0-quickstart.ipynb``.
 NiceGUI Interface Prototype
 ---------------------------
 
-The interface requires Python 3.10 or newer. Python 3.13 is recommended for
-BigWig imports; the app installs its ``pybigtools`` reader on Python 3.10–3.13.
-Python 3.14 or newer can run the interface with tables, NumPy profiles, and
-bedGraph tracks, but BigWig imports need a separately installed compatible reader.
+The interface requires Python 3.10 or newer. BigWig support is installed
+automatically: ``pybigtools`` on Python 3.10–3.13, or ``figwig`` on Python 3.14
+and newer. Both readers support the same region, binning and aggregation controls
+for uploads and public links.
 
 .. code-block:: bash
 
@@ -81,7 +81,8 @@ Open ``docs/build/html/index.html``.
 Tracks
 ------
 
-BigWig import needs ``pyBigWig``:
+The app's BigWig reader is included in ``app/requirements.txt``. For direct use
+of the lower-level ``dnascape.io`` BigWig functions, install ``pyBigWig``:
 
 .. code-block:: bash
 

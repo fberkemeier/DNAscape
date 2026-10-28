@@ -415,10 +415,12 @@ From the repository root:
 The prototype requires Python 3.10 or newer (the scientific package itself
 continues to support its existing Python range).
 
-Python 3.13 is recommended for BigWig imports: the app installs `pybigtools`
-on Python 3.10–3.13. Python 3.14 or newer can run the app with tables, NumPy
-profiles, and bedGraph tracks; BigWig imports require a separately installed
-compatible reader. The discontinued `gwseq-io-pp` package is no longer an
+BigWig support is installed automatically: `pybigtools` on Python 3.10–3.13,
+or `figwig` on Python 3.14 and newer. The same region, resolution, aggregation
+and missing-value controls apply to both readers. Figwig reads bounded chunks
+and loads Numba only when a BigWig is opened; its first read compiles and caches
+the decoding kernels, so subsequent reads are faster. The discontinued
+`gwseq-io-pp` package remains an optional compatibility fallback, not an
 installation dependency.
 
 ```powershell

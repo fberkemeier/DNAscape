@@ -30,9 +30,9 @@ app = [
   "py7zr>=1,<2",
   # Preserve ECharts paths and text when converting SVG previews to PDF.
   "svglib>=1.5,<2",
-  # BigWig wheels are available through Python 3.13. Newer Python versions
-  # can run the app with tables, NumPy profiles, and bedGraph tracks.
-  "pybigtools>=0.3,<0.4; python_version < '3.14'",
+  # Select a BigWig reader with wheels for the active Python interpreter.
+  "pybigtools>=0.3,<0.4; python_version >= '3.10' and python_version < '3.14'",
+  "figwig>=0.2,<0.3; python_version >= '3.14'",
 ]
 test = [
   "pytest>=8",
@@ -43,7 +43,8 @@ test = [
   "nicegui>=3.12,<4",
   "py7zr>=1,<2",
   "svglib>=1.5,<2",
-  "pybigtools>=0.3,<0.4; python_version < '3.14'",
+  "pybigtools>=0.3,<0.4; python_version >= '3.10' and python_version < '3.14'",
+  "figwig>=0.2,<0.3; python_version >= '3.14'",
 ]
 
 [project.urls]

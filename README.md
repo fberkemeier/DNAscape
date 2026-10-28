@@ -4,41 +4,30 @@
 
 # DNAscape
 
-DNAscape is a local browser app for preparing, mapping, simulating, visualising, and analysing DNA replication data. It brings the main DNAscape workflows into one interface while keeping the computation on your computer.
-
-**Initiation rate** (`initiation_rate`, abbreviated `ir`) describes the rate of origin firing in unreplicated DNA.
+DNAscape is software for mapping and simulating DNA replication kinetics. It infers origin firing and fork movement from genomic data and predicts replication timing and other replication features. Use it through Python, notebooks, the command line or the local browser app.
 
 ## What you can do
 
-- **Prepare data:** import tables, NumPy profiles, bedGraph, or BigWig tracks; bin, smooth, rescale or invert values; apply region transforms within a mask; and export DNAscape-ready profiles.
-- **Map replication features:** infer supported kinetic targets from one or more compatible input profiles or constant values.
-- **Run simulations:** simulate replication from initiation-rate and fork-speed profiles or constants, compare datasets, and inspect standard or detailed outputs.
-- **Plot and analyse data:** compare multiple profiles, smooth each dataset independently, export plots, and calculate Pearson, Spearman, and Kendall tau correlations. Download all selected correlation matrices and paired sample counts in one CSV or TSV report.
-- **Reuse recent work:** reopen or download files and completed workflows retained in the current browser session.
+- **Prepare experimental data:** derive replication-timing profiles from Repli-seq, origin-firing profiles from SNS-seq and fork-directionality profiles from OK-seq. Select genomic regions, convert resolutions, smooth and rescale signals, or transform selected regions.
+- **Map replication features:** choose a target, such as initiation rate, fork speed, replication timing or fork directionality, and infer it from compatible input profiles or constant values. Fit spatial, temporal or space-time dependence where supported.
+- **Simulate DNA replication:** model origin firing and fork movement, explore changes in initiation rate or fork speed, and inspect timing, fork profiles, replicated fractions and origin statistics across simulations.
+- **Visualise and analyse results:** compare datasets, explore profiles and distributions, perform statistical analyses and customise plots. Download prepared data and model outputs as TSV, TXT, CSV or NPZ, alongside figures and analysis reports.
 
-The app accepts common profile formats including CSV, TSV, TXT, NPY, NPZ, bedGraph, and BigWig. The Data Manager can load supported files from public links and import GEO 16-fraction Repli-seq text matrices (`.mat` or `.mat.gz`), including chromosome-specific replication timing extraction.
+## Run the DNAscape app
 
-Raw data exports support TSV, TXT, CSV and NPZ. Analysis reports use CSV or TSV.
-
-## Run locally
+An online version is a work in progress. To run the app locally, follow the steps below.
 
 ### Requirements
 
-- Python 3.10 or newer (Python 3.13 recommended for BigWig imports)
+- Python 3.10 or newer (Python 3.13 recommended)
 - Git
 - A modern web browser
-
-The app installs its BigWig reader on Python 3.10–3.13. On Python 3.14 or
-newer, tables, NumPy profiles, and bedGraph tracks work; BigWig imports require
-a separately installed compatible reader. If you need BigWig support, install
-Python 3.13 (`winget install -e --id Python.Python.3.13`) and select it when creating the environment with
-`py -3.13 -m venv .venv` on Windows or `python3.13 -m venv .venv` on macOS/Linux.
 
 ### 1. Download the repository
 
 ```bash
-git clone https://github.com/fberkemeier/DNAscape-devmode.git
-cd DNAscape-devmode
+git clone https://github.com/fberkemeier/DNAscape.git
+cd DNAscape
 ```
 
 ### 2. Create and activate a virtual environment
@@ -57,9 +46,11 @@ python3 -m venv .venv
 source .venv/bin/activate
 ```
 
+> **BigWig note:** if you use BigWig files or links, installation automatically selects `pybigtools` for Python 3.10–3.13 or `figwig` for Python 3.14 and newer. Both provide the same region and binning controls. Figwig's first read compiles and caches its decoding routines, so it can take a few seconds longer.
+
 ### 3. Install the app
 
-Run these commands from the repository root:
+From the repository root:
 
 ```bash
 python -m pip install --upgrade pip
@@ -72,65 +63,49 @@ python -m pip install -r app/requirements.txt
 python -m app
 ```
 
-Open [http://127.0.0.1:8080](http://127.0.0.1:8080) in your browser. Keep the terminal open while using the app, and press `Ctrl+C` there to stop it.
-
 ## A quick first run
 
-1. Open **Simulation** from the left menu.
-2. Keep the default constant inputs and select **Simulate**.
-3. Explore the generated outputs and plotting settings in the Preview panel.
+### Managing data
 
-Simulation's **Region** includes **Whole region**, **Periodic** and **Show plot** switches. Whole region uses the genomic extent of an uploaded initiation-rate or fork-speed profile. **Region transforms** can edit initiation rate, fork speed, or both independently, after selecting and resampling the region. Each input has its own mask, transform and optional position/interval export. Plot settings provide separate mask guides and names. Gaussian noise uses the transform's seed when supplied, otherwise the simulation seed when fixed. Original uploads are preserved.
+Start in **Data Manager** to prepare a replication-timing profile:
 
-To try a file-based workflow, open **Data Manager** and use the bundled example at `examples/data/example/replication_timing_hESC.csv`.
+1. Upload a Repli-seq track, or choose **Link**, paste the [K562 Repli-seq BigWig link](https://hgdownload.gi.ucsc.edu/goldenPath/hg19/encodeDCC/wgEncodeUwRepliSeq/wgEncodeUwRepliSeqK562WaveSignalRep1.bigWig) and click **Inspect**.
+2. In **Configure**, set **Prepare as** to **Replication timing**. Select **chr1**, keep the full chromosome, and set **Bin size (bp)** to **1000** and **Aggregation** to **Mean**. Under **Values**, choose **Missing values → Fill with a value** and set **Fill value** to **30**.
+3. In **Data transforms**, switch on **Apply transform** and leave the formula as `source`. Set **Value scaling** to **Target interval**, **Minimum** to **30**, **Maximum** to **500**, and check **Invert**, so higher Repli-seq scores represent earlier replication. This assigns an illustrative 30–500 minute range to relative timing scores.
+4. Click **Convert**, inspect the plot, and download the timing profile from **Generated Files → Raw data** as TSV.
 
-## Managing data
+### Mapping data
 
-Use **Data Manager** to turn a Repli-seq BigWig track into a replication-timing profile. This example prepares 1 kb bins with timings from **30 to 500 minutes**, spanning approximately eight hours.
+Move to **Mapping** to infer a spatial initiation-rate profile from that timing data:
 
-The **Region transforms** section defines a mask of selected positions and applies an operation within it. **Invert mask** selects the complement within Start/End; **Export mask** downloads the selected positions or intervals. Configure and **Data transforms** run before these regional operations.
+1. Set **Mapped output** to **Initiation rate**, **Dependence** to **Space**, and **Input factors** to **Replication timing + fork speed**.
+2. Under **Inputs**, upload the timing profile as a spatial profile. Set **Fork speed** to **Constant** with a value of **1.4 kb/min**.
+3. In **Region**, leave **Whole region** off and set **Start** to **40000 kb**, **End** to **50000 kb**, and **Resolution** to **1 kb**. Click **Map**, compare observed and fitted timing, and download the fitted initiation-rate profile from **Raw data**.
 
-1. In **Data**, upload or drag in a BigWig file. Alternatively, open **Link**, select **Example: ENCODE Repli-seq (bigWig) - K562**, then click **Inspect**. You can also paste your own public BigWig URL and inspect it.
-2. In **Configure**, set **Prepare as** to **Replication timing**. Under **Region & binning**, choose **One chromosome**, select the chromosome and Start/End coordinates, set **Bin size (bp)** to **1000**, and keep **Aggregation** at **Mean**.
-3. Under **Values**, set **Value scaling** to **Target interval**, **Minimum** to **30**, and **Maximum** to **500**. Check **Invert** so higher Repli-seq scores become earlier replication times.
-4. Set **Missing values** to **Fill with a value**, and **Fill value** to **30**. Custom fills are applied after scaling, so missing bins become exactly 30 minutes.
-5. Under **Output**, optionally enable **Show plot preview after conversion**, then click **Convert**. Download the result from **Generated files**; TSV is the default format. Mapping and Simulation assume array uploads are sampled at **1 kb**. Their **Resolution** control sets the output bin width: wider bins average the source values, while finer bins use linear interpolation. The selected Start/End interval stays fixed. Initiation rates are expressed per output bin (min⁻¹); fork speeds remain in kb/min, with travel time scaled by bin width.
+### Simulating DNA replication
 
-The K562 example contains relative timing scores; rescaling them to 30–500 minutes assigns an assumed absolute time range. Filling missing bins with 30 assigns them the earliest time in this example. Other missing-value choices are **Keep empty values**, **Fill with zero** (the default), **Fill with minimum**, **Fill with maximum**, and **Report error**.
+Move to **Simulation** to simulate replication using the inferred origin-firing profile:
 
-In Mapping, **Fitting** lists only the target quantity. Set lower and upper bounds independently, or leave a field blank for the route's automatic default. An optional initial guess sets the solver's starting value. Weibull routes fit an initiation-rate amplitude, so their bounds and guess apply to that amplitude. Supplied timing and kinetic profiles remain unchanged. Standard kinetic fits and forward timing/directionality maps use deterministic predictions at zero stall rate; nonzero stalling uses stochastic ensembles. Explicitly stochastic fork-speed and firing-factor models retain their requested simulation model. Periodic joins are used consistently across speed dependences. Timing-gradient directionality requires timing data compatible with the periodic join. Automatic raw-output filenames end in `_c`, `_x`, `_t` or `_xt` for their declared dependence.
+1. Under **Initiation rate**, choose **Profile** and upload the mapped profile with **Space** dependence. Keep **Fork speed** constant at **1.4 kb/min**.
+2. In **Region**, enable **Whole region** and keep **Resolution** at **1 kb/bin**. In **Simulation settings**, set **Simulations (replicates)** to **100**; optionally enable **Fix seed** for reproducible runs.
+3. Click **Simulate**, explore the outputs in **Preview**, and download data or figures. Change the fork speed, number of simulations or other settings and rerun to compare outcomes.
 
-Temporal fork-speed fits anchor the initial speed at the first time point and scale their time dependence to the observed timing interval. Sampling timing observations retains the full spatial firing integral, including narrow origins between observation sites. For spatial firing inputs, automatic time grids follow the data and extend until the omitted survival integral is negligible. Explicit time grids are preserved.
+For advanced examples and further workflows, see the [documentation](https://dnascape.readthedocs.io/en/latest/examples.html), which is still being expanded.
 
-Mapping offers deterministic observables. Directionality accepts timing plus fork speed, or initiation rate plus fork speed through the timing relation. Temporal velocities weight the survival gradient before time integration. Directionality from fork densities, initiation/coalescence probability densities and ensemble-only outputs remain available through Simulation and the Python API. Forward time limits are inferred from the kinetic profiles and extended to completion; supplied time grids retain their explicit limits. Replicated fraction integrates partially covered spatial bins, including spatially varying fork travel times.
+## Using the Python code
 
-For **Initiation events** and **Coalescence events**, **Quantity** selects **Density (events/kb)**, integrated over the computed time window, or **Rate density (events/kb/min)**. These expected event densities retain their counts; they are not normalized probability distributions. With unreplicated fraction `s = 1-f`, the rates are `j_i = I*s` and `j_c = 2*v*rho_right*rho_left/s` for symmetric fork speeds, following [Gauthier, Norio and Bechhoefer (2012), Eqs. 1–6](https://doi.org/10.1371/journal.pone.0032053). Both forward outputs use the same deterministic transport solution for full space–time initiation-rate and speed profiles. The solver evolves conditional fork densities `g = rho/s` and `-log(s)` to avoid division near completion, with second-order spatial transport and adaptive time integration. Integrated densities are accumulated during the solve, independently of the displayed time samples. Spatial refinement reduces the remaining discretization error. The terminology follows the unnormalized event densities in [Baker and Bechhoefer (2014), Section II.A](https://doi.org/10.1103/PhysRevE.89.032703).
+Use the [Python API](https://dnascape.readthedocs.io/en/latest/api_reference.html) in scripts or notebooks; install the package from this checkout with `python -m pip install .`.
 
-The **Region transforms** section in Mapping defines a mask relative to a supplied input, or from uploaded positions or intervals. It applies the same transforms as Data Manager to the initial fitted target within that mask, then holds those values fixed in every fitting step. Inputs remain unchanged. Regional constraints automatically select a compatible spatial or space–time target; time-resolved firing uses a free profile so the frozen regions can obey their own constraints. Constrained fork-speed fits use the existing deterministic mean-field solver with exact sensitivities and expose its control points, smoothness and convergence tolerance in Mapping settings. Frozen values override fit bounds locally and must remain valid kinetic values (non-negative initiation rates or positive fork speeds). Mask positions can be exported separately, and runnable Mapping downloads include auxiliary mask and modulation profiles.
+To turn an app workflow into code, enable **Settings → Interface → Developer mode**, then click **Code** on Data Manager, Mapping, Simulation or Analysis. This downloads an editable `.py` script with the current settings and input/output folder definitions. Place any listed source files in its input folder and run it with DNAscape installed.
 
-## Comparing and analysing data
+## Citation
 
-Open **Analysis** and upload the profiles you want to compare. Use matching genomic regions and resolutions: correlations pair samples by array index over their shared span. Switch on **Enable analysis** to reveal correlation choices and independent moving-average or Gaussian smoothing for each dataset. **Show p-values** optionally displays two-sided, unadjusted p-values for dataset pairs.
+If you use DNAscape in your research, please cite the following and include the software version used:
 
-Choose Pearson, Spearman, and/or Kendall tau, then click **Analyse**. The **Analysis report** below the plotting settings combines all selected methods in one table, with each correlation heading its dataset columns. At the bottom, edit the report name, choose CSV (default) or TSV, and use the download arrow to save the coefficients, paired sample counts, and optional p-values. The cross clears the plots and report while retaining uploaded data. With analysis switched off, **Plot** uses the original profiles and the analysis controls and report are hidden.
+> Francisco Berkemeier and Michael A. Boemo (2026). DNAscape: Software for mapping and simulating DNA replication kinetics. bioRxiv.
 
-## Local data and sessions
+## Questions and bugs
 
-DNAscape does not require a hosted service. Uploaded files and calculations are handled by the Python process running on your computer. A public URL is accessed only when you explicitly choose it as a data source.
-
-Recent uploads and results are cached in memory for the current browser tab and are not permanent storage. Use **Cached Files** to manage them, or **Reset to defaults** in the top-right menu to clear the workspace.
-
-## Troubleshooting
-
-- **The page did not open automatically:** visit [http://127.0.0.1:8080](http://127.0.0.1:8080) manually.
-- **Port 8080 is already in use:** set `DNASCAPE_APP_PORT` to another port before running `python -m app`.
-- **A change is not visible:** stop the app with `Ctrl+C`, start it again, and refresh the browser.
-- **PowerShell blocks environment activation:** skip activation and run `.\.venv\Scripts\python.exe -m pip install -r app/requirements.txt`, followed by `.\.venv\Scripts\python.exe -m app`.
-- **Installation reports `No matching distribution found for gwseq-io-pp`:** update this checkout and rerun the install command. DNAscape no longer requires that discontinued package.
-- **BigWig import reports that no reader is installed:** use Python 3.13 and install the app dependencies in that environment, or import the track as bedGraph.
-
-## Project status
-
-The local interface is under active development. Please report bugs or suggest improvements through [GitHub Issues](https://github.com/fberkemeier/DNAscape/issues).
+For questions, bug reports or feature requests, use [GitHub Issues](https://github.com/fberkemeier/DNAscape/issues) or contact [Francisco Berkemeier](mailto:fp409@cam.ac.uk).
 
 DNAscape is available under the [MIT License](LICENSE).
