@@ -378,7 +378,7 @@ body.body--dark .dn-app-menu {
 
 .dn-settings-dialog .dn-settings-grid {
   gap: 0.6rem;
-  grid-template-columns: repeat(2, minmax(0, 1fr));
+  grid-template-columns: repeat(3, minmax(0, 1fr));
 }
 
 .dn-settings-theme-color .q-btn {
@@ -402,7 +402,47 @@ body.body--dark .dn-app-menu {
 
 .dn-settings-dialog:not(.dn-about-dialog):not(.dn-reset-dialog) {
   max-height: calc(100dvh - 2rem);
+  max-width: min(46rem, calc(100vw - 2rem));
   overflow-y: auto;
+}
+
+.dn-settings-navigation-help {
+  color: var(--dn-muted);
+  display: grid;
+  font-size: 0.76rem;
+  gap: 0.3rem 1rem;
+  grid-template-columns: max-content minmax(0, 1fr);
+  line-height: 1.45;
+  margin: 0;
+  width: 100%;
+}
+
+.dn-settings-navigation-help dt,
+.dn-settings-navigation-help dd {
+  margin: 0;
+  min-width: 0;
+}
+
+.dn-settings-navigation-help dt {
+  color: var(--dn-text);
+  font-weight: 500;
+}
+
+@media (max-width: 680px) {
+  .dn-settings-dialog .dn-settings-grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+}
+
+@media (max-width: 460px) {
+  .dn-settings-dialog .dn-settings-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .dn-settings-navigation-help {
+    gap: 0.3rem 0.65rem;
+    grid-template-columns: minmax(0, 6rem) minmax(0, 1fr);
+  }
 }
 
 .dn-settings-section {

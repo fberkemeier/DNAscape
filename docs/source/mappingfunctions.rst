@@ -1,208 +1,143 @@
-Mapping with rmap
-=================
+Mapping: rmap
+=============
 
-``rmap`` maps between replication features under stated assumptions.
+``rmap`` relates replication features under explicit kinetic assumptions.
+Use **Mapping** to infer a target from compatible inputs, or to predict
+observables from initiation rate and fork speed. The equations and their
+limits are explained in :doc:`foundations`.
 
-Call
-----
+Choose a target and its inputs
+------------------------------
 
-.. code-block:: python
+Start with **Mapped output**, then choose **Dependence** and **Input factors**.
+Available routes and input fields update to match those choices.
 
-   from dnascape import rmap
+.. list-table:: Common questions
+   :header-rows: 1
+   :widths: 33 28 39
 
-   initiation_rate = rmap(
-       source={"replication_timing": timing, "fork_speed": 1.4},
-       target="initiation_rate",
-       assumptions={"resolution_x": 1.0, "target_form": "space"},
-   )
+   * - Question
+     - Target
+     - Typical supplied inputs
+   * - Where is origin firing favoured?
+     - Initiation rate
+     - Replication timing and fork speed.
+   * - How quickly do forks move?
+     - Fork speed
+     - Timing and initiation rate; supported routes also use directionality.
+   * - When will each position replicate?
+     - Replication timing
+     - Initiation rate and fork speed.
+   * - Which way do forks travel?
+     - Fork directionality
+     - Timing and fork speed, or kinetic inputs through a timing prediction.
+   * - How does replication progress?
+     - Replicated fraction or fork density
+     - Initiation rate and fork speed.
+   * - Where and when do events occur?
+     - Initiation or coalescence density
+     - Compatible kinetic fields or prepared model outputs.
 
-Single-source form:
+**Constant**, **Space**, **Time** and **Space-time** describe how a fitted
+kinetic quantity varies. A time-only rate or speed is shared across the region;
+a space-time field can vary along both axes. Some routes offer a **Target
+shape**, such as a Weibull time dependence.
 
-.. code-block:: python
+For initiation and coalescence outputs, **Quantity** distinguishes integrated
+spatial density in events/kb from space-time rate density in events/(kb min).
+These are actual event densities, distinct from potential initiation rate.
+Use :doc:`simulationengine` for distributions across stochastic S phases.
 
-   timing_pred = rmap(
-       source="initiation_rate",
-       data=initiation_rate,
-       target="replication_timing",
-       assumptions={
-           "fork_speed": 1.4,
-           "resolution_x": 1.0,
-           "sim_number": 100,
-           "seed": 1,
-           "verbose": False,
-       },
-   )
+Supply profiles and define the region
+-------------------------------------
 
-Routes
-------
+Under **Inputs**, enter constants with **Value**, or upload a profile and
+select its dependence. Use the same chromosome, coordinate interpretation and
+time reference for all inputs. Prepare unfamiliar track formats in Data
+Manager first, where their region and value processing are easier to inspect.
 
-Inspect the installed route table:
+In **Region**:
 
-.. code-block:: python
+* **Whole region** uses the available spatial input. Otherwise set **Start**
+  and **End** in kb; End is excluded.
+* **Resolution** changes the bin width without stretching the chosen interval.
+  Wider bins average the source; finer bins interpolate it.
+* When a temporal grid is needed, its resolution controls time sampling.
+  Automatic forward maps choose a time horizon that captures replication
+  completion, subject to the supported model and resource limits.
+* **Periodic** joins the ends. Use it for a periodic model, rather than to hide
+  boundary effects in a linear region. Periodic fits use wrapped spatial context.
+* **Show plot** controls the preview and its Plot settings.
 
-   rmap.targets()
-   rmap.requirements(target="initiation_rate")
-   rmap.requirements(target="fork_speed", detail=True)
+Plain spatial uploads default to one sample per kb when no coordinate or
+resolution metadata are available. Recheck the inferred interval before fitting.
+The app keeps fork speed in kb/min and handles conversion to its internal grid.
 
-Common targets:
+Fit settings
+------------
 
-* ``initiation_rate``
-* ``fork_speed``
-* ``replication_timing``
-* ``fork_directionality``
-* ``replicated_fraction`` / ``replicated_fraction_xt``
-* ``fork_densities_xt``
-* ``initiation_events`` / ``initiation_events_xt``
-* ``coalescence_events`` / ``coalescence_events_xt``
-* ``origin_efficiency``
-* ``inter_origin_distance``
-* ``completion_time``
-* ``num_origins``
+Start with the route defaults. Change one control at a time and compare the
+resulting prediction, not just the fitted curve.
 
-Timing To Initiation Rate
--------------------------
+**MSE threshold**
+   Optional early stopping based on the discrepancy between observed and
+   predicted data. It differs from a numerical floor on the target values.
 
-.. code-block:: python
+**Fit iterations and Fit step**
+   Control the relevant fitting stage. Routes that separate spatial and
+   temporal fitting expose **Space fit iterations** and **Time fit iterations**
+   with their corresponding steps. Space-time fits may use sequential or
+   alternating component updates; they can report more than one stage.
 
-   initiation_rate = rmap(
-       source={"replication_timing": timing, "fork_speed": 1.4},
-       target="initiation_rate",
-       assumptions={
-           "resolution_x": 1.0,
-           "resolution_t": 2.0,
-           "target_form": "space",
-           "target_shape": "weibull",
-           "maxiter": 20,
-           "fit_step": 0.6,
-       },
-   )
+**Neighbourhood range and Maximum edge context**
+   Control the spatial context used by supported calculations and linear-edge
+   treatment. Cropped regions can lose contributions from origins outside the
+   interval; retain surrounding data when local boundary behaviour matters.
 
-``target_form`` selects constant, space, time, or space-time output.
-``target_shape`` controls parametric time dependence where relevant.
+**Target bounds and Initial guess**
+   Constrain the fitted quantity and choose its starting value. Supplied inputs
+   remain fixed. For a Weibull model, amplitude bounds apply to its fitted
+   amplitude, whose units depend on the temporal shape.
 
-.. figure:: _static/img/mapped_firing_placeholder.svg
-   :width: 760
-   :alt: Placeholder for mapped initiation-rate profile
+The advanced **Fork movement** controls include stalling and, where needed,
+the simulations averaged for a stochastic fit estimate. Deterministic routes
+use the kinetic relationships directly; increasing simulations is not a
+universal way to improve a mapping.
 
-   Placeholder for mapped initiation rate.
+Constrain selected target regions
+---------------------------------
 
-Initiation Rate To Timing
--------------------------
+Open **Region transforms** and use **Relative to** to choose the supplied
+input that defines the mask. Position ranges or **Upload profile** define
+positions directly and do not need a signal reference. The shared controls
+are described under :ref:`data-region-transforms`.
 
-.. code-block:: python
+The transform is applied to the selected values of the initial target guess.
+Those values are then held fixed during fitting, rather than multiplied,
+perturbed or re-randomised at every step. Unmasked values continue to fit.
+Observed timing and other supplied inputs remain unchanged.
 
-   timing_pred = rmap(
-       source={"initiation_rate": initiation_rate, "fork_speed": 1.4},
-       target="replication_timing",
-       assumptions={
-           "resolution_x": 1.0,
-           "sim_number": 200,
-           "seed": 11,
-           "verbose": False,
-       },
-   )
+A genomic mask on a constant or time-only target can require spatial
+dependence. Mapping automatically selects a compatible target when available.
+Transforms must retain physically valid target values: initiation rates are
+non-negative and fork speeds are positive.
 
-Compare:
+Inspect and save the result
+---------------------------
 
-.. code-block:: python
+Click **Map**. The status line reports the stage, fit error when available,
+ETA and elapsed time. **Initial prediction** measures the first forward
+calculation; the estimate can change as later fitting stages are measured.
 
-   import numpy as np
+For inverse timing fits, inspect observed-versus-fitted timing, residuals and
+MSE alongside the inferred target. A lower MSE measures agreement with that
+objective; it does not make the inferred kinetics unique.
 
-   mse = np.nanmean((timing - timing_pred) ** 2)
+**Preview** can display inputs and target separately or together. Download
+the fitted quantity and useful comparison data from **Raw data**, or transfer
+a profile with **Open in**. Dependence suffixes ``_c``, ``_x``, ``_t`` and
+``_xt`` distinguish constant, spatial, temporal and space-time map outputs.
+Save the region, resolution and assumptions with the files.
 
-.. figure:: _static/img/observed_predicted_placeholder.svg
-   :width: 760
-   :alt: Placeholder comparing observed and predicted timing
-
-   Placeholder for observed and predicted timing.
-
-Timing To Speed
----------------
-
-.. code-block:: python
-
-   fork_speed_x = rmap(
-       source={"replication_timing": timing, "initiation_rate": initiation_rate},
-       target="fork_speed",
-       assumptions={
-           "resolution_x": 1.0,
-           "target_form": "space",
-           "initial_fork_speed": 1.4,
-           "speed_bounds": (0.2, 4.0),
-           "maxiter": 20,
-       },
-   )
-
-Timing To RFD
--------------
-
-.. code-block:: python
-
-   rfd = rmap(
-       source={"replication_timing": timing, "fork_speed": 1.4},
-       target="fork_directionality",
-       assumptions={"resolution_x": 1.0, "smoothw": 25},
-   )
-
-.. figure:: _static/img/fork_directionality_placeholder.svg
-   :width: 760
-   :alt: Placeholder for fork directionality
-
-   Placeholder for fork directionality.
-
-Space-Time Features
--------------------
-
-.. code-block:: python
-
-   import numpy as np
-
-   time_grid = np.arange(0, 240 + 2, 2)
-
-   fraction_xt = rmap(
-       source={"initiation_rate": initiation_rate, "fork_speed": 1.4},
-       target="replicated_fraction_xt",
-       assumptions={
-           "resolution_x": 1.0,
-           "resolution_t": 2.0,
-           "time_grid": time_grid,
-       },
-   )
-
-   fork_densities = rmap(
-       source={"initiation_rate": initiation_rate, "fork_speed": 1.4},
-       target="fork_densities_xt",
-       assumptions={
-           "resolution_x": 1.0,
-           "resolution_t": 2.0,
-           "time_grid": time_grid,
-       },
-   )
-
-App Page
---------
-
-Mapping exposes focused ``rmap`` routes.
-
-Inputs
-   Numeric timing, initiation-rate, fork-speed, or directionality tables; optional
-   constants.
-
-Controls
-   Target, dependence, route, chromosome, region, resolution, fit settings,
-   geometry, plot settings.
-
-Outputs
-   Preview, figure exports, raw mapped data, cached artifact.
-
-Python
-   ``rmap(source=..., target=..., assumptions=...)``.
-
-Notes
------
-
-* Use ``return_info=True`` to save route metadata.
-* Keep ``resolution_x`` consistent.
-* Increase ``sim_number`` for stable simulation-backed routes.
-* Start simple, then fit more variable kinetic fields.
-* Export outputs and assumptions together.
+The :doc:`quickstart` walks through timing-to-initiation mapping.
+:doc:`python` shows the same workflow in code.

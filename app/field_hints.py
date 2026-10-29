@@ -104,7 +104,7 @@ FIELD_HINTS = {
     "Operation": "Choose how to change the selected data.",
     "Override": "Replace the default with your own input.",
     "Page": "Choose a page of files.",
-    "Page controls and outputs": "Keep controls and results when switching pages.",
+    "Keep settings and results between pages": "Remember page inputs and results when navigating.",
     "Panel position": "Choose the corner used for the legend and statistics.",
     "Plot export DPI": "Resolution of downloaded raster plots.",
     "Pool size": "Number of available firing factors.",

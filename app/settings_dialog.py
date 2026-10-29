@@ -102,7 +102,7 @@ def settings_dialog(*, on_apply: Callable[[], None]) -> SettingsDialog:
             ).mark("settings-close")
         with ui.column().classes("dn-settings-section"):
             ui.label("Interface").classes("dn-setting-group-title")
-            switch("preserve_page_state", "Page controls and outputs", "settings-preserve-page-state")
+            switch("preserve_page_state", "Keep settings and results between pages", "settings-preserve-page-state")
             switch("show_examples", "Example links", "settings-show-examples")
             switch("show_field_hints", "Field hover hints", "settings-show-field-hints")
             switch("show_help", "Field help", "settings-show-help")
@@ -115,9 +115,9 @@ def settings_dialog(*, on_apply: Callable[[], None]) -> SettingsDialog:
                     .props("dense").classes("dn-field").mark("settings-plot-dpi")
                 )
                 select("raw_compression", "Raw data compression", COMPRESSION_OPTIONS, "settings-raw-compression")
+                select("result_name_style", "Result and file names", NAME_STYLE_OPTIONS, "settings-result-name-style")
                 select("cached_file_format", "Cached file type", CACHE_FILE_FORMAT_OPTIONS, "settings-cached-file-format")
                 select("cached_compression", "Cached compression", COMPRESSION_OPTIONS, "settings-cached-compression")
-                select("result_name_style", "Result and file names", NAME_STYLE_OPTIONS, "settings-result-name-style")
                 controls["conversion_memory_limit_mb"] = (
                     ui.number(
                         label="Conversion memory limit (MB)",
@@ -174,8 +174,22 @@ def settings_dialog(*, on_apply: Callable[[], None]) -> SettingsDialog:
                             and float(value).is_integer()
                         ),
                     },
-                ).props("dense").classes("dn-field").style("grid-column: 1 / -1").mark("settings-preview-points")
+                ).props("dense").classes("dn-field").mark("settings-preview-points")
                 field_hint(controls["preview_points"], "Maximum points shown per curve in the visible range.")
+        with ui.column().classes("dn-settings-section").mark("settings-navigation-controls"):
+            ui.label("Navigation controls").classes("dn-setting-group-title")
+            with ui.element("dl").classes("dn-settings-navigation-help"):
+                for shortcut, description in (
+                    ("Drag", "Pan within the data limits."),
+                    ("Left Ctrl + scroll", "Zoom in or out around the pointer."),
+                    ("Left Ctrl + drag", "Select an X range, a heatmap box, or the smaller circular arc."),
+                    ("Reset axes", "Use the reset arrows beside the axis limits in Plot settings."),
+                    ("Hover and detail", "Guides → Hover toggles readouts. Zoom in to reveal more detail."),
+                ):
+                    with ui.element("dt"):
+                        ui.label(shortcut)
+                    with ui.element("dd"):
+                        ui.label(description)
         editor = SettingsDialog(dialog, controls)
 
         def apply() -> None:

@@ -1,27 +1,28 @@
 Installation
 ============
 
-DNAscape requires Python 3.9 or later.
+An online version is a work in progress. To run the DNAscape app locally,
+follow the steps below, as in the repository README.
 
-Package
--------
+Requirements
+------------
 
-Released package:
+* Python 3.10 or newer (Python 3.13 recommended).
+* Git.
+* A modern web browser.
 
-.. code-block:: bash
-
-   pip install dnascape
-
-Development install:
+1. Download DNAscape
+--------------------
 
 .. code-block:: bash
 
    git clone https://github.com/fberkemeier/DNAscape.git
    cd DNAscape
-   python -m venv .venv
-   source .venv/bin/activate
-   pip install -U pip
-   pip install -e .
+
+Run the remaining commands from this project folder.
+
+2. Create a virtual environment
+-------------------------------
 
 Windows PowerShell:
 
@@ -29,79 +30,40 @@ Windows PowerShell:
 
    py -m venv .venv
    .\.venv\Scripts\Activate.ps1
-   python -m pip install -U pip
-   python -m pip install -e .
 
-Notebooks
----------
+macOS and Linux:
 
 .. code-block:: bash
 
-   pip install notebook jupyterlab ipykernel
-   python -m ipykernel install --user --name dnascape --display-name "DNAscape"
-   python -m jupyterlab examples
+   python3 -m venv .venv
+   source .venv/bin/activate
 
-Start with ``examples/0-quickstart.ipynb``.
+.. note::
 
-NiceGUI Interface Prototype
----------------------------
+   For BigWig files and links, the app installation selects ``pybigtools`` on
+   Python 3.10-3.13 or ``figwig`` on Python 3.14 and newer. Both provide the
+   same region and binning controls. Figwig compiles and caches its decoding
+   routines on the first read, which can take a few seconds longer.
 
-The interface requires Python 3.10 or newer. BigWig support is installed
-automatically: ``pybigtools`` on Python 3.10–3.13, or ``figwig`` on Python 3.14
-and newer. Both readers support the same region, binning and aggregation controls
-for uploads and public links.
+3. Install the app
+------------------
 
 .. code-block:: bash
 
-   pip install -r app/requirements.txt
+   python -m pip install --upgrade pip
+   python -m pip install -r app/requirements.txt
+
+This also installs the DNAscape Python package and its numerical dependencies.
+
+4. Start DNAscape
+-----------------
+
+.. code-block:: bash
+
    python -m app
 
-The interface includes Overview, Data Manager, Mapping, Simulation, Plotting,
-Cached Files, and Resources. Simulation runs are connected to ``rsim`` with
-separate optional time-course and space-time outputs, bounded retained previews,
-and plot/raw-data downloads.
+Open the address printed in the terminal. Keep that terminal running while
+using the app; press ``Ctrl+C`` there to stop it.
 
-Docs
-----
-
-.. code-block:: bash
-
-   pip install -r docs/requirements.txt
-   sphinx-build -b html docs/source docs/build/html
-
-Windows:
-
-.. code-block:: powershell
-
-   python -m pip install -r docs\requirements.txt
-   python -m sphinx -b html docs\source docs\build\html
-
-Open ``docs/build/html/index.html``.
-
-Tracks
-------
-
-The app's BigWig reader is included in ``app/requirements.txt``. For direct use
-of the lower-level ``dnascape.io`` BigWig functions, install ``pyBigWig``:
-
-.. code-block:: bash
-
-   pip install pyBigWig
-
-bedGraph import uses pandas only.
-
-Verify
-------
-
-.. code-block:: python
-
-   import dnascape
-
-   print(dnascape.rmap.targets().head())
-   print(dnascape.rsim.output().head())
-
-CLI:
-
-.. code-block:: bash
-
-   dnascape --help
+To open your default browser automatically, see :ref:`app-open-browser`.
+Continue with :doc:`quickstart`, or use :doc:`python` for code-based workflows.

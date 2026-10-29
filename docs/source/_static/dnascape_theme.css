@@ -40,3 +40,42 @@
 .rst-content a:hover {
   color: var(--dnascape-red-dark);
 }
+
+.wy-nav-content {
+  max-width: 1000px;
+}
+
+.rst-content {
+  line-height: 1.65;
+}
+
+.rst-content h1,
+.rst-content h2,
+.rst-content h3 {
+  color: #3f3934;
+}
+
+.rst-content div.math {
+  overflow-x: auto;
+  max-width: 100%;
+  padding: 0.35rem 0;
+}
+
+.rst-content table.docutils td,
+.rst-content table.docutils th {
+  white-space: normal;
+  vertical-align: top;
+}
+
+.rst-content .admonition.note {
+  background: #faf4ef;
+}
+
+.rst-content .admonition.note .admonition-title {
+  background: var(--dnascape-red);
+}
+
+.rst-content figure,
+.rst-content .figure {
+  margin: 1.5rem 0;
+}

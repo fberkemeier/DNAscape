@@ -1,246 +1,149 @@
-Simulation with rsim
-====================
+Simulation: rsim
+================
 
-``rsim`` simulates stochastic S phases from initiation rate and fork speed.
+``rsim`` generates stochastic S phases from potential initiation rate and fork
+speed. Use **Simulation** to explore individual replication programmes,
+ensemble variability and mechanisms beyond a deterministic mapping.
 
-Call
-----
+Set the kinetic inputs
+----------------------
 
-.. code-block:: python
+Supply **Initiation rate** and **Fork speed** as constants or profiles.
+Profiles can depend on space, time or both, where supported by the input
+controls. Initiation describes potential origin firing before passive
+replication; it is not the number of origins that actually fire.
 
-   import numpy as np
-   from dnascape import rsim
+The app uses initiation rate **per spatial bin per minute** and fork speed
+**in kb/min**. A mapped app profile can be transferred directly. Python users
+passing a density returned by ``rmap`` must convert it to a per-bin rate;
+see :ref:`concept-units` and :doc:`python`.
 
-   simulation = rsim(
-       source={"initiation_rate": initiation_rate, "fork_speed": 1.4},
-       assumptions={
-           "sim_number": 100,
-           "resolution_x": 1.0,
-           "resolution_t": 2.0,
-           "time_grid": np.arange(0, 300 + 2, 2),
-           "time_statsQ": True,
-           "seed": 42,
-           "verbose": False,
-       },
-   )
+Define the region
+-----------------
 
-Inputs
-------
+**Start**, **End** and **Resolution (kb/bin)** define the simulated grid.
+Enable **Whole region** to use a spatial input's full interval; this switch
+is available when at least one kinetic input has a spatial profile. Otherwise,
+enter the region explicitly. Uploaded values are resampled onto the selected
+grid without changing its physical extent.
 
-``initiation_rate`` and ``fork_speed`` can be:
+**Periodic** wraps forks across the region boundary; the default linear model
+has two ends. **Show plot** controls preview generation. A circular display
+is a presentation choice and does not enable periodic simulation.
 
-* scalar;
-* spatial ``(n,)``;
-* time-only ``(1, T)``;
-* space-time ``(n, T)``.
+Choose ensemble and recording settings
+--------------------------------------
 
-If both inputs lack a spatial axis, pass ``n_bins``, ``genome_length``, or
-``interval_kb``.
+**Simulations (replicates)**
+   Number of independent S phases to average. Begin with a small ensemble while
+   configuring the model; increase it to characterise population variation.
 
-Fork movement
--------------
+**Fix seed**
+   Repeat a run with the same random seed and settings. Record both for
+   reproducibility.
 
-Fork speeds follow the supplied field by default. Set ``fork_speed_std`` to a
-non-negative arithmetic standard deviation in kb/min to draw positive lognormal
-speeds with the local input value as their arithmetic mean, independently for
-each spatial bin, direction, and replicate. Time-dependent fields use draws
-per encountered time slice and integrate distance through clock boundaries
-while crossing a bin. Draws are reused when propagation revisits a cell.
-This avoids the divergent mean crossing time caused by normally distributed
-speeds conditioned on being positive, without imposing a speed floor. With
-zero deviation the original simulation and seeded results are unchanged.
+**Time window (min)**
+   Interval covered by the recorded time-dependent outputs.
 
-For example, ``assumptions={"fork_speed_std": 0.2, "seed": 42}`` adds speed
-variation to any supported fork-speed dependence. Stalling and finite
-firing-factor pools can be enabled independently.
+**Maximum time (min)**
+   Stopping limit for a replicate. A recording window and a simulation stopping
+   limit serve different purposes. Check for unfinished replication before
+   interpreting completion statistics.
 
-Outputs
--------
+**Track time courses**
+   Adds replicated fraction, origin firing, fork counts and available firing
+   factors over time, and the completed replicon-length distribution.
 
-Always returned:
+**Track space-time outputs**
+   Adds position-by-time matrices for replicated fraction, initiation and
+   coalescence events, and directional/total fork density. These need more
+   memory than profiles and time courses.
 
-* ``replication_timing``
-* ``replication_timing_std``
-* ``completion_time`` (absolute simulation-clock completion timestamp)
-* ``s_phase_duration`` (completion minus the first realised initiation)
-* ``num_origins`` / ``num_oris``
-* ``origin_efficiency`` / ``efficiency``
-* ``fork_directionality``
-* ``inter_origin_distance_count``
-* ``inter_origin_distances_truncated``
+Choose time resolution fine enough for the dynamics of interest. More preview
+points improve on-screen detail, not the simulation grid or stored outputs.
 
-Per-simulation replication-time profiles and pooled inter-origin distances are
-retention outputs, not space-time statistics. ``retain_rep_times_per_sim`` and
-``retain_inter_origin_distances`` control them independently. Use
-``retain_rep_times_limit`` or ``retain_inter_origin_distances_limit`` to keep a
-deterministic prefix without changing any ensemble summaries. For a bounded
-inter-origin distribution, ``inter_origin_distance_count`` reports the complete
-number of distances produced and ``inter_origin_distances_truncated`` reports
-whether the retained array is incomplete. Disabling distance retention avoids
-constructing those per-realization arrays while still reporting their total
-count.
+Fork movement and firing factors
+--------------------------------
 
-With ``time_statsQ=True``:
+**Fork stalling** enables genomic barriers at the specified **Stall rate
+(stalls/kb)**. **Stall recovery** allows passage after a mean **Recovery time**
+in minutes. With recovery disabled, a stalled fork remains blocked in that
+realisation.
 
-* ``time_grid``
-* ``replicated_fraction``
-* ``total_forks``
-* ``active_forks``
-* ``stalled_forks``
-* ``origin_firing``: mean actual initiations per sampling interval ending at
-  each time-grid point, excluding passively replicated firing proposals.
-* ``replicon_lengths``: pooled completed DNA-domain lengths per fired origin
-  in kb. Periodic domains are joined across the seam; unfinished domains are
-  excluded. ``retain_replicon_lengths_limit`` bounds retained samples, while
-  ``replicon_length_count`` and ``replicon_lengths_truncated`` report the full
-  count and any truncation.
-* ``firing_factors`` when finite factors are enabled.
+**Shared between directions** uses the same stall positions and recovery
+landscape for forks arriving from either direction. With it off, the two
+directions have independent landscapes. Shared genomic stalls do not pause
+a distant sister fork.
 
-With ``time_stats_xtQ=True`` (the memory-intensive, detailed outputs):
+**Stochastic movement** adds a positive speed distribution with the supplied
+local speed as its arithmetic mean and the selected standard deviation in
+kb/min. The model uses lognormal draws; zero deviation recovers deterministic
+movement. Spatial and temporal speed dependence can be combined with stalling.
 
-* ``time_grid`` and ``replicated_fraction``
-* ``replicated_fraction_xt``
-* ``initiation_events_xt``
-* ``coalescence_events_xt``
-* ``right_fork_density_xt``
-* ``left_fork_density_xt``
-* ``fork_density_xt``: the sum of the right- and left-moving densities.
+Finite firing factors provide an optional limited pool for origin activation.
+Set its size and recycling behaviour when investigating resource-limited
+initiation. Available-factor time courses require time tracking.
 
-Initiation-event fields record only origins that fired before passive
-replication, within the requested time grid and simulation stopping time.
+Transform an input region
+-------------------------
 
-.. figure:: _static/img/simulation_outputs_placeholder.svg
-   :width: 760
-   :alt: Placeholder for simulation outputs
+In **Region transforms**, set **Relative to** to **Initiation rate**,
+**Fork speed** or **Both**. Each input has its own mask and operation when
+both are selected. The controls match :ref:`data-region-transforms`.
 
-   Placeholder for simulation outputs.
+These transforms modify the simulation inputs after region selection and
+resampling. For example, set initiation to zero in a genomic interval to
+suppress local origin firing while allowing incoming forks to replicate it.
+A fork-speed transform must leave speeds finite and positive.
 
-Perturbations
--------------
+Read the outputs
+----------------
 
-Fork slowing:
+Click **Simulate**, then choose an output in **Preview**.
 
-.. code-block:: python
+.. list-table:: Output groups
+   :header-rows: 1
+   :widths: 28 72
 
-   slow_fork = rsim(
-       source={"initiation_rate": initiation_rate, "fork_speed": 0.8},
-       assumptions={"sim_number": 200, "resolution_x": 1.0, "seed": 3, "verbose": False},
-   )
+   * - Group
+     - Interpretation
+   * - Replication timing
+     - Ensemble mean and standard deviation, with retained individual profiles.
+   * - Origin efficiency
+     - Fraction of replicates in which each bin fired before passive replication.
+   * - Fork directionality
+     - Mean replication direction along the region.
+   * - Completion summaries
+     - Completion times, S-phase durations and origins per replicate.
+   * - Length distributions
+     - Inter-origin distances, plus completed replicon lengths with time tracking.
+   * - Outputs marked (time)
+     - Recorded progression, actual origin firing, fork counts and firing factors.
+   * - Outputs marked (space-time)
+     - Position-by-time fields of progression, events and fork density.
 
-Fork stalling:
+**Origin firing (time)** counts actual initiations per recording interval,
+averaged over replicates. It differs from the input initiation hazard and is
+not an event rate per minute unless divided by interval duration.
 
-.. code-block:: python
+**Completion time** is measured on the simulation clock. **S-phase duration**
+is completion minus the first realised initiation. Inter-origin distance is
+the separation of neighbouring fired origins; replicon length is the completed
+DNA domain assigned to a fired origin. Unfinished domains are excluded from
+the latter distribution.
 
-   stalled = rsim(
-       source={"initiation_rate": initiation_rate, "fork_speed": 1.4},
-       assumptions={
-           "sim_number": 200,
-           "resolution_x": 1.0,
-           "stall_rate_per_kb": 0.02,
-           "tau": 15.0,
-           "seed": 4,
-           "verbose": False,
-       },
-   )
+Simulation event matrices contain averaged counts in recorded space-time
+bins. Continuous rate densities produced by Mapping have a different
+normalisation; see :ref:`concept-events` before comparing them.
 
-``stall_rate_per_kb`` is a physical encounter density in stalls/kb. DNAscape
-converts it at the selected spatial resolution using
-``p_bin = 1 - exp(-stall_rate_per_kb * resolution_x)``. The older
-``stall_rate`` keyword remains available as a probability per spatial bin for
-backward compatibility.
-By default, directions have independent stall positions and recovery delays.
-Set ``stall_shared_directions=True`` to use the same positions and delays for
-forks arriving from either direction. This represents shared genomic barriers;
-it does not pause a distant sister fork when its partner stalls.
+Export and compare
+------------------
 
-Finite factors:
+Download numerical outputs from **Raw data**, using NPZ for large matrices.
+Keep the seed, replicate count, coordinates, input profiles and all mechanism
+settings with the results. Use **Open in -> Analysis** to compare runs.
 
-.. code-block:: python
-
-   finite_factors = rsim(
-       source={"initiation_rate": initiation_rate, "fork_speed": 1.4},
-       assumptions={
-           "sim_number": 200,
-           "ffiring_nr": 60,
-           "ffiring_recycle": 0.05,
-           "time_statsQ": True,
-           "seed": 5,
-           "verbose": False,
-       },
-   )
-
-Space-Time
-----------
-
-Space-time fields scale with bins times time points. Request them only when
-needed.
-
-.. code-block:: python
-
-   heatmap_sim = rsim(
-       source={"initiation_rate": initiation_rate, "fork_speed": 1.4},
-       assumptions={
-           "sim_number": 50,
-           "resolution_x": 1.0,
-           "resolution_t": 2.0,
-           "time_grid": np.arange(0, 300 + 2, 2),
-           "time_statsQ": True,
-           "time_stats_xtQ": True,
-           "seed": 8,
-           "verbose": False,
-       },
-   )
-
-.. figure:: _static/img/replicated_fraction_heatmap_placeholder.svg
-   :width: 760
-   :alt: Placeholder for replicated-fraction heatmap
-
-   Placeholder for a replicated-fraction heatmap.
-
-Compare
--------
-
-.. code-block:: python
-
-   import numpy as np
-
-   predicted = simulation["replication_timing"]
-   valid = np.isfinite(timing) & np.isfinite(predicted)
-   timing_mse = np.mean((timing[valid] - predicted[valid]) ** 2)
-
-Export:
-
-.. code-block:: python
-
-   from dnascape import rsave
-
-   rsave(predicted, "outputs/simulated_timing.tsv", data_form="space")
-   rsave(simulation["origin_efficiency"], "outputs/origin_efficiency.tsv", data_form="space")
-
-App Page
---------
-
-Simulation runs ``rsim`` interactively.
-
-Inputs
-   Initiation rate and fork speed as constants or uploaded profiles.
-
-Controls
-   Region, resolution, replicates, geometry, time window, stalling, finite
-   factors, seed, output, plot view.
-
-Outputs
-   Timing, efficiency, directionality, replicated fraction, fork counts,
-   factors, and space-time fields.
-
-Python
-   ``rsim(source=..., assumptions=...)``.
-
-Performance
------------
-
-* Use small ``sim_number`` while exploring.
-* Avoid ``time_stats_xtQ=True`` unless needed.
-* Coarser ``resolution_x`` and ``resolution_t`` reduce cost.
-* Use ``dens_memmap_dir`` for large space-time outputs.
-* Set ``seed`` for comparisons.
+Mean curves can hide differences between individual S phases. Inspect
+variability and distributions as well as means. For larger runs, request only
+the time/space-time trackers and retained samples you need. Python exposes
+additional retention controls in the :ref:`python-notebooks` examples.

@@ -1,0 +1,34 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="720" height="300" viewBox="0 0 720 300" role="img" aria-labelledby="title desc">
+  <title id="title">A backward DNA replication cone</title>
+  <desc id="desc">At constant fork speed, earlier origin firings within a triangular region can reach a selected genomic position by time t. If there is no potential initiation in that region, the position remains unreplicated.</desc>
+  <defs>
+    <marker id="arrow" markerWidth="8" markerHeight="8" refX="6" refY="3" orient="auto" markerUnits="strokeWidth"><path d="M0,0 L6,3 L0,6" fill="none" stroke="#776e67" stroke-width="1.2"/></marker>
+  </defs>
+  <rect width="720" height="300" rx="10" fill="#fcfaf8"/>
+  <g font-family="Arial, Helvetica, sans-serif" font-size="15" fill="#3f3934">
+    <path d="M64,244 H462" fill="none" stroke="#776e67" stroke-width="1.5" marker-end="url(#arrow)"/>
+    <path d="M64,244 V30" fill="none" stroke="#776e67" stroke-width="1.5" marker-end="url(#arrow)"/>
+    <path d="M112,244 L268,60 L424,244 Z" fill="#b03412" fill-opacity=".1" stroke="#b03412" stroke-width="1.8"/>
+    <path d="M268,60 V244" fill="none" stroke="#b9aaa0" stroke-width="1.1" stroke-dasharray="5 5"/>
+    <path d="M150,200 H386" fill="none" stroke="#b9aaa0" stroke-width="1.1" stroke-dasharray="4 4"/>
+    <circle cx="268" cy="60" r="5" fill="#b03412"/>
+    <circle cx="223" cy="158" r="4.5" fill="#b03412"/>
+    <circle cx="322" cy="220" r="4.5" fill="#b03412"/>
+    <circle cx="142" cy="112" r="4" fill="#aca29b"/>
+    <circle cx="398" cy="143" r="4" fill="#aca29b"/>
+    <text x="20" y="30">Time</text>
+    <text x="75" y="256" font-size="13">0</text>
+    <text x="270" y="278" text-anchor="middle">Genomic position</text>
+    <text x="268" y="43" text-anchor="middle" font-weight="bold">(x, t)</text>
+    <text x="268" y="260" text-anchor="middle" font-size="13">x</text>
+    <text x="92" y="207" font-size="13">&#x3c4;</text>
+    <text x="106" y="276" text-anchor="middle" font-size="12">x - vt</text>
+    <text x="425" y="276" text-anchor="middle" font-size="12">x + vt</text>
+    <text x="492" y="90" fill="#b03412" font-weight="bold">Earlier origin firings</text>
+    <text x="492" y="114">Inside: can reach (x, t)</text>
+    <text x="492" y="143">Outside: cannot reach it</text>
+    <text x="492" y="193" font-weight="bold">Survival</text>
+    <text x="492" y="217">No initiation in the cone</text>
+    <text x="492" y="240">means unreplicated at (x, t).</text>
+  </g>
+</svg>

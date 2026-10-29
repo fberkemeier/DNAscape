@@ -1,134 +1,80 @@
 Quickstart
 ==========
 
-This example builds a timing profile, maps it to initiation rate with ``rmap``,
-simulates with ``rsim``, and exports the results.
+This first run uses the app to prepare Repli-seq data, infer a spatial
+initiation rate and simulate replication. It connects the three modules:
+**Data Manager (rdata) -> Mapping (rmap) -> Simulation (rsim)**.
 
-Python
-------
+Start the app using :doc:`installation`. The example uses K562 chromosome 1
+and a constant fork speed of 1.4 kb/min.
 
-.. code-block:: python
+1. Prepare a timing profile
+---------------------------
 
-   import numpy as np
-   from dnascape import rmap, rsim, rsave
+Open **Data Manager**.
 
-   x_kb = np.arange(0, 500, 1.0)
-   replication_timing = 35 + 25 * (1 - np.exp(-((x_kb - 250) / 130) ** 2))
-   fork_speed = 1.4  # kb/min
+1. Select **Link**, paste the public K562 Repli-seq BigWig URL below and click
+   **Inspect**. A successful inspection replaces the button text with a check.
+2. In **Configure**, leave **Apply configuration** on. Set **Prepare as** to
+   **Replication timing**, choose **chr1**, use the full chromosome, and set
+   **Bin size (bp)** to **1000** and **Aggregation** to **Mean**.
+3. Under **Values**, choose **Missing values -> Fill with a value** and use
+   **30** as the fill value.
+4. Open **Data transforms** and enable **Apply transform**. Leave the formula
+   as ``source``. Choose **Value scaling -> Target interval**, with **Minimum**
+   **30** and **Maximum** **500**, and enable **Invert**.
+5. Click **Convert**. The new result appears at the top of **Generated Files**.
+   Inspect it and download the timing profile from **Raw data** as TSV.
 
-Map timing to initiation rate:
+.. code-block:: text
 
-.. code-block:: python
+   https://hgdownload.gi.ucsc.edu/goldenPath/hg19/encodeDCC/wgEncodeUwRepliSeq/wgEncodeUwRepliSeqK562WaveSignalRep1.bigWig
 
-   initiation_rate = rmap(
-       source={
-           "replication_timing": replication_timing,
-           "fork_speed": fork_speed,
-       },
-       target="initiation_rate",
-       assumptions={
-           "resolution_x": 1.0,
-           "target_form": "space",
-           "target_shape": "weibull",
-           "maxiter": 10,
-       },
-   )
+The wave signal is relative. Assigning it a 30-500 minute interval is an
+illustrative calibration: larger Repli-seq scores become earlier times after
+inversion. Use an experimentally justified time scale for quantitative work.
+For a workflow using bundled data without downloads, see :ref:`python-notebooks`.
 
-Simulate:
-
-.. code-block:: python
-
-   simulation = rsim(
-       source={"initiation_rate": initiation_rate, "fork_speed": fork_speed},
-       assumptions={
-           "sim_number": 100,
-           "resolution_x": 1.0,
-           "resolution_t": 2.0,
-           "time_statsQ": True,
-           "seed": 7,
-           "verbose": False,
-       },
-   )
-
-   predicted_timing = simulation["replication_timing"]
-   replicated_fraction = simulation["replicated_fraction"]
-
-Export:
-
-.. code-block:: python
-
-   rsave(initiation_rate, "outputs/initiation_rate_chr1.tsv", data_form="space")
-   rsave(predicted_timing, "outputs/predicted_timing_chr1.tsv", data_form="space")
-   rsave(replicated_fraction, "outputs/replicated_fraction.tsv", data_form="time")
-
-.. figure:: _static/img/mapped_firing_placeholder.svg
-   :width: 760
-   :alt: Placeholder for inferred initiation-rate profile
-
-   Placeholder for an inferred initiation-rate profile.
-
-Same Workflow In The App
+2. Infer initiation rate
 ------------------------
 
-.. list-table::
-   :header-rows: 1
-   :widths: 24 38 38
+Open **Mapping**.
 
-   * - Step
-     - App
-     - Python
-   * - Prepare input
-     - Data Management: convert or bin input files.
-     - ``rload``, ``rdata``, ``rtrack``.
-   * - Map
-     - Mapping: target **Initiation rate**, route **Replication timing + fork
-       speed**.
-     - ``rmap(..., target="initiation_rate")``.
-   * - Simulate
-     - Simulation: supply initiation rate, fork speed, replicates, seed.
-     - ``rsim(source=..., assumptions=...)``.
-   * - Export
-     - Use page export controls or Cached Files.
-     - ``rsave`` or matplotlib ``savefig``.
+1. Choose **Mapped output -> Initiation rate**, **Dependence -> Space**, and
+   **Input factors -> Replication timing + fork speed**.
+2. Under **Inputs**, upload the prepared timing profile with **Space**
+   dependence. Set fork speed to **Constant**, with **Value** **1.4 kb/min**.
+3. In **Region**, turn **Whole region** off. Set **Start** to **40000 kb**,
+   **End** to **50000 kb**, and **Resolution** to **1 kb**. Leave **Periodic** off.
+4. Click **Map**. Compare the observed timing with the fitted prediction and
+   inspect the MSE. Download the initiation-rate profile from **Raw data**.
 
-Bundled Data
-------------
+You can also use a result's **Open in** button to transfer it directly. For
+Mapping, choose the target, route and receiving input when prompted.
 
-.. code-block:: python
+3. Simulate the fitted programme
+--------------------------------
 
-   from dnascape import loadcsv, select_profile_region, plotf
+Open **Simulation**.
 
-   timing_full = loadcsv("replication_timing", cell_line="H1", chr_number=1)
-   timing, x_kb = select_profile_region(
-       timing_full,
-       raw_resolution_kb=1.0,
-       interval_kb=(10_000, 40_000),
-   )
+1. Upload the mapped initiation rate as a **Profile** with **Space** dependence.
+   Keep fork speed **Constant** at **1.4 kb/min**.
+2. Enable **Whole region** and use **Resolution** **1 kb/bin**. This uses the
+   full uploaded profile, which now represents the mapped 10,000 kb interval.
+3. Set **Simulations (replicates)** to **100** and enable **Fix seed** for a
+   reproducible run. Enable **Track time courses** to include progression,
+   origin firing over time and replicon lengths.
+4. Click **Simulate**. In **Preview**, select an output to inspect and download
+   the data you need. Compare the ensemble timing with the mapping prediction.
 
-   plotf(
-       timing,
-       x_array=x_kb,
-       xtitle="Genomic position (kb)",
-       ytitle="Replication timing (min)",
-       invyQ=True,
-   )
+Change one assumption, such as fork speed, and rerun to compare programmes.
+The :doc:`simulationengine` guide explains optional fork mechanisms and outputs.
 
-Notebook version: ``examples/0-quickstart.ipynb``.
+Continue
+--------
 
-Outputs
--------
-
-``rmap`` returns the requested feature. With ``return_info=True`` it returns
-values plus route metadata.
-
-``rsim`` always returns timing, origin efficiency, fork directionality,
-completion time, origin counts, and inter-origin distances. Time courses need
-``time_statsQ=True``. Space-time fields need ``time_stats_xtQ=True``.
-
-Next
-----
-
-* :doc:`foundations`: terms and shapes.
-* :doc:`datamanagement`: input preparation.
-* :doc:`mappingfunctions`: ``rmap`` routes.
-* :doc:`simulationengine`: ``rsim`` controls.
+* :doc:`niceguiapp` explains navigation, transfers, settings and code export.
+* :doc:`datamanagement`, :doc:`mappingfunctions` and :doc:`simulationengine`
+  describe each workflow in more detail.
+* :doc:`foundations` explains the equations and assumptions.
+* :doc:`python` provides a runnable script and the notebook sequence.

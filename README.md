@@ -90,11 +90,11 @@ Move to **Simulation** to simulate replication using the inferred origin-firing 
 2. In **Region**, enable **Whole region** and keep **Resolution** at **1 kb/bin**. In **Simulation settings**, set **Simulations (replicates)** to **100**; optionally enable **Fix seed** for reproducible runs.
 3. Click **Simulate**, explore the outputs in **Preview**, and download data or figures. Change the fork speed, number of simulations or other settings and rerun to compare outcomes.
 
-For advanced examples and further workflows, see the [documentation](https://dnascape.readthedocs.io/en/latest/examples.html), which is still being expanded.
+For advanced examples and further workflows, see the [documentation](https://dnascape.readthedocs.io/en/latest/python.html#notebooks), which is still being expanded.
 
 ## Using the Python code
 
-Use the [Python API](https://dnascape.readthedocs.io/en/latest/api_reference.html) in scripts or notebooks; install the package from this checkout with `python -m pip install .`.
+Use the [Python guide](https://dnascape.readthedocs.io/en/latest/python.html) in scripts or notebooks; install the package from this checkout with `python -m pip install .`.
 
 To turn an app workflow into code, enable **Settings → Interface → Developer mode**, then click **Code** on Data Manager, Mapping, Simulation or Analysis. This downloads an editable `.py` script with the current settings and input/output folder definitions. Place any listed source files in its input folder and run it with DNAscape installed.
 
