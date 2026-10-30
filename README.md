@@ -65,7 +65,7 @@ For later launches, activate `.venv` and simply run `python -m app`.
 
 Here we present a quickstart example for processing data, mapping a kinetic feature, and simulating a replication programme.
 
-### Managing data
+### I. Managing data
 
 With the app open, select **Data Manager** in the left-hand menu. We will prepare a replication-timing profile from publicly available Repli-seq data:
 
@@ -74,7 +74,7 @@ With the app open, select **Data Manager** in the left-hand menu. We will prepar
 3. In **Data transforms**, switch on **Apply transform** and leave the formula as `source`. Set **Value scaling** to `Target interval`, **Minimum** to `30`, **Maximum** to `500`, and check **Invert**, so higher Repli-seq scores represent earlier replication. This assigns an illustrative 30–500 minute range to relative timing scores.
 4. Click **Convert**, inspect the plot, and download the timing profile from **Generated Files → Raw data** as TSV.
 
-### Mapping data
+### II. Mapping data
 
 Select **Mapping** from the left-hand menu. We will now infer a spatial initiation-rate profile that fits the timing data:
 
@@ -82,7 +82,7 @@ Select **Mapping** from the left-hand menu. We will now infer a spatial initiati
 2. Under **Inputs**, upload the timing profile as a spatial profile. Set **Fork speed** to `Constant` with a value of `1.4` kb/min.
 3. In **Region**, leave **Whole region** off and set **Start** to `40000` kb, **End** to `50000` kb, and keep **Resolution** at `1` kb. Click **Map**, compare observed and fitted timing (toggle the **Output** options in the **Preview** panel), and download the fitted initiation-rate profile from **Raw data**.
 
-### Simulating DNA replication
+### III. Simulating DNA replication
 
 Move to **Simulation** to simulate replication using the inferred origin-firing profile:
 
@@ -90,21 +90,21 @@ Move to **Simulation** to simulate replication using the inferred origin-firing 
 2. In **Region**, enable **Whole region** and keep **Resolution** at `1` kb/bin. In **Simulation settings**, set **Simulations (replicates)** to `100`; optionally enable **Fix seed** for reproducible runs.
 3. Click **Simulate**, explore the outputs in **Preview**, and download data or figures. Change the fork speed, number of simulations or other settings and rerun to compare outcomes.
 
-For advanced examples and further workflows, see the [documentation](https://dnascape.readthedocs.io/en/latest/python.html#notebooks), which is still being expanded.
-
 ## Using the source code
 
 DNAscape is written in Python. For large-scale simulations, automated analyses or customised workflows, you can export code from the app or use its Python modules directly.
 
 ### Export a workflow from the app
 
-The app includes an option to directly download the relevant code for one of DNAscape's core modules, namely **Data Manager**, **Mapping**, **Simulation** and **Analysis**. Enabling **Settings → Interface → Developer mode** displays a **Code** button next to the action button in each page. Each button exports a self-contained Python script reproducing the page’s workflow with your current settings and input/output folder definitions.
-
-Run the script with DNAscape installed and the required files in its input folder. Uploads are optional: missing inputs use placeholder filenames that you can edit to reference local data.
+The app includes an option to directly download the relevant code for one of DNAscape's core modules, namely **Data Manager**, **Mapping**, **Simulation** and **Analysis**. Enabling **Settings → Interface → Developer mode** displays a **Code** button next to the action button in each page. Each button exports a self-contained Python script reproducing the page’s workflow with your current settings and input/output folder definitions. Run the script with DNAscape installed and the required files in its input folder. Uploads are optional: missing inputs use placeholder filenames that you can edit to reference local data.
 
 ### Use the Python modules directly
 
-An alternative way is to use the more user-friendly DNAscape’s modules into your own scripts or notebooks, including rmap for mapping and rsim for simulation. Within `examples`, see `0_quickstart.ipynb`, `2_mapping.ipynb` and `3_simulation.ipynb` for worked examples, and the [Python guide](https://dnascape.readthedocs.io/en/latest/python.html) for further details.
+An alternative way is to use the more user-friendly DNAscape’s modules into your own scripts or notebooks, including rmap for mapping and rsim for simulation. Within `examples`, see `0_quickstart.ipynb`, `2_mapping.ipynb` and `3_simulation.ipynb` for worked examples.
+
+## Documentation
+
+Please see the [documentation](https://dnascape.readthedocs.io/en/latest/python.html#notebooks) for detailed usage instructions, descriptions of DNAscape's features, and further examples.
 
 ## Citation
 
