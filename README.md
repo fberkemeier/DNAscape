@@ -70,36 +70,41 @@ Here we present a quickstart example for processing data, mapping a kinetic feat
 With the app open, select **Data Manager** in the left-hand menu. We will prepare a replication-timing profile from publicly available Repli-seq data:
 
 1. Download the [K562 Repli-seq bigWig file](https://hgdownload.gi.ucsc.edu/goldenPath/hg19/encodeDCC/wgEncodeUwRepliSeq/wgEncodeUwRepliSeqK562WaveSignalRep1.bigWig) from ENCODE and **Upload** it. Alternatively, choose **Link**, select the K562 Repli-seq example to automatically paste the ENCODE link and click **Inspect**. This uploads the raw bigWig file onto DNAscape.
-2. In **Configure**, set **Prepare as** to `Replication timing`. Select `chr1` and set **Bin size (bp)** to `1000`. Under **Values**, set **Missing values** as "Fill with a value" and set **Fill value** to `30` (minutes).
+2. In **Configure**, set **Prepare as** to `Replication timing`. Select `chr1` and set **Bin size (bp)** to `1000`. Under **Values**, set **Missing values** as `Fill with a value` and set **Fill value** to `30` (minutes).
 3. In **Data transforms**, switch on **Apply transform** and leave the formula as `source`. Set **Value scaling** to `Target interval`, **Minimum** to `30`, **Maximum** to `500`, and check **Invert**, so higher Repli-seq scores represent earlier replication. This assigns an illustrative 30–500 minute range to relative timing scores.
 4. Click **Convert**, inspect the plot, and download the timing profile from **Generated Files → Raw data** as TSV.
 
 ### Mapping data
 
-Select **Mapping** from the left-hand menu. We will now infer a spatial initiation-rate profile that best fits the timing data:
+Select **Mapping** from the left-hand menu. We will now infer a spatial initiation-rate profile that fits the timing data:
 
-1. Within **Target**, set **Mapped output** to `Initiation rate`, **Dependence** to `Space`, and **Input factors** to `Replication timing + fork speed`.
+1. Within **Target**, set **Mapped output** to `Initiation rate`, **Dependence** to `Space`, and **Input factors** to `Replication timing + fork speed`. This determines the mapping route: to determine the initation rate from given replication timing and fork speed.
 2. Under **Inputs**, upload the timing profile as a spatial profile. Set **Fork speed** to `Constant` with a value of `1.4` kb/min.
-3. In **Region**, leave **Whole region** off and set **Start** to `40000` kb, **End** to `50000` kb, and keep **Resolution** at `1` kb. Click **Map**, compare observed and fitted timing, and download the fitted initiation-rate profile from **Raw data**.
+3. In **Region**, leave **Whole region** off and set **Start** to `40000` kb, **End** to `50000` kb, and keep **Resolution** at `1` kb. Click **Map**, compare observed and fitted timing (toggle the **Output** options in the **Preview** panel), and download the fitted initiation-rate profile from **Raw data**.
 
 ### Simulating DNA replication
 
 Move to **Simulation** to simulate replication using the inferred origin-firing profile:
 
-1. Under **Initiation rate**, choose **Profile** and upload the mapped profile with **Space** dependence. Keep **Fork speed** constant at **1.4 kb/min**.
-2. In **Region**, enable **Whole region** and keep **Resolution** at **1 kb/bin**. In **Simulation settings**, set **Simulations (replicates)** to **100**; optionally enable **Fix seed** for reproducible runs.
+1. Under **Initiation rate**, choose `Profile` and upload the mapped profile. DNAscape automatically detects the space dependence. Keep **Fork speed** constant at `1.4` kb/min.
+2. In **Region**, enable **Whole region** and keep **Resolution** at `1` kb/bin. In **Simulation settings**, set **Simulations (replicates)** to `100`; optionally enable **Fix seed** for reproducible runs.
 3. Click **Simulate**, explore the outputs in **Preview**, and download data or figures. Change the fork speed, number of simulations or other settings and rerun to compare outcomes.
 
 For advanced examples and further workflows, see the [documentation](https://dnascape.readthedocs.io/en/latest/python.html#notebooks), which is still being expanded.
 
-## Using the Python code
+## Using the source code
 
-Use the [Python guide](https://dnascape.readthedocs.io/en/latest/python.html) in scripts or notebooks; install the package from this checkout with `python -m pip install .`.
+DNAscape is written in Python. For large-scale simulations, automated analyses or customised workflows, you can export code from the app or use its Python modules directly.
 
-To turn an app workflow into code, enable **Settings → Interface → Developer mode**, then click **Code** on Data Manager, Mapping, Simulation or Analysis. This downloads an editable `.py` script with the current settings and input/output folder definitions. Place any listed source files in its input folder and run it with DNAscape installed.
+### Export a workflow from the app
 
-Uploads are optional for code export: missing inputs use placeholder filenames,
-which you can edit to point to data already stored locally.
+The app includes an option to directly download the relevant code for one of DNAscape's core modules, namely **Data Manager**, **Mapping**, **Simulation** and **Analysis**. Enabling **Settings → Interface → Developer mode** displays a **Code** button next to the action button in each page. Each button exports a self-contained Python script reproducing the page’s workflow with your current settings and input/output folder definitions.
+
+Run the script with DNAscape installed and the required files in its input folder. Uploads are optional: missing inputs use placeholder filenames that you can edit to reference local data.
+
+### Use the Python modules directly
+
+An alternative way is to use the more user-friendly DNAscape’s modules into your own scripts or notebooks, including rmap for mapping and rsim for simulation. Within `examples`, see `0_quickstart.ipynb`, `2_mapping.ipynb` and `3_simulation.ipynb` for worked examples, and the [Python guide](https://dnascape.readthedocs.io/en/latest/python.html) for further details.
 
 ## Citation
 
