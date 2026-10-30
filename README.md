@@ -6,15 +6,15 @@
 
 DNAscape is software for mapping and simulating DNA replication. Its mapping workflow infers origin firing and fork speed from data on replication timing, origin competence, fork directionality and other features. Its simulation workflow models individual S phases and simulates whole-genome replication programmes from initiation and fork-speed inputs, quantifying inter-origin distances, origin efficiency, S-phase duration and other replication statistics. Together, the two workflows can be used to investigate the effects of replication stress, quantify variability between cells, and test hypotheses about the mechanisms shaping replication programmes across organisms and cell types.
 
-DNAscape works with experimental or model-derived profiles of replication timing, origin activity, and fork dynamics, including profiles derived from Repli-seq, SNS-seq and OK-seq. Tools for preparing data, visualising results and analysing datasets support both workflows. Use DNAscape through its local browser app, in Python scripts and Jupyter notebooks, or from the command line.
+DNAscape works with experimental or model-derived profiles of replication timing, origin activity, and fork dynamics, including profiles derived from Repli-seq, SNS-seq and OK-seq. Tools for preparing data, visualising results and analysing datasets support both workflows. Use DNAscape through its browser app, in Python scripts and Jupyter notebooks, or from the command line.
 
 ## Run the DNAscape app
 
-To run the app locally, follow the steps below.
+DNAscape is best used through its interactive app, built with [NiceGUI](https://nicegui.io). To run the app locally, follow the steps below.
 
 ### Requirements
 
-- Python 3.10 or newer (Python 3.13 recommended)
+- Python 3.10 or newer
 - Git
 - A modern web browser
 
@@ -27,7 +27,7 @@ cd DNAscape
 
 ### 2. Create and activate a virtual environment
 
-Run these commands from the project folder. Choose an installed Python version below (`3.13` is recommended):
+Choose an installed Python version (3.13 is recommended):
 
 On Windows PowerShell:
 
@@ -61,7 +61,7 @@ python -m pip install -r app/requirements.txt
 python -m app
 ```
 
-For later launches, activate `.venv` again and run `python -m app`.
+For later launches, activate `.venv` and simply run `python -m app`.
 
 ## A quick first run
 
