@@ -19,6 +19,9 @@ Enable **Settings -> Interface -> Developer mode** and select **Code** on a
 workflow page. The download is one ``.py`` file, containing editable settings
 and input/output folder definitions.
 
+Uploads are optional: missing inputs use placeholder filenames. Edit these
+paths to use files already stored locally, or place the files in the input folder.
+
 Place the listed original files in its input folder, adjust paths as needed,
 and run it with the same DNAscape version. Data Manager scripts reproduce
 preparation and transforms; Mapping and Simulation scripts reproduce their

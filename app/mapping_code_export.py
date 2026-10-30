@@ -65,7 +65,7 @@ def snapshot_mapping_code(
     processing in the downloaded script actually rereads the original data.
     """
     members: list[tuple[str, bytes | Mapping[str, np.ndarray]]] = []
-    from app.code_export import CodeInputs
+    from app.code_export import CodeInputs, placeholder_upload
     retained_inputs = CodeInputs()
     input_recipes: dict[str, Any] = {}
     for index, (key, live) in enumerate(inputs.items(), start=1):
@@ -77,11 +77,15 @@ def snapshot_mapping_code(
             item["mode"] = "prepared"
             item["prepared_path"] = None
             if enabled:
-                bundle = read_input(live)
                 path = f"prepared-{index:02d}.npz"
-                # Completed workflow arrays are immutable. Retain their
-                # references here and compress them in the export worker.
-                members.append((path, dict(bundle)))
+                selected = _value(surface.get("prepared_selection"))
+                if "prepared_results" in surface and selected not in surface["prepared_results"]:
+                    members.append((path, b""))
+                else:
+                    bundle = read_input(live)
+                    # Completed workflow arrays are immutable. Retain their
+                    # references here and compress them in the export worker.
+                    members.append((path, dict(bundle)))
                 item["prepared_path"] = path
         elif form == "scalar":
             multiple = str(_value(surface.get("mode"), "")) == "constants"
@@ -91,22 +95,24 @@ def snapshot_mapping_code(
                 item["values"] = [_value(control) for control in controls]
             else:
                 item["values"] = _value(surface.get("scalar"))
-        elif form == "regions" and str(_value(surface.get("source"), "")) != "upload":
+        elif (form == "regions" and str(_value(surface.get("source"), "")) != "upload"
+              and (not enabled or str(_value(surface.get("editor"), "") or "").strip())):
             item["mode"] = "regions"
             item["values"] = read_input(live).tolist() if enabled else _value(surface.get("editor"), "")
         else:
             item["mode"] = "upload"
             selections = surface.get("selection_values", {})
             files: list[dict[str, Any]] = []
-            if enabled and not surface.get("inspections"):
-                raise ValueError(f"Upload {key.replace('_', ' ')} data before exporting code.")
-            for inspection in surface.get("inspections", ()):
+            inspections = surface.get("inspections", ())
+            if enabled and not inspections:
+                inspections = (placeholder_upload(key, form=form),)
+            for inspection in inspections:
                 path = retained_inputs.upload(inspection)
                 members.append((path, bytes(inspection.content)))
                 selected = selections.get(inspection.name, {})
                 files.append({
                     "path": path,
-                    "name": inspection.name,
+                    "name": inspection.name if inspection.content else None,
                     "column": selected.get("column"),
                     "array_key": selected.get("array_key"),
                     "source_format": inspection.source_format,
@@ -169,7 +175,8 @@ def build_mapping_python(snapshot: MappingCodeSnapshot) -> ExportArtifact:
     inputs = "\n".join(f"#   {path!r}" for path, data in snapshot.files if isinstance(data, bytes))
     source = f'''# DNAscape Mapping: run with this version of DNAscape installed.
 # Run: python mapping.py
-# Place the original files under INPUT_DIRECTORY:
+# Edit INPUT_DIRECTORY and the filenames below to use your local data.
+# Missing uploads use placeholder filenames; replace them or supply those files:
 {inputs or "#   No external files: constants/prepared data are included below."}
 
 from pathlib import Path

@@ -4,18 +4,13 @@
 
 # DNAscape
 
-DNAscape is software for mapping and simulating DNA replication kinetics. It infers origin firing and fork movement from genomic data and predicts replication timing and other replication features. Use it through Python, notebooks, the command line or the local browser app.
+DNAscape is software for mapping and simulating DNA replication. Its mapping workflow infers origin firing and fork speed from data on replication timing, origin competence, fork directionality and other features. Its simulation workflow models individual S phases and simulates whole-genome replication programmes from initiation and fork-speed inputs, quantifying inter-origin distances, origin efficiency, S-phase duration and other replication statistics. Together, the two workflows can be used to investigate the effects of replication stress, quantify variability between cells, and test hypotheses about the mechanisms shaping replication programmes across organisms and cell types.
 
-## What you can do
-
-- **Prepare experimental data:** derive replication-timing profiles from Repli-seq, origin-firing profiles from SNS-seq and fork-directionality profiles from OK-seq. Select genomic regions, convert resolutions, smooth and rescale signals, or transform selected regions.
-- **Map replication features:** choose a target, such as initiation rate, fork speed, replication timing or fork directionality, and infer it from compatible input profiles or constant values. Fit spatial, temporal or space-time dependence where supported.
-- **Simulate DNA replication:** model origin firing and fork movement, explore changes in initiation rate or fork speed, and inspect timing, fork profiles, replicated fractions and origin statistics across simulations.
-- **Visualise and analyse results:** compare datasets, explore profiles and distributions, perform statistical analyses and customise plots. Download prepared data and model outputs as TSV, TXT, CSV or NPZ, alongside figures and analysis reports.
+DNAscape works with experimental or model-derived profiles of replication timing, origin activity, and fork dynamics, including profiles derived from Repli-seq, SNS-seq and OK-seq. Tools for preparing data, visualising results and analysing datasets support both workflows. Use DNAscape through its local browser app, in Python scripts and Jupyter notebooks, or from the command line.
 
 ## Run the DNAscape app
 
-An online version is a work in progress. To run the app locally, follow the steps below.
+To run the app locally, follow the steps below.
 
 ### Requirements
 
@@ -32,21 +27,22 @@ cd DNAscape
 
 ### 2. Create and activate a virtual environment
 
+Run these commands from the project folder. Choose an installed Python version below (`3.13` is recommended):
+
 On Windows PowerShell:
 
 ```powershell
-py -m venv .venv
+$pythonVersion = "3.13"
+py "-$pythonVersion" -m venv .venv
 .\.venv\Scripts\Activate.ps1
 ```
 
 On macOS and Linux:
 
 ```bash
-python3 -m venv .venv
+python3.13 -m venv .venv
 source .venv/bin/activate
 ```
-
-> **BigWig note:** if you use BigWig files or links, installation automatically selects `pybigtools` for Python 3.10–3.13 or `figwig` for Python 3.14 and newer. Both provide the same region and binning controls. Figwig's first read compiles and caches its decoding routines, so it can take a few seconds longer.
 
 ### 3. Install the app
 
@@ -57,11 +53,15 @@ python -m pip install --upgrade pip
 python -m pip install -r app/requirements.txt
 ```
 
+> **BigWig note:** if you use BigWig files, installation automatically selects `pybigtools` for Python 3.10–3.13 or `figwig` for Python 3.14 and newer. Both provide the same region and binning controls.
+
 ### 4. Start DNAscape
 
 ```bash
 python -m app
 ```
+
+For later launches, activate `.venv` again and run `python -m app`.
 
 ## A quick first run
 
@@ -97,6 +97,9 @@ For advanced examples and further workflows, see the [documentation](https://dna
 Use the [Python guide](https://dnascape.readthedocs.io/en/latest/python.html) in scripts or notebooks; install the package from this checkout with `python -m pip install .`.
 
 To turn an app workflow into code, enable **Settings → Interface → Developer mode**, then click **Code** on Data Manager, Mapping, Simulation or Analysis. This downloads an editable `.py` script with the current settings and input/output folder definitions. Place any listed source files in its input folder and run it with DNAscape installed.
+
+Uploads are optional for code export: missing inputs use placeholder filenames,
+which you can edit to point to data already stored locally.
 
 ## Citation
 

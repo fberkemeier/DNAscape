@@ -2869,7 +2869,7 @@ def render(_navigate: Callable[[str], None]) -> None:
                     )
 
                 async def download_simulation_code() -> None:
-                    from app.code_export import CodeInputs, CodeSnapshot, build_python, filter_code_settings, statistics_code_settings
+                    from app.code_export import CodeInputs, CodeSnapshot, build_python, filter_code_settings, placeholder_upload, statistics_code_settings
 
                     if running or any(control.loading for control in filter_controls.values()):
                         notify("Wait for the data operation to finish before exporting code.", type="warning")
@@ -2891,10 +2891,9 @@ def render(_navigate: Callable[[str], None]) -> None:
                                 options["values"] = list(_read_simulation_constant_controls(
                                     source.constants, label=label, positive=key == "fork_speed"))
                             else:
-                                if not source.inspections:
-                                    raise ValueError(f"Upload {label.lower()} data.")
+                                inspections = source.inspections or (placeholder_upload(key, form=options["form"]),)
                                 options["files"] = [dict(source=inputs.encode(inspection),
-                                    **source.selections.get(inspection.name, source.selection)) for inspection in source.inspections]
+                                    **source.selections.get(inspection.name, source.selection)) for inspection in inspections]
                             source_options[key] = options
                         preferences = {}
                         for (dataset, key), preference in {**batch_raw_preferences, **ensemble_raw_preferences}.items():

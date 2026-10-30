@@ -3527,15 +3527,18 @@ def render(_navigate: Callable[[str], None]) -> None:
                     filter_controls.controls["enabled"].on_value_change(render_filter_exports)
 
     def build_request(
-        source: _DataManagerSource,
+        source: _DataManagerSource | None,
         *,
         output_name: str,
     ) -> DataConversionRequest:
-        settings = configuration_for(source)
-        controls = {key: SimpleNamespace(value=value) for key, value in settings.items()}
-        apply_configuration = bool(settings["apply_configuration"])
-        current = source.inspection
-        details = selected_data(source)
+        from app.code_export import placeholder_upload
+
+        configuration = configuration_for(source) if source is not None else dict(settings)
+        controls = {key: SimpleNamespace(value=value) for key, value in configuration.items()}
+        apply_configuration = bool(configuration["apply_configuration"])
+        current = source.inspection if source is not None else placeholder_upload()
+        details = selected_data(source) if source is not None else _SelectedData("x", ())
+        selection = source.selection if source is not None else ""
         target_format = "tsv"
         decimal_places = _integer(
             controls["decimal_places"],
@@ -3543,33 +3546,33 @@ def render(_navigate: Callable[[str], None]) -> None:
             minimum=0,
         ) if apply_configuration else None
         kwargs: dict[str, Any] = {}
-        if details.form in {"x", "xt"} and source.selection != _REPLISEQ_TIMING and apply_configuration:
-            chromosome = settings["chromosome"] if any(str(name).lower() in {"chr", "chrom", "chromosome"} for name in current.columns) else None
-            _rows, chromosomes = spatial_profile_rows(current)
+        if details.form in {"x", "xt"} and selection != _REPLISEQ_TIMING and apply_configuration:
+            chromosome = configuration["chromosome"] if any(str(name).lower() in {"chr", "chrom", "chromosome"} for name in current.columns) else None
+            _rows, chromosomes = spatial_profile_rows(current) if source is not None else (None, ())
             if chromosomes and chromosome not in chromosomes:
                 chromosome = chromosomes[0]
-            if not settings["profile_region_custom"] or not settings["profile_bin_custom"]:
+            if source is not None and (not configuration["profile_region_custom"] or not configuration["profile_bin_custom"]):
                 length = (details.shape[0] if len(details.shape) == 2 and (details.form == "xt" or 1 not in details.shape)
                           else int(np.prod(details.shape)))
                 _positions, intervals, _supplied = spatial_profile_grid(
-                    current, length, source_bin_size=settings["source_bin_size"], chromosome=chromosome,
+                    current, length, source_bin_size=configuration["source_bin_size"], chromosome=chromosome,
                 )
-                if not settings["profile_region_custom"]:
+                if not configuration["profile_region_custom"]:
                     controls["start"].value = int(round(intervals[0, 0] * 1000))
                     controls["end"].value = int(round(intervals[-1, 1] * 1000))
-                if not settings["profile_bin_custom"]:
+                if not configuration["profile_bin_custom"]:
                     controls["bin_size"].value = max(1, int(round(np.median(intervals[:, 1] - intervals[:, 0]) * 1000)))
             kwargs.update(
                 profile_binning=True,
                 source_bin_size=_integer(controls["source_bin_size"], "Source resolution", minimum=1),
-                start=_integer(controls["start"], "Start", minimum=0),
-                end=_integer(controls["end"], "End", minimum=1),
+                start=_integer(controls["start"], "Start", minimum=0) if source is not None or configuration["profile_region_custom"] else None,
+                end=_integer(controls["end"], "End", minimum=1) if source is not None or configuration["profile_region_custom"] else None,
                 bin_size=_integer(controls["bin_size"], "Bin size", minimum=1),
                 aggregation="mean",
                 chromosome=chromosome,
                 memory_limit_mb=get_export_settings().conversion_memory_limit_mb,
             )
-        if source.selection == _REPLISEQ_TIMING:
+        if selection == _REPLISEQ_TIMING:
             chromosome = str(controls["chromosome"].value or "")
             if source.track_inspection is None or chromosome not in {
                 region.chromosome for region in source.track_inspection.regions
@@ -3634,7 +3637,7 @@ def render(_navigate: Callable[[str], None]) -> None:
             value_scaling = str(controls["value_scaling"].value)
             threshold_enabled, threshold_min, threshold_max = (
                 _resolved_feature_bounds(
-                    str(settings["feature"]),
+                    str(configuration["feature"]),
                     _optional_number(controls["threshold_min"], "Lower threshold"),
                     _optional_number(controls["threshold_max"], "Upper threshold"),
                 )
@@ -3687,33 +3690,36 @@ def render(_navigate: Callable[[str], None]) -> None:
             fill_value=_number(controls["fill_value"], "Fill value") if apply_configuration else 0.0,
             decimal_places=decimal_places,
             data_filter=filter_controls.snapshot() if filter_controls is not None else DataFilterSettings(),
-            transform_formula=transform_controls.formula_for(source.source_id) if transform_controls is not None else None,
+            transform_formula=transform_controls.formula_for(source.source_id if source is not None else None) if transform_controls is not None else None,
             value_name=_selected_value_name(
                 source,
                 details,
-                str(settings["feature"]),
-            ),
+                str(configuration["feature"]),
+            ) if source is not None else _FEATURE_VALUE_NAMES[str(configuration["feature"])],
             genome_build=None,
-            units="min" if source.selection == _REPLISEQ_TIMING else None,
-            source_url=str(source.remote_metadata.get("final_url") or "") or None,
-            biological_role=str(settings["feature"]),
+            units="min" if selection == _REPLISEQ_TIMING else None,
+            source_url=(str(source.remote_metadata.get("final_url") or "") or None
+                        if source is not None else configuration.get("source_url") or None),
+            biological_role=str(configuration["feature"]),
             semantic_note=("Timing from sixteen equally spaced S-phase fractions. "
                            "Default T50 is the midpoint of a cumulative sigmoid fit."
-                           if source.selection == _REPLISEQ_TIMING else _FEATURE_HINTS[str(settings["feature"])]),
+                           if selection == _REPLISEQ_TIMING else _FEATURE_HINTS[str(configuration["feature"])]),
             **kwargs,
         )
 
-    def build_requests() -> tuple[
-        tuple[_DataManagerSource, DataConversionRequest],
+    def build_requests(*, allow_placeholders: bool = False) -> tuple[
+        tuple[_DataManagerSource | None, DataConversionRequest],
         ...,
     ]:
-        if pending_links := unresolved_link_rows():
+        if not allow_placeholders and (pending_links := unresolved_link_rows()):
             noun = "link" if len(pending_links) == 1 else "links"
             raise ValueError(
                 f"Inspect the {len(pending_links)} pending public {noun} before converting."
             )
         candidates = tuple(sources_for_mode())
         if not candidates:
+            if allow_placeholders:
+                return ((None, build_request(None, output_name=_DATA_FILE_STEM)),)
             raise ValueError("Add at least one data source before converting.")
         save_source_configuration()
 
@@ -3761,7 +3767,7 @@ def render(_navigate: Callable[[str], None]) -> None:
             notify("Wait for the data operation to finish before exporting code.", type="warning")
             return
         try:
-            requests = build_requests()
+            requests = build_requests(allow_placeholders=True)
             inputs = CodeInputs()
             request_options = [inputs.encode(replace(
                 request, data_filter=filter_code_settings(filter_controls),

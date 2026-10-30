@@ -16,6 +16,18 @@ class CodeSnapshot:
     files: tuple[tuple[str, bytes], ...] = ()
 
 
+def placeholder_upload(name="source", *, form="x"):
+    """Describe an editable file input without inspecting or inventing data."""
+    from dnascape.workflows.uploads import UploadInspection
+
+    extension = "npz" if form == "xt" else "tsv"
+    return UploadInspection(
+        name=f"{name}.{extension}", content_type="application/octet-stream",
+        content=b"", source_format=extension, compressed=False,
+        expected_form=form, inferred_form=form,
+    )
+
+
 class CodeInputs:
     """Retain original filenames, deduplicating identical shared source files."""
     def __init__(self):
@@ -43,6 +55,15 @@ def filter_code_settings(controls):
     settings = controls.snapshot()
     if controls.upload is not None and settings.selection == "profile":
         settings = replace(settings, profile=None, upload=controls.upload)
+    if settings.enabled:
+        prefix = controls.marker_prefix.replace("-", "_")
+        if settings.selection == "profile" and settings.profile is None and settings.upload is None:
+            settings = replace(settings, upload=placeholder_upload(prefix + "_mask_positions", form="regions"),
+                               profile_layout="positions")
+        if (settings.action == "modulate" and settings.modulation.upload is None
+                and settings.modulation.values is None and not settings.modulation.profiles):
+            settings = replace(settings, modulation=replace(settings.modulation,
+                upload=placeholder_upload(prefix + "_modulation_profile", form="auto")))
     return settings
 
 
@@ -68,7 +89,8 @@ def build_python(snapshot: CodeSnapshot) -> ExportArtifact:
     source = f'''# DNAscape {workflow.replace("_", " ").title()}
 # Run with the DNAscape package used to export this script installed:
 #   python {workflow}.py
-# Place the original source files under INPUT_DIRECTORY:
+# Edit INPUT_DIRECTORY and the filenames below to use your local data.
+# Missing uploads use placeholder filenames; replace them or supply those files:
 {inputs}
 
 from pathlib import Path

@@ -367,6 +367,9 @@ Data Manager, Mapping, Simulation or Analysis (Plotting). Each button downloads
 one editable `.py` file directly. Exporting code reads the current controls and
 does not start the page's conversion, fit, simulation or analysis.
 
+Uploads are optional for code export. Missing inputs use editable placeholder
+filenames, so scripts can read data already stored in a local folder.
+
 Use Python 3.10 or newer and install the matching DNAscape checkout, for example
 `python -m pip install /path/to/DNAscape`. The scripts need the DNAscape package,
 not the app or NiceGUI. Put the original source files listed at the top of the

@@ -1534,17 +1534,19 @@ def render(_navigate: Callable[[str], None]) -> None:
         target = transformation_context["target"]
         target.set_options(options, value=target.value if target.value in options else "all")
 
-    def data_transform_snapshot():
+    def data_transform_snapshot(profiles=None):
         target = data_transformation_context["target"].value
-        profiles = data_transform_sources()
+        profiles = data_transform_sources() if profiles is None else profiles
         if target != "all" and not profiles:
             raise ValueError("Choose an available dataset to transform.")
         return dict(enabled=bool(data_transformation_controls.enabled.value),
                     target=profiles[0].series_id if target != "all" and profiles else None,
                     combine=bool(data_transformation_controls.combining),
-                    formulas={profile_key(item.series_id): data_transformation_controls.formulas.get(item.series_id, "source") for item in profiles},
+                    formulas={profile_key(item.series_id): data_transformation_controls.formulas.get(item.series_id,
+                        data_transformation_controls.formulas.get(None, "source")) for item in profiles},
                     combined_formula=data_transformation_controls.combined_formula,
-                    values={key: dict(value) for key, value in value_transform_settings.items()})
+                    values={profile_key(profiles[0].series_id) if key == "pending" and profiles else key: dict(value)
+                            for key, value in value_transform_settings.items()})
 
     def dual_y_axes_active(group: Sequence[_PlotSeries], controls: Any = None) -> bool:
         active_controls = plot_settings if controls is None else controls
@@ -2247,23 +2249,26 @@ def render(_navigate: Callable[[str], None]) -> None:
 
     async def download_plotting_code() -> None:
         from dataclasses import fields
-        from app.code_export import CodeInputs, CodeSnapshot, build_python, filter_code_settings
+        from app.code_export import CodeInputs, CodeSnapshot, build_python, filter_code_settings, placeholder_upload
 
         if running or transformation_controls.loading:
             notify("Wait for the data operation to finish before exporting code.", type="warning")
             return
         try:
-            selected = _collect_plot_series(sources, missing_policy="ignore")
+            has_selection = any(source.inspection is not None and source.selection for source in sources)
+            selected = (_collect_plot_series(sources, missing_policy="ignore") if has_selection else
+                        (_PlotSeries((1, _NATURAL_SELECTION), "Profile", "x", np.empty(0)),))
             inputs = CodeInputs()
             profiles = []
             for item in selected:
-                source = next(source for source in sources if source.source_id == item.series_id[0])
+                inspection = next((source.inspection for source in sources
+                    if source.source_id == item.series_id[0] and source.selection), None) or placeholder_upload("profile", form=item.form)
                 token = item.series_id[1]
                 profiles.append(dict(
                     id=list(item.series_id), name=item.name, form=item.form,
-                    source=inputs.encode(source.inspection),
-                    column=token if not source.inspection.array_keys and token not in {_NATURAL_SELECTION, _MATRIX_SELECTION} else None,
-                    array_key=token if source.inspection.array_keys else None,
+                    source=inputs.encode(inspection),
+                    column=token if not inspection.array_keys and token not in {_NATURAL_SELECTION, _MATRIX_SELECTION} else None,
+                    array_key=token if inspection.array_keys else None,
                     smoothing=inputs.encode(SmoothingSettings()),
                 ))
             target = transformation_context["target"].value
@@ -2273,7 +2278,7 @@ def render(_navigate: Callable[[str], None]) -> None:
                              target=transformation_targets.get(target),
                              keep_originals=bool(transformation_context["keep_originals"].value),
                              analysis_on_mask_only=bool(transformation_context["analysis_on_mask_only"].value))
-            data_transform = data_transform_snapshot()
+            data_transform = data_transform_snapshot(selected if not has_selection else None)
             # Describe output identities without running formulas or analysis.
             preview_series = list(selected)
             if data_transform["enabled"]:

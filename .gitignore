@@ -13,6 +13,10 @@ htmlcov/
 .coverage.*
 coverage.xml
 
+# Local regression tests
+/dnascape/tests/
+/app/tests/
+
 # Local tooling and temporary browser profiles
 /.agents/
 /.codex/
@@ -34,7 +38,18 @@ data/
 
 # Local example outputs
 examples/figures/
+/examples/outputs/
 /figures/
+
+# Downloaded developer scripts and their local inputs/outputs
+/code_snippets/
+/examples/code_snippets/
+/data_manager.py
+/mapping.py
+/simulation.py
+/plotting.py
+/inputs/
+/outputs/
 
 # Keep only minimal example dataset
 examples/data/*
