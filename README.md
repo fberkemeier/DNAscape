@@ -3,6 +3,7 @@
 </p>
 
 # DNAscape
+[![Documentation Status](https://readthedocs.org/projects/dnascape/badge/?version=latest)](https://dnascape.readthedocs.io/en/latest/)
 
 DNAscape is software for mapping and simulating DNA replication. Its mapping workflow infers origin firing and fork speed from data on replication timing, origin competence, fork directionality and other features. Its simulation workflow models individual S phases and simulates whole-genome replication programmes from initiation and fork-speed inputs, quantifying inter-origin distances, origin efficiency, S-phase duration and other replication statistics. Together, the two workflows can be used to investigate the effects of replication stress, quantify variability between cells, and test hypotheses about the mechanisms shaping replication across organisms and cell types.
 
