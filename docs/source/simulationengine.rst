@@ -1,12 +1,13 @@
-Simulation: rsim
-================
+Simulation
+==========
 
-``rsim`` generates stochastic S phases from potential initiation rate and fork
-speed. Use **Simulation** to explore individual replication programmes,
-ensemble variability and mechanisms beyond a deterministic mapping.
 
-Set the kinetic inputs
-----------------------
+Use **Simulation** to generate stochastic S phases from potential initiation
+rate and fork speed. Explore individual replication programmes, ensemble
+variability and mechanisms beyond a deterministic mapping.
+
+Inputs
+--------
 
 Supply **Initiation rate** and **Fork speed** as constants or profiles.
 Profiles can depend on space, time or both, where supported by the input
@@ -16,10 +17,10 @@ replication; it is not the number of origins that actually fire.
 The app uses initiation rate **per spatial bin per minute** and fork speed
 **in kb/min**. A mapped app profile can be transferred directly. Python users
 passing a density returned by ``rmap`` must convert it to a per-bin rate;
-see :ref:`concept-units` and :doc:`python`.
+see :ref:`concept-units` and :doc:`pythonmodules`.
 
-Define the region
------------------
+Region
+~~~~~~~~
 
 **Start**, **End** and **Resolution (kb/bin)** define the simulated grid.
 Enable **Whole region** to use a spatial input's full interval; this switch
@@ -31,8 +32,8 @@ grid without changing its physical extent.
 has two ends. **Show plot** controls preview generation. A circular display
 is a presentation choice and does not enable periodic simulation.
 
-Choose ensemble and recording settings
---------------------------------------
+Main workflow
+-------------
 
 **Simulations (replicates)**
    Number of independent S phases to average. Begin with a small ensemble while
@@ -62,8 +63,11 @@ Choose ensemble and recording settings
 Choose time resolution fine enough for the dynamics of interest. More preview
 points improve on-screen detail, not the simulation grid or stored outputs.
 
+Optional settings
+-----------------
+
 Fork movement and firing factors
---------------------------------
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
 **Fork stalling** enables genomic barriers at the specified **Stall rate
 (stalls/kb)**. **Stall recovery** allows passage after a mean **Recovery time**
@@ -84,20 +88,20 @@ Finite firing factors provide an optional limited pool for origin activation.
 Set its size and recycling behaviour when investigating resource-limited
 initiation. Available-factor time courses require time tracking.
 
-Transform an input region
--------------------------
+Region transforms
+~~~~~~~~~~~~~~~~~
 
 In **Region transforms**, set **Relative to** to **Initiation rate**,
 **Fork speed** or **Both**. Each input has its own mask and operation when
-both are selected. The controls match :ref:`data-region-transforms`.
+both are selected. The controls match :ref:`region-transforms`.
 
 These transforms modify the simulation inputs after region selection and
 resampling. For example, set initiation to zero in a genomic interval to
 suppress local origin firing while allowing incoming forks to replicate it.
 A fork-speed transform must leave speeds finite and positive.
 
-Read the outputs
-----------------
+Outputs and interpretation
+--------------------------
 
 Click **Simulate**, then choose an output in **Preview**.
 
@@ -137,7 +141,7 @@ bins. Continuous rate densities produced by Mapping have a different
 normalisation; see :ref:`concept-events` before comparing them.
 
 Export and compare
-------------------
+~~~~~~~~~~~~~~~~~~
 
 Download numerical outputs from **Raw data**, using NPZ for large matrices.
 Keep the seed, replicate count, coordinates, input profiles and all mechanism

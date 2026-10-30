@@ -66,6 +66,9 @@ from dnascape.workflows.analysis import (
 from dnascape.workflows.filtering import DataFilterSettings
 from dnascape.workflows.exports import safe_export_filename
 from dnascape.workflows.analysis_transforms import analysis_values, transform_profiles, analysis_mask_artifact, profile_key
+from dnascape.workflows.temporal_preview import (
+    profile_heatmap_data, spatial_region, uploaded_spatial_region, uploaded_time_axis,
+)
 
 _PROFILE_ACCEPT = ".csv,.tsv,.txt,.npy,.npv,.npz,.gz"
 _DEPENDENCE_LABELS = {
@@ -93,6 +96,8 @@ class _ProfileSourceState:
     inspection: UploadInspection | None = None
     selection: tuple[str, ...] = ()
     array_cache: dict[str, np.ndarray] = field(default_factory=dict)
+    spatial_region: tuple[float, float] | None = None
+    time_step: float = 1.
 
 
 @dataclass(frozen=True)
@@ -107,6 +112,8 @@ class _PlotSeries:
     analysis_on_mask_only: bool = False
     source: UploadInspection | None = field(default=None, repr=False, compare=False)
     warnings: tuple[str, ...] = ()
+    spatial_region: tuple[float, float] | None = None
+    time_step: float = 1.
 
 
 @dataclass(frozen=True)
@@ -162,7 +169,7 @@ _SEPARATE_SETTING_VALUE_FIELDS = (
     "line_width",
     "line_type",
     "show_fill", "fill_side",
-    "aspect_ratio", "circular_combine", "circular_track_height", "circular_inner_radius",
+    "aspect_ratio", "circular_combine", "circular_outer_radius", "circular_inner_radius",
     "histogram_bins",
     "histogram_bin_size",
     "histogram_touching",
@@ -332,8 +339,10 @@ def _selection_form(state: _ProfileSourceState, token: str) -> str:
     if token == _MATRIX_SELECTION:
         return "xt"
     if inspection.array_keys:
+        if token == inspection.default_array_key and inspection.inferred_form in _DEPENDENCE_LABELS:
+            return inspection.inferred_form
         return _infer_profile_form(_npz_values(state, token))
-    return "x"
+    return 't' if inspection.inferred_form == 't' else 'x'
 
 
 def _set_default_selection(state: _ProfileSourceState) -> None:
@@ -420,6 +429,9 @@ def _materialize_source(
                 form=form,
                 values=values,
                 full_identity=_full_series_identity(inspection.name, token),
+                source=inspection,
+                spatial_region=state.spatial_region,
+                time_step=state.time_step,
             )
         )
     return series
@@ -466,14 +478,15 @@ def _prepare_analysis_profiles(
         source = next(source for source in sources if source.source_id == item.series_id[0])
         records.append(dict(id=item.series_id, name=item.name, form=item.form, full_identity=item.full_identity,
                             values=smooth_profile(item.values, smoothing.get(item.series_id, SmoothingSettings()), dependence=item.form),
-                            source=source.inspection))
+                            source=source.inspection, spatial_region=item.spatial_region, time_step=item.time_step))
     region = (dict(settings=transformations.data_filter, target=transformations.target,
                    keep_originals=transformations.keep_originals, analysis_on_mask_only=transformations.analysis_on_mask_only)
               if transformations is not None else None)
     records = transform_profiles(records, data_transforms=data_transformations, region_transforms=region, cancel=cancel)
     processed = [_PlotSeries(series_id=item["id"], name=item["name"], form=item["form"], values=item["values"],
                              full_identity=item.get("full_identity", ""), transformed=item.get("transformed", False),
-                             mask=item.get("mask"), analysis_on_mask_only=item.get("analysis_on_mask_only", False), source=item["source"], warnings=item.get("warnings", ()))
+                             mask=item.get("mask"), analysis_on_mask_only=item.get("analysis_on_mask_only", False), source=item["source"], warnings=item.get("warnings", ()),
+                             spatial_region=item.get('spatial_region'), time_step=item.get('time_step', 1.))
                  for item in records]
     processed = _unique_series_names(processed)
     report = None
@@ -487,14 +500,11 @@ def _prepare_analysis_profiles(
 
 
 def _series_compatibility_error(series: Sequence[_PlotSeries]) -> str | None:
-    """Return the one intrinsically unsupported dependence mixture, if present."""
+    """Reject unknown dependence; spatial and temporal maps can be separate."""
 
     forms = {item.form for item in series}
-    if "t" in forms and "xt" in forms:
-        return (
-            "Time profiles cannot be mixed with space-time heatmaps. "
-            "Remove one of these data types before plotting."
-        )
+    if not forms <= _DEPENDENCE_LABELS.keys():
+        return 'Choose space, time or space-time profiles.'
     return None
 
 
@@ -504,7 +514,7 @@ def _combined_series_compatible(series: Sequence[_PlotSeries]) -> bool:
     if len(series) <= 1:
         return True
     forms = {item.form for item in series}
-    return len(forms) == 1 and forms <= {"x", "t"}
+    return forms == {'x'}
 
 
 def _plot_groups(
@@ -531,7 +541,7 @@ def _plot_groups(
 
 
 def _axis_labels(form: str, view: str, density: bool) -> tuple[str, str]:
-    if form == "xt":
+    if form in {"t", "xt"}:
         return "Position (kb)", "Time (min)"
     if view == "Boxplot":
         return "", "Value"
@@ -594,6 +604,58 @@ def render(_navigate: Callable[[str], None]) -> None:
     statistics_export_preferences: dict[Any, StatisticsExportPreference] = {}
     mask_export_preferences: dict[str, dict] = {}
 
+    async def edit_spatial_region(source: _ProfileSourceState) -> bool:
+        """Ask for missing spatial coordinates without changing a time signal."""
+        selected = _materialize_source(source, missing_policy='ignore')
+        temporal = next((item for item in selected if item.form == 't'), None)
+        if temporal is None:
+            return True
+        defaults = source.spatial_region or uploaded_spatial_region(source.inspection) or (0., 1000.)
+        has_time_axis = uploaded_time_axis(source.inspection, temporal.values.size) is not None
+        with ui.dialog().mark('plotting-temporal-region-dialog') as dialog, ui.card().classes('dn-dialog-card').style('width: 420px; max-width: 95vw'):
+            ui.label('Spatial region').classes('dn-panel-title')
+            ui.label(source.inspection.name).classes('dn-upload-formats')
+            ui.label('The time profile is uniform across this region.').classes('dn-settings-help')
+            with ui.row().classes('w-full no-wrap'):
+                start = ui.number('Start (kb)', value=defaults[0], min=0).props('dense').classes('dn-field flex-1').mark('plotting-temporal-start')
+                end = ui.number('End (kb)', value=defaults[1], min=0).props('dense').classes('dn-field flex-1').mark('plotting-temporal-end')
+            step = ui.number('Time step (min)', value=source.time_step, min=.000001).props('dense').classes('dn-field w-full').mark('plotting-temporal-time-step')
+            step.set_visibility(not has_time_axis)
+
+            def accept_region() -> None:
+                try:
+                    bounds = spatial_region((start.value, end.value))
+                    increment = float(step.value)
+                    if not np.isfinite(increment) or increment <= 0:
+                        raise ValueError('Time step must be greater than zero.')
+                except (TypeError, ValueError) as exc:
+                    notify(str(exc), type='negative')
+                    return
+                dialog.submit((bounds, increment))
+
+            with ui.row().classes('w-full justify-end'):
+                ui.button('Cancel', on_click=dialog.close).props('flat no-caps').mark('plotting-temporal-cancel')
+                ui.button('Apply', on_click=accept_region).props('no-caps').classes('dn-action-primary').mark('plotting-temporal-apply')
+        try:
+            answer = await dialog
+            if answer is None:
+                return False
+            source.spatial_region, source.time_step = answer
+            staged_sources_changed()
+            return True
+        finally:
+            dialog.delete()
+
+    async def ensure_spatial_regions() -> bool:
+        for source in tuple(sources):
+            if not any(_selection_form(source, token) == 't' for token in source.selection):
+                continue
+            if source.spatial_region is None:
+                source.spatial_region = uploaded_spatial_region(source.inspection)
+            if source.spatial_region is None and not await edit_spatial_region(source):
+                return False
+        return True
+
     page_intro(
         "Analysis",
         "Explore DNAscape data",
@@ -640,6 +702,8 @@ def render(_navigate: Callable[[str], None]) -> None:
                                     else next_source_id
                                 ),
                                 inspection=inspection,
+                                spatial_region=previous.spatial_region if previous is not None else None,
+                                time_step=previous.time_step if previous is not None else 1.,
                             )
                             _set_default_selection(candidate)
                             if previous is not None:
@@ -793,6 +857,8 @@ def render(_navigate: Callable[[str], None]) -> None:
                                     ui.label(f"Array size: {size}").classes(
                                         "dn-mapping-detected-summary"
                                     )
+                                if any(item.form == 't' for item in selected):
+                                    ui.button('Spatial region', icon='crop_free', on_click=lambda: edit_spatial_region(state)).props('flat dense no-caps').mark(f'plotting-temporal-region-{state.source_id}')
 
                             details_panel()
 
@@ -985,7 +1051,7 @@ def render(_navigate: Callable[[str], None]) -> None:
                     curve_series = [
                         item
                         for item in latest_series
-                        if item.form in {"x", "t"}
+                        if item.form == 'x'
                     ]
                     if len(curve_series) < 2:
                         return
@@ -1360,7 +1426,7 @@ def render(_navigate: Callable[[str], None]) -> None:
         return staged_forms()
 
     def requested_plot_type(*, form: str, multiple: bool, controls: Any = None) -> str:
-        if form == "xt":
+        if form in {"t", "xt"}:
             return "Heatmap"
         active_controls = plot_settings if controls is None else controls
         view = str(active_controls.view.value or "Default")
@@ -1372,11 +1438,8 @@ def render(_navigate: Callable[[str], None]) -> None:
 
     def staged_compatibility_error() -> str | None:
         forms = set(staged_forms())
-        if "t" in forms and "xt" in forms:
-            return (
-                "Time profiles cannot be mixed with space-time heatmaps. "
-                "Remove one of these data types."
-            )
+        if not forms <= _DEPENDENCE_LABELS.keys():
+            return 'Choose space, time or space-time profiles.'
         return None
 
     def sync_presentation_options(*, sync_action: bool = True) -> None:
@@ -1384,7 +1447,7 @@ def render(_navigate: Callable[[str], None]) -> None:
         multiple = len(forms) > 1
         combined_compatible = (
             not multiple
-            or (len(set(forms)) == 1 and set(forms) <= {"x", "t"})
+            or set(forms) == {'x'}
         )
         options = ["Combined", "Separate"] if combined_compatible else ["Separate"]
         if list(presentation.options) != options:
@@ -1441,10 +1504,10 @@ def render(_navigate: Callable[[str], None]) -> None:
             plot_settings,
             plot_type=plot_type,
             multiple_curves=multiple and not separate,
-            allow_histogram=form != "xt",
-            allow_boxplot=form != "xt",
+            allow_histogram=form not in {'t', 'xt'},
+            allow_boxplot=form not in {'t', 'xt'},
         )
-        dual_available = len(forms) == 2 and not separate and len(unique_forms) == 1 and form in {"x", "t"}
+        dual_available = len(forms) == 2 and not separate and len(unique_forms) == 1 and form == 'x'
         plot_settings.dual_y_axes.visible = dual_available
         dual_active = dual_available and bool(plot_settings.dual_y_axes.value)
         plot_settings.secondary_y_limit_editor.visible = dual_active
@@ -1656,10 +1719,7 @@ def render(_navigate: Callable[[str], None]) -> None:
             ),
             histogram_boundary=str(plot_settings.histogram_boundary.value or "left"),
             y_axis=(
-                np.arange(
-                    max(item.values.shape[1] for item in latest_series),
-                    dtype=float,
-                )
+                np.unique(np.concatenate([profile_heatmap_data(vars(item))[2] for item in latest_series]))
                 if plot_type == "Heatmap"
                 else None
             ),
@@ -1703,9 +1763,7 @@ def render(_navigate: Callable[[str], None]) -> None:
         y_axis: Any = None
         lines: tuple[PreviewLine, ...] = ()
         if plot_type == "Heatmap":
-            values = profile.T
-            x_axis = np.arange(profile.shape[0], dtype=float)
-            y_axis = np.arange(profile.shape[1], dtype=float)
+            values, x_axis, y_axis = profile_heatmap_data(vars(first))
         elif plot_type in {"Line", "Histogram", "Boxplot"}:
             individual_styles = use_curve_styles and len(group) > 1
             lines = tuple(
@@ -1823,8 +1881,8 @@ def render(_navigate: Callable[[str], None]) -> None:
             controls,
             plot_type=plot_type,
             multiple_curves=False,
-            allow_histogram=first.form != "xt",
-            allow_boxplot=first.form != "xt",
+            allow_histogram=first.form not in {'t', 'xt'},
+            allow_boxplot=first.form not in {'t', 'xt'},
         )
         if reset_axes:
             x_label, y_label = _axis_labels(
@@ -1880,7 +1938,7 @@ def render(_navigate: Callable[[str], None]) -> None:
             ),
             histogram_boundary=str(controls.histogram_boundary.value or "left"),
             y_axis=(
-                np.arange(first.values.shape[1], dtype=float)
+                profile_heatmap_data(vars(first))[2]
                 if plot_type == "Heatmap"
                 else None
             ),
@@ -2255,6 +2313,8 @@ def render(_navigate: Callable[[str], None]) -> None:
             notify("Wait for the data operation to finish before exporting code.", type="warning")
             return
         try:
+            if not await ensure_spatial_regions():
+                return
             has_selection = any(source.inspection is not None and source.selection for source in sources)
             selected = (_collect_plot_series(sources, missing_policy="ignore") if has_selection else
                         (_PlotSeries((1, _NATURAL_SELECTION), "Profile", "x", np.empty(0)),))
@@ -2270,6 +2330,8 @@ def render(_navigate: Callable[[str], None]) -> None:
                     column=token if not inspection.array_keys and token not in {_NATURAL_SELECTION, _MATRIX_SELECTION} else None,
                     array_key=token if inspection.array_keys else None,
                     smoothing=inputs.encode(SmoothingSettings()),
+                    spatial_region=item.spatial_region,
+                    time_step=item.time_step,
                 ))
             target = transformation_context["target"].value
             if transformation_controls.controls["enabled"].value and target != "all" and target not in transformation_targets:
@@ -2309,7 +2371,7 @@ def render(_navigate: Callable[[str], None]) -> None:
                     arguments.pop(key, None)
                 style = {key: getattr(active, key).value for key in (
                     "view", "show_fill", "fill_side", "reverse_order", "circular_combine", "circular_inner_radius",
-                    "circular_track_height", "z_axis_label", "show_hover")}
+                    "circular_outer_radius", "z_axis_label", "show_hover")}
                 style["histogram_dataset"] = active._histogram_dataset
                 style["theme_color"] = get_export_settings().theme_color
                 specification = dict(profiles=[list(item.series_id) for item in group],
@@ -2358,6 +2420,8 @@ def render(_navigate: Callable[[str], None]) -> None:
                 raise CancelledError
 
         try:
+            if not await ensure_spatial_regions():
+                raise CancelledError
             preparation_arguments = (
                 tuple(replace(source, selection=tuple(source.selection), array_cache=dict(source.array_cache)) for source in sources),
                 {},

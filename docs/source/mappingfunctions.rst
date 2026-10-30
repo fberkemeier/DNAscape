@@ -1,13 +1,13 @@
-Mapping: rmap
-=============
+Mapping
+========
 
-``rmap`` relates replication features under explicit kinetic assumptions.
+
 Use **Mapping** to infer a target from compatible inputs, or to predict
-observables from initiation rate and fork speed. The equations and their
-limits are explained in :doc:`foundations`.
+observables from initiation rate and fork speed under explicit kinetic
+assumptions. The equations and their limits are explained in :doc:`foundations`.
 
-Choose a target and its inputs
-------------------------------
+Inputs
+--------
 
 Start with **Mapped output**, then choose **Dependence** and **Input factors**.
 Available routes and input fields update to match those choices.
@@ -48,8 +48,8 @@ spatial density in events/kb from space-time rate density in events/(kb min).
 These are actual event densities, distinct from potential initiation rate.
 Use :doc:`simulationengine` for distributions across stochastic S phases.
 
-Supply profiles and define the region
--------------------------------------
+Profiles and region
+~~~~~~~~~~~~~~~~~~~
 
 Under **Inputs**, enter constants with **Value**, or upload a profile and
 select its dependence. Use the same chromosome, coordinate interpretation and
@@ -73,8 +73,23 @@ Plain spatial uploads default to one sample per kb when no coordinate or
 resolution metadata are available. Recheck the inferred interval before fitting.
 The app keeps fork speed in kb/min and handles conversion to its internal grid.
 
+Main workflow
+-------------
+
+
+Choose the target and input factors, supply the inputs, and define the region.
+Start with the route's default fitting settings. Apply optional bounds or
+region transforms when required, then run the map.
+
+Click **Map**. The status line reports the stage, fit error when available,
+ETA and elapsed time. **Initial prediction** measures the first forward
+calculation; the estimate can change as later fitting stages are measured.
+
+Optional settings
+-----------------
+
 Fit settings
-------------
+~~~~~~~~~~~~
 
 Start with the route defaults. Change one control at a time and compare the
 resulting prediction, not just the fitted curve.
@@ -104,13 +119,13 @@ the simulations averaged for a stochastic fit estimate. Deterministic routes
 use the kinetic relationships directly; increasing simulations is not a
 universal way to improve a mapping.
 
-Constrain selected target regions
----------------------------------
+Region transforms
+~~~~~~~~~~~~~~~~~
 
 Open **Region transforms** and use **Relative to** to choose the supplied
 input that defines the mask. Position ranges or **Upload profile** define
 positions directly and do not need a signal reference. The shared controls
-are described under :ref:`data-region-transforms`.
+are described under :ref:`region-transforms`.
 
 The transform is applied to the selected values of the initial target guess.
 Those values are then held fixed during fitting, rather than multiplied,
@@ -122,12 +137,8 @@ dependence. Mapping automatically selects a compatible target when available.
 Transforms must retain physically valid target values: initiation rates are
 non-negative and fork speeds are positive.
 
-Inspect and save the result
----------------------------
-
-Click **Map**. The status line reports the stage, fit error when available,
-ETA and elapsed time. **Initial prediction** measures the first forward
-calculation; the estimate can change as later fitting stages are measured.
+Outputs and interpretation
+--------------------------
 
 For inverse timing fits, inspect observed-versus-fitted timing, residuals and
 MSE alongside the inferred target. A lower MSE measures agreement with that
@@ -140,4 +151,4 @@ a profile with **Open in**. Dependence suffixes ``_c``, ``_x``, ``_t`` and
 Save the region, resolution and assumptions with the files.
 
 The :doc:`quickstart` walks through timing-to-initiation mapping.
-:doc:`python` shows the same workflow in code.
+Use :doc:`exportworkflows` to reproduce all current app options in a script.

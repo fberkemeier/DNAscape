@@ -2,8 +2,8 @@ Quickstart
 ==========
 
 This first run uses the app to prepare Repli-seq data, infer a spatial
-initiation rate and simulate replication. It connects the three modules:
-**Data Manager (rdata) -> Mapping (rmap) -> Simulation (rsim)**.
+initiation rate and simulate replication. It connects three app pages:
+**Data Manager -> Mapping -> Simulation**.
 
 Start the app using :doc:`installation`. The example uses K562 chromosome 1
 and a constant fork speed of 1.4 kb/min.
@@ -33,7 +33,7 @@ Open **Data Manager**.
 The wave signal is relative. Assigning it a 30-500 minute interval is an
 illustrative calibration: larger Repli-seq scores become earlier times after
 inversion. Use an experimentally justified time scale for quantitative work.
-For a workflow using bundled data without downloads, see :ref:`python-notebooks`.
+For a Python workflow using bundled data without downloads, see :doc:`pythonmodules`.
 
 2. Infer initiation rate
 ------------------------
@@ -73,8 +73,8 @@ The :doc:`simulationengine` guide explains optional fork mechanisms and outputs.
 Continue
 --------
 
-* :doc:`niceguiapp` explains navigation, transfers, settings and code export.
-* :doc:`datamanagement`, :doc:`mappingfunctions` and :doc:`simulationengine`
-  describe each workflow in more detail.
+* :doc:`appguide` groups the page guides and shared controls.
+* :doc:`niceguiapp` explains navigation, plots, transfers and settings.
+* :doc:`exportworkflows` explains how to reproduce the current app settings in Python.
 * :doc:`foundations` explains the equations and assumptions.
-* :doc:`python` provides a runnable script and the notebook sequence.
+* :doc:`python` introduces the direct functions and notebook examples.

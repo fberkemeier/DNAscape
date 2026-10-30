@@ -13,37 +13,37 @@ WORKFLOWS = (
     (
         "data-management",
         "Data Manager",
-        "Prepare sequencing tables, genomic tracks, and profile formats for downstream analysis.",
+        "Prepare experimental data and model inputs for mapping, simulation and analysis.",
         OUTLINE_ICON_SVGS["data"],
     ),
     (
         "mapping",
         "Mapping",
-        "Infer spatial, temporal, or feature-dependent replication landscapes from kinetic inputs.",
+        "Map between origin firing, fork speed, replication timing and other replication features.",
         OUTLINE_ICON_SVGS["mapping"],
     ),
     (
         "simulation",
         "Simulation",
-        "Generate replication dynamics under selected kinetic assumptions and compare outputs.",
+        "Simulate replication programmes to explore dynamics, stress and variability between cells.",
         OUTLINE_ICON_SVGS["simulation"],
     ),
     (
         "plotting",
         "Analysis",
-        "Plot and compare datasets, and perform statistical analyses.",
+        "Visualise profiles, compare datasets and perform statistical analyses.",
         None,
     ),
     (
         "cached-files",
         "Cached Files",
-        "Reopen recent results and download files retained automatically in this browser tab.",
+        "Reopen recent results and download files stored in this browser tab.",
         OUTLINE_ICON_SVGS["cached"],
     ),
     (
         "resources",
         "Resources",
-        "Find documentation, examples, source code, and citation guidance for the project.",
+        "Find documentation, examples, source code and citation guidance.",
         OUTLINE_ICON_SVGS["resources"],
     ),
 )

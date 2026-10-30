@@ -3,51 +3,39 @@
    :width: 320px
    :alt: DNAscape
 
-DNAscape
+Overview
 ========
 
 DNAscape is software for preparing genomic data, mapping DNA replication
-kinetics and simulating replication programmes. Start with experimental
-profiles or a model, infer the features you need, and compare the predicted
-behaviour with stochastic S phases.
+kinetics and simulating replication programmes. Infer origin firing or fork
+speed from compatible profiles, predict replication features, and explore
+stochastic S phases and their variability.
 
-Three modules, one workflow
----------------------------
+Start with the app
+------------------
 
-**rdata -- prepare data**
-   Convert files and genomic tracks into profiles with a defined region,
-   resolution and meaning. In the app, use :doc:`datamanagement`.
+Follow :doc:`installation`, then the :doc:`quickstart` to prepare Repli-seq
+data, map a spatial initiation rate and simulate the fitted programme.
+The :doc:`appguide` follows the pages and controls of the interface.
 
-**rmap -- map replication features**
-   Infer initiation rate or fork speed, or predict timing, directionality and
-   other observables under explicit assumptions. In the app, use
-   :doc:`mappingfunctions`.
+Continue in Python
+------------------
 
-**rsim -- simulate replication**
-   Generate stochastic replication programmes and quantify their mean behaviour
-   and variability. In the app, use :doc:`simulationengine`.
-
-The app brings these workflows together without writing code. The same
-modules are available from :doc:`python` for scripts, notebooks and parameter
-sweeps. :doc:`foundations` explains their biological and mathematical basis.
-
-Start here
-----------
-
-Follow :doc:`installation`, then the app-based :doc:`quickstart`. The page
-names and controls in these guides match the DNAscape interface.
+:doc:`python` explains how to export an app workflow or use the three Python
+entry points: ``rdata`` prepares data, ``rmap`` maps replication features and
+``rsim`` simulates replication. :doc:`notebooks` provides worked examples.
+:doc:`foundations` explains the quantities, units and mathematical assumptions.
 
 .. toctree::
-   :maxdepth: 1
+   :maxdepth: 2
+   :titlesonly:
+   :hidden:
 
-   installation
-   quickstart
-   niceguiapp
-   datamanagement
-   mappingfunctions
-   simulationengine
-   foundations
+   Overview <self>
+   gettingstarted
+   appguide
    python
+   foundations
 
 Citation and contact
 --------------------

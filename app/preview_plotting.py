@@ -16,6 +16,7 @@ from app.export_settings import get_export_settings
 from app.field_hints import field_hint
 from app.icons import RESET_ICON
 from app.notifications import notify
+from dnascape.workflows.circular import DEFAULT_OUTER_RADIUS, DEFAULT_INNER_RADIUS
 
 from dnascape.workflows.preview import (
     CURVE_TYPES,
@@ -161,7 +162,9 @@ class PreviewSettingsControls:
     circular_combine: Any = None
     circular_inner_radius: Any = None
     circular_options: Any = None
-    circular_track_height: Any = None
+    circular_outer_radius: Any = None
+    reset_circular_radii: Any = None
+    _resetting_circular_radii: bool = field(default=False, init=False, repr=False)
     z_axis_label: Any = None
     surface: Any = None
     _sync_navigation_controls: bool = field(default=True, init=False, repr=False)
@@ -453,11 +456,14 @@ class PreviewChartHandle:
                 self.options.setdefault("dnascapeLegendOrder", list(legend["data"]))
                 legend["data"] = list(reversed(self.options["dnascapeLegendOrder"])) if reverse else list(self.options["dnascapeLegendOrder"])
             if self.settings.view.value == "Circular":
+                inner = _finite_number(self.settings.circular_inner_radius.value)
+                outer = _finite_number(self.settings.circular_outer_radius.value)
+                if inner is None or outer is None or not 0 <= inner < outer <= 100:
+                    return
                 from dnascape.workflows.circular import circular_preview_options
                 circular_preview_options(self.options,
                     layout="Overlay" if self.settings.circular_combine.value else "Rings",
-                    track_height=_positive_finite(getattr(self.settings.circular_track_height, "value", None)) or 8.,
-                    inner_radius=self.settings.circular_inner_radius.value if self.settings.circular_inner_radius.value is not None else 64.)
+                    outer_radius=outer, inner_radius=inner)
                 self.settings.circular_combine.set_visibility(self.options.get("dnascapeCircularDatasetCount", 1) > 1)
         else:
             label = str(getattr(self.settings.z_axis_label, "value", "") or "")
@@ -1088,6 +1094,11 @@ def plotting_settings_ready(
         _report_log_minimum(controls, *error)
         return False
     object.__setattr__(controls, "_log_limit_error", None)
+    if controls.view.value == 'Circular':
+        inner = _finite_number(controls.circular_inner_radius.value)
+        outer = _finite_number(controls.circular_outer_radius.value)
+        if inner is None or outer is None or not 0 <= inner < outer <= 100:
+            return False
     if plot_type == "Histogram" and controls.density.value and _positive_finite(controls.kde_bandwidth.value) is None:
         return False
     if plot_type == "Histogram" and (
@@ -1332,7 +1343,8 @@ _PREVIEW_SETTING_MARKER_SUFFIXES: dict[str, str] = {
     "circular_options": "circular-options",
     "circular_combine": "circular-combine",
     "circular_inner_radius": "circular-inner-radius",
-    "circular_track_height": "circular-track-height",
+    "circular_outer_radius": "circular-outer-radius",
+    "reset_circular_radii": "reset-circular-radii",
     "primary_color": "primary-color",
     "secondary_color": "secondary-color",
     "heatmap_palette": "heatmap-palette",
@@ -1542,18 +1554,25 @@ def preview_settings_controls(
                 title = _PlotTitle(initial_title)
                 with ui.column().classes("w-full").mark(markers.get("circular_options", "circular-options")) as circular_options:
                     with ui.element("div").classes("dn-preview-histogram-grid"):
-                        circular_track_height = _mark(
-                            ui.number(label="Track height (%)", value=8., min=1, max=24, step=1)
-                            .props("dense").classes("dn-field dn-field-compact"), markers, "circular_track_height",
+                        circular_outer_radius = _mark(
+                            ui.number(label="Outer radius (%)", value=DEFAULT_OUTER_RADIUS, min=1, max=100, step=1)
+                            .props("dense").classes("dn-field dn-field-compact"), markers, "circular_outer_radius",
                         )
                         circular_inner_radius = _mark(
-                            ui.number(label="Inner radius (%)", value=64., min=0, max=78, step=1)
+                            ui.number(label="Inner radius (%)", value=DEFAULT_INNER_RADIUS, min=0, max=99, step=1)
                             .props("dense").classes("dn-field dn-field-compact"), markers, "circular_inner_radius",
                         )
+                        with circular_inner_radius.add_slot('append'):
+                            reset_circular_radii = _mark(
+                                ui.button(icon=RESET_ICON, color=None).props(
+                                    'flat round dense aria-label="Reset both circular radii to defaults"'
+                                ).classes('dn-reset-button dn-y-limit-reset'), markers, 'reset_circular_radii',
+                            )
+                        reset_circular_radii.tooltip('Reset both radii')
                     circular_combine = _mark(ui.checkbox("Combine", value=False), markers, "circular_combine")
                     field_hint(circular_combine, "Overlay datasets on the same circular track.")
                 circular_options.visible = False
-                circular_track_height.visible = False
+                circular_outer_radius.visible = False
                 circular_inner_radius.visible = False
                 circular_combine.visible = False
                 with ui.element("div").classes("dn-preview-histogram-grid"):
@@ -1931,7 +1950,8 @@ def preview_settings_controls(
         circular_combine=circular_combine,
         circular_inner_radius=circular_inner_radius,
         circular_options=circular_options,
-        circular_track_height=circular_track_height,
+        circular_outer_radius=circular_outer_radius,
+        reset_circular_radii=reset_circular_radii,
         z_axis_label=z_axis_label,
         surface=settings_surface,
         legend_name=legend_name,
@@ -2004,8 +2024,6 @@ def bind_preview_settings_updates(
         controls.fill_side,
         controls.reverse_order,
         controls.circular_combine,
-        controls.circular_inner_radius,
-        controls.circular_track_height,
         controls.z_axis_label,
         controls.histogram_touching,
         controls.histogram_grouped,
@@ -2029,6 +2047,26 @@ def bind_preview_settings_updates(
     controls.histogram_boundary.on_value_change(lambda: change_domain(on_histogram_range_change))
     controls.line_type.on_value_change(on_line_type_change or on_redraw)
     controls.reset_aspect_ratio.on_click(lambda: controls.aspect_ratio.set_value(default_aspect_ratio))
+    def circular_radii_changed() -> None:
+        if controls._resetting_circular_radii:
+            return
+        inner = _finite_number(controls.circular_inner_radius.value)
+        outer = _finite_number(controls.circular_outer_radius.value)
+        if inner is not None and outer is not None and 0 <= inner < outer <= 100:
+            on_redraw()
+
+    def reset_circular_radii() -> None:
+        object.__setattr__(controls, '_resetting_circular_radii', True)
+        try:
+            controls.circular_outer_radius.set_value(DEFAULT_OUTER_RADIUS)
+            controls.circular_inner_radius.set_value(DEFAULT_INNER_RADIUS)
+        finally:
+            object.__setattr__(controls, '_resetting_circular_radii', False)
+        on_redraw()
+
+    controls.circular_inner_radius.on_value_change(circular_radii_changed)
+    controls.circular_outer_radius.on_value_change(circular_radii_changed)
+    controls.reset_circular_radii.on_click(reset_circular_radii)
     def refresh_visibility_and_plot() -> None:
         # One event should produce one redraw.  This matters for a dense
         # heatmap, where duplicate browser updates are visibly expensive.
@@ -2120,7 +2158,7 @@ def sync_preview_settings_visibility(
     controls.circular_options.visible = circular
     controls.circular_combine.visible = circular and multiple_curves
     controls.circular_inner_radius.visible = circular
-    controls.circular_track_height.visible = circular
+    controls.circular_outer_radius.visible = circular
     if circular and controls.aspect_ratio.enabled:
         object.__setattr__(controls, "_cartesian_aspect_ratio", _positive_finite(controls.aspect_ratio.value) or 2.5)
         controls.aspect_ratio.disable()
@@ -2164,17 +2202,17 @@ def sync_preview_settings_visibility(
     controls.line_type.visible = line or kde
     controls.fill_options.visible = line or kde
     controls.fill_side.visible = (line or kde) and bool(controls.show_fill.value)
-    legend_available = line or histogram or (boxplot and multiple_curves) or (heatmap and bool(available_filters))
+    legend_available = line or histogram or (boxplot and multiple_curves) or (heatmap and (filter_available or bool(available_filters)))
     controls.show_legend.visible = legend_available
     if controls.legend_name is not None:
         controls.legend_name.visible = legend_available and bool(controls.show_legend.value)
     if controls.show_filter is not None:
-        controls.show_filter.visible = line and filter_available
+        controls.show_filter.visible = (line or heatmap) and filter_available
         controls.show_filter.set_enabled(filter_available)
         if getattr(controls, "filter_guide_options", None) is not None:
-            controls.filter_guide_options.visible = line and filter_available
+            controls.filter_guide_options.visible = (line or heatmap) and filter_available
         controls.filter_name.visible = (
-            line and filter_available and bool(controls.show_filter.value) and bool(controls.show_legend.value)
+            (line or heatmap) and filter_available and bool(controls.show_filter.value) and bool(controls.show_legend.value)
         )
     for key, control in controls.filter_guides.items():
         available = (line or heatmap) and key in available_filters

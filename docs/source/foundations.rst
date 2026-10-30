@@ -1,10 +1,29 @@
-Core Concepts
+Core concepts
 =============
 
 DNAscape connects measured genomic signals to a model of **origin firing**,
 **fork movement** and **fork coalescence**. This chapter defines the quantities,
 their units and the equations behind the main mappings. It also explains why
 a good fit need not identify a unique replication programme.
+
+.. _concept-assays:
+
+Experimental profiles
+---------------------
+
+Repli-seq, SNS-seq and OK-seq measure different aspects of replication. Prepare
+the quantity required by the next workflow:
+
+* **Repli-seq:** a relative timing score needs an explicit time calibration
+  before it represents minutes. For sixteen equally spaced chronological S-phase fractions,
+  Data Manager also supports a weighted mean time or sigmoid T50 estimate
+  using the specified S-phase duration.
+* **SNS-seq and related origin-enrichment data:** preserve the spatial origin
+  signal, then justify its scale before treating it as an initiation rate.
+* **OK-seq:** preserve signed directionality and verify strand orientation.
+
+See :doc:`datamanagement` for preparation controls and :doc:`quickstart`
+for a specific Repli-seq example.
 
 .. _concept-grids:
 
@@ -72,7 +91,7 @@ The initiation-rate convention at each interface matters:
   :math:`I_{\mathrm{bin}}`, in initiations per bin per minute.
 * App-to-app mappings and transfers handle their own boundary conversions.
   When passing a Python ``rmap`` result to ``rsim``, multiply by
-  ``resolution_x``; see :doc:`python`.
+  ``resolution_x``; see :doc:`pythonmodules`.
 
 App region resampling averages or interpolates initiation-rate values under
 its per-bin convention, rather than summing them. When constructing a grid

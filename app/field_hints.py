@@ -13,7 +13,7 @@ FIELD_HINTS = {
     "Apply transformations": "Apply the selected data transformations.",
     "Array": "Choose an array from the uploaded file.",
     "Aspect ratio": "Plot width divided by height.",
-    "Track height (%)": "Radial thickness of each circular track.",
+    "Outer radius (%)": "Outer edge of the circular tracks, as a percentage.",
     "Reverse order": "Reverse curve stacking and legend order.",
     "Z-axis label": "Label the heatmap colour scale.",
     "Bin aggregation": "Choose how values within each bin are combined.",

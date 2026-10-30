@@ -207,6 +207,20 @@ class MappingFitConstraint:
         positions = self.start + np.arange(selected.size) * self.dx
         return np.rint(positions[selected] * 1000.).astype(np.int64)
 
+    def preview_selection(self):
+        """Retain the frozen mask for plot guides independently of export."""
+        from .simulation_filters import SimulationFilterSelection
+
+        if self.mask is None or not self.mask.any():
+            return None
+        mask = self.mask.T if self.form == 't' else self.mask
+        end = self.end if self.end is not None else self.start + (self.spatial_size or mask.shape[0]) * self.dx
+        return SimulationFilterSelection(
+            np.packbits(mask).tobytes(), mask.shape, self.form in {'x', 'xt'}, self.form in {'t', 'xt'},
+            self.start, end, self.dx, self.dt,
+            np.packbits(mask.any(axis=1)).tobytes(), np.packbits(mask.any(axis=0)).tobytes(),
+        )
+
     def _spatial_mask(self):
         if self.form in {'t', 'scalar'}:
             return np.full(self.spatial_size or 1, bool(self.mask.any()))

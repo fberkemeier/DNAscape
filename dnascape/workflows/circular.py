@@ -4,6 +4,9 @@ from copy import deepcopy
 import math
 import json
 
+DEFAULT_OUTER_RADIUS = 72.
+DEFAULT_INNER_RADIUS = 64.
+
 
 def _sector_renderer(inverse):
     return (
@@ -59,15 +62,20 @@ def circular_camera(polars, axis, window):
     return base
 
 
-def circular_preview_options(options, *, layout="Rings", track_height=8., inner_radius=64.):
+def circular_preview_options(options, *, layout="Rings", outer_radius=None, inner_radius=DEFAULT_INNER_RADIUS, track_height=None):
     if options.get("dnascapePlotType") == "Heatmap":
         raise ValueError("Circular view is available for profiles, not heatmaps.")
-    track_height = float(track_height)
-    if not math.isfinite(track_height) or not 1 <= track_height <= 24:
-        raise ValueError("Track height must be between 1 and 24 percent.")
+    legacy_height = track_height is not None and outer_radius is None
+    if legacy_height:
+        track_height = float(track_height)
+        if not math.isfinite(track_height) or not 1 <= track_height <= 24:
+            raise ValueError("Track height must be between 1 and 24 percent.")
     inner_radius = float(inner_radius)
-    if not math.isfinite(inner_radius) or not 0 <= inner_radius <= 78:
-        raise ValueError("Inner radius must be between 0 and 78 percent.")
+    outer_radius = float(DEFAULT_OUTER_RADIUS if outer_radius is None else outer_radius)
+    if not math.isfinite(outer_radius) or not 0 < outer_radius <= 100:
+        raise ValueError("Outer radius must be greater than 0 and at most 100 percent.")
+    if not math.isfinite(inner_radius) or not 0 <= inner_radius < (80. if legacy_height else outer_radius):
+        raise ValueError("Inner radius must be non-negative and less than the outer radius.")
     x_axes = options.get("xAxis", {})
     y_axes = options.get("yAxis", {})
     x = x_axes[0] if isinstance(x_axes, list) else x_axes
@@ -116,9 +124,18 @@ def circular_preview_options(options, *, layout="Rings", track_height=8., inner_
         curve_tracks.append(group_indices[key])
     tracks = len(groups)
     radial_tracks = tracks if rings else 1
-    gap = min(2., 10./radial_tracks, (80.-inner_radius)/(2*radial_tracks))
-    height = min(track_height, (80.-inner_radius-gap*(radial_tracks-1))/radial_tracks)
-    options["dnascapeCircularTrackHeight"] = track_height
+    if legacy_height:
+        # Previously exported scripts specify thickness rather than an outer
+        # radius. Preserve their geometry while new controls use both radii.
+        gap = min(2., 10./radial_tracks, (80.-inner_radius)/(2*radial_tracks))
+        height = min(track_height, (80.-inner_radius-gap*(radial_tracks-1))/radial_tracks)
+        outer_radius = inner_radius + radial_tracks*height + gap*(radial_tracks-1)
+    else:
+        span = outer_radius - inner_radius
+        gap = min(2., 10./radial_tracks, span/(2*radial_tracks))
+        height = (span-gap*(radial_tracks-1))/radial_tracks
+    options["dnascapeCircularTrackHeight"] = height
+    options["dnascapeCircularOuterRadius"] = outer_radius
     options["dnascapeCircularInnerRadius"] = inner_radius
     legend = options.get("legend")
     if isinstance(legend, dict) and legend.get("show"):
@@ -192,24 +209,25 @@ def circular_preview_options(options, *, layout="Rings", track_height=8., inner_
             series.update(showSymbol=series.get("type") == "scatter",
                           symbolSize=6,
                           emphasis={**series.get("emphasis", {}), "disabled": True})
+    # Named mask guides have no curve points. Convert them separately so they
+    # shade the existing tracks without creating extra radial tracks.
+    for series in tuple(options.get("series", [])):
         if series.get("markArea"):
             source = series.setdefault("dnascapeCircularMaskSource", series["markArea"].get("data", []))
-            mask, mask_source = [], []
-            for interval in source:
-                start, end = interval[0].get("xAxis"), interval[1].get("xAxis")
-                if start is not None and end is not None:
-                    mask_source.append([start, end, current_y["max"], current_y["min"]])
-                    mask.append([start, end, current_y["max"], current_y["min"]])
             series["markArea"] = {**series["markArea"], "data": []}
-            if mask_source:
-                options["series"].append({"type": "custom", "coordinateSystem": "polar",
-                    "polarIndex": polar_index, "name": interval[0].get("name", "Mask"),
-                    "dnascapeCircularMask": True, "silent": True, "z": 0,
-                    "dnascapeCircularMaskSourceData": mask_source,
-                    "encode": {"angle": [0, 1], "radius": [2, 3]}, "data": mask,
-                    "itemStyle": {"color": "rgba(128,128,128,.15)"},
-                    ":renderItem": _sector_renderer(bool(current_x.get("inverse"))),
-                })
+            for polar_index in ([series["polarIndex"]] if "polarIndex" in series else range(tracks)):
+                current_x, current_y = options["angleAxis"][polar_index], options["radiusAxis"][polar_index]
+                mask_source = [[interval[0]["xAxis"], interval[1]["xAxis"], current_y["max"], current_y["min"]]
+                               for interval in source if "xAxis" in interval[0] and "xAxis" in interval[1]]
+                if mask_source:
+                    options["series"].append({"type": "custom", "coordinateSystem": "polar",
+                        "polarIndex": polar_index, "name": series.get("name", "Mask"),
+                        "dnascapeCircularMask": True, "silent": True, "z": 0,
+                        "dnascapeCircularMaskSourceData": mask_source,
+                        "encode": {"angle": [0, 1], "radius": [2, 3]}, "data": list(mask_source),
+                        "itemStyle": series["markArea"].get("itemStyle", {"color": "rgba(128,128,128,.15)"}),
+                        ":renderItem": _sector_renderer(bool(current_x.get("inverse"))),
+                    })
     for series in options.get("series", []):
         if series.get("type") != "custom" or not series.get("silent"):
             continue

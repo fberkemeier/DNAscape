@@ -1,8 +1,7 @@
 Installation
 ============
 
-An online version is a work in progress. To run the DNAscape app locally,
-follow the steps below, as in the repository README.
+Run the DNAscape app locally using the same steps as the repository README.
 
 Requirements
 ------------
@@ -24,19 +23,25 @@ Run the remaining commands from this project folder.
 2. Create a virtual environment
 -------------------------------
 
+Choose an installed Python version (3.13 is recommended).
+
 Windows PowerShell:
 
 .. code-block:: powershell
 
-   py -m venv .venv
+   $pythonVersion = "3.13"
+   py "-$pythonVersion" -m venv .venv
    .\.venv\Scripts\Activate.ps1
 
 macOS and Linux:
 
 .. code-block:: bash
 
-   python3 -m venv .venv
+   python3.13 -m venv .venv
    source .venv/bin/activate
+
+When changing Python versions or computers, create a fresh environment and
+reinstall the dependencies. Do not reuse or copy an existing ``.venv``.
 
 .. note::
 
@@ -65,5 +70,24 @@ This also installs the DNAscape Python package and its numerical dependencies.
 Open the address printed in the terminal. Keep that terminal running while
 using the app; press ``Ctrl+C`` there to stop it.
 
-To open your default browser automatically, see :ref:`app-open-browser`.
+For later launches, activate ``.venv`` again and run ``python -m app``.
+
+.. _app-open-browser:
+
+Open the browser automatically
+------------------------------
+
+In Windows PowerShell:
+
+.. code-block:: powershell
+
+   $env:DNASCAPE_APP_SHOW = "true"
+   python -m app
+
+On macOS and Linux:
+
+.. code-block:: bash
+
+   DNASCAPE_APP_SHOW=true python -m app
+
 Continue with :doc:`quickstart`, or use :doc:`python` for code-based workflows.

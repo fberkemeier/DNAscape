@@ -4,7 +4,7 @@
 
 # DNAscape
 
-DNAscape is software for mapping and simulating DNA replication. Its mapping workflow infers origin firing and fork speed from data on replication timing, origin competence, fork directionality and other features. Its simulation workflow models individual S phases and simulates whole-genome replication programmes from initiation and fork-speed inputs, quantifying inter-origin distances, origin efficiency, S-phase duration and other replication statistics. Together, the two workflows can be used to investigate the effects of replication stress, quantify variability between cells, and test hypotheses about the mechanisms shaping replication programmes across organisms and cell types.
+DNAscape is software for mapping and simulating DNA replication. Its mapping workflow infers origin firing and fork speed from data on replication timing, origin competence, fork directionality and other features. Its simulation workflow models individual S phases and simulates whole-genome replication programmes from initiation and fork-speed inputs, quantifying inter-origin distances, origin efficiency, S-phase duration and other replication statistics. Together, the two workflows can be used to investigate the effects of replication stress, quantify variability between cells, and test hypotheses about the mechanisms shaping replication across organisms and cell types.
 
 DNAscape works with experimental or model-derived profiles of replication timing, origin activity, and fork dynamics, including profiles derived from Repli-seq, SNS-seq and OK-seq. Tools for preparing data, visualising results and analysing datasets support both workflows. Use DNAscape through its browser app, in Python scripts and Jupyter notebooks, or from the command line.
 
@@ -74,9 +74,9 @@ With the app open, select **Data Manager** in the left-hand menu. We will prepar
 3. In **Data transforms**, switch on **Apply transform** and leave the formula as `source`. Set **Value scaling** to `Target interval`, **Minimum** to `30`, **Maximum** to `500`, and check **Invert**, so higher Repli-seq scores represent earlier replication. This assigns an illustrative 30–500 minute range to relative timing scores.
 4. Click **Convert**, inspect the plot, and download the timing profile from **Generated Files → Raw data** as TSV.
 
-### II. Mapping data
+### II. Mapping features
 
-Select **Mapping** from the left-hand menu. We will now infer a spatial initiation-rate profile that fits the timing data:
+Select **Mapping** from the left-hand menu. We will now infer a spatial origin initiation-rate profile that fits the timing data:
 
 1. Within **Target**, set **Mapped output** to `Initiation rate`, **Dependence** to `Space`, and **Input factors** to `Replication timing + fork speed`. This determines the mapping route: to determine the initation rate from given replication timing and fork speed.
 2. Under **Inputs**, upload the timing profile as a spatial profile. Set **Fork speed** to `Constant` with a value of `1.4` kb/min.
@@ -100,11 +100,11 @@ The app includes an option to directly download the relevant code for one of DNA
 
 ### Use the Python modules directly
 
-An alternative way is to use the more user-friendly DNAscape’s modules into your own scripts or notebooks, including rmap for mapping and rsim for simulation. Within `examples`, see `0_quickstart.ipynb`, `2_mapping.ipynb` and `3_simulation.ipynb` for worked examples.
+An alternative way is to use the more user-friendly DNAscape’s modules into your own scripts or notebooks, including rmap for mapping and rsim for simulation. Within `examples`, see `1-quickstart.ipynb`, `2-mapping.ipynb` and `3-simulation.ipynb` for worked examples.
 
 ## Documentation
 
-Please see the [documentation](https://dnascape.readthedocs.io/en/latest/python.html#notebooks) for detailed usage instructions, descriptions of DNAscape's features, and further examples.
+Please see the [documentation](https://dnascape.readthedocs.io/en/latest) for detailed usage instructions, descriptions of DNAscape's features, and further examples.
 
 ## Citation
 

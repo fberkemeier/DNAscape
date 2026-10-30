@@ -1,12 +1,13 @@
-Data Manager: rdata
-===================
+Data Manager
+============
 
-``rdata`` prepares experimental or model-derived data for DNAscape. In the app,
-**Data Manager** converts files and genomic tracks into reusable profiles,
-with explicit coordinates, resolution and value processing.
 
-Load a source
--------------
+Use **Data Manager** to convert experimental or model-derived files and
+genomic tracks into reusable profiles, with explicit coordinates, resolution
+and value processing.
+
+Inputs
+--------
 
 Use **Upload** for local data or **Link** for a public file URL. Click
 **Inspect** after entering a link. A successful inspection becomes an inactive
@@ -17,8 +18,10 @@ available arrays, columns, chromosomes and dependence. Each source's details
 appear below its upload or link. For multiple sources, numbered source labels
 keep configuration and formulas associated with the correct input.
 
-Configure the profile
----------------------
+See :ref:`concept-assays` for the meaning of Repli-seq, SNS-seq and OK-seq signals.
+
+Main workflow
+-------------
 
 **Apply configuration** is on by default. **Prepare as** describes the
 biological quantity you intend to use. Select the appropriate chromosome,
@@ -45,8 +48,13 @@ Turn it off to choose a numbered **Source** and configure inputs separately.
 Turning Apply configuration off bypasses its value processing; genomic tracks
 still need a region and binning to become arrays.
 
+Apply any optional transforms below, then click **Convert**.
+
+Optional settings
+-----------------
+
 Data transforms
----------------
+~~~~~~~~~~~~~~~
 
 Open **Data transforms** to change the prepared signal. Enable **Apply
 transform** and enter a numeric Python/NumPy expression. The default
@@ -76,45 +84,20 @@ available independently of the selected scaling mode.
 
 .. _data-region-transforms:
 
-Region transforms and masks
----------------------------
+Region transforms
+~~~~~~~~~~~~~~~~~
+
 
 Region transforms run after **Configure** and **Data transforms**. They retain
-the grid and change only selected values. The section is collapsed and
-**Apply transform** is off by default; its controls remain editable while off.
+the grid and change only selected values. Use them, for example, to replace
+negative values, interpolate a selected interval or modulate the signal with
+another prepared profile.
 
-Under **Select regions / define mask**, choose:
+The selection, operation and mask export controls are described under
+:ref:`region-transforms`. Here ``source`` means the prepared signal, including
+the result of a combined data-transform formula.
 
-* **Signal threshold**, or a threshold relative to the source minimum or maximum.
-* **Between thresholds**, selecting values within or outside the interval.
-* **Missing values (NaN)**, or **Whole region**.
-* **Position ranges**, such as ``(1000,2000), (4000,5000)``.
-* **Upload profile**, for a position list or two-column interval file.
-
-Position ranges and intervals include their start and exclude their end.
-**Coordinates** defaults to **bp**; choose kb if needed. **Invert mask**
-selects the complement within the configured region. Empty position ranges or
-an absent uploaded profile select nothing.
-
-Choose a **Transform** operation: replace with a value or NaN, average each
-selected region, interpolate between surrounding values, add Gaussian noise,
-match a reference minimum/maximum, multiply or add a value. The default mask
-selects negative values and replaces them with zero.
-
-**Modulate with profile** uses a second prepared genomic signal or annotation.
-Enter a formula such as ``source * profile``. Here ``source`` is the current
-prepared signal, including any combined transform; ``profile`` is the uploaded
-covariate. The formula can use surrounding data, but only masked values change.
-For mismatched profiles, modulation aligns from the beginning and uses the
-overlapping extent, leaving other source values unchanged and issuing a yellow
-warning. Check alignment when interpreting genomic effects.
-
-Enable **Export mask** beside Apply transform to add a mask file to Raw data.
-**Export as** chooses a position list or merged intervals. Genomic mask exports
-use integer **bp** coordinates; text exports have no header or extra columns.
-These files can be reused in another page's Region transforms.
-
-Convert, inspect and reuse
+Outputs and interpretation
 --------------------------
 
 Click **Convert** to create a result. The latest file is selected at the top
@@ -127,19 +110,6 @@ When an applied mask is available, **Plot settings -> Guides -> Mask** shades
 it in light grey. With Legend enabled, name the signal and mask separately.
 Mask shading uses the selection made before the regional edit.
 
-Assay meaning
--------------
-
-Repli-seq, SNS-seq and OK-seq measure different aspects of replication. Prepare
-the quantity required by the next workflow:
-
-* **Repli-seq:** a relative timing score needs an explicit time calibration
-  before it represents minutes. For sixteen equally spaced chronological S-phase fractions,
-  Data Manager also supports a weighted mean time or sigmoid T50 estimate
-  using the specified S-phase duration.
-* **SNS-seq and related origin-enrichment data:** preserve the spatial origin
-  signal, then justify its scale before treating it as an initiation rate.
-* **OK-seq:** preserve signed directionality and verify strand orientation.
-
-The :doc:`quickstart` gives a concrete Repli-seq example. :doc:`python` shows
-``rdata`` in a script, while :doc:`foundations` defines the model quantities.
+The :doc:`quickstart` gives a concrete Repli-seq example.
+Use :doc:`exportworkflows` to reproduce the current app settings in Python,
+or :doc:`pythonmodules` for the direct Python functions.

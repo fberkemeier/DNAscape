@@ -1,4 +1,4 @@
-"""Simulation-only mask guides, with independent names and zoom refinement."""
+"""Mapping and Simulation mask guides with names and zoom refinement."""
 
 from dnascape.workflows.simulation_filters import FILTER_LABELS
 
@@ -28,21 +28,29 @@ def add_simulation_filter_guides(options, results, controls, *, kind, time_end):
             continue
         selections = tuple(result.filter_state.selections[key] for result in results
                            if result.filter_state is not None and key in result.filter_state.selections)
-        if not selections:
-            continue
         name = str(controls.filter_guide_names[key].value or '').strip() or FILTER_LABELS[key]
-        if any(series.get('name') == name for series in options.get('series', ())):
-            name += ' (mask)'
         color, fill = colors[key]
-        options.setdefault('series', []).append({
-            'name': name, 'type': 'line', 'data': [], 'silent': True, 'showSymbol': False,
-            'tooltip': {'show': False}, 'itemStyle': {'color': color}, 'lineStyle': {'opacity': 0},
-            'z': 3 if kind == 'xt' else 0,
-            'markArea': {'silent': True, 'label': {'show': False}, 'emphasis': {'disabled': True},
-                         'itemStyle': {'color': fill},
-                         'data': SimulationFilterAreas(selections, kind, time_end)},
-        })
-        legend = options.setdefault('legend', {})
-        legend['show'] = bool(controls.show_legend.value)
-        legend.setdefault('data', []).append({'name': name, 'icon': 'roundRect'})
+        add_mask_guide(options, selections, name=name, kind=kind, time_end=time_end,
+                       show_legend=bool(controls.show_legend.value), color=color, fill=fill)
+    return options
+
+
+def add_mask_guide(options, selections, *, name, kind, time_end, show_legend,
+                   color='#888888', fill='rgba(120,120,120,0.16)'):
+    """Append a named, refinable mask to a spatial or temporal preview."""
+    if not selections or kind not in {'space', 'time', 'xt'}:
+        return options
+    if any(series.get('name') == name for series in options.get('series', ())):
+        name += ' (mask)'
+    options.setdefault('series', []).append({
+        'name': name, 'type': 'line', 'data': [], 'silent': True, 'showSymbol': False,
+        'tooltip': {'show': False}, 'itemStyle': {'color': color}, 'lineStyle': {'opacity': 0},
+        'z': 3 if kind == 'xt' else 0,
+        'markArea': {'silent': True, 'label': {'show': False}, 'emphasis': {'disabled': True},
+                     'itemStyle': {'color': fill},
+                     'data': SimulationFilterAreas(tuple(selections), kind, time_end)},
+    })
+    legend = options.setdefault('legend', {})
+    legend['show'] = show_legend
+    legend.setdefault('data', []).append({'name': name, 'icon': 'roundRect'})
     return options

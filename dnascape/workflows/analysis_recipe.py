@@ -57,9 +57,9 @@ def build_profile_recipe_plot(profiles, plot):
         selected = [dict(item, values=analysis_values(item)) for item in selected]
     profile = selected[0]
     if arguments["plot_type"] == "Heatmap":
-        values = np.asarray(profile["values"])
-        arguments.update(values=values.T, x_axis=np.arange(values.shape[0], dtype=float),
-                         y_axis=np.arange(values.shape[1], dtype=float))
+        from .temporal_preview import profile_heatmap_data
+        values, positions, times = profile_heatmap_data(profile)
+        arguments.update(values=values, x_axis=positions, y_axis=times)
     else:
         curves = plot.get("curves", [{}] * len(selected))
         arguments["lines"] = tuple(PreviewLine(
@@ -96,8 +96,12 @@ def apply_profile_presentation(options, settings):
             legend["data"] = list(reversed(options["dnascapeLegendOrder"])) if reverse else list(options["dnascapeLegendOrder"])
         if settings.get("view") == "Circular":
             from .circular import circular_preview_options
-            circular_preview_options(options, layout=("Overlay" if settings["circular_combine"] else "Rings") if "circular_combine" in settings else settings.get("circular_layout", "Rings"),
-                                     track_height=settings.get("circular_track_height", 8.), inner_radius=settings.get("circular_inner_radius", 64.))
+            radii = dict(inner_radius=settings.get('circular_inner_radius', 64.))
+            if 'circular_outer_radius' in settings:
+                radii['outer_radius'] = settings['circular_outer_radius']
+            elif 'circular_track_height' in settings:
+                radii['track_height'] = settings['circular_track_height']
+            circular_preview_options(options, layout=("Overlay" if settings["circular_combine"] else "Rings") if "circular_combine" in settings else settings.get("circular_layout", "Rings"), **radii)
     else:
         from .preview import set_heatmap_colorbar_label
         set_heatmap_colorbar_label(options, settings.get("z_axis_label"))

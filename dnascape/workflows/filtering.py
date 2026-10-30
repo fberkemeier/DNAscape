@@ -361,7 +361,7 @@ def profile_coordinates(inspection: UploadInspection, length: int):
         keys = {name: str(name).lower().replace(" ", "_") for name in inspection.columns}
         columns = [name for name, key in keys.items() if key in {
             "start", "end", "start_bp", "end_bp", "position_kb", "position_bp",
-            "start_kb", "end_kb", "position", "pos", "x", "time", "time_min",
+            "start_kb", "end_kb", "position", "pos", "x", "time", "time_min", "t",
         }]
         if columns:
             table = _upload_table(inspection, columns)
@@ -372,7 +372,7 @@ def profile_coordinates(inspection: UploadInspection, length: int):
         return (starts + ends) / 2000., np.column_stack((starts, ends)) / 1000.
     if "start_kb" in names and "end_kb" in names and len(names["start_kb"]) == length:
         return (names["start_kb"] + names["end_kb"]) / 2, np.column_stack((names["start_kb"], names["end_kb"]))
-    for name, divisor in (("position_kb", 1), ("position_bp", 1000), ("position", 1), ("pos", 1), ("x", 1), ("time", 1), ("time_min", 1)):
+    for name, divisor in (("position_kb", 1), ("position_bp", 1000), ("position", 1), ("pos", 1), ("x", 1), ("time", 1), ("time_min", 1), ("t", 1)):
         if name in names and len(names[name]) == length:
             return np.asarray(names[name], dtype=float) / divisor, None
     if inspection.source_format == "npz":

@@ -37,7 +37,7 @@ from app.mapping_uploads import (
 )
 from app.page_activity import current_page_activity
 from dnascape.workflows.preview_inputs import (
-    add_simulation_input_previews, input_preview_result,
+    INPUT_PREFIX, add_simulation_input_previews, input_preview_result,
 )
 from app.pages.common import (
     progress_message,
@@ -199,7 +199,7 @@ def _output_spec(label: str, result: ConstantSimulationResult | None = None) -> 
     if form == "xt":
         return replace(spec, kind="xt", y_label="Time (min)")
     if form == "t":
-        return replace(spec, kind="time", x_label="Time (min)")
+        return replace(spec, kind="xt", y_label="Time (min)")
     return replace(spec, kind="space")
 
 # Some simulation quantities have a meaningful physical domain which should not
@@ -1381,7 +1381,7 @@ def _automatic_y_limits(
         ),
         floor_at_zero=output_label in _NONNEGATIVE_LINE_OUTPUTS,
     )
-    if spec.kind != "xt":
+    if spec.kind != "xt" or spec.key.startswith(INPUT_PREFIX):
         return limits
 
     # Detailed fields are tracked over the requested simulation window, which
@@ -1573,6 +1573,11 @@ def _result_plot_options(
                 *individual_lines,
                 PreviewLine("Mean", result.position_kb, mean, color, z=4),
             )
+    heatmap_values = values.T if spec.kind == 'xt' else values
+    heatmap_positions = result.position_kb
+    if spec.kind == 'xt' and result.input_forms.get(spec.key) == 't':
+        from dnascape.workflows.temporal_preview import temporal_heatmap
+        heatmap_values, heatmap_positions, _ = temporal_heatmap(values, result.position_kb, result.time_grid)
     options = build_preview_plot_options(
         plot_type=plot_type,
         x_limits=x_limits,
@@ -1595,8 +1600,8 @@ def _result_plot_options(
             if plot_type == "Heatmap"
             else series_label.strip() or ("Mean" if plot_type == "Line" else output_label)
         ),
-        values=values.T if spec.kind == "xt" else values,
-        x_axis=result.position_kb if spec.kind == "xt" else axis,
+        values=heatmap_values,
+        x_axis=heatmap_positions if spec.kind == "xt" else axis,
         y_axis=result.time_grid if spec.kind == "xt" else None,
         lines=lines,
         bands=bands,
@@ -2794,10 +2799,10 @@ def render(_navigate: Callable[[str], None]) -> None:
                                 )
                             selected = str(output.value or 'Replication timing')
                             spec = _output_spec(selected, latest_result)
-                            if spec.kind in {'space', 'time', 'xt'} and str(view.value or 'Default') == 'Default':
+                            if spec.kind in {'space', 'time', 'xt'} and str(view.value or 'Default') in {'Default', 'Circular'}:
                                 shown = tuple(item.result for item in latest_items) if combined_preview_active() else (latest_result,)
                                 selected_outputs = [select_result_output(result, spec.key) for result in shown]
-                                temporal_axes = ([selected.y for selected in selected_outputs] if spec.kind == 'xt' else
+                                temporal_axes = ([input_preview_result(result, spec.key).time_grid for result in shown] if spec.kind == 'xt' else
                                                  [selected.x for selected in selected_outputs] if spec.kind == 'time' else
                                                  [result.time_grid for result in shown])
                                 guide_time_end = max((float(axis[-1]) for axis in temporal_axes if axis is not None and len(axis)),
@@ -3473,13 +3478,13 @@ def render(_navigate: Callable[[str], None]) -> None:
                     ):
                         stats = stat_strip(
                             (
-                                ("Simulations (replicates)", ""),
+                                ("Simulations", ""),
                                 ("Resolution", ""),
                                 ("Region", ""),
                                 ("Geometry", ""),
                             )
                         )
-                replicate_stats = stats["Simulations (replicates)"]
+                replicate_stats = stats["Simulations"]
                 resolution_stats = stats["Resolution"]
                 region_stats = stats["Region"]
                 geometry_stats = stats["Geometry"]
@@ -4340,8 +4345,12 @@ def render(_navigate: Callable[[str], None]) -> None:
                         allow_circular=spec.kind not in {"xt", "distribution"},
                         allow_individual_profiles=allow_individual_profiles,
                         allow_standard_deviation=allow_standard_deviation,
-                        available_filters=tuple({key for item in latest_items if item.result.filter_state is not None
-                                                 for key in item.result.filter_state.selections}),
+                        available_filters=tuple(
+                            {key for item in latest_items if item.result.filter_state is not None
+                             for key in item.result.filter_state.selections}
+                            | {key for key, controls in filter_controls.items()
+                               if filter_relative.value in {key, 'both'} and controls.controls['enabled'].value}
+                        ),
                     )
                     # A combined batch uses one colour control per dataset; the
                     # single-series colour field would otherwise be ambiguous.

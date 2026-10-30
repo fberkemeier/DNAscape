@@ -34,6 +34,7 @@ from dnascape.workflows.mapping_catalog import (
     mapping_target,
 )
 from dnascape.workflows.spatial_grid import resample_spatial, spatial_bin_count
+from dnascape.workflows.simulation_filters import SimulationFilterSelection
 from dnascape.workflows.mapping_filter import (
     MappingFilterSettings, MappingFitConstraint, prepare_filter_request,
     filtered_speed_settings,
@@ -164,6 +165,7 @@ class MappingResult:
     fit_mse: float | None = None
     diagnostics: Mapping[str, Any] = field(default_factory=dict)
     input_axes: Mapping[str, tuple[np.ndarray, np.ndarray]] = field(default_factory=dict)
+    filter_selection: SimulationFilterSelection | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -2139,6 +2141,7 @@ def run_mapping(
             inter_origin_distance_count=inter_origin_distance_count,
             inter_origin_distances_truncated=inter_origin_distances_truncated,
             fit_mse=fit_mse,
+            filter_selection=constraint.preview_selection() if constraint is not None else None,
             diagnostics=MappingProxyType({
                 key: _readonly(value) if isinstance(value, np.ndarray) else value
                 for metadata in (

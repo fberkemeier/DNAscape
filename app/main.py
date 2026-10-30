@@ -421,9 +421,6 @@ def index() -> None:
     def cycle_theme() -> None:
         """Cycle System -> Light -> Dark without losing automatic mode."""
 
-        # Theme refresh removes the item before its separate auto-close event
-        # can arrive from the browser, so close the persistent menu first.
-        app_menu.close()
         if dark_mode.value is None:
             dark_mode.disable()
         elif dark_mode.value is False:
@@ -619,7 +616,7 @@ def index() -> None:
             with ui.item_section():
                 ui.label("Reset to defaults")
         with (
-            ui.menu_item(on_click=cycle_theme)
+            ui.menu_item(on_click=cycle_theme, auto_close=False)
             .props(
                 f'aria-label="{theme_label}; switch to {next_theme} theme" '
                 f'title="{theme_label}; switch to {next_theme} theme"'

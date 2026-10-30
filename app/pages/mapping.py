@@ -21,6 +21,7 @@ from dnascape.workflows.mapping_filter import MappingFilterSettings, compatible_
 from app.field_hints import FIELD_HINTS, MAPPING_SETTING_HINTS, field_hint
 from app.statistics_exports import HistogramStatisticsExport
 from app.raw_data_transfer import RawInputTarget, open_raw_artifact
+from app.simulation_filter_guides import add_mask_guide
 
 from dnascape.workflows.plotting import (
     _result_axis as _result_axis,
@@ -3872,6 +3873,7 @@ def render(_navigate: Callable[[str], None]) -> None:
 
                 filter_syncing = False
                 filter_speed_mode = False
+                filter_plot_refresh = {'call': lambda: None}
 
                 def sync_mapping_filter() -> None:
                     nonlocal filter_syncing, filter_speed_mode
@@ -3917,6 +3919,7 @@ def render(_navigate: Callable[[str], None]) -> None:
                         invalidate_mapping_result()
                     finally:
                         filter_syncing = False
+                    filter_plot_refresh['call']()
 
                 mapping_filter_controls = DataFilterControls(
                     sync_mapping_filter, marker_prefix='mapping-filter',
@@ -4126,6 +4129,7 @@ def render(_navigate: Callable[[str], None]) -> None:
                     initial_title=initial_output_label,
                     initial_x_label="Position (kb)",
                     initial_y_label=initial_output_label,
+                    allow_filter=True,
                     on_reset_y_limits=lambda: populate_automatic_y_limits(),
                     markers=preview_settings_markers(
                         "mapping",
@@ -4758,6 +4762,10 @@ def render(_navigate: Callable[[str], None]) -> None:
                             and not comparison_curves
                         ),
                         allow_boxplot=dependence == "ensemble" and not multiple_curves,
+                        filter_available=actual_output_key != 'fit_history' and (
+                            bool(mapping_filter_controls.controls['enabled'].value)
+                            or any(item.result.filter_selection is not None for item in latest_results)
+                        ),
                     )
                     if (
                         len(latest_results) > 1
@@ -5309,6 +5317,24 @@ def render(_navigate: Callable[[str], None]) -> None:
                     except (OSError, RuntimeError, TypeError, ValueError) as exc:
                         notify(str(exc), type="negative")
 
+                def add_mapping_mask(options, results, output_key, plot_type) -> None:
+                    if not plot_settings.show_filter.value or plot_type not in {'Line', 'Heatmap'}:
+                        return
+                    actual_key = _resolved_output_key(results[0], output_key)
+                    if actual_key == 'fit_history':
+                        return
+                    selections = tuple(result.filter_selection for result in results
+                                       if result.filter_selection is not None)
+                    comparison = results[0].comparisons.get(output_key.removeprefix(_COMPARISON_PREFIX))
+                    form = comparison.form if comparison is not None else results[0].output_forms.get(actual_key)
+                    kind = 'xt' if plot_type == 'Heatmap' else 'time' if form == 't' else 'space'
+                    add_mask_guide(
+                        options, selections, kind=kind,
+                        name=str(plot_settings.filter_name.value or '').strip() or 'Mask',
+                        time_end=max((float(result.time_axis[-1]) for result in results if result.time_axis.size), default=0.),
+                        show_legend=bool(plot_settings.show_legend.value),
+                    )
+
                 def render_latest_result() -> None:
                     nonlocal result_chart
                     statistics_export.refresh()
@@ -5348,6 +5374,7 @@ def render(_navigate: Callable[[str], None]) -> None:
                                     }
                                     shown = _mapping_constant_profile(latest_result, key)
                                     options = _mapping_plot_options(shown, **arguments)
+                                    add_mapping_mask(options, (latest_result,), key, arguments['plot_type'])
                                     holder = {}
                                     async def save_chart(fmt, selected=key, reference=holder):
                                         await download_plot(fmt, chart=reference["chart"], selected_output=selected)
@@ -5384,6 +5411,12 @@ def render(_navigate: Callable[[str], None]) -> None:
                                     on_download=download_plot,
                                 )
                             if preview_output.value != _ALL_PLOTS_KEY:
+                                shown_results = tuple(item.result for item in latest_results) if (
+                                    len(latest_results) > 1 and str(preview_layout.value) == 'Combined'
+                                ) else (latest_result,)
+                                add_mapping_mask(result_chart.options, shown_results,
+                                                 plot_kwargs['output_key'], plot_kwargs['plot_type'])
+                                result_chart.update()
                                 result_chart.attach_settings(plot_settings)
                         except (RuntimeError, TypeError, ValueError) as exc:
                             notify(str(exc), type="negative")
@@ -6044,6 +6077,7 @@ def render(_navigate: Callable[[str], None]) -> None:
                     on_visibility_change=sync_plot_controls,
                     on_line_type_change=line_type_changed,
                 )
+                filter_plot_refresh['call'] = sync_plot_controls
                 sync_plot_controls()
                 raw_controls.download_button.on_click(lambda: download_raw(raw_controls))
                 map_button.on_click(map_data)
