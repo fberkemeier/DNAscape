@@ -46,14 +46,12 @@ source .venv/bin/activate
 
 ### 3. Install the app
 
-From the repository root:
-
 ```bash
 python -m pip install --upgrade pip
 python -m pip install -r app/requirements.txt
 ```
 
-> **BigWig note:** if you use BigWig files, installation automatically selects `pybigtools` for Python 3.10–3.13 or `figwig` for Python 3.14 and newer. Both provide the same region and binning controls.
+> **Note:** if you use bigWig files, installation automatically selects `pybigtools` for Python 3.10–3.13 or `figwig` for Python 3.14 and newer. Both provide the same region and binning controls.
 
 ### 4. Start DNAscape
 
@@ -65,20 +63,22 @@ For later launches, activate `.venv` and simply run `python -m app`.
 
 ## A quick first run
 
+Here we present a quickstart example for processing data, mapping a kinetic feature, and simulating a replication programme.
+
 ### Managing data
 
-Start in **Data Manager** to prepare a replication-timing profile:
+With the app open, select **Data Manager** in the left-hand menu. We will prepare a replication-timing profile from publicly available Repli-seq data:
 
-1. Upload a Repli-seq track, or choose **Link**, paste the [K562 Repli-seq BigWig link](https://hgdownload.gi.ucsc.edu/goldenPath/hg19/encodeDCC/wgEncodeUwRepliSeq/wgEncodeUwRepliSeqK562WaveSignalRep1.bigWig) and click **Inspect**.
-2. In **Configure**, set **Prepare as** to **Replication timing**. Select **chr1**, keep the full chromosome, and set **Bin size (bp)** to **1000** and **Aggregation** to **Mean**. Under **Values**, choose **Missing values → Fill with a value** and set **Fill value** to **30**.
+1. Download the [K562 Repli-seq bigWig file](https://hgdownload.gi.ucsc.edu/goldenPath/hg19/encodeDCC/wgEncodeUwRepliSeq/wgEncodeUwRepliSeqK562WaveSignalRep1.bigWig) from ENCODE and **Upload** it. Alternatively, choose **Link**, select the K562 Repli-seq example to automatically paste the ENCODE link and click **Inspect**. This uploads the raw bigWig file onto DNAscape.
+2. In **Configure**, set **Prepare as** to **Replication timing**. Select "chr1" and set **Bin size (bp)** to "1000". Under **Values**, set **Missing values** as "Fill with a value" and set **Fill value** to "30" (minutes).
 3. In **Data transforms**, switch on **Apply transform** and leave the formula as `source`. Set **Value scaling** to **Target interval**, **Minimum** to **30**, **Maximum** to **500**, and check **Invert**, so higher Repli-seq scores represent earlier replication. This assigns an illustrative 30–500 minute range to relative timing scores.
 4. Click **Convert**, inspect the plot, and download the timing profile from **Generated Files → Raw data** as TSV.
 
 ### Mapping data
 
-Move to **Mapping** to infer a spatial initiation-rate profile from that timing data:
+Select **Mapping** from the left-hand menu. We will now infer a spatial initiation-rate profile that best fits the timing data:
 
-1. Set **Mapped output** to **Initiation rate**, **Dependence** to **Space**, and **Input factors** to **Replication timing + fork speed**.
+1. Within **Target**, set **Mapped output** to "Initiation rate", **Dependence** to "Space", and **Input factors** to "Replication timing + fork speed".
 2. Under **Inputs**, upload the timing profile as a spatial profile. Set **Fork speed** to **Constant** with a value of **1.4 kb/min**.
 3. In **Region**, leave **Whole region** off and set **Start** to **40000 kb**, **End** to **50000 kb**, and **Resolution** to **1 kb**. Click **Map**, compare observed and fitted timing, and download the fitted initiation-rate profile from **Raw data**.
 
