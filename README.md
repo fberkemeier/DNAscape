@@ -13,7 +13,7 @@ DNAscape works with experimental or model-derived profiles of replication timing
 
 DNAscape is best used through its interactive app, built with [NiceGUI](https://nicegui.io). To run the app locally, follow the steps below.
 
-**Requirements:** Python 3.10 or newer, Git and a modern web browser.
+> **Requirements:** Python 3.10 or newer, Git and a modern web browser.
 
 ### 1. Download the repository
 
@@ -43,7 +43,7 @@ source .venv/bin/activate
 
 > **Note:** when using bigWig files, installation automatically selects `pybigtools` for Python 3.10–3.13 or `figwig` for Python 3.14 and newer.
 
-### 3. Install and run the DNAscape app
+### 3. Install and run the app
 
 ```bash
 pip install ".[app]"
