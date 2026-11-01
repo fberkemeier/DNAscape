@@ -26,7 +26,7 @@ git clone https://github.com/fberkemeier/DNAscape.git
 cd DNAscape
 ```
 
-### 2. Create and activate a virtual environment
+### 2. Setup a virtual environment (optional)
 
 Choose an installed Python version (3.13 is recommended):
 
@@ -45,22 +45,14 @@ python3.13 -m venv .venv
 source .venv/bin/activate
 ```
 
-### 3. Install the app
-
-```bash
-python -m pip install --upgrade pip
-python -m pip install -r app/requirements.txt
-```
-
 > **Note:** if you use bigWig files, installation automatically selects `pybigtools` for Python 3.10–3.13 or `figwig` for Python 3.14 and newer. Both provide the same region and binning controls.
 
-### 4. Start DNAscape
+### 3. Install and run the DNAscape app
 
 ```bash
+python pip install ".[app]"
 python -m app
 ```
-
-For later launches, activate `.venv` and simply run `python -m app`.
 
 ## A quick first run
 
