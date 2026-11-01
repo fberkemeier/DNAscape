@@ -2186,11 +2186,13 @@ def render(_navigate: Callable[[str], None]) -> None:
 
                         def store_control(name: str) -> None:
                             settings[name] = controls[name].value
-                            if details.form in {"x", "xt"}:
-                                if name in {"start", "end"}:
-                                    settings["profile_region_custom"] = True
-                                elif name == "bin_size":
-                                    settings["profile_bin_custom"] = True
+                            if name in {"start", "end", "bin_size"}:
+                                source = active_source()
+                                if source is not None and selected_data(source).form in {"x", "xt"}:
+                                    if name in {"start", "end"}:
+                                        settings["profile_region_custom"] = True
+                                    else:
+                                        settings["profile_bin_custom"] = True
                             if name in {"bin_size", "chromosome"}:
                                 refresh_source_metadata()
                             if name in {
