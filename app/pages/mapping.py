@@ -3695,7 +3695,7 @@ def render(_navigate: Callable[[str], None]) -> None:
                         ui.element("div")
                         .classes("dn-mapping-window-grid")
                         .mark("mapping-spatial-window")
-                    ) as spatial_window:
+                    ):
                         region_start = (
                             ui.number(label="Start (kb)", value=0.0, min=0.0, step=1.0)
                             .props("dense")
@@ -3720,7 +3720,7 @@ def render(_navigate: Callable[[str], None]) -> None:
                         )
                         time_resolution_slot = (
                             ui.element("div")
-                            .classes("w-full min-w-0")
+                            .classes("dn-mapping-time-resolution-slot w-full min-w-0")
                             .mark("mapping-time-resolution-slot")
                         )
 
@@ -3782,10 +3782,6 @@ def render(_navigate: Callable[[str], None]) -> None:
                         time_resolution = region_setting_controls.get("resolution_time")
                         has_time_resolution = time_resolution is not None and time_resolution.holder is not None
                         time_resolution_slot.set_visibility(has_time_resolution)
-                        spatial_window.classes(
-                            add="dn-mapping-window-time" if has_time_resolution else "",
-                            remove="" if has_time_resolution else "dn-mapping-window-time",
-                        )
                         if time_resolution is not None and time_resolution.holder is not None:
                             time_resolution.holder.move(time_resolution_slot)
                         # Keep the requested fit grid when input forms change.

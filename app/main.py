@@ -7,7 +7,7 @@ import os
 from pathlib import Path
 
 from nicegui import app as nicegui_app
-from nicegui import ui
+from nicegui import binding, ui
 from nicegui.elements.button import Button
 from nicegui.elements.tooltip import Tooltip
 
@@ -699,6 +699,8 @@ def _show_browser() -> bool:
 def main() -> None:
     """Start the local-only interface; browser launch is explicitly opt-in."""
 
+    # Plot refreshes can exceed NiceGUI's 10 ms diagnostic threshold briefly.
+    binding.MAX_PROPAGATION_TIME = 0.1
     preload_workflow_pages()
     ui.run(
         title="DNAscape",

@@ -3190,8 +3190,8 @@ body.body--dark .dn-nav-active {
   width: 100%;
 }
 
-.dn-mapping-window-time {
-  grid-template-columns: minmax(0, 0.7fr) minmax(0, 0.7fr) minmax(0, 1.2fr) minmax(0, 1.4fr);
+.dn-mapping-time-resolution-slot {
+  grid-column: 3;
 }
 
 .dn-mapping-setting {
@@ -4926,6 +4926,10 @@ body.body--dark .dn-main-logo-frame .dn-main-logo {
   .dn-mapping-upload-selectors,
   .dn-mapping-window-grid {
     grid-template-columns: 1fr;
+  }
+
+  .dn-mapping-time-resolution-slot {
+    grid-column: 1;
   }
 
   .dn-mapping-settings-advanced .dn-mapping-settings-grid > * {
