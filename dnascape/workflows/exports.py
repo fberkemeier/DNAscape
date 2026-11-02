@@ -892,7 +892,7 @@ def _svg_capture_to_pdf(svg_data: bytes) -> bytes:
     except ImportError as exc:
         raise RuntimeError(
             "Vector PDF export requires the DNAscape app export dependencies. "
-            "Install them with `pip install -e .[app]`."
+            'Install them with `python -m pip install ".[app]"`.'
         ) from exc
 
     try:

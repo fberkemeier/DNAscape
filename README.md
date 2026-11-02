@@ -27,7 +27,7 @@ cd DNAscape
 ### 2. Install and run the app
 
 ```bash
-pip install .[app]
+pip install ".[app]"
 python -m app
 ```
 

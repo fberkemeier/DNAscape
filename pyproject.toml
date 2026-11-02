@@ -1,6 +1,7 @@
 [build-system]
-requires = ["setuptools>=61"]
-build-backend = "setuptools.build_meta"
+# Build wheels in temporary archives instead of reusing the checkout's build/.
+requires = ["hatchling>=1.27"]
+build-backend = "hatchling.build"
 
 [project]
 name = "dnascape"
@@ -28,8 +29,8 @@ genomics = [
 app = [
   "nicegui>=3.12,<4",
   "py7zr>=1,<2",
-  # Preserve ECharts paths and text when converting SVG previews to PDF.
-  "svglib>=1.5,<2",
+  # Vector PDF export needs no Cairo; svglib 1.6 adds its bitmap backend.
+  "svglib>=1.5.1,<1.6",
   # Select a BigWig reader with wheels for the active Python interpreter.
   "pybigtools>=0.3,<0.4; python_version >= '3.10' and python_version < '3.14'",
   "figwig>=0.2,<0.3; python_version >= '3.14'",
@@ -37,12 +38,11 @@ app = [
 test = [
   "pytest>=8",
   # Verify that installed wheels contain the headless workflow subpackage.
-  "setuptools>=61",
-  "wheel",
+  "hatchling>=1.27",
   # Exercise the local NiceGUI interface with its real component tree.
   "nicegui>=3.12,<4",
   "py7zr>=1,<2",
-  "svglib>=1.5,<2",
+  "svglib>=1.5.1,<1.6",
   "pybigtools>=0.3,<0.4; python_version >= '3.10' and python_version < '3.14'",
   "figwig>=0.2,<0.3; python_version >= '3.14'",
 ]
@@ -55,12 +55,14 @@ Issues = "https://github.com/fberkemeier/DNAscape/issues"
 [project.scripts]
 dnascape = "dnascape.cli:main"
 
-[tool.setuptools.packages.find]
-include = ["dnascape", "dnascape.*"]
-exclude = ["dnascape.tests", "dnascape.tests.*"]
+[tool.hatch.build]
+exclude = ["/dnascape/tests"]
 
-[tool.setuptools.package-data]
-dnascape = ["_inverse_transport.c", "workflows/*.js"]
+[tool.hatch.build.targets.wheel]
+packages = ["dnascape"]
+
+[tool.hatch.build.targets.sdist]
+only-include = ["dnascape", "pyproject.toml", "README.md", "LICENSE"]
 
 [tool.pytest.ini_options]
 testpaths = ["dnascape/tests", "app/tests"]
