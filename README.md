@@ -3,7 +3,7 @@
 </p>
 
 # DNAscape
-[![Documentation Status](https://readthedocs.org/projects/dnascape/badge/?version=latest)](https://dnascape.readthedocs.io/en/latest/)
+[![Documentation Status](https://app.readthedocs.org/projects/dnascape/badge/?version=latest)](https://dnascape.readthedocs.io/en/latest/)
 
 DNAscape is software for mapping and simulating DNA replication, through two complementary workflows.
 
@@ -70,7 +70,7 @@ The app includes an option to directly download the relevant code for one of DNA
 
 ### Use the Python modules directly
 
-An alternative way is to use the more user-friendly DNAscape’s modules into your own scripts or notebooks, including rmap for mapping and rsim for simulation. Within `examples`, see `1-quickstart.ipynb`, `2-mapping.ipynb` and `3-simulation.ipynb` for worked examples.
+An alternative way is to use the more user-friendly DNAscape’s modules into your own scripts or notebooks. Within `examples`, see `1-quickstart.ipynb`, `2-mapping.ipynb` and `3-simulation.ipynb` for worked examples.
 
 ## Documentation
 
