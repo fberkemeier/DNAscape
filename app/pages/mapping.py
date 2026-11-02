@@ -375,6 +375,10 @@ _MAPPING_TARGET_ORDER = (
     "fork_speed",
     "replication_timing",
     "fork_directionality",
+    "origin_efficiency",
+    "replicated_fraction",
+    "initiation_events",
+    "coalescence_events",
     "fork_densities",
 )
 _MAPPING_TARGETS = tuple(
