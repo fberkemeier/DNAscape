@@ -7,9 +7,9 @@
 
 DNAscape is software for mapping and simulating DNA replication, through two complementary workflows.
 
-Its mapping workflow infers origin firing and fork speed from data on replication timing, origin competence, fork directionality and other features. Its simulation workflow models individual S phases and simulates whole-genome replication programmes from initiation and fork-speed inputs, quantifying inter-origin distances, origin efficiency, S-phase duration and other replication statistics. Together, both workflows can be used to investigate the effects of replication stress, quantify variability between cells, and test hypotheses about the mechanisms shaping replication across organisms and cell types.
+Its mapping workflow infers origin firing and fork speed from data on replication timing, origin competence, fork directionality and other features. Its simulation workflow models individual S phases and simulates whole-genome replication programmes from initiation and fork-speed inputs, quantifying inter-origin distances, origin efficiency, S-phase duration and other replication statistics. Together, these workflows can be used to investigate the effects of replication stress, quantify variability between cells, and test hypotheses about the mechanisms shaping replication across organisms and cell types.
 
-DNAscape works with experimental or model-derived profiles of replication timing, origin activity, and fork dynamics, including profiles derived from Repli-seq, SNS-seq and OK-seq. Tools for preparing data, visualising results and analysing datasets support both workflows. Use DNAscape through its browser app, in Python scripts and Jupyter notebooks, or from the command line.
+DNAscape works with experimental or model-derived profiles of replication timing, origin activity, and fork dynamics, including profiles derived from Repli-seq, SNS-seq and OK-seq. Tools for preparing data, visualising results and analysing datasets support both workflows. Region masking and transformation tools allow users to test local perturbations and examine discrepancies between predicted and observed replication profiles in selected genomic regions. Use DNAscape through its browser app, in Python scripts and Jupyter notebooks, or from the command line.
 
 ## Run the DNAscape app
 
@@ -27,7 +27,7 @@ cd DNAscape
 ### 2. Install and run the app
 
 ```bash
-pip install ".[app]"
+pip install .[app]
 python -m app
 ```
 
