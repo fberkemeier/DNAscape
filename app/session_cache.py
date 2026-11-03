@@ -8,9 +8,9 @@ import time
 import uuid
 from collections import OrderedDict
 from collections.abc import Callable, Mapping, Sequence
-from dataclasses import dataclass, field, replace
 from contextlib import contextmanager
 from contextvars import ContextVar
+from dataclasses import dataclass, field, replace
 from pathlib import PurePath
 from typing import Any, Literal
 
@@ -474,7 +474,10 @@ class SessionCache:
             self.remove(identifier)
 
     def _trim_global(self) -> None:
-        while self.count() > self.max_total_items or self.size() > self.max_total_bytes:
+        from dnascape._resources import memory_status
+        status = memory_status()
+        byte_limit = self.max_total_bytes if status is None else min(self.max_total_bytes, status.limit // 16)
+        while self.count() > self.max_total_items or self.size() > byte_limit:
             identifier = next(
                 (entry.id for entry in self._entries.values() if not entry.keep),
                 next(iter(self._entries), None),
@@ -486,6 +489,21 @@ class SessionCache:
     def _enforce_limits(self, category: CacheCategory) -> None:
         self._trim(category)
         self._trim_global()
+        from dnascape._resources import memory_status
+        status = memory_status()
+        if status is not None:
+            # One shared allowance, not 256 MiB for each visitor's cache.
+            caches = list(_SESSION_CACHES.values())
+            if all(cache is not self for cache in caches):
+                caches.append(self)
+            limit = min(32 * 1024**2, status.limit // 16)
+            while sum(cache.size() for cache in caches) > limit:
+                candidates = [(entry.created_at, cache, entry.id)
+                              for cache in caches for entry in cache._entries.values()]
+                if not candidates:
+                    break
+                _, cache, identifier = min(candidates, key=lambda item: item[0])
+                cache.remove(identifier)
 
     def _unique_name(self, requested: str) -> str:
         """Return a case-insensitively unique cache name with compound suffixes intact."""

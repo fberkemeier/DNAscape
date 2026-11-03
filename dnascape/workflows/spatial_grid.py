@@ -72,6 +72,8 @@ def resample_spatial(
         result = np.asarray(array[first:last], dtype=float).view()
         result.setflags(write=False)
         return result
+    from dnascape._resources import ensure_capacity
+    ensure_capacity(count * columns * 64, "Resampling the selected spatial grid")
     output = np.empty((count, columns), dtype=float)
     matrix = array.reshape(array.shape[0], columns)
     factor = resolution / source_resolution

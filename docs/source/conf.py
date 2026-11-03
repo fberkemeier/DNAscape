@@ -11,7 +11,7 @@ extensions = ["sphinx.ext.mathjax", "sphinx_copybutton"]
 exclude_patterns = []
 
 html_theme = "sphinx_rtd_theme"
-html_title = "DNAscape documentation"
+html_title = f"{project} {release} documentation"
 html_short_title = "DNAscape"
 html_favicon = "_static/dnascape_logo_tab.png"
 html_static_path = ["_static"]

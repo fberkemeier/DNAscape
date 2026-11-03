@@ -9,13 +9,15 @@ Both inputs are constant inside centered spatial cells.
 from __future__ import annotations
 
 import numpy as np
+
 from .utils import check_cancelled, report_measured_work
 
 
 class StationaryHazard:
     backend = "stationary_travel_primitive"
 
-    def __init__(self, speed, clock, resolution=1.0, periodic=False, radius=2000.0):
+    def __init__(self, speed, clock, resolution=1.0, periodic=False, radius=2000.0,
+                 *, cache_bytes=64 * 1024**2):
         self.speed = np.array(speed, dtype=float, copy=True)
         self.t = np.asarray(clock, dtype=float)
         self.dx = float(resolution)
@@ -50,6 +52,7 @@ class StationaryHazard:
         self.recorded = False
         self._geometry = {}
         self._geometry_bytes = 0
+        self._cache_bytes = cache_bytes
 
     def _inverse(self, query):
         if self.uniform_speed:
@@ -75,7 +78,7 @@ class StationaryHazard:
             qpart = self.y[cell] * h + 0.5 * self.slow[cell] * h * h
             geometry = cell, h, turns, qpart
             cost = sum(a.nbytes for a in geometry if isinstance(a, np.ndarray)) + 256
-            if key is not None and self._geometry_bytes + cost <= 64 * 1024**2:
+            if key is not None and self._geometry_bytes + cost <= self._cache_bytes:
                 self._geometry[key] = geometry
                 self._geometry_bytes += cost
         cell, h, turns, qpart = geometry
@@ -103,6 +106,8 @@ class StationaryHazard:
         return time * (right[0] - left[0]) - distance, left, right
 
     def forward(self, rate, record=False):
+        from ._resources import ensure_capacity
+        ensure_capacity(len(self.t) * self.n * 64, "Evaluating replication timing")
         self.rate = np.array(rate, dtype=float, copy=True)
         if self.rate.shape != (self.n,) or np.any(~np.isfinite(self.rate)) or np.any(self.rate < 0):
             raise ValueError("Stationary initiation must be a non-negative spatial vector.")

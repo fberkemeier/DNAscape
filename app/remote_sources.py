@@ -394,8 +394,19 @@ def _declared_content_length(response: Any) -> int | None:
 
 
 def _read_bounded(response: Any, *, max_bytes: int, deadline: float) -> bytes:
+    from dnascape._resources import (
+        HostedResourceError,
+        ensure_capacity,
+        resource_message,
+        upload_limit,
+    )
+    hosted_limit = upload_limit()
+    if hosted_limit is not None:
+        max_bytes = min(max_bytes, hosted_limit)
     declared = _declared_content_length(response)
     if declared is not None and declared > max_bytes:
+        if hosted_limit is not None:
+            raise HostedResourceError(resource_message("Downloading this remote file"))
         raise RemoteSourceTooLargeError(
             f"The remote file is larger than the {max_bytes / 1024**2:g} MiB limit."
         )
@@ -403,6 +414,7 @@ def _read_bounded(response: Any, *, max_bytes: int, deadline: float) -> bytes:
     chunks: list[bytes] = []
     total = 0
     while True:
+        ensure_capacity(total * 3 + _READ_CHUNK_BYTES * 4, "Downloading the remote data")
         remaining_time = deadline - time.monotonic()
         if remaining_time <= 0:
             raise RemoteSourceError("The remote file request timed out.")
@@ -420,6 +432,8 @@ def _read_bounded(response: Any, *, max_bytes: int, deadline: float) -> bytes:
         chunks.append(chunk)
         total += len(chunk)
         if total > max_bytes:
+            if hosted_limit is not None:
+                raise HostedResourceError(resource_message("Downloading this remote file"))
             raise RemoteSourceTooLargeError(
                 f"The remote file is larger than the {max_bytes / 1024**2:g} MiB limit."
             )

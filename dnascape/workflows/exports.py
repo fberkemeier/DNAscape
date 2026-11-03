@@ -30,6 +30,7 @@ from xml.etree import ElementTree
 
 import numpy as np
 
+from dnascape._resources import ensure_capacity, hosted_operation
 from dnascape.workflows.export_settings import DATA_FILE_FORMAT_OPTIONS, normalize_compression
 from dnascape.workflows.preview import _kde_data, has_finite_values
 from dnascape.workflows.result_naming import RSIM_FILE_PREFIX, output_file_token
@@ -151,6 +152,7 @@ class SelectedOutput:
     y_label: str
 
 
+@hosted_operation("Exporting results")
 def build_chart_capture_export(
     data_uri: str,
     file_format: str,
@@ -284,6 +286,7 @@ def _seven_zip_bytes(data: bytes, member_name: str) -> bytes:
     return archive.getvalue()
 
 
+@hosted_operation("Exporting results")
 def compressed_export_artifact(
     data: bytes,
     *,
@@ -294,6 +297,7 @@ def compressed_export_artifact(
     """Wrap one raw-data file in the selected deterministic compression format."""
 
     normalized = normalize_compression(compression)
+    ensure_capacity(len(data) * 3, "Compressing the download")
     if normalized == "none":
         return ExportArtifact(data=data, filename=filename, media_type=media_type)
     if normalized == "gzip":
@@ -432,6 +436,7 @@ def select_result_output(
     )
 
 
+@hosted_operation("Exporting results")
 def build_plot_export(
     result: ConstantSimulationResult,
     output_key: str,
@@ -568,6 +573,7 @@ def build_plot_export(
     )
 
 
+@hosted_operation("Exporting results")
 def build_raw_export(
     result: ConstantSimulationResult,
     output_key: str,
@@ -998,6 +1004,7 @@ def _validated_canvas(
         raise ValueError("DPI must be a whole number between 72 and 600.")
     if width * normalized_dpi * height * normalized_dpi > MAX_PLOT_PIXELS:
         raise ValueError("Figure dimensions and DPI exceed the local pixel limit.")
+    ensure_capacity(int(width * height * normalized_dpi**2) * 32, "Rendering this figure")
     return width, height, normalized_dpi
 
 
@@ -1045,9 +1052,11 @@ def _image_extent(x: np.ndarray, y: np.ndarray) -> tuple[float, float, float, fl
 
 
 def _text_bytes(selected: SelectedOutput, file_format: str) -> bytes:
+    ensure_capacity(selected.values.size * 100, "Formatting this text download")
     values, _data_form, columns = _rdata_payload(selected)
     class BoundedBuffer(io.BytesIO):
         def write(self, data):
+            ensure_capacity(len(data) + self.tell(), "Formatting this text download")
             if self.tell() + len(data) > MAX_TEXT_EXPORT_BYTES:
                 raise ValueError("Text export exceeds 1 GiB. Use NPZ for this dataset.")
             return super().write(data)
@@ -1076,6 +1085,7 @@ def _text_bytes(selected: SelectedOutput, file_format: str) -> bytes:
 
 
 def _binary_bytes(selected: SelectedOutput) -> bytes:
+    ensure_capacity(selected.values.nbytes * 4, "Preparing this NumPy download")
     stream = io.BytesIO()
     values, data_form, columns = _rdata_payload(selected)
     data_form_array = np.asarray(data_form)

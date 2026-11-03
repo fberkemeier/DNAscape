@@ -29,7 +29,7 @@ from app.settings_dialog import settings_dialog as create_settings_dialog
 from app.theme import brand_logo, logo_sources, theme_css, update_logo
 
 if TYPE_CHECKING:
-    from app._launch_progress import LaunchProgress
+    from app._launch_progress import LaunchProgress, ShutdownProgress
 
 APP_DIR = Path(__file__).resolve().parent
 ROOT_DIR = APP_DIR.parent
@@ -701,14 +701,21 @@ def _show_browser() -> bool:
     }
 
 
-def main(*, launch_progress: LaunchProgress | None = None) -> None:
+def main(*, launch_progress: LaunchProgress | None = None, shutdown_progress: ShutdownProgress | None = None) -> None:
     """Start the local-only interface; browser launch is explicitly opt-in."""
 
     # Plot refreshes can exceed NiceGUI's 10 ms diagnostic threshold briefly.
     binding.MAX_PROPAGATION_TIME = 0.1
+    if shutdown_progress is not None:
+        # Uvicorn installs its signal handlers before ASGI startup. Wrap them
+        # here so feedback starts on Ctrl+C, before any connections are closed.
+        nicegui_app.on_startup(lambda: shutdown_progress.watch_signals(launch_progress))
+        nicegui_app.on_shutdown(shutdown_progress.start)
     if launch_progress is not None:
         launch_progress.update(1, "Loading workflows")
-    preload_workflow_pages()
+    from dnascape._resources import hosted
+    if not hosted():
+        preload_workflow_pages()
     if launch_progress is not None:
         launch_progress.update(2, "Starting server")
 

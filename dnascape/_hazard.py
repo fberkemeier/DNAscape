@@ -219,6 +219,11 @@ class HazardOperator:
 
     def __init__(self, speed_tx, time_grid, resolution=1., periodic=False,
                  radius=2000., backend="auto", *, interpolation="cubic"):
+        from ._resources import ensure_capacity, hosted, working_bytes
+        ensure_capacity(np.size(speed_tx) * 192, "Evaluating the space-time replication model")
+        if hosted():
+            self._CACHE_BYTES = min(self._CACHE_BYTES, working_bytes(8 * 1024**2))
+            self._CHECKPOINT_BYTES = min(self._CHECKPOINT_BYTES, working_bytes(4 * 1024**2))
         supplied_speed = np.asarray(speed_tx, dtype=float)
         if supplied_speed.ndim == 2 and supplied_speed.strides[0] == 0:
             self.speed = np.broadcast_to(supplied_speed[:1].copy(), supplied_speed.shape)

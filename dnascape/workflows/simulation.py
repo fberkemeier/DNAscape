@@ -16,9 +16,11 @@ from typing import Any, cast
 
 import numpy as np
 
-from .spatial_grid import resample_spatial
+from dnascape._resources import ensure_capacity, hosted, hosted_operation
+
 from .filtering import DataFilterSettings
 from .simulation_filters import SimulationFilterState, apply_simulation_filters
+from .spatial_grid import resample_spatial
 
 ProgressReporter = Callable[[float, str], None]
 CancelChecker = Callable[[], None]
@@ -215,6 +217,7 @@ def _kinetic_field(
     return normalized
 
 
+@hosted_operation("Simulation")
 def validate_constant_simulation(request: ConstantSimulationRequest, cancel: CancelChecker | None = None) -> _ValidatedRequest:
     """Validate user-controlled values before allocating arrays or starting work."""
     if cancel is not None:
@@ -262,6 +265,21 @@ def validate_constant_simulation(request: ConstantSimulationRequest, cancel: Can
         # 0.3 / 0.1). Do not manufacture an extra spatial bin in that case.
         ratio = float(nearest_bin_count)
     n_bins = int(math.ceil(ratio))
+    if hosted():
+        # Check before resampling, filtering, or allocating retained profiles.
+        reps = _positive_integer(request.replicates, "Simulations (replicates)")
+        profiles = min(MAX_RETAINED_REPLICATION_PROFILES, reps,
+                       _positive_integer(request.retained_profile_count, "Profiles shown", allow_zero=True))
+        times = (int(math.ceil(_finite(request.time_window, "Time window", positive=True) / resolution_t)) + 2
+                 if request.track_time_outputs or request.track_detailed_outputs else 0)
+        inputs = sum(np.asarray(value).size * 32 for value in (request.initiation_rate, request.fork_speed))
+        estimate = n_bins * (512 + profiles * 24) + reps * 128 + inputs
+        estimate += min(MAX_INTER_ORIGIN_SAMPLES, n_bins * reps) * 24
+        if request.track_time_outputs or request.track_detailed_outputs:
+            estimate += min(MAX_REPLICON_SAMPLES, n_bins * reps) * 24 + times * 128
+        if request.track_detailed_outputs:
+            estimate += n_bins * times * 128
+        ensure_capacity(estimate, "Simulating the selected region and outputs")
     if n_bins > MAX_SPATIAL_BINS:
         raise ValueError(
             f"The region contains {n_bins:,} bins; the local app limit is "
@@ -559,6 +577,7 @@ def _collect_replication_profile_statistics(
     return replication_time_profiles, replication_timing_std
 
 
+@hosted_operation("Simulation")
 def run_constant_simulation(
     request: ConstantSimulationRequest,
     report: ProgressReporter | None = None,

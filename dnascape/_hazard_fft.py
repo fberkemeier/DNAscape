@@ -6,7 +6,7 @@ The radius clips the convolution kernel, not the observed genomic interval.
 """
 
 import numpy as np
-from scipy.fft import next_fast_len, rfftn, irfftn
+from scipy.fft import irfftn, next_fast_len, rfftn
 
 from .utils import check_cancelled, report_measured_work
 
@@ -43,6 +43,8 @@ class ConstantSpeedConvolution:
                          int(np.ceil(reach / self.dx + .5)))
         self.shape = (next_fast_len(2 * len(self.t) - 1),
                       self.n if periodic else next_fast_len(self.n + self.width))
+        from ._resources import ensure_capacity
+        ensure_capacity(self.shape[0] * self.shape[1] * 128, "Allocating the Mapping transforms")
         self._kernels = None
         self._rate = None
         self._last_spectrum = None

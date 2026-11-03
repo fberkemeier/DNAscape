@@ -47,6 +47,8 @@ def progress_context(report=None, cancel=None, *, suppress_output=False, metric_
 def check_cancelled():
     """Raise through the worker's cancellation callback when a run was stopped."""
 
+    from ._resources import checkpoint
+    checkpoint()
     cancel = getattr(_PROGRESS_STATE, "cancel", None)
     if callable(cancel):
         cancel()

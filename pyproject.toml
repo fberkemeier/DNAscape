@@ -65,7 +65,7 @@ packages = ["dnascape"]
 only-include = ["dnascape", "pyproject.toml", "README.md", "LICENSE"]
 
 [tool.pytest.ini_options]
-testpaths = ["dnascape/tests", "app/tests"]
+testpaths = ["dnascape/tests", "app/tests", "tests"]
 addopts = "-ra"
 
 [tool.pyright]

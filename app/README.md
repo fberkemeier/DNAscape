@@ -44,6 +44,19 @@ off, the legend lists every dataset and has no dataset selector. **Side by side*
 datasets within each shared bin interval, keeping bin size unchanged. Enabling
 **KDE** replaces bars with density curves; the adjacent **Smoothness** multiplies
 Scott's bandwidth (1 by default, larger values give smoother curves).
+On Render (`RENDER=true`), the app additionally detects its container memory
+limit and current usage. If these cannot be read, it assumes a conservative
+512 MiB limit. `DNASCAPE_MEMORY_LIMIT_MB` can lower the detected allowance;
+it cannot raise the container's limit. Headroom is reserved for the interface.
+Mapping, Simulation, Data Manager, upload parsing and exports share a heavy-job
+guard, including across worker processes on Linux. Jobs that exceed estimated
+available memory are declined, and running jobs check memory cooperatively.
+A dismissible warning links to the GitHub README's local installation section.
+Hosted caches share at most 32 MiB per web process, and uploads have a smaller dynamic limit
+(at most 16 MiB). These hosted controls are absent locally; existing local
+controls remain in effect. Memory estimates and cooperative checks reduce OOM
+risk but are not a hard OS-level memory sandbox.
+
 **Conversion memory limit (MB)** sets the estimated working-memory budget for
 BigWig and bedGraph preparation, from 64 MB (default) to 4096 MB. The K562 ENCODE
 example at 1 kb bins for all chromosomes needs about 322 MB; choosing 512 MB

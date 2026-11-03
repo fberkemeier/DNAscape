@@ -5,13 +5,13 @@ cells contribute to the loss; overlapping influence halos supply origins and
 fork trajectories. This is not a set of independently fitted subregions.
 """
 
-import numpy as np
 import tempfile
+
+import numpy as np
 
 from ._fit_constraints import current_fit_constraint, fit_constraint_context
 from ._kinetic_tail import eventual_sources
 from .utils import check_cancelled, measured_work_phase
-
 
 # Keep the existing fast dense path for ordinary regional fits. The tiled
 # path starts before the old 64-million-value allocation guard is reached.
@@ -53,7 +53,11 @@ class TiledKineticFit:
         halo = min(n, self.halo)
         # Do not let a long clock leave a tiny core inside a large halo:
         # that would repeatedly solve almost the same neighbourhood.
-        core = min(16384, max(256, halo, TILE_VALUES // len(self.model.clock) - 2 * halo))
+        from ._resources import hosted, working_bytes
+        tile_values = TILE_VALUES
+        if hosted():
+            tile_values = min(tile_values, working_bytes(64 * 1024**2) // 192)
+        core = min(16384, max(256, halo, tile_values // len(self.model.clock) - 2 * halo))
         if core + 2 * halo >= n:
             yield np.arange(n), slice(0, n), slice(0, n), self.periodic
             return
@@ -92,6 +96,9 @@ class TiledKineticFit:
 
     def fields(self, p, indices, *, project=True):
         from ._kinetic_fit import _supplied_on_clock
+        from ._resources import ensure_capacity
+        ensure_capacity(len(indices) * len(self.model.clock) * 192,
+                        "Mapping a region and its neighbouring origins")
 
         local, q = self.local_model(p, indices)
         # The worker's constraint belongs to the entire selected region.
@@ -150,8 +157,8 @@ class TiledKineticFit:
     def operator(self, speed, periodic):
         from ._hazard import HazardOperator
         from ._hazard_fft import ConstantSpeedConvolution
-        from ._hazard_transport import FastTransportHazard
         from ._hazard_stationary_source import StationarySourceHazard
+        from ._hazard_transport import FastTransportHazard
         from ._kinetic_fit import _StaticHazardAdapter, _uniform_space
 
         args = (speed, self.model.clock, self.dx, periodic, self.radius)
@@ -174,7 +181,8 @@ class TiledKineticFit:
             return operator
 
         if self.stationary:
-            candidate = StationarySourceHazard(*args)
+            candidate = StationarySourceHazard(*args,
+                                              differentiate_speed=self.model.target == "fork_speed")
             if len(self.model.clock) * candidate.length <= 24_000_000:
                 return remember(candidate)
         if self.static:
@@ -310,8 +318,8 @@ class TiledKineticFit:
                 d_hazard = np.zeros_like(hazard)
                 d_hazard[:, core] = local_derivative * (2. / (self.count * self.scale_loss))
                 options = {"with_speed": self.model.target == "fork_speed"}
-                from ._hazard_transport import FastTransportHazard
                 from ._hazard_stationary_source import StationarySourceHazard
+                from ._hazard_transport import FastTransportHazard
                 if isinstance(operator, (FastTransportHazard, StationarySourceHazard)):
                     options["with_rate"] = self.model.target == "initiation_rate"
                 with measured_work_phase(middle, start + width):

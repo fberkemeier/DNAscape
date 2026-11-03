@@ -11,6 +11,7 @@ from __future__ import annotations
 import csv
 import gzip
 import io
+import math
 import re
 import zipfile
 from collections.abc import Iterator, Mapping, Sequence
@@ -20,6 +21,8 @@ from types import MappingProxyType
 from typing import Any
 
 import numpy as np
+
+from dnascape._resources import checkpoint, ensure_capacity, hosted, hosted_operation
 
 # These limits apply again on the server; the matching browser-side limit in
 # ``data_upload`` is only a usability aid and must not be treated as security.
@@ -153,6 +156,8 @@ def _bounded_gunzip(content: bytes) -> bytes:
     try:
         with gzip.GzipFile(fileobj=io.BytesIO(content)) as source:
             while True:
+                checkpoint()
+                ensure_capacity(total * 2 + 3 * 1024**2, "Decompressing the uploaded file")
                 chunk = source.read(min(1024 * 1024, MAX_DECOMPRESSED_BYTES - total + 1))
                 if not chunk:
                     break
@@ -278,6 +283,7 @@ def _geo_repliseq_payload(name: str, payload: bytes) -> bytes | None:
             "Split it into smaller genomic regions."
         )
 
+    ensure_capacity(bins * 19 * 128, "Preparing the GEO Repli-seq matrix")
     numeric = np.empty((18, bins), dtype=float)
     stream.seek(data_start)
     for index, raw_line in enumerate(stream):
@@ -319,6 +325,9 @@ def _geo_repliseq_payload(name: str, payload: bytes) -> bytes | None:
     writer = csv.writer(output, delimiter="\t", lineterminator="\n")
     writer.writerow(("chrom", "start", "end", *(f"S{i}" for i in range(1, 17))))
     for index, chromosome in enumerate(chromosomes):
+        if index % 1024 == 0:
+            checkpoint()
+            ensure_capacity(output.tell() * 3, "Formatting the Repli-seq matrix")
         writer.writerow((
             chromosome.decode("ascii"), int(numeric[0, index]), int(numeric[1, index]),
             *numeric[2:, index],
@@ -664,6 +673,7 @@ def _stream_numeric_columns(
     """Parse a table into one bounded float matrix without retaining strings."""
 
     width = len(columns)
+    ensure_capacity(data_rows * width * 32, "Reading the numeric table")
     values = np.full((data_rows, width), np.nan, dtype=float)
     numeric = np.ones(width, dtype=bool)
     row_index = 0
@@ -717,6 +727,7 @@ def _pandas_numeric_columns(
 ) -> dict[str, np.ndarray] | None:
     """Use pandas' bounded C parser when the core dependency is available."""
 
+    ensure_capacity(data_rows * len(columns) * 64, "Parsing the uploaded table")
     try:
         import pandas as pd
     except ImportError:  # pragma: no cover - supported minimal installations
@@ -904,6 +915,7 @@ def _validate_numeric_array(
         raise UploadTooLargeError(
             f"The selected {label} is too large to keep safely in this local session."
         )
+    ensure_capacity(int(array.size) * 32, "Preparing the uploaded numeric array")
     result = np.asarray(array, dtype=float)
     if result.size == 0:
         raise UploadInspectionError(f"The selected {label} is empty.")
@@ -923,9 +935,29 @@ def _archive_members(payload: bytes) -> None:
     if len(members) > MAX_ARCHIVE_MEMBERS:
         raise UploadTooLargeError("The NPZ archive contains too many arrays.")
     expanded = sum(member.file_size for member in members)
+    ensure_capacity(expanded * 4, "Expanding the NumPy archive")
     packed = max(1, sum(member.compress_size for member in members))
     if expanded > MAX_DECOMPRESSED_BYTES or expanded / packed > MAX_COMPRESSION_RATIO:
         raise UploadTooLargeError("The NPZ archive expands beyond the safe inspection limit.")
+    if hosted():
+        with zipfile.ZipFile(io.BytesIO(payload)) as archive:
+            for member in members:
+                if member.filename.endswith(".npy"):
+                    with archive.open(member) as stream:
+                        _preflight_npy(stream)
+
+
+def _preflight_npy(payload):
+    """Read declared dimensions before np.load can allocate a malicious shape."""
+    if not hosted():
+        return
+    stream = io.BytesIO(payload) if isinstance(payload, bytes) else payload
+    version = np.lib.format.read_magic(stream)
+    reader = (np.lib.format.read_array_header_1_0 if version == (1, 0)
+              else np.lib.format.read_array_header_2_0)
+    shape, _fortran, dtype = reader(stream)
+    ensure_capacity(math.prod(shape) * max(8, dtype.itemsize) * 4,
+                    "Loading the NumPy array")
 
 
 def _preferred_array_key(keys: Sequence[str]) -> str | None:
@@ -1068,6 +1100,7 @@ def _inspect_npy(
     compressed: bool,
     expected_form: str,
 ) -> UploadInspection:
+    _preflight_npy(payload)
     try:
         array = _validate_numeric_array(
             np.load(io.BytesIO(payload), allow_pickle=False),
@@ -1214,6 +1247,7 @@ def _inspect_npz(
     )
 
 
+@hosted_operation("Reading uploaded data")
 def inspect_upload(
     name: str,
     content: bytes | bytearray | memoryview,
@@ -1231,6 +1265,7 @@ def inspect_upload(
     BigWig or bedGraph sources; binary signatures still have to agree.
     """
 
+    ensure_capacity(len(content) * 8, "Inspecting the uploaded file")
     safe_name = _safe_name(name)
     raw = bytes(content)
     if not raw:
@@ -1506,6 +1541,7 @@ def _materialize_npz(inspection: UploadInspection, array_key: str | None) -> np.
     return values
 
 
+@hosted_operation("Reading uploaded data")
 def materialize_upload(
     inspection: UploadInspection,
     *,
@@ -1561,6 +1597,7 @@ def materialize_upload(
     return _coerce_expected_form(resolved, inspection.expected_form)
 
 
+@hosted_operation("Reading uploaded data")
 def materialize_many(
     inspections: Sequence[UploadInspection],
     *,

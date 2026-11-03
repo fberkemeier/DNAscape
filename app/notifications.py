@@ -47,6 +47,14 @@ def notification_message(message: Any) -> str:
 def notify(message: Any, **options: Any) -> None:
     """Give every application message the same compact corner close button."""
 
+    from dnascape._resources import LOCAL_SETUP_URL, hosted
+    if hosted() and str(message).startswith(("Online memory limit:", "Online app busy:")):
+        options["type"] = "warning"
+        options["timeout"] = 0
+        options["actions"] = [
+            *(options.get("actions") or ()),
+            {"label": "Run locally", "handler": lambda: ui.navigate.to(LOCAL_SETUP_URL, new_tab=True)},
+        ]
     options["classes"] = (
         f"{options.get('classes') or ''} dn-notification dn-notification-dismissible"
     ).strip()

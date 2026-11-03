@@ -386,6 +386,11 @@ def data_upload(
     metadata immediately below each completed filename row.
     """
 
+    from dnascape._resources import upload_limit
+    hosted_limit = upload_limit()
+    if hosted_limit is not None:
+        max_file_size = min(max_file_size, hosted_limit)
+        max_total_size = min(max_total_size, hosted_limit)
     uploaded_names: list[str] = list(dict.fromkeys(str(name) for name in initial_names))
     inspecting_names: list[str] = []
     upload_lock = asyncio.Lock()
@@ -399,8 +404,11 @@ def data_upload(
         return result
 
     async def handle_rejected(event: events.UiEventArguments) -> None:
+        from dnascape._resources import resource_message
+        size_rejection = "size" in str(event.args).lower()
         notify(
-            "This file type or size is not accepted here.",
+            (resource_message("This upload") if hosted_limit is not None and size_rejection
+             else "This file type or size is not accepted here."),
             type="warning",
         )
         await invoke_callback(on_rejected, event)

@@ -1,8 +1,8 @@
 .. title:: DNAscape
 
-.. image:: _static/dnascape_logo_small.svg
+.. image:: _static/dnascape_logo.svg
    :align: center
-   :width: 320px
+   :width: 360px
    :alt: DNAscape
 
 .. toctree::

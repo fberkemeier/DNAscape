@@ -10,15 +10,20 @@ from typing import Any, cast
 
 import numpy as np
 
+from dnascape._resources import ensure_capacity, hosted_operation
 from dnascape.workflows.export_settings import normalize_compression
-from dnascape.workflows.mapping import MappingResult
-from dnascape.workflows.result_naming import RMAP_FILE_PREFIX, dependence_file_suffix, output_file_token
 from dnascape.workflows.exports import (
     RAW_FORMATS,
     ExportArtifact,
     compressed_export_artifact,
     normalize_export_format,
     safe_export_filename,
+)
+from dnascape.workflows.mapping import MappingResult
+from dnascape.workflows.result_naming import (
+    RMAP_FILE_PREFIX,
+    dependence_file_suffix,
+    output_file_token,
 )
 
 MAX_TEXT_EXPORT_VALUES = 64_000_000
@@ -117,6 +122,7 @@ def select_mapping_output(
     )
 
 
+@hosted_operation("Exporting Mapping results")
 def build_mapping_raw_export(
     result: MappingResult,
     output_key: str,
@@ -136,6 +142,8 @@ def build_mapping_raw_export(
 
     normalized_format = normalize_export_format(file_format, allowed=RAW_FORMATS)
     selected = select_mapping_output(result, output_key)
+    ensure_capacity(selected.values.size * (100 if normalized_format != "npz" else 32),
+                    "Preparing this Mapping download")
     if output_key == 'filter_positions':
         if filter_layout not in {'positions', 'intervals'}:
             raise ValueError('Choose a position list or genomic intervals for the mask.')
@@ -201,6 +209,7 @@ def build_mapping_raw_export(
     )
 
 
+@hosted_operation("Exporting Mapping comparisons")
 def build_mapping_comparison_raw_export(
     result: MappingResult,
     fitted_key: str,
@@ -217,6 +226,7 @@ def build_mapping_comparison_raw_export(
         raise ValueError(f"Fit comparison {fitted_key!r} is not available.")
     observed = np.asarray(comparison.observed, dtype=float).reshape(-1)
     fitted = np.asarray(comparison.fitted, dtype=float).reshape(-1)
+    ensure_capacity(observed.size * 256, "Preparing the fit comparison download")
     if observed.size != fitted.size or observed.size == 0:
         raise ValueError("Observed and fitted profiles must have the same non-zero length.")
     if comparison.form == "x" and result.x_axis.size == observed.size:
@@ -317,6 +327,7 @@ def _text_bytes(selected: SelectedMappingOutput, file_format: str) -> bytes:
     values = _rdata_values(selected)
     class BoundedBuffer(io.BytesIO):
         def write(self, data):
+            ensure_capacity(len(data) + self.tell(), "Formatting this Mapping download")
             if self.tell() + len(data) > MAX_TEXT_EXPORT_BYTES:
                 raise ValueError("Text export exceeds 1 GiB. Use NPZ for this dataset.")
             return super().write(data)

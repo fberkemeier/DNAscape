@@ -3,12 +3,14 @@
 from __future__ import annotations
 
 import ast
+import math
 import operator
-from functools import lru_cache
 from collections.abc import Mapping
+from functools import lru_cache
 
 import numpy as np
 
+from dnascape._resources import checkpoint, ensure_capacity, hosted, hosted_operation
 
 _FUNCTION_NAMES = """
 abs absolute sqrt cbrt square exp exp2 expm1 log log2 log10 log1p
@@ -59,6 +61,7 @@ def _expression(text: str) -> ast.Expression:
     return tree
 
 
+@hosted_operation("Applying data transforms")
 def evaluate_formula(text: str, variables: Mapping[str, np.ndarray], *, shape=None, check_mask=None) -> np.ndarray:
     """Evaluate numeric Python/NumPy syntax without executing Python statements.
 
@@ -71,6 +74,32 @@ def evaluate_formula(text: str, variables: Mapping[str, np.ndarray], *, shape=No
         value.flags.writeable = False
         arrays[name] = value
     expected = tuple(shape if shape is not None else next(iter(arrays.values())).shape)
+    ensure_capacity(math.prod(expected) * 64, "Applying the data formula")
+
+    def preflight(values, *, matrix=False):
+        if not hosted():
+            return
+        checkpoint()
+        def flatten(items):
+            for item in items:
+                if isinstance(item, (tuple, list)):
+                    yield from flatten(item)
+                elif isinstance(item, np.ndarray):
+                    yield item.shape
+        shapes = list(flatten(values))
+        cells = sum(math.prod(s) for s in shapes)
+        if matrix and len(shapes) == 2 and all(shapes):
+            a, b = shapes
+            # The input arrays already exist; bound the output contraction.
+            outer = np.broadcast_shapes(a[:-2], b[:-2])
+            result = outer + ((a[-2],) if len(a) > 1 else ()) + ((b[-1],) if len(b) > 1 else ())
+            cells = max(cells, math.prod(result))
+        elif shapes:
+            try:
+                cells = max(cells, math.prod(np.broadcast_shapes(*shapes)))
+            except ValueError:
+                pass  # concatenate/interp can accept different input shapes.
+        ensure_capacity(cells * 64, "Evaluating the formula's intermediate arrays")
 
     def function(node):
         if isinstance(node, ast.Name) and node.id in _FUNCTIONS:
@@ -94,7 +123,9 @@ def evaluate_formula(text: str, variables: Mapping[str, np.ndarray], *, shape=No
         if isinstance(node, ast.Attribute) and isinstance(node.value, ast.Name) and node.value.id == "np" and node.attr in _CONSTANTS:
             return _CONSTANTS[node.attr]
         if isinstance(node, ast.BinOp) and type(node.op) in _BINARY:
-            return _BINARY[type(node.op)](visit(node.left), visit(node.right))
+            left, right = visit(node.left), visit(node.right)
+            preflight((left, right), matrix=isinstance(node.op, ast.MatMult))
+            return _BINARY[type(node.op)](left, right)
         if isinstance(node, ast.UnaryOp):
             operations = {ast.USub: operator.neg, ast.UAdd: operator.pos, ast.Not: np.logical_not, ast.Invert: np.logical_not}
             if type(node.op) in operations:
@@ -105,6 +136,7 @@ def evaluate_formula(text: str, variables: Mapping[str, np.ndarray], *, shape=No
                 if type(op) not in _COMPARE:
                     break
                 right = visit(right_node)
+                preflight((left, right, result))
                 result = np.logical_and(result, _COMPARE[type(op)](left, right))
                 left = right
             else:
@@ -114,10 +146,13 @@ def evaluate_formula(text: str, variables: Mapping[str, np.ndarray], *, shape=No
             operation = np.logical_and if isinstance(node.op, ast.And) else np.logical_or
             result = values[0]
             for value in values[1:]:
+                preflight((result, value))
                 result = operation(result, value)
             return result
         if isinstance(node, ast.IfExp):
-            return np.where(visit(node.test), visit(node.body), visit(node.orelse))
+            args = (visit(node.test), visit(node.body), visit(node.orelse))
+            preflight(args)
+            return np.where(*args)
         if isinstance(node, (ast.List, ast.Tuple)):
             return [visit(value) for value in node.elts] if isinstance(node, ast.List) else tuple(visit(value) for value in node.elts)
         if isinstance(node, ast.Slice):
@@ -128,7 +163,10 @@ def evaluate_formula(text: str, variables: Mapping[str, np.ndarray], *, shape=No
             callback, prefix = function(node.func)
             if any(key.arg is None or key.arg == "out" or key.arg.startswith("_") for key in node.keywords):
                 raise ValueError("Use direct numeric arguments in the formula.")
-            return callback(*prefix, *(visit(value) for value in node.args), **{key.arg: visit(key.value) for key in node.keywords})
+            args = (*prefix, *(visit(value) for value in node.args))
+            kwargs = {key.arg: visit(key.value) for key in node.keywords}
+            preflight((*args, *kwargs.values()))
+            return callback(*args, **kwargs)
         raise ValueError("Enter a numeric Python expression using the source arrays and NumPy functions.")
 
     try:

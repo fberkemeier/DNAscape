@@ -14,6 +14,29 @@ The workflow subsections below follow the pages of the app.
 
 For a first run with specific settings, follow :ref:`quickstart`.
 
+Hosted Memory Limits
+--------------------
+
+On Render, Mapping, Simulation and Data Manager share a detected memory budget.
+The app checks uploads, expanded arrays, output grids and intermediate working
+memory before large allocations, and checks memory during running jobs.
+Only one heavy data or calculation operation runs at a time across these
+workflows. Cached results also share a smaller allowance across visitors in
+each web process.
+
+If a job is too large, a warning suggests a smaller region, larger bin size
+or fewer outputs. Its **Run locally** action opens the
+`GitHub installation instructions <https://github.com/fberkemeier/DNAscape#run-the-dnascape-app>`_.
+The app does not silently change the selected resolution, model or outputs.
+Spatial initiation-rate and fork-speed timing fits use time blocks on Render
+to reduce memory while retaining the selected numerical grid.
+
+These additional hosted restrictions do not apply to local runs, which retain
+their existing validation and resource controls. Conversion memory limit in
+Settings cannot override the hosted service's available memory. The checks
+leave headroom for the server but cannot guarantee against every possible
+operating-system out-of-memory event.
+
 .. _niceguiapp:
 
 User Interface
@@ -206,6 +229,7 @@ Turn it off to choose a numbered **Source** and configure inputs separately.
 **Show plot**, beside Apply configuration, controls the preview.
 Turning Apply configuration off bypasses its value processing; genomic tracks
 still need a region and binning to become arrays.
+Data transforms and Region transforms remain independent of this switch.
 
 Apply any optional transforms below, then click **Convert**.
 
@@ -238,8 +262,10 @@ With multiple sources, **Combine** replaces the separate formulas with one
 
 Combined sources must have matching shapes and supplied coordinates. The
 result is one profile and one generated file. **Smoothing**, **Value scaling**
-and **Invert** follow the formula within Data transforms. Invert remains
-available independently of the selected scaling mode.
+and **Invert** prepare each source before the individual or combined formula.
+Invert remains available independently of the selected scaling mode.
+Smoothing, scaling and inversion also remain active with Apply configuration off.
+Inactive smoothing-window, scaling and custom-fill fields do not affect conversion.
 
 .. _data-region-transforms:
 

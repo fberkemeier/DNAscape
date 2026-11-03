@@ -4382,7 +4382,7 @@ body.body--dark .dn-main-logo-frame .dn-main-logo {
 .dn-resource-grid {
   display: grid;
   gap: 1.05rem;
-  grid-template-columns: repeat(2, minmax(0, 1fr));
+  grid-template-columns: repeat(3, minmax(0, 1fr));
   width: 100%;
 }
 
@@ -4396,7 +4396,13 @@ body.body--dark .dn-main-logo-frame .dn-main-logo {
   text-decoration: none !important;
 }
 
-.dn-resource-link:hover .dn-resource-link-label {
+.dn-resource-link:hover,
+.dn-resource-link:focus-visible {
+  color: var(--dn-accent) !important;
+}
+
+.dn-resource-link:hover .dn-resource-link-label,
+.dn-resource-link:focus-visible .dn-resource-link-label {
   text-decoration: underline;
   text-underline-offset: 0.15em;
 }
@@ -4424,8 +4430,28 @@ body.body--dark .dn-main-logo-frame .dn-main-logo {
 }
 
 .dn-resource-link-label {
+  font-size: 1rem;
   line-height: 1.35;
   overflow-wrap: anywhere;
+}
+
+.dn-resource-replicanvas-logo {
+  background-color: var(--dn-accent);
+  display: block;
+  flex: 0 0 6.25rem;
+  height: 2.6rem;
+  mask: url("/dnascape-assets/replicanvas_logo.png") center / contain no-repeat;
+  mask-mode: alpha;
+  max-width: 100%;
+  width: 6.25rem;
+}
+
+.dn-resource-citation-guidance {
+  margin: 0;
+}
+
+.dn-resource-citation-guidance a {
+  color: var(--dn-accent) !important;
 }
 
 .dn-resource-citation-panel {

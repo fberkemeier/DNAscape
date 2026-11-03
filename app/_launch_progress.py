@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import signal
 import sys
 import threading
 import time
@@ -11,17 +12,20 @@ from typing import TextIO
 class LaunchProgress:
     """Report completed startup stages, animating only interactive terminals."""
 
-    def __init__(self, stream: TextIO | None = None) -> None:
+    def __init__(self, stream: TextIO | None = None, *, operation="Launching app", label="Loading interface") -> None:
         self.stream = sys.stdout if stream is None else stream
         try:
             self.interactive = self.stream.isatty()
         except (AttributeError, OSError, ValueError):
             self.interactive = False
         self._stop = threading.Event()
-        self._lock = threading.Lock()
+        # A terminal interrupt can finish startup while the main thread is
+        # already updating its progress line.
+        self._lock = threading.RLock()
         self._thread: threading.Thread | None = None
         self._stage = 0
-        self._label = "Loading interface"
+        self._label = label
+        self._operation = operation
         self._started = 0.
         self._frame = 0
         self._width = 0
@@ -52,7 +56,7 @@ class LaunchProgress:
         bar = "#"*filled + "-"*(20-filled)
         spinner = "" if final or not self.interactive else " " + "|/-\\"[self._frame % 4]
         elapsed = int(time.monotonic()-self._started)
-        line = f"Launching app [{bar}] {self._label}{spinner} ({elapsed}s)"
+        line = f"{self._operation} [{bar}] {self._label}{spinner} ({elapsed}s)"
         if self.interactive:
             self._write("\r" + line.ljust(self._width) + ("\n" if final else ""))
             self._width = max(self._width, len(line))
@@ -98,3 +102,57 @@ class LaunchProgress:
         if not self._finished:
             self._finish("Cancelled" if exc_type is KeyboardInterrupt else
                          "Launch failed" if exc_type is not None else "Stopped")
+
+
+class ShutdownProgress(LaunchProgress):
+    """Start terminal feedback on the first interrupt, before server cleanup."""
+
+    def __init__(self, stream: TextIO | None = None) -> None:
+        super().__init__(stream, operation="Stopping app", label="Cleaning up")
+        self._begun = False
+        self._handlers = {}
+
+    def __enter__(self) -> ShutdownProgress:
+        return self
+
+    def start(self) -> None:
+        if not self._begun:
+            self._begun = True
+            super().__enter__()
+
+    def watch_signals(self, launch_progress: LaunchProgress | None = None) -> None:
+        """Wrap the server's installed handlers without replacing its cleanup."""
+        if threading.current_thread() is not threading.main_thread():
+            return
+        signals = [signal.SIGINT]
+        if hasattr(signal, "SIGBREAK"):
+            signals.append(signal.SIGBREAK)
+        for signum in signals:
+            if signum in self._handlers:
+                continue
+            previous = signal.getsignal(signum)
+            if not callable(previous):
+                continue
+
+            def interrupted(sig, frame, handler=previous):
+                if launch_progress is not None:
+                    launch_progress._finish("Cancelled")
+                self.start()
+                handler(sig, frame)
+
+            self._handlers[signum] = (previous, interrupted)
+            signal.signal(signum, interrupted)
+
+    def finish(self) -> None:
+        self.start()
+        if self._finish("Done", ready=True):
+            self._write("DNAscape stopped\n")
+
+    def __exit__(self, exc_type, exc_value, traceback) -> None:
+        for signum, (previous, installed) in self._handlers.items():
+            # Uvicorn normally restores its original handlers itself, before
+            # re-raising Ctrl+C. Do not overwrite a handler it has restored.
+            if signal.getsignal(signum) is installed:
+                signal.signal(signum, previous)
+        if self._begun and not self._finished:
+            self._finish("Shutdown failed" if exc_type is not None else "Stopped")

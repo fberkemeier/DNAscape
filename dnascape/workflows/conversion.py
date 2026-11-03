@@ -16,12 +16,27 @@ from urllib.parse import urlsplit, urlunsplit
 import numpy as np
 import pandas as pd
 
+from dnascape._resources import checkpoint, ensure_capacity, hosted, hosted_operation
+from dnascape.io import inspect_genomic_track, rdata, rload, rsave, rtrack
 from dnascape.workflows.bigwig import inspect_bigwig, read_bigwig_bins
 from dnascape.workflows.export_settings import (
     DATA_FILE_FORMAT_OPTIONS,
     DEFAULT_CONVERSION_MEMORY_LIMIT_MB,
     MAX_CONVERSION_MEMORY_LIMIT_MB,
 )
+from dnascape.workflows.exports import ExportArtifact, safe_export_filename
+from dnascape.workflows.filtering import (
+    DataFilterSettings,
+    FilterSelection,
+    apply_data_filter,
+    capture_filter_selection,
+    filter_metadata,
+    profile_chromosome,
+    profile_coordinates,
+    resolve_filter,
+)
+from dnascape.workflows.repliseq import replication_timing_from_fractions
+from dnascape.workflows.result_naming import RDATA_FILE_PREFIX
 from dnascape.workflows.uploads import (
     MAX_ARCHIVE_MEMBERS,
     MAX_ARRAY_ELEMENTS,
@@ -29,14 +44,6 @@ from dnascape.workflows.uploads import (
     UploadInspection,
     materialize_upload,
 )
-from dnascape.workflows.result_naming import RDATA_FILE_PREFIX
-from dnascape.workflows.repliseq import replication_timing_from_fractions
-from dnascape.workflows.filtering import (
-    DataFilterSettings, FilterSelection, apply_data_filter, capture_filter_selection,
-    filter_metadata, profile_chromosome, profile_coordinates, resolve_filter,
-)
-from dnascape.workflows.exports import ExportArtifact, safe_export_filename
-from dnascape.io import inspect_genomic_track, rdata, rload, rsave, rtrack
 
 # Public UI order: interoperable text first, NumPy-specific formats last.
 DATA_EXPORT_FORMATS: tuple[tuple[str, str], ...] = tuple(
@@ -82,6 +89,7 @@ _CancelChecker = Callable[[], None]
 def _check_cancelled(cancel: _CancelChecker | None) -> None:
     """Run the caller's worker-local cancellation check, when provided."""
 
+    checkpoint()
     if cancel is not None:
         cancel()
 
@@ -455,6 +463,7 @@ def _source_payload(
         with gzip.GzipFile(fileobj=io.BytesIO(inspection.content)) as source:
             while True:
                 _check_cancelled(cancel)
+                ensure_capacity(total * 2 + 3 * 1024**2, "Expanding the compressed data")
                 chunk = source.read(min(1024 * 1024, MAX_DECOMPRESSED_BYTES - total + 1))
                 if not chunk:
                     break
@@ -977,6 +986,7 @@ def _infer_form(values: Any) -> str:
     return "unknown"
 
 
+@hosted_operation("Preparing data")
 def extract_values(
     inspection: UploadInspection,
     *,
@@ -1090,6 +1100,7 @@ def inspect_track(
 
 
 def _repliseq_table(inspection: UploadInspection, *, coordinates_only: bool = False) -> pd.DataFrame:
+    ensure_capacity(len(inspection.content) * 12, "Reading the Repli-seq matrix")
     if inspection.source_layout != "geo_repliseq":
         raise ValueError("Choose a GEO Repli-seq matrix containing S1–S16.")
     columns = ["chrom", "start", "end"]
@@ -1182,6 +1193,7 @@ def _prepare_repliseq_timing(
     )
 
 
+@hosted_operation("Preparing data")
 def inspect_data_source(inspection: UploadInspection) -> DataSourceInspection:
     """Return a single auto-detected view of a supported local upload."""
 
@@ -1324,6 +1336,7 @@ def _resolved_track_request(
     estimated_bytes = total_bins * (_TRACK_ESTIMATED_BYTES_PER_BIN + filter_bytes)
     if request.chromosome_scope == "all":
         estimated_bytes += padded_cells * np.dtype(float).itemsize
+    ensure_capacity(estimated_bytes * 2, "Preparing the selected chromosomes")
     if estimated_bytes > limits.max_bytes:
         raise ValueError(
             f"Preparing {total_bins:,} chromosome bins would require about "
@@ -1844,11 +1857,14 @@ def _prepare_track(
     )
 
 
+@hosted_operation("Preparing data")
 def prepare_data(request: DataConversionRequest, cancel: _CancelChecker | None = None,
                  *, filter_preview: list[FilterSelection | None] | None = None) -> PreparedData:
     """Prepare values for preview/mapping without writing a download file."""
 
     request = _normalized_request(request)
+    if hosted():
+        ensure_capacity(math.prod(request.inspection.shape) * 96, "Preparing the selected data")
     if request.repliseq_timing_method is not None:
         return _prepare_repliseq_timing(request, cancel=cancel)
     if request.input_form == "track":
@@ -1868,7 +1884,11 @@ def prepare_data(request: DataConversionRequest, cancel: _CancelChecker | None =
     length = values.shape[0] if request.input_form == "xt" else values.size
     positions, intervals = profile_coordinates(request.inspection, length)
     if request.profile_binning:
-        from dnascape.workflows.profile_grid import spatial_profile_grid, spatial_profile_rows, rebin_spatial_profile
+        from dnascape.workflows.profile_grid import (
+            rebin_spatial_profile,
+            spatial_profile_grid,
+            spatial_profile_rows,
+        )
         if request.input_form not in {"x", "xt"}:
             raise ValueError("Region and binning require a spatial profile.")
         if request.source_bin_size <= 0 or request.source_start < 0:
@@ -2011,6 +2031,7 @@ def _read_output(
         raise RuntimeError("rdata did not create the requested output file.") from exc
     if size <= 0:
         raise RuntimeError("rdata created an empty output file.")
+    ensure_capacity(size * 3, "Preparing the converted download")
     if max_bytes is None:
         max_bytes = _MAX_CONVERTED_BYTES
     if size > max_bytes:
@@ -2149,6 +2170,7 @@ def _filter_prepared_track(prepared, request, slices, cancel=None, filter_previe
     return replace(result, metadata=prepared.metadata + filter_metadata(request.data_filter))
 
 
+@hosted_operation("Preparing data")
 def convert_combined_data(
     requests: tuple[DataConversionRequest, ...], formula: str, *, output_name="rdata_combined",
     progress=False, cancel=None,
@@ -2279,6 +2301,7 @@ def _convert_track(
     )
 
 
+@hosted_operation("Preparing data")
 def convert_data(
     request: DataConversionRequest,
     progress: Callable[[dict[str, Any]], None] | bool = False,
@@ -2293,6 +2316,9 @@ def convert_data(
 
     _check_cancelled(cancel)
     request = _normalized_request(request)
+    if hosted():
+        shape = request.inspection.shape
+        ensure_capacity(math.prod(shape) * 96, "Preparing the selected data")
     _check_cancelled(cancel)
     if len(request.inspection.content) > MAX_DECOMPRESSED_BYTES:
         raise ValueError("The uploaded source exceeds the local conversion limit.")

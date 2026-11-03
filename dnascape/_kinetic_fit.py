@@ -10,9 +10,9 @@ they are effective kinetic models, rather than uniquely identified histories.
 
 from __future__ import annotations
 
+import time
 from copy import copy
 from dataclasses import dataclass
-import time
 
 import numpy as np
 from scipy.special import gamma
@@ -28,7 +28,6 @@ from .utils import (
     measured_work,
     measured_work_phase,
 )
-
 
 _FORMS = {
     "c": "scalar",
@@ -302,7 +301,10 @@ class _KineticModel:
                 free_public = ~self.projection.mask.reshape(np.asarray(public).shape)
             values = self._public_grid(projected)
             if free_public is not None:
-                free = np.broadcast_to(free, values.shape) & self._public_grid(free_public)
+                if not self.temporal:
+                    free = free & np.asarray(free_public).reshape(1, -1)
+                else:
+                    free = np.broadcast_to(free, values.shape) & self._public_grid(free_public)
         return values, (raw, amplitude, basis, basis_gradient, free)
 
     def gradient(self, field_gradient, parameters, state):
@@ -483,9 +485,9 @@ def fit_kinetic(
     del compatibility
     from ._hazard import HazardOperator
     from ._hazard_fft import ConstantSpeedConvolution
+    from ._hazard_stationary_source import StationarySourceHazard
     from ._hazard_transport import FastTransportHazard
     from ._hazard_uniform import UniformKineticsHazard
-    from ._hazard_stationary_source import StationarySourceHazard
     from .fitting import _RmapInfoArray, _RmapInfoFloat
 
     if target not in {"initiation_rate", "fork_speed"}:
@@ -812,12 +814,17 @@ def fit_kinetic(
     )
 
     from ._kinetic_tiled import DENSE_FIT_VALUES, TiledKineticFit
+    from ._resources import ensure_capacity, hosted, working_bytes
 
     tiled = None
+    streamed = hosted() and static_primitive and observation == "timing"
 
     def configure_grid():
         nonlocal tiled, fixed
-        if not compact and not uniform_kinetics and n * len(clock) > DENSE_FIT_VALUES:
+        dense_limit = DENSE_FIT_VALUES
+        if hosted():
+            dense_limit = min(dense_limit, working_bytes(128 * 1024**2) // 192)
+        if not streamed and not compact and not uniform_kinetics and n * len(clock) > dense_limit:
             tiled = TiledKineticFit(
                 model, supplied, native_clock, dt, dx, perQ, radius,
                 observation, raw_observed, valid_observed, mean_fraction, offset, scale_loss,
@@ -826,6 +833,9 @@ def fit_kinetic(
             fixed = None
         else:
             tiled = None
+            if not streamed:
+                ensure_capacity((1 if compact else n) * len(clock) * 192,
+                                "Mapping the selected space-time grid")
             fixed = _supplied_on_clock(
                 supplied, clock, native_clock, n, dt, supplied_name,
                 positive=target == "initiation_rate",
@@ -859,7 +869,8 @@ def fit_kinetic(
                     compress=not compact,
                 )
             elif stationary_source and StationarySourceHazard.applicable(speed, clock):
-                operator = StationarySourceHazard(speed, clock, dx, perQ, radius)
+                operator = StationarySourceHazard(speed, clock, dx, perQ, radius,
+                                                 differentiate_speed=target == "fork_speed")
             elif static_primitive:
                 operator = _StaticHazardAdapter(speed, clock, dx, perQ, radius)
             elif (
@@ -1021,6 +1032,31 @@ def fit_kinetic(
 
     def evaluate(p, need_gradient=True):
         nonlocal calls
+        if streamed:
+            from ._stationary_timing import stationary_timing
+            fitted, state = model.evaluate(p)
+            rate, speed = (fitted, fixed) if target == "initiation_rate" else (fixed, fitted)
+            if not np.all(eventual_sources(rate[0], dx, radius, perQ)):
+                if enforce_completion:
+                    return {"loss": np.inf, "mse": np.inf, "gradient": np.zeros(model.count)}
+                raise ValueError("The kinetics allow no continuing initiation near some positions.")
+            with measured_work_phase(0., 1.):
+                predicted, residual, sensitivity, final, derivative = stationary_timing(
+                    rate[0], speed[0], clock, weights, dx, perQ, radius,
+                    raw_observed, valid_observed, offset, scale_loss,
+                    with_speed=target == "fork_speed",
+                )
+            calls += 1
+            if enforce_completion and np.max(final) > completion_tolerance:
+                return {"loss": np.inf, "mse": np.inf, "gradient": np.zeros(model.count)}
+            mse = float(np.sum(np.where(valid_observed, residual, 0.) ** 2) / observation_count)
+            return regularize(dict(loss=mse / scale_loss, mse=mse,
+                                   gradient=model.gradient(derivative, p, state), fitted=fitted,
+                                   hazard=None, survival=final[None, :], prediction=predicted,
+                                   residual=residual, sensitivity=sensitivity,
+                                   positive_rate=bool(np.any(rate[0] > 0)), spatial_groups=None,
+                                   backend="streamed_stationary_travel_primitive",
+                                   gradient_state=None), p)
         if tiled is None:
             return evaluate_dense(p, need_gradient)
         calls += 1

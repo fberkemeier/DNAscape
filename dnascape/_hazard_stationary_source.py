@@ -7,14 +7,16 @@ space-time transport solve. The reverse pass differentiates the same kernels.
 """
 
 import numpy as np
-from scipy.fft import next_fast_len, rfft, irfft
+from scipy.fft import irfft, next_fast_len, rfft
+
 from .utils import check_cancelled, report_measured_work
 
 
 class StationarySourceHazard:
     backend = "stationary_source_convolution"
 
-    def __init__(self, speed, clock, resolution=1.0, periodic=False, radius=2000.0):
+    def __init__(self, speed, clock, resolution=1.0, periodic=False, radius=2000.0,
+                 *, differentiate_speed=True):
         self.speed = np.asarray(speed)
         self.t = np.array(clock, dtype=float, copy=True)
         if (
@@ -54,6 +56,7 @@ class StationarySourceHazard:
         self.length = self.n if periodic else next_fast_len(self.n + self.width)
         self._spectrum = None
         self._state = None
+        self.differentiate_speed = differentiate_speed
 
     @staticmethod
     def applicable(speed, clock, *, max_fft_cells=24_000_000):
@@ -85,6 +88,30 @@ class StationarySourceHazard:
         interval = self.t[:-1] * 0.5 * self.dt * (self.velocity[:-1] + self.velocity[1:])
         interval += self.dt**2 * (self.velocity[:-1] / 6 + self.velocity[1:] / 3)
         self.J = np.r_[0.0, np.cumsum(interval)]
+        from ._resources import ensure_capacity
+        temporary_times = len(self.t) if self.differentiate_speed else min(16, len(self.t))
+        ensure_capacity(len(self.t) * self.length * 40 + temporary_times * (self.width + 1) * 160,
+                        "Building the mapping convolution")
+        # Construct the kernel in time blocks when speed derivatives are not
+        # required, avoiding permanent XT derivative tables for initiation fits.
+        if not self.differentiate_speed:
+            self._spectrum = np.empty((len(self.t), self.length // 2 + 1), dtype=complex)
+            for first in range(0, len(self.t), 16):
+                check_cancelled()
+                selected = slice(first, first + 16)
+                travel = self.travel[selected, None]
+                left, _ = self._primitive(travel - a)
+                right, _ = self._primitive(travel - b)
+                ring = np.maximum(left - right, 0.)
+                ring[:, 0] *= 2.
+                ring[:, b <= a] = 0.
+                kernel = np.zeros((len(ring), self.length))
+                kernel[:, :self.width + 1] = ring
+                if self.width:
+                    kernel[:, (-np.arange(1, self.width + 1)) % self.length] += ring[:, 1:]
+                self._spectrum[selected] = rfft(kernel, axis=1)
+            self._kernel_state = None
+            return
         left, lr = self._primitive(self.travel[:, None] - a)
         right, rr = self._primitive(self.travel[:, None] - b)
         factor = np.ones(len(distance))
@@ -118,6 +145,8 @@ class StationarySourceHazard:
         return np.maximum(result, 0.0)
 
     def backward(self, gradient, with_speed=True, *, with_rate=True):
+        if with_speed and not self.differentiate_speed:
+            raise ValueError("Speed derivatives were not requested for this operator.")
         if self._state is None:
             raise RuntimeError("Record a prediction before differentiating it.")
         check_cancelled()

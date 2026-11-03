@@ -3547,6 +3547,8 @@ def render(_navigate: Callable[[str], None]) -> None:
             "Decimal places",
             minimum=0,
         ) if apply_configuration else None
+        missing_policy = str(configuration["missing_policy"]) if apply_configuration else "ignore"
+        track_missing = str(configuration["track_missing"]) if apply_configuration else "nan"
         kwargs: dict[str, Any] = {}
         if details.form in {"x", "xt"} and selection != _REPLISEQ_TIMING and apply_configuration:
             chromosome = configuration["chromosome"] if any(str(name).lower() in {"chr", "chrom", "chromosome"} for name in current.columns) else None
@@ -3603,7 +3605,7 @@ def render(_navigate: Callable[[str], None]) -> None:
                 memory_limit_mb=get_export_settings().conversion_memory_limit_mb,
                 bin_size=_integer(controls["bin_size"], "Bin size", minimum=1),
                 aggregation=aggregation,
-                track_missing=str(controls["track_missing"].value) if apply_configuration else "nan",
+                track_missing=track_missing,
                 interpolation=str(controls["interpolation"].value) if apply_configuration else "none",
             )
             if chromosome_scope == "single":
@@ -3636,7 +3638,6 @@ def render(_navigate: Callable[[str], None]) -> None:
             else:
                 kwargs.update(chromosome=None, start=None, end=None)
         if details.form in _POLISHABLE_FORMS and apply_configuration:
-            value_scaling = str(controls["value_scaling"].value)
             threshold_enabled, threshold_min, threshold_max = (
                 _resolved_feature_bounds(
                     str(configuration["feature"]),
@@ -3645,11 +3646,20 @@ def render(_navigate: Callable[[str], None]) -> None:
                 )
             )
             kwargs.update(
+                threshold_enabled=threshold_enabled,
+                threshold_min=threshold_min,
+                threshold_max=threshold_max,
+            )
+        # Smoothing, scaling and inversion belong to Data transforms, not
+        # Configure. Keep them active when configuration processing is bypassed.
+        if details.form in _POLISHABLE_FORMS:
+            value_scaling = str(controls["value_scaling"].value)
+            kwargs.update(
                 smooth_window=_integer(
                     controls["smooth_window"],
                     "Smoothing window",
                     minimum=1,
-                ),
+                ) if configuration["smoothing_mode"] == "moving_average" else 1,
                 scaling_mode=value_scaling,
                 normalize="none",
                 rescale_min=(
@@ -3663,9 +3673,6 @@ def render(_navigate: Callable[[str], None]) -> None:
                     else 1.0
                 ),
                 rescale_invert=bool(controls["rescale_invert"].value),
-                threshold_enabled=threshold_enabled,
-                threshold_min=threshold_min,
-                threshold_max=threshold_max,
                 signal_transform="keep",
                 scale=(
                     _number(controls["scale"], "Multiplier")
@@ -3684,12 +3691,12 @@ def render(_navigate: Callable[[str], None]) -> None:
             gzip_output=False,
             value_column=details.value_column,
             array_key=details.array_key,
-            missing_policy=(
-                str(controls["missing_policy"].value)
-                if "missing_policy" in controls
-                else "zero"
-            ) if apply_configuration else "ignore",
-            fill_value=_number(controls["fill_value"], "Fill value") if apply_configuration else 0.0,
+            missing_policy=missing_policy,
+            fill_value=(
+                _number(controls["fill_value"], "Fill value")
+                if (track_missing if details.form == "track" else missing_policy) == "fill"
+                else 0.0
+            ),
             decimal_places=decimal_places,
             data_filter=filter_controls.snapshot() if filter_controls is not None else DataFilterSettings(),
             transform_formula=transform_controls.formula_for(source.source_id if source is not None else None) if transform_controls is not None else None,
@@ -3803,8 +3810,10 @@ def render(_navigate: Callable[[str], None]) -> None:
                 sources=request_options, exports=exports,
                 statistics=statistics,
                 preview_points=get_export_settings().preview_points,
-                combined_formula=(transform_controls.combined_formula or
-                                  " + ".join(f"source{i}" for i in range(1, len(requests) + 1))) if combining else None,
+                combined_formula=(
+                    transform_controls.combined_formula if transform_controls.combined_formula is not None
+                    else " + ".join(f"source{i}" for i in range(1, len(requests) + 1))
+                ) if combining else None,
                 combined_name=f"{_DATA_FILE_STEM}_combined",
             ), tuple(inputs.files.items()))
             artifact = await run.io_bound(build_python, snapshot)

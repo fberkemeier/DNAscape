@@ -91,7 +91,18 @@
     if(chart.__dnascapeFrameInstalled)return;
     chart.__dnascapeFrameInstalled=true;
     const setOption=chart.setOption.bind(chart),resize=chart.resize.bind(chart),capture=chart.getDataURL.bind(chart);
-    chart.setOption=(...args)=>{const result=setOption(...args);window.dnascapeClipCircularFrame(chart);return result;};
+    chart.setOption=(options,...args)=>{
+      // NiceGUI only replaces options when the series count changes. A view
+      // switch can keep that count while changing coordinate systems; merging
+      // then retains polar axes, hidden Cartesian axes and polar series styles.
+      // Only full specifications carry the plot type: gesture patches must merge.
+      if(options.dnascapePlotType&&!!chart.getOption()?.dnascapeCircular!==!!options.dnascapeCircular){
+        args[0]=typeof args[0]==='object'?{...args[0],notMerge:true}:true;
+      }
+      const result=setOption(options,...args);
+      window.dnascapeClipCircularFrame(chart);
+      return result;
+    };
     chart.resize=(...args)=>{const result=resize(...args);window.dnascapeClipCircularFrame(chart);return result;};
     chart.getDataURL=(...args)=>{
       if(window.dnascapeClipCircularFrame(chart))chart.getZr().refreshImmediately();

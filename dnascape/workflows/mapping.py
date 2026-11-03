@@ -24,6 +24,7 @@ from typing import Any, Protocol, cast
 
 import numpy as np
 
+from dnascape._resources import ensure_capacity, hosted_operation
 from dnascape.workflows.mapping_catalog import (
     DATA_FORMS,
     DataForm,
@@ -33,12 +34,14 @@ from dnascape.workflows.mapping_catalog import (
     mapping_route,
     mapping_target,
 )
-from dnascape.workflows.spatial_grid import resample_spatial, spatial_bin_count
-from dnascape.workflows.simulation_filters import SimulationFilterSelection
 from dnascape.workflows.mapping_filter import (
-    MappingFilterSettings, MappingFitConstraint, prepare_filter_request,
+    MappingFilterSettings,
+    MappingFitConstraint,
     filtered_speed_settings,
+    prepare_filter_request,
 )
+from dnascape.workflows.simulation_filters import SimulationFilterSelection
+from dnascape.workflows.spatial_grid import resample_spatial, spatial_bin_count
 
 ProgressReporter = Callable[[float, str], None]
 CancelChecker = Callable[[], None]
@@ -292,6 +295,7 @@ def _preflight_input_payload(
 
     for value in values.values():
         visit(value)
+    ensure_capacity(total_bytes * 4, "Preparing Mapping inputs")
     if total_values > MAX_INPUT_VALUES or total_bytes > MAX_INPUT_BYTES:
         raise ValueError(
             f"Mapped inputs contain {total_values:,} values / {total_bytes / 1024**2:.1f} MiB; "
@@ -1179,6 +1183,7 @@ def _validate_grid(
         )
 
 
+@hosted_operation("Mapping")
 def validate_mapping_request(
     request: MappingRequest,
     cancel: CancelChecker | None = None,
@@ -1792,6 +1797,7 @@ def _bounded_track_payload(upload: TrackUpload) -> bytes:
     return b"".join(chunks)
 
 
+@hosted_operation("Mapping")
 def materialize_track_upload(
     upload: TrackUpload,
     *,
@@ -1881,6 +1887,7 @@ def materialize_track_upload(
             temporary_path.unlink(missing_ok=True)
 
 
+@hosted_operation("Mapping")
 def materialize_many_tracks(
     uploads: Sequence[TrackUpload],
     **track_options: Any,
@@ -1907,6 +1914,7 @@ def materialize_many_tracks(
     return _readonly(values)
 
 
+@hosted_operation("Mapping")
 def run_mapping(
     request: MappingRequest,
     report: ProgressReporter | None = None,
