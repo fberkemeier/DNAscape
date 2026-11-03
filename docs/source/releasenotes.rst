@@ -1,4 +1,4 @@
-Release notes
+Release Notes
 =============
 
 Unreleased
@@ -11,3 +11,7 @@ Unreleased
   to Core concepts.
 * Updated the main page with a concise contents list, overview, citation and
   contact information.
+* Aligned Installation and Quickstart with the README's app installation
+  command and current data preparation, mapping and simulation walkthrough.
+* Simplified Installation by removing virtual environment and automatic
+  browser-opening instructions, and capitalised section and subsection titles.

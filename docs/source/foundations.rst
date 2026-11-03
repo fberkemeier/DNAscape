@@ -1,4 +1,4 @@
-Core concepts
+Core Concepts
 =============
 
 DNAscape connects measured genomic signals to a model of **origin firing**,
@@ -11,7 +11,7 @@ For an application of timing-based inference to human genomes, see
 
 .. _concept-assays:
 
-Experimental profiles
+Experimental Profiles
 ---------------------
 
 Repli-seq, SNS-seq and OK-seq measure different aspects of replication. Prepare
@@ -30,7 +30,7 @@ for a specific Repli-seq example.
 
 .. _concept-grids:
 
-Coordinates and dependence
+Coordinates And Dependence
 --------------------------
 
 A spatial profile contains one value per genomic bin. Regions use half-open
@@ -71,7 +71,7 @@ need their source resolution to be supplied or interpreted explicitly.
 
 .. _concept-units:
 
-Initiation rate and fork speed
+Initiation Rate And Fork Speed
 ------------------------------
 
 Let :math:`I(x,t)` be potential initiation rate per unit **unreplicated** DNA
@@ -101,7 +101,7 @@ its per-bin convention, rather than summing them. When constructing a grid
 in Python to preserve a fixed physical density, recalculate
 :math:`I_{\mathrm{bin}}` using the new bin width.
 
-KJMA: nucleation, growth and coalescence
+KJMA: Nucleation, Growth And Coalescence
 ----------------------------------------
 
 The Kolmogorov-Johnson-Mehl-Avrami (KJMA) framework describes transformation by
@@ -183,7 +183,7 @@ amplitude carries the units of the kinetic field; the temporal basis is
 dimensionless. See :ref:`kineticframework` for the exact parameterisation,
 shared hazard equations, fitting procedure and identifiability limits.
 
-Timing and directionality
+Timing And Directionality
 -------------------------
 
 If the replication time at :math:`x` is :math:`T_x` and replication completes
@@ -220,7 +220,7 @@ endpoint value.
 
 .. _concept-events:
 
-Fork transport and actual event densities
+Fork Transport And Actual Event Densities
 -----------------------------------------
 
 Let :math:`\rho_+` and :math:`\rho_-` be right- and left-moving fork densities
@@ -274,7 +274,7 @@ actual origin firing in a time interval is the integral of :math:`j_i` over
 that interval and over the simulated region. A small spatial bin's origin
 efficiency is approximately :math:`\Delta x\int j_i(x,t)dt`.
 
-Fitting, masks and model interpretation
+Fitting, Masks And Model Interpretation
 ---------------------------------------
 
 A timing fit commonly minimises mean squared error on valid scored positions
@@ -311,7 +311,7 @@ a map and a simulated or measured profile.
 
 .. _kineticframework:
 
-Unified mapping framework
+Unified Mapping Framework
 -------------------------
 
 Mapping initiation rate, fork speed, replicated fraction and mean replication
@@ -740,7 +740,7 @@ probability monotonicity, finite-difference adjoints and native-grid replay
 provide separate correctness checks. Kinematic-cache reuse preserves the
 general forward calculation and both of its adjoints exactly.
 
-Further reading
+Further Reading
 ---------------
 
 .. [Berkemeier2025] F. Berkemeier, P. R. Cook and M. A. Boemo (2025).

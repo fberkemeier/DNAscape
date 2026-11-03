@@ -45,7 +45,7 @@ Once available, please also cite the accompanying preprint:
    *DNAscape: Software for mapping and simulating DNA replication kinetics.*
    bioRxiv.
 
-Bugs, questions and comments
+Bugs, Questions And Comments
 ============================
 
 DNAscape is under active development by Francisco Berkemeier. For bug reports,

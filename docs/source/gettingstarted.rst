@@ -1,4 +1,4 @@
-Getting started
+Getting Started
 ===============
 
 
@@ -10,17 +10,19 @@ Repli-seq track to an inferred initiation rate and a simulated programme.
 Installation
 ------------
 
-Run the DNAscape app locally using the same steps as the repository README.
+DNAscape is best used through its interactive browser app, built with NiceGUI.
+The steps below follow the repository README and run the app locally.
 
 Requirements
 ~~~~~~~~~~~~
 
 * Python 3.10 or newer (Python 3.13 recommended).
 * Git.
+* Pip.
 * A modern web browser.
 
-1. Download DNAscape
-~~~~~~~~~~~~~~~~~~~~
+1. Download the repository
+~~~~~~~~~~~~~~~~~~~~~~~~~~
 
 .. code-block:: bash
 
@@ -29,75 +31,19 @@ Requirements
 
 Run the remaining commands from this project folder.
 
-2. Create a virtual environment
-~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
-
-Choose an installed Python version (3.13 is recommended).
-
-Windows PowerShell:
-
-.. code-block:: powershell
-
-   $pythonVersion = "3.13"
-   py "-$pythonVersion" -m venv .venv
-   .\.venv\Scripts\Activate.ps1
-
-macOS and Linux:
+2. Install and run the app
+~~~~~~~~~~~~~~~~~~~~~~~~~~
 
 .. code-block:: bash
 
-   python3.13 -m venv .venv
-   source .venv/bin/activate
-
-When changing Python versions or computers, create a fresh environment and
-reinstall the dependencies. Do not reuse or copy an existing ``.venv``.
-
-.. note::
-
-   For BigWig files and links, the app installation selects ``pybigtools`` on
-   Python 3.10-3.13 or ``figwig`` on Python 3.14 and newer. Both provide the
-   same region and binning controls. Figwig compiles and caches its decoding
-   routines on the first read, which can take a few seconds longer.
-
-3. Install the app
-~~~~~~~~~~~~~~~~~~
-
-.. code-block:: bash
-
-   python -m pip install --upgrade pip
-   python -m pip install -r app/requirements.txt
-
-This also installs the DNAscape Python package and its numerical dependencies.
-
-4. Start DNAscape
-~~~~~~~~~~~~~~~~~
-
-.. code-block:: bash
-
+   pip install ".[app]"
    python -m app
 
+This installs the DNAscape Python package and its app dependencies.
 Open the address printed in the terminal. Keep that terminal running while
 using the app; press ``Ctrl+C`` there to stop it.
 
-For later launches, activate ``.venv`` again and run ``python -m app``.
-
-.. _app-open-browser:
-
-Open the browser automatically
-~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
-
-In Windows PowerShell:
-
-.. code-block:: powershell
-
-   $env:DNASCAPE_APP_SHOW = "true"
-   python -m app
-
-On macOS and Linux:
-
-.. code-block:: bash
-
-   DNASCAPE_APP_SHOW=true python -m app
+For later launches, run ``python -m app`` from the repository folder.
 
 Continue with :ref:`quickstart`, or use :doc:`python` for code-based workflows.
 
@@ -106,73 +52,84 @@ Continue with :ref:`quickstart`, or use :doc:`python` for code-based workflows.
 Quickstart
 ----------
 
-This first run uses the app to prepare Repli-seq data, infer a spatial
-initiation rate and simulate replication. It connects three app pages:
+This first run follows the README example: prepare a replication-timing
+profile from public Repli-seq data, infer a spatial initiation rate, and
+simulate the fitted replication programme. It connects three app pages:
 **Data Manager -> Mapping -> Simulation**.
 
 Start the app using :ref:`installation`. The example uses K562 chromosome 1
 and a constant fork speed of 1.4 kb/min.
 
-1. Prepare a timing profile
-~~~~~~~~~~~~~~~~~~~~~~~~~~~
+I. Managing data
+~~~~~~~~~~~~~~~~
 
-Open **Data Manager**.
+With the app open, select **Data Manager** in the left-hand menu.
 
-1. Select **Link**, paste the public K562 Repli-seq BigWig URL below and click
-   **Inspect**. A successful inspection replaces the button text with a check.
+1. Download the `K562 Repli-seq BigWig file`_ from ENCODE and **Upload** it.
+   Alternatively, choose **Link**, select
+   **Example: ENCODE Repli-seq (bigWig) - K562** to fill in the URL, and click
+   **Inspect**. You can also paste the file's URL directly into the Link field.
 2. In **Configure**, leave **Apply configuration** on. Set **Prepare as** to
    **Replication timing**, choose **chr1**, use the full chromosome, and set
    **Bin size (bp)** to **1000** and **Aggregation** to **Mean**.
-3. Under **Values**, choose **Missing values -> Fill with a value** and use
-   **30** as the fill value.
-4. Open **Data transforms** and enable **Apply transform**. Leave the formula
+   Under **Values**, set **Missing values** to **Fill with a value** and
+   **Fill value** to **30** minutes.
+3. Open **Data transforms** and enable **Apply transform**. Leave the formula
    as ``source``. Choose **Value scaling -> Target interval**, with **Minimum**
    **30** and **Maximum** **500**, and enable **Invert**.
-5. Click **Convert**. The new result appears at the top of **Generated Files**.
-   Inspect it and download the timing profile from **Raw data** as TSV.
+4. Click **Convert**. Inspect the plot, then download the timing profile as
+   TSV from **Generated Files -> Raw data**.
 
-.. code-block:: text
-
-   https://hgdownload.gi.ucsc.edu/goldenPath/hg19/encodeDCC/wgEncodeUwRepliSeq/wgEncodeUwRepliSeqK562WaveSignalRep1.bigWig
+.. _K562 Repli-seq BigWig file: https://hgdownload.gi.ucsc.edu/goldenPath/hg19/encodeDCC/wgEncodeUwRepliSeq/wgEncodeUwRepliSeqK562WaveSignalRep1.bigWig
 
 The wave signal is relative. Assigning it a 30-500 minute interval is an
 illustrative calibration: larger Repli-seq scores become earlier times after
 inversion. Use an experimentally justified time scale for quantitative work.
 For a Python workflow using bundled data without downloads, see :ref:`pythonmodules`.
 
-2. Infer initiation rate
-~~~~~~~~~~~~~~~~~~~~~~~~
+II. Mapping features
+~~~~~~~~~~~~~~~~~~~~
 
-Open **Mapping**.
+Select **Mapping** in the left-hand menu to infer a spatial origin
+initiation-rate profile that fits the prepared timing data.
 
-1. Choose **Mapped output -> Initiation rate**, **Dependence -> Space**, and
-   **Input factors -> Replication timing + fork speed**.
-2. Under **Inputs**, upload the prepared timing profile with **Space**
-   dependence. Set fork speed to **Constant**, with **Value** **1.4 kb/min**.
-3. In **Region**, turn **Whole region** off. Set **Start** to **40000 kb**,
-   **End** to **50000 kb**, and **Resolution** to **1 kb**. Leave **Periodic** off.
-4. Click **Map**. Compare the observed timing with the fitted prediction and
-   inspect the MSE. Download the initiation-rate profile from **Raw data**.
+1. Within **Target**, set **Mapped output** to **Initiation rate**,
+   **Dependence** to **Space**, and **Input factors** to
+   **Replication timing + fork speed**. This selects the route that infers
+   initiation rate from supplied timing and fork speed.
+2. Under **Inputs**, upload the prepared timing profile (TSV) and confirm its
+   **Space** dependence. Set **Fork speed** to **Constant**, with a value of
+   **1.4 kb/min**.
+3. In **Region**, leave **Whole region** off. Set **Start** to **40000 kb**,
+   **End** to **50000 kb**, and **Resolution** to **1 kb**. Leave **Periodic**
+   off, then click **Map**. Compare observed and fitted timing using the
+   **Output** selector in **Preview**, inspect the MSE, and download the fitted
+   initiation-rate profile from **Raw data**.
 
 You can also use a result's **Open in** button to transfer it directly. For
 Mapping, choose the target, route and receiving input when prompted.
 
-3. Simulate the fitted programme
-~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+III. Simulating DNA replication
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
-Open **Simulation**.
+Move to **Simulation** to simulate replication using the inferred
+origin-firing profile.
 
-1. Upload the mapped initiation rate as a **Profile** with **Space** dependence.
-   Keep fork speed **Constant** at **1.4 kb/min**.
-2. Enable **Whole region** and use **Resolution** **1 kb/bin**. This uses the
-   full uploaded profile, which now represents the mapped 10,000 kb interval.
-3. Set **Simulations (replicates)** to **100** and enable **Fix seed** for a
-   reproducible run. Enable **Track time courses** to include progression,
-   origin firing over time and replicon lengths.
-4. Click **Simulate**. In **Preview**, select an output to inspect and download
-   the data you need. Compare the ensemble timing with the mapping prediction.
+1. Under **Initiation rate**, choose **Profile** and upload the mapped profile.
+   DNAscape automatically detects its **Space** dependence. Keep **Fork speed**
+   **Constant** at **1.4 kb/min**.
+2. In **Region**, enable **Whole region** and keep **Resolution** at
+   **1 kb/bin**. This uses the full uploaded profile, representing the mapped
+   10,000 kb interval. In **Simulation settings**, set **Simulations
+   (replicates)** to **100**; optionally enable **Fix seed** for reproducible
+   runs.
+3. Click **Simulate**, explore the outputs in **Preview**, and download the
+   data or figures you need. Compare the ensemble timing with the mapping
+   prediction, then change the fork speed, replicate count or other settings
+   and rerun to compare outcomes.
 
-Change one assumption, such as fork speed, and rerun to compare programmes.
+Optionally enable **Track time courses** in Simulation settings to include
+replicated fraction, origin firing over time and replicon lengths.
 The :ref:`simulationengine` guide explains optional fork mechanisms and outputs.
 
 Continue

@@ -1,4 +1,4 @@
-Python and notebooks
+Python And Notebooks
 ====================
 
 
@@ -12,7 +12,7 @@ Start with :ref:`exportworkflows` to reproduce the current app options.
 
 .. _exportworkflows:
 
-Export a workflow from the app
+Export A Workflow From The App
 ------------------------------
 
 Enable **Settings -> Interface -> Developer mode** and select **Code** on a
@@ -45,8 +45,8 @@ directory. Keep the script, source files and DNAscape version with the result.
 
 .. _pythonmodules:
 
-Use rdata, rmap and rsim
-------------------------
+Use ``rdata``, ``rmap`` And ``rsim``
+------------------------------------
 
 
 The three public entry points are ``rdata`` for data preparation, ``rmap`` for
@@ -188,7 +188,7 @@ that reader choice and its preparation controls.
 
 .. _python-notebooks:
 
-Notebook examples
+Notebook Examples
 -----------------
 
 

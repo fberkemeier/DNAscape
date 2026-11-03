@@ -1,4 +1,4 @@
-App guide
+App Guide
 =========
 
 
@@ -16,7 +16,7 @@ For a first run with specific settings, follow :ref:`quickstart`.
 
 .. _niceguiapp:
 
-User interface
+User Interface
 --------------
 
 
