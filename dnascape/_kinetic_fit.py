@@ -390,7 +390,6 @@ def fit_kinetic(
     *,
     target,
     observation="timing",
-    observation_weights=None,
     target_form="x",
     resolution=1.0,
     resolution_time=5.0,
@@ -432,9 +431,6 @@ def fit_kinetic(
     weibull_onset=1.0,
     adaptive_fitting=True,
     relative_tolerance=0.001,
-    timing_method="auto",
-    timing_quadrature_rtol=1e-6,
-    temporal_newton=True,
     _warm_start=None,
     _progress_offset=0,
     _progress_budget=None,
@@ -501,18 +497,12 @@ def fit_kinetic(
         observation = "timing"
     elif observation in {"replicated_fraction", "replicated_fraction_xt", "fraction"}:
         observation = "fraction"
-    elif observation == "hazard":
-        observation = "hazard"
     else:
-        raise ValueError("Observations must be timing, replicated fraction or hazard.")
+        raise ValueError("Observations must be timing or replicated fraction.")
     dx, dt = float(resolution), float(resolution_time)
     relative_tolerance = float(relative_tolerance)
     if not np.isfinite(relative_tolerance) or relative_tolerance < 0:
         raise ValueError("Fit tolerance must be finite and non-negative.")
-    if timing_method not in {"auto", "grid", "quadrature"}:
-        raise ValueError("Timing method must be auto, grid or quadrature.")
-    if not np.isfinite(timing_quadrature_rtol) or timing_quadrature_rtol <= 0.:
-        raise ValueError("Timing quadrature tolerance must be finite and positive.")
     radius = float(neighbourhood_range)
     if not np.isfinite(dx) or dx <= 0 or not np.isfinite(dt) or dt <= 0:
         raise ValueError("Spatial and temporal resolutions must be finite and positive.")
@@ -571,9 +561,7 @@ def fit_kinetic(
         typical = np.where(valid, raw_observed - offset, np.nanmedian(raw_observed[valid] - offset))
     else:
         valid = np.isfinite(raw_observed)
-        if observation == "hazard" and (raw_observed.ndim != 2 or np.any(raw_observed[valid] < 0.)):
-            raise ValueError("Hazard observations must be a non-negative position-by-time array.")
-        if observation == "fraction" and np.any((raw_observed[valid] < 0.0) | (raw_observed[valid] > 1.0)):
+        if np.any((raw_observed[valid] < 0.0) | (raw_observed[valid] > 1.0)):
             raise ValueError("Replicated fraction must be between zero and one.")
         n = None if mean_fraction else raw_observed.shape[0]
         typical = None
@@ -601,7 +589,7 @@ def fit_kinetic(
     if target == "fork_speed" and not np.any(supplied_array > 0):
         raise ValueError("A positive initiation rate is required to infer fork speed.")
     if time_grid is None:
-        if observation != "timing":
+        if observation == "fraction":
             clock = np.arange(raw_observed.shape[-1], dtype=float) * dt
         else:
             maximum = max_time if max_time is not None else max_rep_time
@@ -632,8 +620,8 @@ def fit_kinetic(
         or np.any(np.diff(clock) <= 0)
     ):
         raise ValueError("Time grid must start at zero and be finite and strictly increasing.")
-    if observation != "timing" and clock.size != raw_observed.shape[-1]:
-        raise ValueError("The time grid must match the time-resolved observations.")
+    if observation == "fraction" and clock.size != raw_observed.shape[-1]:
+        raise ValueError("The time grid must match the replicated-fraction observations.")
     if observation == "timing" and clock[-1] <= float(np.max(typical)):
         raise ValueError("The time grid must extend beyond the observed replication timing.")
     native_clock = clock.copy()
@@ -666,7 +654,7 @@ def fit_kinetic(
             raise ValueError(
                 "The supplied profile allows no continuing initiation within the influence radius of some positions; a finite mean replication time cannot be fitted."
             )
-    if observation != "timing":
+    if observation == "fraction":
         fraction_matrix = raw_observed.reshape(1, -1) if mean_fraction else raw_observed
         finite_fraction = np.isfinite(fraction_matrix)
         counts = finite_fraction.sum(axis=0)
@@ -676,7 +664,7 @@ def fit_kinetic(
             out=np.full(clock.size, np.nan),
             where=counts > 0,
         )
-        survival = np.where(np.isfinite(means), np.exp(-means) if observation == "hazard" else 1.0-means, 0.0)
+        survival = np.where(np.isfinite(means), 1.0 - means, 0.0)
         rough_timing = float(_trapz_weights(clock) @ survival)
         typical = np.full(n, max(rough_timing, dt))
     elif compact:
@@ -765,12 +753,6 @@ def fit_kinetic(
     # Do not interpolate the supplied field into a full XT temporary first.
     fixed = None
     valid_observed = np.isfinite(raw_observed)
-    data_weights = None
-    if observation_weights is not None:
-        data_weights = np.broadcast_to(np.asarray(observation_weights, float), raw_observed.shape)
-        if np.any(~np.isfinite(data_weights)) or np.any(data_weights < 0.):
-            raise ValueError("Observation weights must be finite and non-negative.")
-        valid_observed = valid_observed & (data_weights > 0.)
     if observation == "timing" and refine_edge_kb and not perQ:
         edge = min(int(float(refine_edge_kb) / dx), max(0, (original_n - 1) // 2))
         if edge:
@@ -778,9 +760,6 @@ def fit_kinetic(
     if not valid_observed.any():
         raise ValueError("No finite observations remain in the selected region.")
     observation_count = int(valid_observed.sum())
-    if data_weights is not None:
-        data_weights = np.where(valid_observed, data_weights, 0.)
-        data_weights = data_weights*(observation_count/data_weights.sum())
     weights = _trapz_weights(clock)
     history = []
     phase_history = []
@@ -834,22 +813,6 @@ def fit_kinetic(
 
     from ._kinetic_tiled import DENSE_FIT_VALUES, TiledKineticFit
 
-    quadrature = False
-    if observation == "timing" and static_primitive and timing_method != "grid":
-        # Backend selection must not depend on the memory tile threshold:
-        # changing a working-set budget must leave the numerical method intact.
-        worthwhile = n >= 2048 and (not stationary_source or n >= 32768)
-        if timing_method == "quadrature" or worthwhile:
-            from ._timing_native import timing_library
-
-            # Auto retains the existing portable fast path when no native
-            # compiler/cache is available; an explicit request also supports
-            # the fully equivalent NumPy quadrature implementation.
-            quadrature = timing_method == "quadrature" or timing_library() is not None
-    timing_accuracy = timing_quadrature_rtol*np.maximum(typical, dt)
-    if error is not None and error > 0.:
-        timing_accuracy = np.minimum(timing_accuracy, .01*np.sqrt(error))
-
     tiled = None
 
     def configure_grid():
@@ -859,8 +822,6 @@ def fit_kinetic(
                 model, supplied, native_clock, dt, dx, perQ, radius,
                 observation, raw_observed, valid_observed, mean_fraction, offset, scale_loss,
                 static_primitive, stationary_source, backend,
-                quadrature=quadrature, quadrature_tolerance=timing_accuracy,
-                observation_weights=data_weights,
             )
             fixed = None
         else:
@@ -873,12 +834,6 @@ def fit_kinetic(
     configure_grid()
 
     def field_derivative(operator, d_hazard):
-        from ._timing_quadrature import StationaryTiming
-
-        if isinstance(operator, StationaryTiming):
-            rate_gradient, speed_gradient = operator.backward_timing(
-                d_hazard/scale_loss, with_speed=target == "fork_speed")
-            return (rate_gradient if target == "initiation_rate" else speed_gradient)[None, :]
         options = {"with_speed": target == "fork_speed"}
         if isinstance(operator, (FastTransportHazard, StationarySourceHazard)):
             options["with_rate"] = target == "initiation_rate"
@@ -898,14 +853,7 @@ def fit_kinetic(
                 "The kinetics or region transforms allow no continuing initiation within the influence radius of some positions; a finite mean replication time cannot be fitted."
             )
         if cached_operator is None or target == "fork_speed":
-            if quadrature:
-                from ._timing_quadrature import StationaryTiming
-
-                operator = StationaryTiming(
-                    speed[0], clock[-1]*typical/np.max(typical), resolution=dx,
-                    periodic=perQ, radius=radius, tolerance=timing_accuracy,
-                )
-            elif backend == "auto" and (compact or uniform_kinetics):
+            if backend == "auto" and (compact or uniform_kinetics):
                 operator = UniformKineticsHazard(
                     speed, clock, dx, perQ, radius, length=original_n * dx,
                     compress=not compact,
@@ -938,30 +886,6 @@ def fit_kinetic(
                 cached_operator = operator
         else:
             operator = cached_operator
-        if quadrature:
-            with measured_work_phase(0., .5):
-                predicted = operator.predict(rate[0], record=need_gradient or budget > 0) + offset
-            if enforce_completion and np.any(operator.tail_bound > timing_accuracy):
-                calls += 1
-                return {"loss": np.inf, "mse": np.inf, "gradient": np.zeros(model.count)}
-            residual = predicted-raw_observed
-            q = np.where(valid_observed, residual, 0.)
-            mse = float(np.sum(q*q if data_weights is None else data_weights*q*q)/observation_count)
-            if data_weights is not None:
-                q = q*data_weights
-            d_prediction = q*(2./observation_count)
-            gradient = (model.gradient(field_derivative(operator, d_prediction), p, model_state)
-                        if need_gradient else np.zeros(model.count))
-            calls += 1
-            return regularize(dict(
-                loss=mse/scale_loss, mse=mse, gradient=gradient, fitted=fitted,
-                hazard=None, survival=operator.final_survival[None, :], prediction=predicted,
-                residual=residual, backend=operator.backend, positive_rate=bool(np.any(rate > 0.)),
-                spatial_groups=None, sensitivity=operator.sensitivity,
-                timing_tail_bound=operator.tail_bound.copy(),
-                quadrature_error=operator.quadrature_error.copy(),
-                gradient_state=None if need_gradient else (operator, d_prediction, p.copy(), model_state),
-            ), p)
         with measured_work_phase(0.0, 0.5):
             if scalar_linear:
                 if scalar_response is None:
@@ -973,19 +897,11 @@ def fit_kinetic(
                 hazard = operator.forward(rate, record=need_gradient or budget > 0)
         survival_field = np.exp(-np.maximum(hazard, 0.0))
         groups = getattr(operator, "groups", None)
-        tail_bound = None
-        if observation == "timing":
-            from ._kinetic_tail import kinetic_timing_bound
-
-            survival_end = survival_field[-1]
-            if groups is not None:
-                survival_end = survival_end[groups]
-            tail_bound = kinetic_timing_bound(
-                model, p, model_state, rate, speed, survival_end, supplied,
-                native_clock, dt, dx, radius, perQ,
-                length=original_n*dx if compact else None,
-            )
-        if enforce_completion and tail_bound is not None and np.any(tail_bound > timing_accuracy):
+        if (
+            observation == "timing"
+            and enforce_completion
+            and np.max(survival_field[-1]) > completion_tolerance
+        ):
             # A slower proposal must not appear to fit better by moving its
             # missing survival tail outside the fixed fitting clock.
             calls += 1
@@ -999,15 +915,13 @@ def fit_kinetic(
                 predicted = predicted_small[groups]
             residual = predicted - raw_observed
             q = np.where(valid_observed, residual, 0.0)
-            mse = float(np.sum(q*q if data_weights is None else data_weights*q*q)/observation_count)
-            if data_weights is not None:
-                q = q*data_weights
+            mse = float(np.sum(q * q) / observation_count)
             q = np.asarray([q.sum()]) if compact else q
             if groups is not None:
                 q = np.bincount(groups, q, minlength=hazard.shape[1])
             d_hazard = -weights[:, None] * survival_field * q[None, :] * (2.0 / observation_count)
         else:
-            fraction = hazard if observation == "hazard" else -np.expm1(-np.maximum(hazard, 0.0))
+            fraction = -np.expm1(-np.maximum(hazard, 0.0))
             predicted_small = fraction.mean(axis=1) if mean_fraction else fraction.T
             if mean_fraction and groups is not None:
                 counts = np.bincount(groups, minlength=hazard.shape[1])
@@ -1023,10 +937,7 @@ def fit_kinetic(
                 predicted = predicted_small[groups]
             residual = predicted - raw_observed
             q = np.where(valid_observed, residual, 0.0) * (2.0 / observation_count)
-            squared = np.where(valid_observed, residual, 0.0)**2
-            mse = float(np.sum(squared if data_weights is None else data_weights*squared)/observation_count)
-            if data_weights is not None:
-                q = q*data_weights
+            mse = float(np.sum(np.where(valid_observed, residual, 0.0) ** 2) / observation_count)
             if mean_fraction:
                 if groups is None:
                     q_hazard = np.broadcast_to(q.reshape(-1, 1) / n, hazard.shape)
@@ -1041,7 +952,7 @@ def fit_kinetic(
                     q_hazard = np.stack([
                         np.bincount(groups, row, minlength=hazard.shape[1]) for row in q_hazard
                     ])
-            d_hazard = q_hazard if observation == "hazard" else q_hazard * survival_field
+            d_hazard = q_hazard * survival_field
         if need_gradient:
             with measured_work_phase(0.5, 1.0):
                 if scalar_response is not None:
@@ -1066,7 +977,6 @@ def fit_kinetic(
             "residual": residual,
             "backend": getattr(operator, "backend", getattr(operator, "name", backend)),
             "positive_rate": bool(np.any(rate > 0.0)),
-            **({"timing_tail_bound": tail_bound} if tail_bound is not None else {}),
             "spatial_groups": groups,
             "gradient_state": None
             if need_gradient
@@ -1129,7 +1039,7 @@ def fit_kinetic(
         if state is None:
             return
         operator, d_hazard, p, model_state = state
-        if scalar_response is not None and not quadrature:
+        if scalar_response is not None:
             derivative = np.asarray([[np.sum(d_hazard * scalar_response) / scale_loss]])
         else:
             derivative = field_derivative(operator, d_hazard)
@@ -1159,9 +1069,7 @@ def fit_kinetic(
             model.projection = planning_projection()
             with measured_work(prediction_work):
                 current = evaluate(parameters, need_gradient=False)
-            tail_bound = current.get("timing_tail_bound")
-            if (np.all(tail_bound <= timing_accuracy) if tail_bound is not None else
-                    np.max(current["survival"][-1]) <= completion_tolerance):
+            if np.max(current["survival"][-1]) <= completion_tolerance:
                 break
             if not current["positive_rate"]:
                 raise ValueError(
@@ -1300,7 +1208,7 @@ def fit_kinetic(
                 local_direction[gradient == 0.0] = 0.0
                 if np.all(np.isfinite(local_direction)) and np.dot(local_direction, gradient) < 0:
                     direction = local_direction
-            if target == "fork_speed" and form in {"x", "xt"} and phase == "space" and observation == "timing":
+            if target == "fork_speed" and form == "xt" and phase == "space" and observation == "timing":
                 # T scales as v**(-1/2) in the homogeneous stationary limit.
                 # Use that local scale to propose spatial amplitude updates,
                 # avoiding normalization by a few large gradient entries.
@@ -1313,41 +1221,6 @@ def fit_kinetic(
                 local_direction[gradient == 0.0] = 0.0
                 if np.all(np.isfinite(local_direction)) and np.dot(local_direction, gradient) < 0:
                     direction = local_direction
-            if (direction is None and temporal_newton and form == "t" and phase == "time"
-                    and observation == "timing" and 1 < len(indices) <= 3
-                    and completed[phase] >= 2
-                    and phase_history[-1]["mse"] > .5*history[-2]):
-                # A time-only target has just two or three global Weibull
-                # coefficients. On a plateau, a small prediction Jacobian
-                # resolves their amplitude/shape/basal correlation better
-                # than another normalised quasi-Newton step. Large spatial
-                # models always retain the O(1)-sweep discrete adjoint.
-                columns = []
-                for index in indices:
-                    probe = parameters.copy()
-                    probe[index] = min(probe[index]+3e-4, model.upper[index])
-                    delta = probe[index]-parameters[index]
-                    if delta <= 0.:
-                        columns = []
-                        break
-                    sampled = evaluate(probe, need_gradient=False)
-                    if not np.isfinite(sampled["loss"]):
-                        columns = []
-                        break
-                    columns.append(((sampled["prediction"]-current["prediction"])/delta)[valid_observed])
-                if columns:
-                    jacobian = np.column_stack(columns)
-                    response = current["residual"][valid_observed]
-                    if data_weights is not None:
-                        root = np.sqrt(data_weights[valid_observed])
-                        jacobian = jacobian*root[:, None]
-                        response = response*root
-                    matrix = jacobian.T@jacobian
-                    ridge = 1e-6*max(float(np.max(np.diag(matrix))), 1e-20)
-                    proposed = -np.linalg.solve(matrix+ridge*np.eye(len(indices)),
-                                                 jacobian.T@response)
-                    if np.all(np.isfinite(proposed)) and np.dot(proposed, gradient) < 0.:
-                        direction = proposed
             if direction is None:
                 direction = metric * _lbfgs_direction(metric * gradient, phase_memories[phase])
             if np.dot(direction, gradient) >= 0:
@@ -1501,19 +1374,13 @@ def fit_kinetic(
             info["weibull_baseline"] = float(np.exp(parameters[model.baseline_index]))
     if observation == "timing":
         info["replication_timing_fit"] = current["prediction"]
-        if "timing_tail_bound" in current:
-            info["timing_tail_error_bound"] = float(np.max(current["timing_tail_bound"]))
-            if "quadrature_error" in current:
-                info["timing_quadrature_error"] = float(np.max(current["quadrature_error"]))
-                info["timing_method"] = "adaptive_gk31"
-        if not quadrature and clock.size * n <= 1_000_000:
+        if clock.size * n <= 1_000_000:
             groups = current["spatial_groups"]
             info["survival"] = (
                 current["survival"].T if groups is None else current["survival"][:, groups].T
             )
     else:
-        info["hazard_fit" if observation == "hazard" else
-             "replicated_fraction_fit" if mean_fraction else "replicated_fraction_xt_fit"] = (
+        info["replicated_fraction_fit" if mean_fraction else "replicated_fraction_xt_fit"] = (
             current["prediction"]
         )
         timing_prediction = current.get("timing_prediction")

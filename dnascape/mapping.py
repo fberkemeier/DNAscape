@@ -372,7 +372,6 @@ def map_replicated_fraction_xt(
     perQ=False,
     neighbourhood_range=2000.0,
     backend="auto",
-    return_hazard=False,
 ):
     resolution = _normalise_resolution_x(resolution, resolution_x=resolution_x)
     if resolution_t is not None:
@@ -428,7 +427,7 @@ def map_replicated_fraction_xt(
             volume = operator.forward(rates[:, None])[:, 0]
             if leading:
                 volume = volume[1:]
-        fraction = np.maximum(volume, 0.0) if return_hazard else -np.expm1(-np.maximum(volume, 0.0))
+        fraction = -np.expm1(-np.maximum(volume, 0.0))
         return np.broadcast_to(fraction, (int(n_bins), t.size)).copy()
 
     if (backend == "auto" and _field_time_length(fork_speed, int(n_bins)) is None
@@ -444,8 +443,7 @@ def map_replicated_fraction_xt(
         operator = StationaryHazard(stationary_speed, clock,
                                         resolution=resolution, periodic=bool(perQ), radius=radius)
         volume = operator.forward(stationary)
-        volume = np.maximum(volume[1:] if leading else volume, 0.0)
-        return volume.T if return_hazard else -np.expm1(-volume).T
+        return -np.expm1(-np.maximum(volume[1:] if leading else volume, 0.0)).T
 
     I = _expand_space_time_field(initiation_rate, t.size, int(n_bins), t, resolution_time, "initiation_rate")
     v = _expand_space_time_field(fork_speed, t.size, int(n_bins), t, resolution_time, "fork_speed", positive=True)
@@ -479,7 +477,7 @@ def map_replicated_fraction_xt(
         A = operator.forward(I)
         if leading:
             A = A[1:]
-        return np.maximum(A, 0.0).T if return_hazard else -np.expm1(-np.maximum(A, 0.0)).T
+        return -np.expm1(-np.maximum(A, 0.0)).T
 
     v_raw = np.asarray(fork_speed, dtype=float)
     if perQ:
@@ -515,12 +513,7 @@ def map_replicated_fraction_xt(
 
     if leading:
         A = A[1:]
-    return np.maximum(A, 0.0).T if return_hazard else -np.expm1(-np.maximum(A, 0.0)).T
-
-
-def map_replication_hazard(*args, **kwargs):
-    """Return H(position, time) directly, retaining values after f saturates."""
-    return map_replicated_fraction_xt(*args, **dict(kwargs, return_hazard=True))
+    return -np.expm1(-np.maximum(A, 0.0)).T
 
 
 def map_replicated_fraction(*args, **kwargs):

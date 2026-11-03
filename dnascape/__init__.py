@@ -57,7 +57,6 @@ _PUBLIC_BY_MODULE = {
         "plothm",
     ),
     "mapping": (
-        "map_replication_hazard",
         "map_replicated_fraction_xt",
         "map_replicated_fraction",
         "map_fork_densities_xt",
@@ -97,7 +96,6 @@ _PUBLIC_BY_MODULE = {
         "map_timing_firing_spacetime_speed_simulated",
         "rfit",
     ),
-    "kinetics": ("fit_kinetic", "fit_joint_static"),
     "routing": (
         "MappingSpec",
         "DataTypeMapper",

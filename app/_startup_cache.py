@@ -1,8 +1,9 @@
 """Keep application bytecode out of slow synced or network source folders.
 
-Only DNAscape's own source loaders change cache location. Python still checks
-source timestamps, sizes and bytecode versions, and dependencies retain their
-normal caches. Source paths, resource lookup and tracebacks stay unchanged.
+DNAscape sources and dependencies in a project-local virtual environment use
+this cache. Python still checks source timestamps, sizes and bytecode versions.
+Source paths, resource lookup and tracebacks stay unchanged. On Windows,
+slow networking extensions also use validated, disposable local copies.
 """
 
 from __future__ import annotations
@@ -12,7 +13,7 @@ import json
 import os
 import sys
 import tempfile
-from importlib.machinery import PathFinder, SourceFileLoader
+from importlib.machinery import ExtensionFileLoader, PathFinder, SourceFileLoader
 from importlib.util import cache_from_source
 from pathlib import Path
 
@@ -41,15 +42,83 @@ class _CachedSourceLoader(SourceFileLoader):
         super().set_data(destination, data, _mode=_mode)
 
 
+class _CachedExtensionLoader(ExtensionFileLoader):
+    """Avoid repeated DLL reads from synced storage, preserving module paths.
+
+    Windows opens an extension binary several times during loading. Keep a
+    versioned local copy; its name changes whenever source size or timestamp
+    changes. Extensions needing DLLs relative to their original location fall
+    back to the ordinary loader. No installed package files are modified.
+    """
+
+    def __init__(self, fullname: str, source: str, cache: Path) -> None:
+        super().__init__(fullname, source)
+        self.cache = cache
+
+    def _local_binary(self) -> Path:
+        source = Path(self.path)
+        stat = source.stat()
+        identity = hashlib.sha256(
+            f"{stat.st_mtime_ns}:{stat.st_size}:{sys.implementation.cache_tag}".encode()
+        ).hexdigest()[:20]
+        destination = self.cache / f"{source.stem}-{identity}{source.suffix}"
+        if destination.is_file() and destination.stat().st_size == stat.st_size:
+            return destination
+        self.cache.mkdir(parents=True, exist_ok=True)
+        temporary = None
+        try:
+            with tempfile.NamedTemporaryFile(dir=self.cache, delete=False) as stream:
+                temporary = Path(stream.name)
+                stream.write(source.read_bytes())
+            os.replace(temporary, destination)
+        finally:
+            if temporary is not None:
+                temporary.unlink(missing_ok=True)
+        return destination
+
+    def create_module(self, spec):
+        original = spec.origin
+        try:
+            spec.origin = str(self._local_binary())
+            return super().create_module(spec)
+        except (OSError, ImportError):
+            # Dependent DLL lookup may require the original package directory.
+            spec.origin = original
+            return super().create_module(spec)
+        finally:
+            spec.origin = original
+
+    def exec_module(self, module):
+        # Keep resource lookup and package diagnostics tied to the installation.
+        module.__file__ = self.path
+        super().exec_module(module)
+
+
 class _LocalCacheFinder:
-    def __init__(self, project: Path, cache: Path) -> None:
+    def __init__(self, project: Path, cache: Path, *, cache_dependencies: bool = False) -> None:
         self.project, self.cache = project, cache
+        self.cache_dependencies = cache_dependencies
 
     def find_spec(self, fullname, path=None, target=None):
-        if fullname.split(".", 1)[0] not in {"app", "dnascape"}:
+        if not self.cache_dependencies and fullname.split(".", 1)[0] not in {"app", "dnascape"}:
             return None
         spec = PathFinder.find_spec(fullname, path, target)
-        if spec is None or not isinstance(spec.loader, SourceFileLoader) or not spec.origin:
+        if spec is None or not spec.origin:
+            return None
+        # Limit binary relocation to the networking accelerators measured at
+        # startup. Scientific/other extensions keep their ordinary loaders
+        # and package-relative native-library/resource lookup.
+        network_extension = (fullname == "_brotli" or fullname.startswith("aiohttp.")
+                             or fullname.startswith("backports.zstd."))
+        if (self.cache_dependencies and network_extension and os.name == "nt"
+                and isinstance(spec.loader, ExtensionFileLoader)):
+            try:
+                relative = Path(spec.origin).relative_to(self.project)
+            except ValueError:
+                return None
+            spec.loader = _CachedExtensionLoader(fullname, spec.origin, self.cache / "native" / relative.parent)
+            return spec
+        if not isinstance(spec.loader, SourceFileLoader):
             return None
         try:
             relative_cache = Path(cache_from_source(spec.origin)).relative_to(self.project)
@@ -82,7 +151,11 @@ def install_local_bytecode_cache() -> Path | None:
     # Preserve import hooks such as pytest's assertion rewriter, replacing only
     # the normal filesystem lookup which would otherwise handle these modules.
     position = next((index for index, finder in enumerate(sys.meta_path) if finder is PathFinder), len(sys.meta_path))
-    sys.meta_path.insert(position, _LocalCacheFinder(project, cache))
+    # A .venv inside Dropbox/network storage suffers the same bytecode I/O
+    # delays as the application. Include only sources under this project;
+    # external environments and the standard library retain their loaders.
+    dependencies = Path(sys.prefix).is_relative_to(project)
+    sys.meta_path.insert(position, _LocalCacheFinder(project, cache, cache_dependencies=dependencies))
     return cache
 
 

@@ -32,8 +32,7 @@ def disk_array(shape, dtype=float, order="C"):
 class TiledKineticFit:
     def __init__(self, model, supplied, native_clock, dt, dx, periodic, radius,
                  observation, observed, valid, mean_fraction, offset, scale_loss,
-                 static, stationary, backend, *, quadrature=False, quadrature_tolerance=None,
-                 observation_weights=None):
+                 static, stationary, backend):
         self.model, self.supplied, self.native_clock = model, supplied, native_clock
         self.dt, self.dx, self.periodic = dt, dx, periodic
         self.radius = min(radius, model.n * dx / 2) if periodic else radius
@@ -41,18 +40,11 @@ class TiledKineticFit:
         self.mean_fraction, self.offset, self.scale_loss = mean_fraction, offset, scale_loss
         self.static, self.stationary, self.backend = static, stationary, backend
         self.count = int(valid.sum())
-        self.observation_weights = observation_weights
         self.projection = None
         self.halo = int(np.ceil(self.radius / self.dx)) + 8
         self.steps = None
         self.cached_operator = None
         self.cached_geometry = None
-        self.quadrature = quadrature
-        self.typical = (np.where(valid, observed-offset, np.nanmedian(observed-offset))
-                        if observation == "timing" else None)
-        self.quadrature_tolerance = (quadrature_tolerance if quadrature_tolerance is not None
-                                    else 1e-6*np.maximum(self.typical, dt)
-                                    if self.typical is not None else None)
 
     def tiles(self):
         n = self.model.n
@@ -62,8 +54,6 @@ class TiledKineticFit:
         # Do not let a long clock leave a tiny core inside a large halo:
         # that would repeatedly solve almost the same neighbourhood.
         core = min(16384, max(256, halo, TILE_VALUES // len(self.model.clock) - 2 * halo))
-        if self.quadrature:
-            core = 32768
         if core + 2 * halo >= n:
             yield np.arange(n), slice(0, n), slice(0, n), self.periodic
             return
@@ -277,7 +267,6 @@ class TiledKineticFit:
         timing = np.empty(n)
         final_survival, final_rate, sensitivity = np.empty(n), np.empty(n), np.empty(n)
         gradient = np.zeros(self.model.count)
-        tail_bounds, quadrature_errors = np.zeros(n), np.zeros(n)
         # A mean-fraction observation couples all receivers. Obtain that one
         # temporal residual first, then apply its adjoint in a second pass.
         passes = 2 if need_gradient and self.mean_fraction else 1
@@ -286,34 +275,6 @@ class TiledKineticFit:
             for index, (indices, core, destination, periodic) in enumerate(self.tiles()):
                 check_cancelled()
                 local, q, fitted, state, rate, speed = self.fields(p, indices)
-                if self.quadrature:
-                    from ._timing_quadrature import StationaryTiming
-
-                    receivers = np.arange(len(indices))[core]
-                    operator = StationaryTiming(
-                        speed[0], self.model.clock[-1]*self.typical[destination]/np.max(self.typical),
-                        resolution=self.dx, periodic=periodic, radius=self.radius,
-                        receivers=receivers, tolerance=self.quadrature_tolerance[destination],
-                    )
-                    predicted = operator.predict(rate[0], record=need_gradient) + self.offset
-                    prediction[destination] = timing[destination] = predicted
-                    final_survival[destination] = operator.final_survival
-                    final_rate[destination] = rate[0, core]
-                    sensitivity[destination] = operator.sensitivity
-                    tail_bounds[destination] = operator.tail_bound
-                    quadrature_errors[destination] = operator.quadrature_error
-                    backend_name = "tiled_" + operator.backend
-                    if need_gradient:
-                        residual = np.where(self.valid[destination], predicted-self.observed[destination], 0.)
-                        if self.observation_weights is not None:
-                            residual = residual*self.observation_weights[destination]
-                        gi, gv = operator.backward_timing(
-                            residual*(2./(self.count*self.scale_loss)),
-                            with_speed=self.model.target == "fork_speed")
-                        derivative = (gi if self.model.target == "initiation_rate" else gv)[None, :]
-                        self.add_gradient(gradient, local, q, state, derivative, indices)
-                    del operator
-                    continue
                 operator = self.operator(speed, periodic)
                 backend_name = "tiled_" + getattr(operator, "backend", "hazard")
                 differentiate = need_gradient and (not self.mean_fraction or iteration == 1)
@@ -330,37 +291,22 @@ class TiledKineticFit:
                     final_rate[destination] = rate[-1, core]
                     sensitivity[destination] = np.einsum("t,tx,tx->x", weights, hazard[:, core], current)
                     if self.observation == "timing":
-                        from ._kinetic_tail import kinetic_timing_bound
-
-                        supplied = np.asarray(self.supplied)
-                        if supplied.ndim and supplied.shape[0] == n:
-                            supplied = supplied[indices]
-                        tail_bounds[destination] = kinetic_timing_bound(
-                            local, q, state, rate, speed, survival[-1], supplied,
-                            self.native_clock, self.dt, self.dx, self.radius, periodic)[core]
                         prediction[destination] = timing[destination]
                     elif self.mean_fraction:
                         prediction.reshape(-1)[:] += (-np.expm1(-np.maximum(hazard[:, core], 0.))).sum(axis=1) / n
                     else:
-                        prediction[destination] = (hazard[:, core].T if self.observation == "hazard"
-                                                   else -np.expm1(-np.maximum(hazard[:, core].T, 0.)))
+                        prediction[destination] = -np.expm1(-np.maximum(hazard[:, core].T, 0.))
                 if not differentiate:
                     continue
                 if self.observation == "timing":
                     residual = np.where(self.valid[destination], prediction[destination] - self.observed[destination], 0.)
-                    if self.observation_weights is not None:
-                        residual = residual*self.observation_weights[destination]
                     local_derivative = -weights[:, None] * current * residual[None, :]
                 elif self.mean_fraction:
                     residual = np.where(self.valid, prediction - self.observed, 0.).reshape(-1)
-                    if self.observation_weights is not None:
-                        residual = residual*self.observation_weights.reshape(-1)
                     local_derivative = current * residual[:, None] / n
                 else:
                     residual = np.where(self.valid[destination], prediction[destination] - self.observed[destination], 0.)
-                    if self.observation_weights is not None:
-                        residual = residual*self.observation_weights[destination]
-                    local_derivative = residual.T if self.observation == "hazard" else current * residual.T
+                    local_derivative = current * residual.T
                 d_hazard = np.zeros_like(hazard)
                 d_hazard[:, core] = local_derivative * (2. / (self.count * self.scale_loss))
                 options = {"with_speed": self.model.target == "fork_speed"}
@@ -382,22 +328,15 @@ class TiledKineticFit:
                     raise ValueError("The kinetics or region transforms allow no continuing initiation within the influence radius of some positions; a finite mean replication time cannot be fitted.")
                 invalid = True
             else:
-                invalid = enforce_completion and np.any(tail_bounds > self.quadrature_tolerance)
+                invalid = enforce_completion and np.max(final_survival) > completion_tolerance
             if invalid:
                 return {"loss": np.inf, "mse": np.inf, "gradient": np.zeros(self.model.count)}
         residual = prediction - self.observed
-        squared = np.where(self.valid, residual, 0.)**2
-        mse = float(np.sum(squared if self.observation_weights is None else
-                           squared*self.observation_weights) / self.count)
-        result = dict(loss=mse / self.scale_loss, mse=mse, gradient=gradient,
+        mse = float(np.sum(np.where(self.valid, residual, 0.) ** 2) / self.count)
+        return dict(loss=mse / self.scale_loss, mse=mse, gradient=gradient,
                     fitted=None, survival=final_survival[None, :], prediction=prediction,
                     residual=residual, hazard=None, sensitivity=sensitivity,
                     timing_prediction=timing, final_rate=final_rate,
                     positive_rate=bool(np.any(final_rate > 0)), spatial_groups=None,
                     backend=backend_name,
                     tiled_parameters=None if need_gradient else p.copy())
-        if self.observation == "timing":
-            result["timing_tail_bound"] = tail_bounds
-        if self.quadrature:
-            result["quadrature_error"] = quadrature_errors
-        return result

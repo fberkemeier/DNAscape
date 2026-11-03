@@ -2038,6 +2038,7 @@ def _render_multiple_constant_input(
 ) -> None:
     """Render editable, indexed constants with optional counterpart pairing."""
 
+    units = _SCALAR_UNITS.get(_friendly_input_key(input_spec.key), "")
     aligned_rows = () if retained.manual_override else peer_rows()
     manual = not aligned_rows
     if manual:

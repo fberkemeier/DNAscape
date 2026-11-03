@@ -367,10 +367,7 @@ class ConeHazard:
         values = np.concatenate(data_blocks)
         row = np.concatenate(row_blocks)
         column = np.concatenate(column_blocks)
-        del data_blocks, row_blocks, column_blocks
-        data.clear()
-        rows.clear()
-        columns.clear()
+        del data_blocks, row_blocks, column_blocks, data, rows, columns
         check_cancelled()
         operator = coo_matrix((values, (row, column)), shape=(self.t.size * self.n, (self.t.size - 1) * (self.n + 1))).tocsr()
         operator.eliminate_zeros()

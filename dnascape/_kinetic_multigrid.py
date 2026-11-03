@@ -89,13 +89,8 @@ def adaptive_fit(observed, supplied, options):
         if warm.get(key) is not None:
             warm[key] = rebin(warm[key])
     valid = np.isfinite(observed)
-    observation_weights = options.get("observation_weights")
-    fine_weights = (valid.astype(float) if observation_weights is None else
-                    np.where(valid, np.broadcast_to(observation_weights, observed.shape), 0.))
-    mass, weights = rebin(np.where(valid, observed, 0.0)*fine_weights), rebin(fine_weights)
+    mass, weights = rebin(np.where(valid, observed, 0.0)), rebin(valid.astype(float))
     coarse_observed = np.divide(mass, weights, out=np.full_like(mass, np.nan), where=weights > 0.0)
-    if observation_weights is not None:
-        warm["observation_weights"] = weights
     if fraction:
         # Weighted prefix differences can round a saturated bin to 1+ulp.
         # Only re-binned valid probabilities are clipped; raw invalid data
