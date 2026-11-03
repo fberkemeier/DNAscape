@@ -13,7 +13,7 @@ from typing import Any
 
 import numpy as np
 from nicegui import run, ui
-from dnascape._resources import ensure_single_source, hosted, LOCAL_SETUP_URL
+from dnascape._resources import ensure_single_source, hosted
 
 from app.artifact_archives import (
     DEFAULT_BATCH_ARCHIVE_SOURCE_BYTES,
@@ -1876,13 +1876,6 @@ def render(_navigate: Callable[[str], None]) -> None:
         "Simulate DNA replication",
         "Run stochastic replication ensembles and inspect their outputs.",
     )
-    if hosted():
-        ui.html(
-            "Render accepts one constant or profile per input and one simulation at a time. "
-            "Uploading a new profile replaces the previous one. "
-            f'<a href="{LOCAL_SETUP_URL}" target="_blank" rel="noopener noreferrer">'
-            "Run locally for multiple constants, profiles and batch comparisons</a>."
-        ).classes("dn-about-copy dn-hosted-resource-note").mark("simulation-hosted-input-note")
     with ui.element("div").classes("dn-workspace"):
         with ui.column().classes("dn-control-stack"):
             with panel(extra_classes="dn-control-card"):

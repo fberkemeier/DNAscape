@@ -4,6 +4,7 @@ Release Notes
 Unreleased
 ----------
 
+* Removed the persistent Render input-limit notices from Mapping and Simulation.
 * Improved adaptive-fitting ETA estimates using measured phase costs and the
   remaining work on each refinement grid.
 * Corrected periodic directionality smoothing, circular preview extent and

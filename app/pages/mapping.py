@@ -14,7 +14,7 @@ from typing import Any, cast
 
 import numpy as np
 from nicegui import run, ui
-from dnascape._resources import ensure_single_source, hosted, LOCAL_SETUP_URL
+from dnascape._resources import ensure_single_source, hosted
 
 from app.notifications import notify
 from app.data_filter_controls import DataFilterControls
@@ -3219,13 +3219,6 @@ def render(_navigate: Callable[[str], None]) -> None:
         "Map replication kinetic landscapes",
         "Infer replication features from measured profiles.",
     )
-    if hosted():
-        ui.html(
-            "Render accepts one constant or profile per input and one mapping at a time. "
-            "Uploading a new profile replaces the previous one. "
-            f'<a href="{LOCAL_SETUP_URL}" target="_blank" rel="noopener noreferrer">'
-            "Run locally for multiple constants, profiles and batch comparisons</a>."
-        ).classes("dn-about-copy dn-hosted-resource-note").mark("mapping-hosted-input-note")
     with ui.element("div").classes("dn-workspace"):
         with ui.column().classes("dn-control-stack"):
             with panel(extra_classes="dn-control-card"):
