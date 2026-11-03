@@ -3,7 +3,7 @@
 </p>
 
 # DNAscape
-[![Documentation Status](https://app.readthedocs.org/projects/dnascape/badge/?version=latest)](https://dnascape.readthedocs.io/en/latest/)
+[![Documentation Status](https://readthedocs.org/projects/dnascape/badge/?version=latest)](https://dnascape.readthedocs.io/en/latest/)
 
 DNAscape is software for mapping and simulating DNA replication, through two complementary workflows.
 
@@ -78,7 +78,9 @@ Please see the [documentation](https://dnascape.readthedocs.io/en/latest) for de
 
 ## Citation
 
-If you use DNAscape in your research, please cite the following and include the software version used:
+If you use DNAscape in your research, please cite the software using the metadata in [CITATION.cff](CITATION.cff) and include the software version used. On GitHub, select **Cite this repository** to copy the citation in APA or BibTeX format.
+
+Once available, please also cite the accompanying preprint:
 
 > Francisco Berkemeier and Michael A. Boemo (2026). DNAscape: Software for mapping and simulating DNA replication kinetics. bioRxiv.
 

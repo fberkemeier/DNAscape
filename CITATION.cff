@@ -1,0 +1,15 @@
+cff-version: 1.2.0
+message: >-
+  If you use DNAscape in your research, please cite this software and include
+  the version used. Once available, please also cite the accompanying preprint.
+type: software
+title: "DNAscape: Software for mapping and simulating DNA replication kinetics"
+authors:
+  - family-names: Berkemeier
+    given-names: Francisco
+  - family-names: Boemo
+    given-names: Michael A.
+version: 1.0.0
+license: MIT
+repository-code: "https://github.com/fberkemeier/DNAscape"
+url: "https://github.com/fberkemeier/DNAscape"

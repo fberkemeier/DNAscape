@@ -34,13 +34,16 @@ replication across organisms and cell types.
 Citation
 ========
 
-If you use DNAscape in research, cite:
+If you use DNAscape in research, please cite the software using the metadata in
+`CITATION.cff <https://github.com/fberkemeier/DNAscape/blob/main/CITATION.cff>`_.
+On GitHub, select **Cite this repository** to copy the citation in APA or
+BibTeX format. Include the software version and model settings used.
+
+Once available, please also cite the accompanying preprint:
 
    Francisco Berkemeier and Michael A. Boemo (2026).
    *DNAscape: Software for mapping and simulating DNA replication kinetics.*
    bioRxiv.
-
-Include the software version and model settings used.
 
 Bugs, questions and comments
 ============================
