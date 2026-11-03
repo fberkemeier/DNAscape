@@ -49,6 +49,10 @@
   line-height: 1.65;
 }
 
+.rst-content .toctree-wrapper > .caption .caption-text::after {
+  content: ":";
+}
+
 .rst-content h1,
 .rst-content h2,
 .rst-content h3 {
