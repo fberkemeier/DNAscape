@@ -2,9 +2,11 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
 import os
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 from nicegui import app as nicegui_app
 from nicegui import binding, ui
@@ -25,6 +27,9 @@ from app.page_activity import current_page_activity
 from app.pages import PAGE_RENDERERS, preload_workflow_pages
 from app.settings_dialog import settings_dialog as create_settings_dialog
 from app.theme import brand_logo, logo_sources, theme_css, update_logo
+
+if TYPE_CHECKING:
+    from app._launch_progress import LaunchProgress
 
 APP_DIR = Path(__file__).resolve().parent
 ROOT_DIR = APP_DIR.parent
@@ -696,12 +701,27 @@ def _show_browser() -> bool:
     }
 
 
-def main() -> None:
+def main(*, launch_progress: LaunchProgress | None = None) -> None:
     """Start the local-only interface; browser launch is explicitly opt-in."""
 
     # Plot refreshes can exceed NiceGUI's 10 ms diagnostic threshold briefly.
     binding.MAX_PROPAGATION_TIME = 0.1
+    if launch_progress is not None:
+        launch_progress.update(1, "Loading workflows")
     preload_workflow_pages()
+    if launch_progress is not None:
+        launch_progress.update(2, "Starting server")
+
+        async def launch_ready() -> None:
+            from nicegui.server import Server
+
+            # ASGI startup hooks precede Uvicorn's socket binding. Keep the
+            # indicator active until this server has actually started.
+            while not Server.instance.started:
+                await asyncio.sleep(.05)
+            launch_progress.ready(nicegui_app.urls)
+
+        nicegui_app.on_startup(launch_ready)
     ui.run(
         title="DNAscape",
         favicon=str(ASSET_DIR / "dnascape_logo_tab.png"),
@@ -709,6 +729,7 @@ def main() -> None:
         port=_port(),
         reload=False,
         show=_show_browser(),
+        show_welcome_message=launch_progress is None,
     )
 
 
