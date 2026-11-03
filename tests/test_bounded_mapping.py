@@ -220,3 +220,71 @@ def test_hosted_still_rejects_nonpositive_fork_speed(form, monkeypatch):
     with pytest.raises(ValueError, match="positive"):
         fit_kinetic(np.linspace(20., 30., 19), 0., target="initiation_rate", target_form=form,
                     maxiter=0, adaptive_fitting=False)
+
+
+@pytest.mark.parametrize("periodic", [False, True])
+@pytest.mark.parametrize("form", ["t", "xt"])
+@pytest.mark.parametrize("sparse", [False, True])
+def test_spatial_cone_tiles_keep_one_objective_and_exact_adjoint(periodic, form, sparse, monkeypatch):
+    from dnascape._hazard_fft import ConstantSpeedConvolution
+    from dnascape._kinetic_bounded import SpatialConeTiming
+
+    monkeypatch.delenv("RENDER", raising=False)
+    m = model(form)
+    m.delay = np.linspace(0., 12., m.n)
+    p = m.initial(None, np.linspace(25., 70., m.n), 1.4)
+    observed, valid = np.linspace(30., 90., m.n), np.ones(m.n, dtype=bool)
+    valid[::7] = False
+    if sparse:
+        valid[10:] = False  # Includes tiles with no observed receivers.
+    speed = np.broadcast_to(1.4, (len(m.clock), m.n))
+    op = ConstantSpeedConvolution(speed, m.clock, periodic=periodic, radius=18.)
+    expected, final, gradient = dense_objective(m, p, op, observed, valid)
+    bounded = SpatialConeTiming(m, observed, valid, 3., 100., 1., periodic, 18., speed=1.4, dt=5.)
+    bounded.core = 11  # Exercise real overlaps, circular seams and edge tiles.
+    actual = bounded.evaluate(p, True)
+    np.testing.assert_allclose(actual["prediction"], expected, rtol=1e-10, atol=1e-10)
+    np.testing.assert_allclose(actual["survival"][-1], final, atol=1e-12)
+    np.testing.assert_allclose(actual["gradient"], gradient, rtol=1e-8, atol=1e-10)
+    deferred = bounded.evaluate(p, False)
+    bounded.complete(deferred)
+    np.testing.assert_allclose(deferred["gradient"], gradient, rtol=1e-8, atol=1e-10)
+    np.testing.assert_allclose(bounded.public(p), m.public(m.evaluate(p)[0]), atol=1e-12)
+    assert bounded.cached is None
+
+
+def test_spatial_fallback_admits_native_grid_with_less_headroom(monkeypatch):
+    import dnascape._kinetic_bounded as b
+    from dnascape import _resources as r
+
+    monkeypatch.setenv("RENDER", "true")
+    monkeypatch.setattr(r, "memory_status", lambda: r.MemoryStatus(512*r.MIB, 300*r.MIB, 85*r.MIB))
+    monkeypatch.setattr(b, "memory_status", r.memory_status)
+    m = model(n=10000, clock=np.arange(351) * 5.)
+    args = (m, np.linspace(30., 500., m.n), np.ones(m.n, dtype=bool), 0., 100., 1., False, 2000.)
+    with pytest.raises(r.HostedResourceError):
+        b.ConeConvolutionTiming(*args, speed=1.4, dt=5.)
+    bounded = b.SpatialConeTiming(*args, speed=1.4, dt=5.)
+    assert 512 <= bounded.core < m.n - 2 * bounded.halo
+    assert len(list(bounded.tiles())) > 1
+
+
+@pytest.mark.parametrize("form,adjoints", [("space", 1), ("time", 1), ("spacetime", 2)])
+def test_final_accepted_hosted_proposal_needs_no_unused_adjoint(form, adjoints, monkeypatch):
+    import dnascape._kinetic_bounded as b
+    from dnascape import _resources as r
+
+    monkeypatch.setenv("RENDER", "true")
+    monkeypatch.setattr(r, "memory_status", lambda: r.MemoryStatus(512*r.MIB, 160*r.MIB, 85*r.MIB))
+    calls = []
+    original = b.BoundedTimingFit.complete
+
+    def complete(self, result):
+        calls.append(True)
+        return original(self, result)
+
+    monkeypatch.setattr(b.BoundedTimingFit, "complete", complete)
+    result = fit_kinetic(np.linspace(70., 100., 80), 1.4, target="initiation_rate", target_form=form,
+                         maxiter=1, tolerance=0., adaptive_fitting=False)
+    assert result._rmap_info["phase_history"][-1]["accepted"]
+    assert len(calls) == adjoints

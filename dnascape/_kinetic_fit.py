@@ -841,6 +841,7 @@ def fit_kinetic(
         nonlocal tiled, fixed, bounded
         from ._kinetic_bounded import (
             ConeConvolutionTiming,
+            SpatialConeTiming,
             StationaryConvolutionTiming,
             UniformTiming,
         )
@@ -867,7 +868,11 @@ def fit_kinetic(
                   and constant_supplied and fit_projection is None
                   and not has_fit_constraint(target)
                   and np.allclose(np.diff(clock), clock[1], rtol=1e-11, atol=1e-12)):
-                bounded = ConeConvolutionTiming(*args, speed=float(supplied_array.reshape(-1)[0]), dt=clock[1])
+                from ._resources import HostedResourceError
+                try:
+                    bounded = ConeConvolutionTiming(*args, speed=float(supplied_array.reshape(-1)[0]), dt=clock[1])
+                except HostedResourceError:
+                    bounded = SpatialConeTiming(*args, speed=float(supplied_array.reshape(-1)[0]), dt=clock[1])
         if bounded is not None:
             tiled, fixed = None, None
             return
@@ -1163,7 +1168,7 @@ def fit_kinetic(
 
     from ._kinetic_progress import FitStage
 
-    progress_stage = FitStage(_progress_tracker, n)
+    progress_stage = FitStage(_progress_tracker, n, phases=schedule)
     prediction_work = _progress_tracker.estimate(1.0, n, budget) + 1
     if observation == "timing":
         actual_projection = model.projection
@@ -1183,7 +1188,7 @@ def fit_kinetic(
 
         for extension in range(7):
             model.projection = planning_projection()
-            with measured_work(prediction_work):
+            with progress_stage.prediction(), measured_work(prediction_work):
                 current = evaluate(parameters, need_gradient=False)
             if np.max(current["survival"][-1]) <= completion_tolerance:
                 break
@@ -1217,15 +1222,16 @@ def fit_kinetic(
         enforce_completion = True
         if active_projection is not None:
             # Freeze the real mask only after the full fitting clock is known.
-            current = evaluate(parameters, need_gradient=False)
+            with progress_stage.prediction():
+                current = evaluate(parameters, need_gradient=False)
             if not np.isfinite(current["loss"]):
                 raise ValueError(
                     "The region transform prevents completion on the fitting clock; use a compatible transform or longer time domain."
                 )
     else:
-        with measured_work(prediction_work):
+        with progress_stage.prediction(), measured_work(prediction_work):
             current = evaluate(parameters, need_gradient=False)
-    progress_stage.ready()
+    progress_stage.ready(time_points=len(clock), backend=current["backend"])
     if _fit_progress_enabled(verbose):
         etaferr(
             _progress_offset,
@@ -1245,7 +1251,8 @@ def fit_kinetic(
     }
     completed = {"space": 0, "time": 0}
     stalled_phases = {"space": 0, "time": 0}
-    for phase in schedule:
+    for phase_index, phase in enumerate(schedule):
+        terminal_bounded_step = bounded is not None and phase_index == len(schedule) - 1
         check_cancelled()
         if relative_tolerance and stalled_phases[phase] >= 2:
             continue
@@ -1369,11 +1376,14 @@ def fit_kinetic(
                     and evaluated["loss"] <= armijo + 1e-14
                     and evaluated["mse"] <= current["mse"] + 1e-12
                 ):
-                    complete_gradient(evaluated)
+                    # The accepted last proposal is already fully validated.
+                    # No subsequent step will consume its expensive adjoint.
+                    if not terminal_bounded_step:
+                        complete_gradient(evaluated)
                     parameters, current, accepted = candidate, evaluated, True
                     phase_scales[phase] = min(1.0, phase_scales[phase] * 0.5**trial * 1.5)
                     break
-        if accepted:
+        if accepted and not terminal_bounded_step:
             s = parameters[indices] - old_parameters[indices]
             y = current["gradient"][indices] - old["gradient"][indices]
             if partial_space:
@@ -1387,7 +1397,7 @@ def fit_kinetic(
             if curvature > 1e-12 * max(float(np.linalg.norm(s) * np.linalg.norm(y)), 1e-30):
                 phase_memories[phase].append((s, y, 1.0 / curvature))
                 phase_memories[phase] = phase_memories[phase][-5:]
-        else:
+        elif not accepted:
             phase_memories[phase].clear()
             phase_scales[phase] = max(1e-6, 0.25 * phase_scales[phase])
         gain = (old["mse"] - current["mse"]) / max(old["mse"], 1e-30)
@@ -1409,7 +1419,7 @@ def fit_kinetic(
             }
         )
         iteration = sum(completed.values())
-        progress_stage.update()
+        progress_stage.update(phase)
         if _fit_progress_enabled(verbose) and iteration % max(1, int(print_every)) == 0:
             etaferr(
                 iteration + _progress_offset,
@@ -1420,6 +1430,7 @@ def fit_kinetic(
                 label="Mapping",
                 eta_seconds=progress_stage.eta(budget - iteration),
             )
+    progress_stage.finish(transfer=_warmup)
     if _fit_progress_enabled(verbose):
         etaferr(
             sum(completed.values()) + _progress_offset,
@@ -1430,6 +1441,7 @@ def fit_kinetic(
             label="Mapping",
             eta_seconds=progress_stage.eta(0),
         )
+    current.pop("bounded_state", None)
     fitted = (bounded.public(parameters) if bounded is not None else
               tiled.public(parameters) if tiled is not None else model.public(current["fitted"]))
     final_survival = current["survival"][-1]

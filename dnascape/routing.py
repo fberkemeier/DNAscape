@@ -1364,7 +1364,7 @@ def map_firing_and_speed_to_directionality(source, **kwargs):
     if not options.get("perQ", False):
         difference[0] = 0.
     result = np.trapezoid(edge_velocity * difference, clock, axis=1) / dx
-    result = np.clip(smoothf(result, kwargs.get("smoothw")), -1., 1.)
+    result = np.clip(smoothf(result, kwargs.get("smoothw"), perQ=bool(options.get("perQ", False))), -1., 1.)
     return _SimulationFeatureArray(result, {"time_grid": clock, "method": "deterministic"})
 
 

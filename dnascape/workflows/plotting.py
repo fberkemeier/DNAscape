@@ -351,6 +351,55 @@ def _result_axis(result: Any, *, kind: str, length: int) -> np.ndarray:
     return np.arange(length, dtype=float)
 
 
+def _fraction_time_limits(
+    result: Any, output_key: str, *, log_y: bool = False,
+) -> tuple[float, float] | None:
+    """Show 1.5 times the latest local t50 without truncating the fraction field.
+
+    Interpolate the first 0.5 crossing at every position on the actual clock.
+    If any median is unresolved, retain the complete time window. Work in
+    bounded blocks so choosing an axis does not copy an entire XT field.
+    """
+    if output_key not in {"replicated_fraction", "replicated_fraction_xt"}:
+        return None
+    form = getattr(result, "output_forms", {}).get(output_key)
+    values = np.asarray(getattr(result, "outputs", {}).get(output_key))
+    if form == "t":
+        curves = values.reshape(1, -1)
+    elif form == "xt" and values.ndim == 2:
+        curves = values
+    else:
+        return None
+    if not curves.size or curves.shape[1] < 2:
+        return None
+    clock = _result_axis(result, kind="time", length=curves.shape[1])
+    if np.any(~np.isfinite(clock)) or clock[0] < 0 or np.any(np.diff(clock) <= 0):
+        return None
+    positive = clock[clock > 0] if log_y else clock
+    if not positive.size:
+        return None
+    lower, latest = float(positive[0]), 0.0
+    block_size = max(1, 1_000_000 // curves.shape[1])
+    for start in range(0, curves.shape[0], block_size):
+        block = curves[start:start + block_size]
+        if not np.all(np.isfinite(block)):
+            return None
+        crossed = block >= 0.5
+        if not np.all(np.any(crossed, axis=1)):
+            return None
+        indices = np.argmax(crossed, axis=1)
+        medians = clock[indices].copy()
+        rows = np.flatnonzero(indices > 0)
+        right = indices[rows]
+        before, after = block[rows, right - 1], block[rows, right]
+        medians[rows] = clock[right - 1] + (
+            (0.5 - before) / (after - before) * (clock[right] - clock[right - 1])
+        )
+        latest = max(latest, float(np.max(medians)))
+    upper = min(float(clock[-1]), 1.5 * latest)
+    return (lower, upper) if upper > lower else None
+
+
 def mapping_plot_options(
     result: Any,
     *,
@@ -394,9 +443,9 @@ def mapping_plot_options(
 ) -> dict[str, Any]:
     """Build a bounded ECharts view for scalar, X, T, XT, and bundle outputs.
 
-    Observed profiles always display only their supplied bins. A smooth
-    periodic initiation-rate fit also shows its model value at the period end;
-    this closes the model curve without changing observations or raw arrays.
+    Observed profiles always display only their supplied bins. Periodic
+    directionality and smooth initiation-rate fits also show the first model
+    value at the period end, without changing observations or raw arrays.
     """
 
     output_key = resolved_output_key(result, output_key)
@@ -520,6 +569,8 @@ def mapping_plot_options(
         else _OUTPUT_LABELS.get(output_key, output_key.replace("_", " ").title())
     )
     if plot_type == "Heatmap":
+        if y_limits is None:
+            y_limits = _fraction_time_limits(result, output_key, log_y=log_y)
         output_form = str(getattr(result, "output_forms", {}).get(output_key, ""))
         if output_form == "t":
             time_axis = _result_axis(result, kind="time", length=values.size)
@@ -637,9 +688,12 @@ def mapping_plot_options(
     else:
         axis = _result_axis(result, kind=axis_kind, length=flattened.size)
     if (
-        output_key == "initiation_rate" and output_form == "x" and axis.size > 1
+        output_form == "x" and axis.size > 1
         and bool(getattr(result, "assumptions", {}).get("perQ", False))
-        and float(getattr(result, "diagnostics", {}).get("fit_periodic_smoothing_kb", 0.)) > 0
+        and (output_key == "fork_directionality" or (
+            output_key == "initiation_rate"
+            and float(getattr(result, "diagnostics", {}).get("fit_periodic_smoothing_kb", 0.)) > 0
+        ))
     ):
         axis = np.append(axis, axis[-1] + (axis[-1] - axis[-2]))
         flattened = np.append(flattened, flattened[0])
@@ -692,6 +746,11 @@ def mapping_automatic_y_limits(
     output_key = resolved_output_key(result, output_key)
     from .preview_inputs import input_preview_result
     result = input_preview_result(result, output_key)
+
+    if plot_type == "Heatmap":
+        fraction_limits = _fraction_time_limits(result, output_key, log_y=log_y)
+        if fraction_limits is not None:
+            return fraction_limits
 
     if output_key.startswith(_COMPARISON_PREFIX):
         comparison = getattr(result, "comparisons", {}).get(

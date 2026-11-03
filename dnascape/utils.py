@@ -233,7 +233,7 @@ def interp_nans(y):
     return y if m.sum() < 2 else np.where(m, y, np.interp(x, x[m], y[m]))
 
 
-def smoothf(data, window=50):
+def smoothf(data, window=50, *, perQ=False):
     data = np.asarray(data, float)
     if window is None:
         return data
@@ -245,6 +245,10 @@ def smoothf(data, window=50):
         return data
     win = min(window, n)
     kernel = np.ones(win, float) / win
+    if perQ:
+        # Use the same window alignment as the linear convolution, with
+        # neighbours across the seam instead of zero padding at the ends.
+        return np.roll(irfft(rfft(data, n) * rfft(kernel, n), n), -(win // 2))
     size = n + win - 1
     fft_A = rfft(data, size)
     fft_B = rfft(kernel, size)

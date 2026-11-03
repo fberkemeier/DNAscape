@@ -8,6 +8,7 @@ from itertools import product
 from pathlib import PurePath
 from typing import Literal, TypeVar
 
+from dnascape._resources import ensure_single_source
 from dnascape.workflows.result_naming import ResultName, combination_result_names
 
 T = TypeVar("T")
@@ -86,6 +87,8 @@ def plan_combination_indices(
     """
 
     sizes = tuple(int(size) for size in source_sizes)
+    for size in sizes:
+        ensure_single_source(size)
     if any(size < 1 for size in sizes):
         raise ValueError("Combination sources must each contain at least one value or file.")
     if mode not in {"pairwise", "all"}:
@@ -187,6 +190,8 @@ def plan_batch_sources(
     """
 
     populated = tuple(source for source in sources if source.filenames)
+    for source in populated:
+        ensure_single_source(len(source.filenames), source.label)
     if not populated:
         return BatchPlan(size=1, names=(fallback_name,))
 

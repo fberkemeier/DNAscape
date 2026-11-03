@@ -1334,7 +1334,7 @@ def map_timing_directionality(
     rfd = (edge_speed / resolution) * dT_per_bin
 
     # optional smoothing of RFD
-    rfd = smoothf(rfd, smoothw)
+    rfd = smoothf(rfd, smoothw, perQ=perQ)
 
     # enforce biological bounds
     rfd = np.clip(rfd, -1.0, 1.0)
@@ -1394,7 +1394,7 @@ def map_timing_directionality_fork_speed(
     fitted_directionality = (
         observed_directionality
         if smoothw is None
-        else np.asarray(smoothf(observed_directionality, smoothw), dtype=float)
+        else np.asarray(smoothf(observed_directionality, smoothw, perQ=perQ), dtype=float)
     )
     from .directionality_inverse import (
         fit_spatial_directionality_speed,
@@ -1461,7 +1461,7 @@ def map_directionality_timing(
     edge_speed = _edge_fork_speed(fork_speed, rfd.size, perQ=perQ)
 
     # optional smoothing of RFD before integration
-    rfd = smoothf(rfd, smoothw)
+    rfd = smoothf(rfd, smoothw, perQ=perQ)
 
     # Each bin contributes dT = (resolution / v_edge) * RFD.
     dT_per_bin = (resolution / edge_speed) * rfd

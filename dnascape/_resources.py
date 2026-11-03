@@ -30,6 +30,16 @@ def hosted() -> bool:
     return os.environ.get("RENDER", "").strip().lower() == "true"
 
 
+def ensure_single_source(count, label="This input"):
+    """Keep hosted jobs to one dataset, before preparing batch arrays."""
+    if hosted() and count > 1:
+        raise HostedResourceError(
+            f"Online input limit: {label} accepts one constant or profile per run on Render. "
+            "Choose one item, or run DNAscape locally for multiple constants, profiles "
+            "and batch comparisons."
+        )
+
+
 def _read_number(path):
     try:
         value = int(Path(path).read_text().strip())

@@ -18,6 +18,8 @@ import numpy as np
 from nicegui import context
 
 from app.simulation_exports import ExportArtifact
+from dnascape import _resources
+from dnascape._resources import MIB, hosted
 
 CacheCategory = Literal["generated", "uploads", "datasets", "workflows"]
 CacheKind = Literal["plot", "raw", "upload", "dataset", "workflow"]
@@ -39,6 +41,10 @@ MAX_ITEMS = 200
 MAX_TOTAL_ITEMS = 500
 MAX_TOTAL_BYTES = 2 * 1024 * 1024 * 1024
 MAX_SESSION_CACHES = 32
+HOSTED_CACHE_BYTES = 4 * MIB
+HOSTED_SHARED_CACHE_BYTES = 8 * MIB
+HOSTED_CACHE_ITEMS = 5
+HOSTED_CACHE_TOTAL_ITEMS = 10
 _INTERNAL_UPLOAD = ContextVar("dnascape_internal_upload", default=False)
 
 
@@ -88,6 +94,9 @@ def estimate_retained_bytes(value: Any, _seen: set[int] | None = None) -> int:
     if isinstance(value, (bytes, bytearray)):
         return len(value)
     if isinstance(value, np.ndarray):
+        # A small slice keeps its entire parent allocation alive.
+        if value.base is not None:
+            return estimate_retained_bytes(value.base, seen)
         return int(value.nbytes)
     if isinstance(value, Mapping):
         return sum(estimate_retained_bytes(item, seen) for item in value.values())
@@ -143,6 +152,7 @@ class SessionCache:
     _output_clearers: dict[str, Callable[[], None]] = field(default_factory=dict)
     _page_refreshers: dict[str, Callable[[], None]] = field(default_factory=dict)
     _input_target_providers: dict[str, Callable[[], Sequence[Any]]] = field(default_factory=dict)
+    _client_ids: set[str] = field(default_factory=set)
     _tracked_categories: set[CacheCategory] = field(
         default_factory=lambda: set(DEFAULT_TRACKED_CATEGORIES)
     )
@@ -154,6 +164,25 @@ class SessionCache:
         self._tracked_categories = {
             category for category in self._tracked_categories if category in CACHE_CATEGORIES
         }
+        if hosted():
+            self.max_items = min(self.max_items, HOSTED_CACHE_ITEMS)
+            self.max_total_items = min(self.max_total_items, HOSTED_CACHE_TOTAL_ITEMS)
+            self.max_total_bytes = min(self.max_total_bytes, HOSTED_CACHE_BYTES)
+            self._tracked_categories.discard("workflows")
+
+    @property
+    def byte_limit(self) -> int:
+        """The effective tab allowance, including current hosted headroom."""
+        status = _resources.memory_status()
+        if status is None:
+            return self.max_total_bytes
+        return min(self.max_total_bytes, HOSTED_CACHE_BYTES, status.limit // 128,
+                   status.available // 4)
+
+    def set_byte_limit(self, value: int) -> None:
+        maximum = HOSTED_CACHE_BYTES if hosted() else MAX_TOTAL_BYTES
+        self.max_total_bytes = max(0, min(maximum, int(value)))
+        self._trim_global()
 
     def is_tracking(self, category: CacheCategory) -> bool:
         """Return whether future items in ``category`` should be retained automatically."""
@@ -192,13 +221,18 @@ class SessionCache:
         payload: Any = None,
         navigate_to: str | None = None,
         keep: bool | None = None,
-    ) -> CacheEntry:
+    ) -> CacheEntry | None:
         """Insert an artifact, refreshing rather than duplicating identical bytes."""
 
         if category not in CACHE_CATEGORIES:
             raise ValueError(f"Unknown cache category {category!r}.")
         if kind == "workflow":
             raise ValueError("Workflow references must be added with add_reference().")
+        retained_size = estimate_retained_bytes((artifact, payload))
+        if hosted():
+            self._enforce_limits(category)
+            if self.byte_limit == 0 or retained_size > self.byte_limit:
+                return None
         normalized = ExportArtifact(
             data=artifact.data,
             filename=_safe_filename(artifact.filename),
@@ -214,7 +248,6 @@ class SessionCache:
             None,
         )
         now = time.time()
-        retained_size = estimate_retained_bytes((normalized, payload))
         if existing is not None:
             retained_artifact = ExportArtifact(
                 data=normalized.data,
@@ -273,9 +306,14 @@ class SessionCache:
         navigate_to: str,
         size_bytes: int | None = None,
         keep: bool = True,
-    ) -> CacheEntry:
+    ) -> CacheEntry | None:
         """Retain a completed workflow result for reopening in its source page."""
 
+        retained_size = max(0, int(size_bytes)) if size_bytes is not None else estimate_retained_bytes(payload)
+        if hosted():
+            self._enforce_limits("workflows")
+            if self.byte_limit == 0 or retained_size > self.byte_limit:
+                return None
         entry = CacheEntry(
             id=uuid.uuid4().hex,
             category="workflows",
@@ -283,11 +321,7 @@ class SessionCache:
             source=str(source).strip() or "DNAscape",
             kind="workflow",
             created_at=time.time(),
-            size_bytes=(
-                max(0, int(size_bytes))
-                if size_bytes is not None
-                else estimate_retained_bytes(payload)
-            ),
+            size_bytes=retained_size,
             detail=str(detail).strip(),
             keep=bool(keep),
             payload=payload,
@@ -348,6 +382,7 @@ class SessionCache:
         self.max_total_items = DEFAULT_MAX_TOTAL_ITEMS
         self.max_total_bytes = DEFAULT_MAX_TOTAL_BYTES
         self._tracked_categories = set(DEFAULT_TRACKED_CATEGORIES)
+        self.__post_init__()
         return removed
 
     def register_output_clearer(self, slug: str, callback: Callable[[], None]) -> None:
@@ -389,6 +424,8 @@ class SessionCache:
 
     def set_max_items(self, value: int) -> None:
         normalized = max(1, min(MAX_ITEMS, int(value)))
+        if hosted():
+            normalized = min(normalized, HOSTED_CACHE_ITEMS)
         self.max_items = normalized
         for category in CACHE_CATEGORIES:
             self._trim(category)
@@ -474,9 +511,7 @@ class SessionCache:
             self.remove(identifier)
 
     def _trim_global(self) -> None:
-        from dnascape._resources import memory_status
-        status = memory_status()
-        byte_limit = self.max_total_bytes if status is None else min(self.max_total_bytes, status.limit // 16)
+        byte_limit = self.byte_limit
         while self.count() > self.max_total_items or self.size() > byte_limit:
             identifier = next(
                 (entry.id for entry in self._entries.values() if not entry.keep),
@@ -489,14 +524,13 @@ class SessionCache:
     def _enforce_limits(self, category: CacheCategory) -> None:
         self._trim(category)
         self._trim_global()
-        from dnascape._resources import memory_status
-        status = memory_status()
+        status = _resources.memory_status()
         if status is not None:
-            # One shared allowance, not 256 MiB for each visitor's cache.
+            # One small shared allowance across visitors, reduced under pressure.
             caches = list(_SESSION_CACHES.values())
             if all(cache is not self for cache in caches):
                 caches.append(self)
-            limit = min(32 * 1024**2, status.limit // 16)
+            limit = min(HOSTED_SHARED_CACHE_BYTES, status.limit // 64, status.available // 2)
             while sum(cache.size() for cache in caches) > limit:
                 candidates = [(entry.created_at, cache, entry.id)
                               for cache in caches for entry in cache._entries.values()]
@@ -535,6 +569,22 @@ def current_session_cache() -> SessionCache:
     if cache is None:
         cache = SessionCache()
         _SESSION_CACHES[session_id] = cache
+    if hosted() and client.id not in cache._client_ids:
+        cache._client_ids.add(client.id)
+
+        def release_client() -> None:
+            cache._client_ids.discard(client.id)
+            if cache._client_ids:
+                return
+            cache.clear_all()
+            cache._output_clearers.clear()
+            cache._page_refreshers.clear()
+            cache._input_target_providers.clear()
+            if _SESSION_CACHES.get(session_id) is cache:
+                _SESSION_CACHES.pop(session_id)
+
+        # Delete follows NiceGUI's reconnect grace period, unlike disconnect.
+        client.on_delete(release_client)
     _SESSION_CACHES.move_to_end(session_id)
     while len(_SESSION_CACHES) > MAX_SESSION_CACHES:
         _SESSION_CACHES.popitem(last=False)

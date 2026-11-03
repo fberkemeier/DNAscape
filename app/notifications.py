@@ -48,7 +48,7 @@ def notify(message: Any, **options: Any) -> None:
     """Give every application message the same compact corner close button."""
 
     from dnascape._resources import LOCAL_SETUP_URL, hosted
-    if hosted() and str(message).startswith(("Online memory limit:", "Online app busy:")):
+    if hosted() and str(message).startswith(("Online memory limit:", "Online app busy:", "Online input limit:")):
         options["type"] = "warning"
         options["timeout"] = 0
         options["actions"] = [

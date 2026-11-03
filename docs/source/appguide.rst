@@ -24,6 +24,22 @@ Only one heavy data or calculation operation runs at a time across these
 workflows. Cached results also share a smaller allowance across visitors in
 each web process.
 
+Mapping and Simulation accept one constant or profile per input on Render;
+uploading another profile replaces the previous one. Multiple constants,
+multiple profile files and expansion of table columns into separate mapping
+runs are available locally. A single space-time matrix remains supported, as
+does one initiation-rate profile paired with one fork-speed profile. Simulation
+ensembles still support multiple stochastic replicates.
+
+Hosted cached history is limited to **4 MiB per browser tab** and **8 MiB shared
+across visitors** in each process, with lower allowances when memory is scarce.
+Automatic workflow history is off by default; the current result remains on
+its page. In **Cached Files > Cache settings**, reduce **Cache memory limit
+(MiB)** or set it to **0** to disable history. Oversized items are not retained,
+even when marked to keep. **Clear all** also releases mounted workflow outputs;
+current uploads and settings remain. Expired browser sessions release their
+retained cache references after the reconnect grace period.
+
 If a job is too large, a warning suggests a smaller region, larger bin size
 or fewer outputs. Its **Run locally** action opens the
 `GitHub installation instructions <https://github.com/fberkemeier/DNAscape#run-the-dnascape-app>`_.
@@ -35,6 +51,9 @@ Space-time initiation fits with constant fork speed use overlapping FFT time
 blocks of the exact cone kernel. Kernel caching follows the available memory,
 and rejected fitting proposals do not calculate unused derivatives. These
 changes retain the numerical grid, model, objective and fitting settings.
+When a full-width transform cannot fit, overlapping spatial neighbourhoods
+retain every origin within the influence radius and contribute to the same
+global fit. Calculation caches are released before the final output is built.
 The final output must also fit the available memory.
 
 These additional hosted restrictions do not apply to local runs, which retain
@@ -361,7 +380,14 @@ history. The shared equations and identifiability limits are explained in
 For initiation and coalescence outputs, **Quantity** distinguishes integrated
 spatial density in events/kb from space-time rate density in events/(kb min).
 These are actual event densities, distinct from potential initiation rate.
+Both event targets use **Initiation rate + Fork speed** as their Mapping route.
 Use :ref:`simulationengine` for distributions across stochastic S phases.
+
+Replicated-fraction heatmaps initially display up to 1.5 times the latest
+local median replication time, capped at the computed time range. Each median
+is interpolated where its fraction curve reaches 0.5. If any position has not
+reached 0.5, the full time range is shown. Raw outputs retain the full time grid;
+the Y limits in Plot settings can show more or less of it.
 
 Profiles and region
 ^^^^^^^^^^^^^^^^^^^
@@ -382,6 +408,10 @@ In **Region**:
   completion, subject to the supported model and resource limits.
 * **Periodic** joins the ends. Use it for a periodic model, rather than to hide
   boundary effects in a linear region. Periodic fits use wrapped spatial context.
+  Fork directionality uses wrapped differences and smoothing. Its periodic
+  preview closes at the region end, one bin beyond the last sample; raw outputs
+  retain their original bins. The first and last samples are neighbours, and
+  need not have identical values.
 * **Show plot** controls the preview and its Plot settings.
 
 Plain spatial uploads default to one sample per kb when no coordinate or
@@ -431,6 +461,10 @@ resulting prediction, not just the fitted curve.
    valid native observations. Disable Adaptive fitting for every update to
    use the selected grid. Fit tolerance defaults to 0.001: 0.1% timing error,
    or 0.001 fraction error. Zero disables convergence-based local skipping.
+   ETA uses measured spatial and temporal step costs and includes the later
+   refinement grids. Unused coarse-grid iterations are estimated at the finer
+   grid where they will run. The estimate adjusts as line-search costs change;
+   convergence can still finish a fit before its full iteration budget.
 
 **Influence radius**
    Limits the distance of potential origins contributing to a position, in kb;

@@ -22,9 +22,17 @@ from app.result_naming import (
     compact_export_stem,
     output_file_token,
 )
-from app.session_cache import CacheCategory, CacheEntry, CacheSort, current_session_cache
+from app.session_cache import (
+    HOSTED_CACHE_BYTES,
+    HOSTED_SHARED_CACHE_BYTES,
+    CacheCategory,
+    CacheEntry,
+    CacheSort,
+    current_session_cache,
+)
 from app.simulation_exports import ExportArtifact, build_raw_export
 from app.simulation_service import ConstantSimulationResult
+from dnascape._resources import LOCAL_SETUP_URL, MIB, hosted
 
 CacheView = Literal["all", "generated", "uploads", "datasets", "workflows"]
 
@@ -135,7 +143,7 @@ def _entry_row(
             .classes("dn-cache-keep")
             .mark(f"cache-keep-{entry.id}")
         )
-        field_hint(keep_control, "Keep this file in cache.")
+        field_hint(keep_control, "Prefer keeping this file; cache memory limits still apply.")
         keep_control.on_value_change(
             lambda event, entry_id=entry.id: set_keep(entry_id, bool(event.value))
         )
@@ -217,6 +225,15 @@ def render(navigate: Callable[[str], None]) -> None:
         "Session files and results",
         "Find, download, or reopen items retained in this browser session.",
     )
+    if hosted():
+        ui.html(
+            f"Render caches up to {_size_text(HOSTED_CACHE_BYTES)} per tab and "
+            f"{_size_text(HOSTED_SHARED_CACHE_BYTES)} shared across visitors, with less retained "
+            "when memory is low. Automatic workflow history is off by default. "
+            "Current page inputs and outputs also use memory; Clear all releases page outputs too. "
+            f'<a href="{LOCAL_SETUP_URL}" target="_blank" rel="noopener noreferrer">'
+            "Run locally for larger analyses</a>."
+        ).classes("dn-about-copy dn-hosted-resource-note").mark("cache-hosted-memory-note")
 
     with panel(extra_classes="dn-cache-panel"):
         with ui.row().classes("dn-cache-panel-head"):
@@ -224,8 +241,8 @@ def render(navigate: Callable[[str], None]) -> None:
             ui.space()
             with ui.row().classes("dn-cache-panel-actions"):
                 ui.icon("memory").classes("dn-cache-memory-note").mark("cache-memory-note").tooltip(
-                    f"Automatically retains up to {cache.max_total_items} recent items and "
-                    f"{_size_text(cache.max_total_bytes)} in this browser tab."
+                    "Cached history uses server memory. The allowance below applies to this tab; "
+                    "current page inputs and outputs also use memory."
                 )
                 with (
                     ui.button(icon="settings")
@@ -240,7 +257,7 @@ def render(navigate: Callable[[str], None]) -> None:
             stat_strip(
                 (
                     ("Items", f"{cache.count():,} / {cache.max_total_items:,}"),
-                    ("Memory", f"{_size_text(cache.size())} / {_size_text(cache.max_total_bytes)}"),
+                    ("Memory", f"{_size_text(cache.size())} / {_size_text(cache.byte_limit)}"),
                     (
                         "Files",
                         f"{cache.count('generated') + cache.count('uploads') + cache.count('datasets'):,}",
@@ -493,6 +510,29 @@ def render(navigate: Callable[[str], None]) -> None:
                     .props('flat round dense aria-label="Close cache settings"')
                     .mark("cache-settings-close")
                 )
+            if hosted():
+                memory_limit = (
+                    ui.number("Cache memory limit (MiB)", value=cache.max_total_bytes / MIB,
+                              min=0, max=HOSTED_CACHE_BYTES / MIB, step=1)
+                    .props("dense")
+                    .classes("dn-field")
+                    .mark("cache-memory-limit")
+                )
+                ui.label("Set to 0 to disable cached history. Current page data remains available.").classes(
+                    "dn-cache-tracking-help"
+                )
+
+                def memory_limit_changed() -> None:
+                    try:
+                        cache.set_byte_limit(int(float(memory_limit.value) * MIB))
+                    except (TypeError, ValueError, OverflowError):
+                        memory_limit.set_value(cache.max_total_bytes / MIB)
+                        return
+                    if memory_limit.value != cache.max_total_bytes / MIB:
+                        memory_limit.set_value(cache.max_total_bytes / MIB)
+                    refresh_all()
+
+                memory_limit.on_value_change(memory_limit_changed)
             with ui.column().classes("dn-cache-settings-section").mark("cache-tracking-settings"):
                 ui.label("Track automatically").classes("dn-cache-tracking-title")
                 ui.label(

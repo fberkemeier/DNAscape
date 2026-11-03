@@ -42,20 +42,27 @@ class BoundedTimingFit:
         return local, fitted, state
 
     def public(self, p):
+        self.release_working()
         if not self.model.temporal:
             return self.model.public(self.model.evaluate(p, need_state=False)[0])
         # Materialise only the public result, never all basis/derivative fields.
         n, nt = self.model.n, len(self.model.clock)
         rows = n if self.model.form == "xt" else 1
         columns = max(self.model.delay.size, self.model.shape_count, rows)
-        ensure_capacity(rows * nt * 8 + columns * 64 * 80, "Preparing the Mapping result")
+        output_bytes = rows * nt * 8
+        status = memory_status()
+        block = 64 if status is None else max(1, min(64, (status.available - output_bytes) // max(1, columns * 80)))
+        ensure_capacity(output_bytes + columns * block * 80, "Preparing the Mapping result")
         result = np.empty((rows, nt))
-        for start in range(0, nt, 64):
+        for start in range(0, nt, block):
             check_cancelled()
-            _, fitted, _ = self.fields(p, start, start + 64, need_state=False)
-            result[:, start:start + 64] = fitted[:, :rows].T
+            _, fitted, _ = self.fields(p, start, start + block, need_state=False)
+            result[:, start:start + block] = fitted[:, :rows].T
             del fitted
         return result
+
+    def release_working(self):
+        """Free calculation caches before materialising the public result."""
 
     def complete(self, result):
         p, state = result.pop("bounded_state")
@@ -104,6 +111,9 @@ class StationaryConvolutionTiming(BoundedTimingFit):
             self.prepare_operator(speed)
             self.operator_parameters = p.copy()
         return self.rate
+
+    def release_working(self):
+        self.operator = None
 
     def kernel(self, selected):
         if self.cache_kernel:
@@ -264,37 +274,48 @@ class ConeConvolutionTiming(BoundedTimingFit):
     Neither operation needs a full XT field or full-history padded FFT.
     """
 
+    @staticmethod
+    def plan(n, nt, dx, periodic, radius, speed, dt, block):
+        cap = min(radius, .5 * n * dx) if periodic else radius
+        width = min(n // 2 if periodic else n - 1,
+                    int(np.ceil(min(cap, speed * nt * dt) / dx + .5)))
+        support = min(nt, int(np.ceil(min(cap, (width + .5) * dx) / (speed * dt))) + 2)
+        length = n if periodic else next_fast_len(n + width)
+        shape = next_fast_len(block + support - 1), length
+        # Cached kernel + disposable spectrum + inverse (three real-sized
+        # FFT buffers), two overlaps, and bounded parameter-gradient batches.
+        estimate = (np.prod(shape) * 24 + (support + block) * n * 16
+                    + min(block, 16) * n * 96 + n * ((nt + block - 1) // block) * 8)
+        return cap, width, support, length, shape, estimate
+
     def __init__(self, *args, speed, dt):
         super().__init__(*args)
         self.v, self.dt = float(speed), float(dt)
         if not np.isfinite(self.v) or self.v <= 0:
             raise ValueError("Fork speed must contain finite positive values.")
         n, nt = self.model.n, len(self.model.clock)
-        cap = min(self.radius, .5 * n * self.dx) if self.periodic else self.radius
-        self.width = min(n // 2 if self.periodic else n - 1,
-                         int(np.ceil(min(cap, self.v * (self.model.clock[-1] + dt)) / self.dx + .5)))
-        distance = np.arange(self.width + 1) * self.dx
-        self.a = np.maximum(0., distance - .5 * self.dx)
-        self.b = np.minimum(cap, distance + .5 * self.dx)
-        reach = min(cap, (self.width + .5) * self.dx)
-        self.support = min(nt, int(np.ceil(reach / (self.v * dt))) + 2)
-        self.length = n if self.periodic else next_fast_len(n + self.width)
         # One kernel, one transform/inverse buffer, rate/Q overlap and small
         # basis batches. Unlike the old 192*N*T rule this has finite history.
         status = memory_status()
         for self.block in (128, 64, 32, 16, 8, 1):
-            self.shape = next_fast_len(self.block + self.support - 1), self.length
-            estimate = (np.prod(self.shape) * 40 + (self.support + self.block) * n * 16
-                        + min(self.block, 32) * n * 96)
+            cap, self.width, self.support, self.length, self.shape, estimate = self.plan(
+                n, nt, self.dx, self.periodic, self.radius, self.v, self.dt, self.block)
             if status is None or estimate < status.available:
                 break
         ensure_capacity(estimate, "Mapping with bounded cone transforms")
+        distance = np.arange(self.width + 1) * self.dx
+        self.a = np.maximum(0., distance - .5 * self.dx)
+        self.b = np.minimum(cap, distance + .5 * self.dx)
         kernel = np.empty((self.support, self.length))
         for start in range(0, self.support, self.block):
             check_cancelled()
             stop = min(start + self.block, self.support)
             kernel[start:stop] = self.impulse(np.arange(start, stop))
         self.spectrum = rfftn(kernel, s=self.shape)
+        self._rate_window = None
+
+    def release_working(self):
+        self.spectrum = None
         self._rate_window = None
 
     def cone(self, indices, half=False):
@@ -414,19 +435,25 @@ class ConeConvolutionTiming(BoundedTimingFit):
             q = np.cumsum(g[::-1], axis=0)[::-1]
             q += accumulated
             accumulated = q[0].copy()
-            history = np.concatenate((q, future))
-            derivative = self.convolve(history, reverse=True)[:stop - start, :n].copy()
-            future = history[:self.support - 1].copy()
+            del hazard, g
             if start < self.support:
                 last = min(stop, self.support)
                 half = rfft(self.impulse(np.arange(start, last), half=True), axis=1)
                 weighted = rfft(q[:last - start], n=self.length, axis=1)
                 initial_gradient -= irfft(np.einsum("tf,tf->f", weighted, half.conj()), n=self.length)[:n]
+                del half, weighted
+            history = np.concatenate((q, future))
+            # history owns these values now. Releasing both inputs before
+            # the FFT avoids retaining a second full influence-radius halo.
+            del q
+            future = None
+            derivative = self.convolve(history, reverse=True)[:stop - start, :n].copy()
+            future = history[:self.support - 1].copy()
             if start == 0:
                 derivative[0] += initial_gradient
-            del hazard, g, q, history
-            for first in range(start, stop, 32):
-                last = min(stop, first + 32)
+            del history
+            for first in range(start, stop, 16):
+                last = min(stop, first + 16)
                 local, _, state = self.fields(p, first, last)
                 gradient += local.gradient(derivative[first - start:last - start], p, state)
                 del local, state
@@ -434,3 +461,143 @@ class ConeConvolutionTiming(BoundedTimingFit):
             report_measured_work(.5 + .5 * (nt - start) / nt)
         self._rate_window = None
         return gradient
+
+
+class SpatialConeTiming(BoundedTimingFit):
+    """One global timing fit, with exact overlapping source neighbourhoods.
+
+    A tile contributes only its receiving cells to the objective. Its halo
+    contains every possible source inside the influence radius. Gradients
+    from those overlapping source cells accumulate into the same global
+    parameter vector; tiles are never fitted independently.
+    """
+
+    def __init__(self, *args, speed, dt):
+        from ._kinetic_tiled import TiledKineticFit
+
+        super().__init__(*args)
+        self.v, self.dt = float(speed), float(dt)
+        n, nt = self.model.n, len(self.model.clock)
+        self.radius = min(self.radius, .5 * n * self.dx) if self.periodic else self.radius
+        self.halo = min(n, int(np.ceil(self.radius / self.dx)) + 2)
+        self.partition = TiledKineticFit(
+            self.model, speed, self.model.clock, dt, self.dx, self.periodic,
+            self.radius, "timing", self.observed, self.valid, False, self.offset,
+            self.scale, False, False, "auto",
+        )
+        self.cached = None
+        self.cached_key = None
+        status = memory_status()
+        minimum = min(n, 512)
+        for block in (128, 64, 32, 16, 8, 1):
+            low, high, best = minimum, n, 0
+            while low <= high:
+                core = (low + high) // 2
+                width = min(n, core + 2 * self.halo)
+                estimate = ConeConvolutionTiming.plan(
+                    width, nt, self.dx, self.periodic and width == n,
+                    self.radius, self.v, dt, block,
+                )[-1]
+                if status is None or estimate < status.available * .95:
+                    best, low = core, core + 1
+                else:
+                    high = core - 1
+            if best:
+                self.core = best
+                break
+        else:
+            width = min(n, minimum + 2 * self.halo)
+            ensure_capacity(ConeConvolutionTiming.plan(
+                width, nt, self.dx, self.periodic and width == n,
+                self.radius, self.v, dt, 1,
+            )[-1], "Mapping a source neighbourhood")
+            self.core = minimum
+
+    def tiles(self):
+        n = self.model.n
+        if self.core + 2 * self.halo >= n:
+            yield np.arange(n), slice(0, n), slice(0, n), self.periodic
+            return
+        for first in range(0, n, self.core):
+            stop = min(n, first + self.core)
+            left, right = first - self.halo, stop + self.halo
+            if not self.periodic:
+                left, right = max(0, left), min(n, right)
+            yield np.arange(left, right) % n, slice(first - left, stop - left), slice(first, stop), False
+
+    def operator(self, p, indices, core, periodic):
+        local, q = self.partition.local_model(p, indices)
+        valid = np.zeros(len(indices), dtype=bool)
+        valid[core] = self.valid[indices[core]]
+        count = max(1, int(valid.sum()))
+        scale = self.scale * self.count / count
+        key = len(indices), periodic
+        if key != self.cached_key:
+            self.cached = None
+            self.cached = ConeConvolutionTiming(
+                local, self.observed[indices], valid, self.offset, scale,
+                self.dx, periodic, self.radius, speed=self.v, dt=self.dt,
+            )
+            self.cached_key = key
+        op = self.cached
+        op.model, op.observed, op.valid = local, self.observed[indices], valid
+        op.count, op.scale = count, scale
+        return op, local, q
+
+    def add_gradient(self, gradient, local, g, indices):
+        parent = self.model
+        if parent.form == "xt":
+            np.add.at(gradient, indices, g[:local.n] + g[local.amplitude_index] / local.n)
+        if parent.temporal:
+            gradient[parent.amplitude_index] += g[local.amplitude_index]
+        if parent.shape_index is not None:
+            if parent.shape_count > 1:
+                np.add.at(gradient, parent.shape_slice.start + indices, g[local.shape_slice])
+            else:
+                gradient[parent.shape_slice] += g[local.shape_slice]
+
+    def evaluate(self, p, need_gradient):
+        n = self.model.n
+        prediction, final, sensitivity = np.empty(n), np.empty(n), np.empty(n)
+        gradient = np.zeros(self.model.count)
+        states = []
+        tiles = list(self.tiles())
+        for index, (indices, core, destination, periodic) in enumerate(tiles):
+            check_cancelled()
+            from .utils import _report_progress
+            _report_progress(.04, f"Mapping... Evaluating model (region {index + 1} of {len(tiles)})")
+            op, local, q = self.operator(p, indices, core, periodic)
+            result = op.evaluate(q, need_gradient)
+            prediction[destination] = result["prediction"][core]
+            final[destination] = result["survival"][-1, core]
+            sensitivity[destination] = result["sensitivity"][core]
+            if need_gradient:
+                self.add_gradient(gradient, local, result["gradient"], indices)
+            else:
+                states.append((indices, core, periodic, result))
+            del op, local, q, result
+            report_measured_work(.5 * (index + 1) / len(tiles))
+        if self.model.form == "xt":
+            gradient[:n] -= gradient[:n].mean()
+        result = self.result(p, prediction, final, sensitivity, "tiled_blocked_exact_cone_convolution", states)
+        result["gradient"] = gradient
+        if need_gradient:
+            result.pop("bounded_state")
+        return result
+
+    def adjoint(self, p, result, states):
+        gradient = np.zeros(self.model.count)
+        for index, (indices, core, periodic, tile) in enumerate(states):
+            check_cancelled()
+            op, local, _ = self.operator(p, indices, core, periodic)
+            op.complete(tile)
+            self.add_gradient(gradient, local, tile["gradient"], indices)
+            del op, local
+            report_measured_work(.5 + .5 * (index + 1) / len(states))
+        if self.model.form == "xt":
+            gradient[:self.model.n] -= gradient[:self.model.n].mean()
+        return gradient
+
+    def release_working(self):
+        self.cached = None
+        self.cached_key = None

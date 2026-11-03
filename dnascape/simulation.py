@@ -905,6 +905,7 @@ def simulate_replication(
 
     # propagation with prev
     check_cancelled()
+    fork_directionality = np.zeros(n, float)
     if not perQ:
         g = np.empty(n, float)
         src = np.empty(n, np.int32)
@@ -948,7 +949,12 @@ def simulate_replication(
                     g[v] = cand
                     src[v] = src[u]
                     prev[v] = u
+                    fork_directionality[v] = 1.0
                     heapq.heappush(pq, (cand, v))
+                elif cand == g[v] and prev[v] != v and fork_directionality[v] < 0:
+                    # Opposing fronts meet exactly at this bin. Their net
+                    # direction is zero, independent of heap/index ordering.
+                    fork_directionality[v] = 0.0
             v = (u - 1) % n
             w = _edge_backward(time_u, v)
             if np.isfinite(w):
@@ -957,19 +963,18 @@ def simulate_replication(
                     g[v] = cand
                     src[v] = src[u]
                     prev[v] = u
+                    fork_directionality[v] = -1.0
                     heapq.heappush(pq, (cand, v))
+                elif cand == g[v] and prev[v] != v and fork_directionality[v] > 0:
+                    fork_directionality[v] = 0.0
 
     idx = np.arange(n, dtype=np.int32)
     fired_mask = (src == idx) & np.isfinite(t)
     fired_idx = np.flatnonzero(fired_mask).astype(np.int64, copy=False)
 
-    fork_directionality = np.zeros(n, float)
     if not perQ:
         fork_directionality[prev == (idx - 1)] = 1.0
         fork_directionality[prev == (idx + 1)] = -1.0
-    else:
-        fork_directionality[prev == ((idx - 1) % n)] = 1.0
-        fork_directionality[prev == ((idx + 1) % n)] = -1.0
 
     fired_times_min = t[fired_idx]
     fired_pos_kb = fired_idx.astype(float) * resolution_space
@@ -1730,15 +1735,19 @@ def rsim(
                         Rm = d > 0
                         Lm = d < 0
 
-                        def _range_add(target_mm, cols, a, b):
+                        def _range_add(target_mm, cols, a, b, weight=1.0):
                             for kk in range(cols.size):
                                 c = int(cols[kk])
-                                target_mm[a[kk]:b[kk], c] += 1.0
+                                target_mm[a[kk]:b[kk], c] += weight
 
                         if np.any(Rm):
                             _range_add(sum_right_moving_fork_density_xt, cols0[Rm], j0[Rm], j1[Rm])
                         if np.any(Lm):
                             _range_add(sum_left_moving_fork_density_xt, cols0[Lm], j0[Lm], j1[Lm])
+                        tied = d == 0
+                        if np.any(tied):
+                            _range_add(sum_right_moving_fork_density_xt, cols0[tied], j0[tied], j1[tied], .5)
+                            _range_add(sum_left_moving_fork_density_xt, cols0[tied], j0[tied], j1[tied], .5)
 
         report_measured_work(i / sim_number)
         if verbose and (i % print_every == 0 or i == sim_number):

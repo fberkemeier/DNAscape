@@ -13,6 +13,7 @@ from typing import Any
 
 import numpy as np
 from nicegui import run, ui
+from dnascape._resources import ensure_single_source, hosted, LOCAL_SETUP_URL
 
 from app.artifact_archives import (
     DEFAULT_BATCH_ARCHIVE_SOURCE_BYTES,
@@ -596,7 +597,7 @@ def _render_simulation_source(
                 ui.select(
                     {
                         "scalar": "Constant",
-                        "constants": "Multiple constants",
+                        **({} if hosted() else {"constants": "Multiple constants"}),
                         "profile": "Profile",
                     },
                     value="scalar",
@@ -835,7 +836,9 @@ def _render_simulation_source(
                 )
                 selections.pop(inspection.name, None)
                 materialized_cache.clear()
-                if replaced_index is None:
+                if hosted():
+                    inspections[:] = [inspection]
+                elif replaced_index is None:
                     inspections.append(inspection)
                 else:
                     # Keep N/N initiation-rate and fork-speed pairing stable when
@@ -871,8 +874,8 @@ def _render_simulation_source(
                 show_accepted_formats=False,
                 on_upload=uploaded,
                 on_clear=cleared,
-                multiple=True,
-                max_files=None,
+                multiple=not hosted(),
+                max_files=1 if hosted() else None,
                 hide_when_loaded=False,
             )
 
@@ -996,6 +999,8 @@ def _materialize_simulation_source(
     cached = controls.materialized_cache.get(cache_key)
     if cached is not None:
         return cached
+    if hosted():
+        controls.materialized_cache.clear()
     selected_inspection = replace(retained_inspection, expected_form=form)
     materialized = np.asarray(
         materialize_upload(
@@ -1021,6 +1026,7 @@ def _materialize_simulation_sources(
     if mode == "scalar":
         return (_number(controls.constant, label),)
     if mode == "constants":
+        ensure_single_source(len(controls.constants), label)
         return _read_simulation_constant_controls(
             controls.constants,
             label=label,
@@ -1028,6 +1034,7 @@ def _materialize_simulation_sources(
         )
     if not controls.inspections:
         raise ValueError(f"Upload {label.casefold()} data.")
+    ensure_single_source(len(controls.inspections), label)
     return tuple(
         _materialize_simulation_source(
             controls,
@@ -1529,6 +1536,12 @@ def _result_plot_options(
         else "Line"
     )
     axis = result.position_kb if spec.kind == "space" else result.time_grid
+    if (spec.key == "fork_directionality" and plot_type == "Line"
+            and result.geometry == "periodic" and axis.size > 1):
+        # Positions are bin starts; the circle ends one full bin beyond the
+        # last sample. Close only the preview, retaining the raw n-bin output.
+        axis = np.append(axis, axis[-1] + (axis[-1] - axis[-2]))
+        values = np.append(values, values[0])
     lines: tuple[PreviewLine, ...] = ()
     bands: tuple[PreviewBand, ...] = ()
     ensemble_active = False
@@ -1863,6 +1876,13 @@ def render(_navigate: Callable[[str], None]) -> None:
         "Simulate DNA replication",
         "Run stochastic replication ensembles and inspect their outputs.",
     )
+    if hosted():
+        ui.html(
+            "Render accepts one constant or profile per input and one simulation at a time. "
+            "Uploading a new profile replaces the previous one. "
+            f'<a href="{LOCAL_SETUP_URL}" target="_blank" rel="noopener noreferrer">'
+            "Run locally for multiple constants, profiles and batch comparisons</a>."
+        ).classes("dn-about-copy dn-hosted-resource-note").mark("simulation-hosted-input-note")
     with ui.element("div").classes("dn-workspace"):
         with ui.column().classes("dn-control-stack"):
             with panel(extra_classes="dn-control-card"):

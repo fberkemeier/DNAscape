@@ -1,12 +1,13 @@
 """Coarse initialization followed by native-resolution kinetic fitting."""
 
-import time
 import inspect
+import time
+
 import numpy as np
 
 
 def adaptive_fit(observed, supplied, options):
-    from ._kinetic_fit import fit_kinetic, _FORMS, _schedule, _integer
+    from ._kinetic_fit import _FORMS, _integer, _schedule, fit_kinetic
 
     observed = np.asarray(observed, dtype=float)
     fraction = options["observation"] not in {"timing", "replication_timing"}
@@ -97,7 +98,8 @@ def adaptive_fit(observed, supplied, options):
         # were rejected above, so this cannot conceal invalid observations.
         coarse_observed = np.clip(coarse_observed, 0.0, 1.0)
     tracker = original["_progress_tracker"]
-    tracker.reserve(n, total - warm_space - warm_time)
+    tracker.reserve(n, total - warm_space - warm_time,
+                    phases=_schedule(form, space - warm_space, temporal - warm_time, order))
     try:
         coarse = fit_kinetic(
             coarse_observed,
@@ -116,6 +118,8 @@ def adaptive_fit(observed, supplied, options):
         _warm_start=coarse_info["_parameter_state"],
         _progress_offset=options.get("_progress_offset", 0) + used_space + used_time,
     )
+    from .utils import _report_progress
+    _report_progress(.04, "Mapping... Refining model at the selected resolution")
     result = fit_kinetic(observed, supplied, **initial)
     info = result._rmap_info
     info["coarse_fit_history"] = coarse_info["fit_history"]

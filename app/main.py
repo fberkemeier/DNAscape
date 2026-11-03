@@ -11,6 +11,7 @@ from typing import TYPE_CHECKING
 from nicegui import app as nicegui_app
 from nicegui import binding, ui
 from nicegui.elements.button import Button
+from nicegui.elements.footer import Footer
 from nicegui.elements.tooltip import Tooltip
 
 from app import __version__
@@ -27,6 +28,7 @@ from app.page_activity import current_page_activity
 from app.pages import PAGE_RENDERERS, preload_workflow_pages
 from app.settings_dialog import settings_dialog as create_settings_dialog
 from app.theme import brand_logo, logo_sources, theme_css, update_logo
+from dnascape._resources import LOCAL_SETUP_URL, hosted
 
 if TYPE_CHECKING:
     from app._launch_progress import LaunchProgress, ShutdownProgress
@@ -210,6 +212,8 @@ def index() -> None:
     # without a reload while still allowing explicit light and dark choices.
     dark_mode = ui.dark_mode(None)
     page_state = {"active": "overview"}
+    hosted_app = hosted()
+    overview_footer: Footer | None = None
     page_hosts: dict[str, object] = {}
     built_pages: set[str] = set()
     page_activity = current_page_activity()
@@ -266,6 +270,13 @@ def index() -> None:
         build_page(slug)
         for candidate, host in page_hosts.items():
             host.set_visibility(candidate == slug)  # type: ignore[attr-defined]
+        if overview_footer is not None:
+            on_overview = slug == "overview"
+            overview_footer.set_value(on_overview)
+            page_host.classes(
+                add="dn-page-with-overview-note" if on_overview else None,
+                remove=None if on_overview else "dn-page-with-overview-note",
+            )
         current_session_cache().refresh_page(slug)
 
     def navigate(slug: str) -> None:
@@ -314,7 +325,9 @@ def index() -> None:
 
     # The drawer occupies the full left edge, including the header corner.
     # Quasar's breakpoint still switches it to overlay behavior on narrow screens.
-    with ui.left_drawer(value=True, bordered=True, top_corner=True).props(
+    with ui.left_drawer(
+        value=True, bordered=True, top_corner=True, bottom_corner=hosted_app,
+    ).props(
         'width=240 breakpoint=900 id="dn-navigation-drawer"'
     ) as drawer:
         drawer.classes("dn-drawer").mark("navigation-drawer")
@@ -661,7 +674,6 @@ def index() -> None:
 
     with ui.header(elevated=False).classes("dn-header"):
         ui.space()
-        ui.badge("PROTOTYPE").props("outline").classes("dn-header-badge")
         with (
             ui.button(icon="menu")
             .props('flat round dense aria-label="Open application menu"')
@@ -673,10 +685,18 @@ def index() -> None:
                 .props('anchor="bottom right" self="top right"')
                 .classes("dn-app-menu")
                 .mark("app-menu")
-            ) as app_menu:
+            ):
                 render_app_menu_items()
 
-    with ui.column().classes("dn-page-host"):
+    if hosted_app:
+        with ui.footer().classes("dn-overview-note").mark("overview-hosted-note") as overview_footer:
+            ui.html(
+                "Note: To explore DNAscape’s full capabilities without Render’s memory limits, "
+                f'<a href="{LOCAL_SETUP_URL}" target="_blank" rel="noopener noreferrer">'
+                "run the app locally</a>."
+            ).classes("dn-lead dn-overview-note-copy")
+
+    with ui.column().classes("dn-page-host") as page_host:
         for slug in PAGE_RENDERERS:
             host = ui.element("div").classes("dn-page-view").mark(f"page-host-{slug}")
             host.set_visibility(False)
@@ -713,7 +733,6 @@ def main(*, launch_progress: LaunchProgress | None = None, shutdown_progress: Sh
         nicegui_app.on_shutdown(shutdown_progress.start)
     if launch_progress is not None:
         launch_progress.update(1, "Loading workflows")
-    from dnascape._resources import hosted
     if not hosted():
         preload_workflow_pages()
     if launch_progress is not None:

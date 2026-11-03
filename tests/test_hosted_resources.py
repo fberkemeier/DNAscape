@@ -234,11 +234,18 @@ def test_hosted_fit_preserves_native_grid_and_matches_local_fit(render, monkeypa
     assert online.shape == (80,)
 
 
-def test_warning_links_to_local_instructions_only_on_render(render, monkeypatch):
+@pytest.mark.parametrize("message", ["memory", "inputs"])
+def test_warning_links_to_local_instructions_only_on_render(render, monkeypatch, message):
     from app import notifications
     calls = []
     monkeypatch.setattr(notifications.ui, "notify", lambda *a, **k: calls.append((a, k)))
-    notifications.notify(resources.resource_message("Mapping"), type="negative")
+    if message == "inputs":
+        with pytest.raises(resources.HostedResourceError) as caught:
+            resources.ensure_single_source(2, "Timing")
+        text = str(caught.value)
+    else:
+        text = resources.resource_message("Mapping")
+    notifications.notify(text, type="negative")
     assert calls[-1][1]["type"] == "warning"
     assert calls[-1][1]["timeout"] == 0
     assert calls[-1][1]["actions"][0]["label"] == "Run locally"
@@ -258,10 +265,9 @@ def test_hosted_cache_budget_is_shared_between_visitors(render, monkeypatch):
     monkeypatch.setattr(session_cache, "_SESSION_CACHES", caches)
     for cache in caches.values():
         cache.add_reference(name="Result", source="Mapping", detail="", payload=None,
-                            navigate_to="mapping", size_bytes=20 * resources.MIB)
-    assert sum(cache.size() for cache in caches.values()) <= 32 * resources.MIB
-    assert not caches["first"].count()
-    assert caches["second"].count() == 1
+                            navigate_to="mapping", size_bytes=4 * resources.MIB)
+    assert sum(cache.size() for cache in caches.values()) <= 8 * resources.MIB
+    assert all(cache.count() == 1 for cache in caches.values())
 
 
 def test_formula_broadcast_is_declined_before_quadratic_intermediate(render):

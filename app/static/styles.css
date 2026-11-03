@@ -172,6 +172,33 @@ body {
   letter-spacing: 0;
 }
 
+.dn-overview-note {
+  background: color-mix(in srgb, var(--dn-bg) 94%, transparent) !important;
+  border-top: 1px solid color-mix(in srgb, var(--dn-line) 60%, transparent);
+  box-shadow: none !important;
+  color: var(--dn-muted) !important;
+  justify-content: center;
+  padding: 0.65rem 0.8rem;
+  z-index: 2000 !important;
+}
+
+.dn-overview-note .dn-overview-note-copy {
+  margin: 0;
+  max-width: 1160px;
+  text-align: center;
+}
+
+.dn-overview-note-copy a {
+  color: var(--dn-accent);
+  text-decoration: underline;
+  text-underline-offset: 0.15em;
+}
+
+.dn-overview-note-copy a:focus-visible {
+  outline: 2px solid var(--dn-accent);
+  outline-offset: 3px;
+}
+
 .dn-app-menu-button {
   color: var(--dn-muted) !important;
 }
@@ -541,6 +568,15 @@ body.body--dark .dn-app-menu {
   color: var(--dn-muted);
   font-size: 0.8rem;
   line-height: 1.5;
+}
+
+.dn-hosted-resource-note {
+  margin: -0.4rem 0 0.8rem;
+}
+
+.dn-hosted-resource-note a {
+  color: var(--dn-accent);
+  text-decoration: underline;
 }
 
 .dn-about-summary {
@@ -1020,6 +1056,11 @@ body.body--dark .dn-nav-active {
 .dn-page-view {
   min-width: 0;
   width: 100%;
+}
+
+/* QPage already reserves the footer's measured height, including wrapped text. */
+.dn-page-host.dn-page-with-overview-note {
+  min-height: 0;
 }
 
 .dn-hero {

@@ -2065,6 +2065,10 @@ def get_mapping_catalog() -> MappingCatalog:
                   and "replicated_fraction" not in spec.source
                   and spec.method not in removed_methods
                   and not spec.method.endswith("_simulation"))
+    event_targets = {"initiation_events", "initiation_events_xt", "coalescence_events", "coalescence_events_xt"}
+    specs = tuple(spec for spec in specs
+                  if spec.target not in event_targets
+                  or set(spec.source) == {"initiation_rate", "fork_speed"})
     public_target_ids = tuple(target for target in public_target_ids
                               if any(spec.target == target for spec in specs))
     methods = tuple(spec.method for spec in specs)

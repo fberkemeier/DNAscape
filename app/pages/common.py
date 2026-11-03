@@ -14,6 +14,7 @@ from typing import Any
 from urllib.parse import quote
 
 from nicegui import background_tasks, events, helpers, ui
+from nicegui.elements.upload import Upload
 from nicegui.elements.upload_files import SmallFileUpload
 
 from app.export_settings import DATA_FILE_FORMAT_OPTIONS, get_export_settings
@@ -81,6 +82,20 @@ class _DataUploadState:
 
 
 _DATA_UPLOAD_STATES: weakref.WeakKeyDictionary[Any, _DataUploadState] = weakref.WeakKeyDictionary()
+
+
+class _DataUpload(Upload):
+    """Release page callbacks even when the HTTP router retains an endpoint."""
+
+    def _handle_delete(self) -> None:
+        state = _DATA_UPLOAD_STATES.pop(self, None)
+        if state is not None:
+            state.receive = None
+            state.remove_controls.clear()
+        self._upload_handlers.clear()
+        self._begin_upload_handlers.clear()
+        self._multi_upload_handlers.clear()
+        super()._handle_delete()
 
 
 def _make_upload_row_drop_target(
@@ -420,7 +435,7 @@ def data_upload(
         normalized_accept = ",".join(accept_tokens)
         upload_prompt = "Choose file or drag it here"
         uploader = (
-            ui.upload(
+            _DataUpload(
                 label=upload_prompt,
                 auto_upload=True,
                 multiple=multiple,
@@ -448,7 +463,11 @@ def data_upload(
             inspecting_names=inspecting_names,
             uploaded_names=uploaded_names,
         )
-        _DATA_UPLOAD_STATES[uploader] = upload_state
+        # State callbacks refer back to the uploader and its page. A strong
+        # value in a WeakKeyDictionary would therefore keep its own key alive.
+        # Let the element own the state; the registry must be weak both ways.
+        uploader._dnascape_upload_state = upload_state
+        _DATA_UPLOAD_STATES[uploader] = weakref.proxy(upload_state)
         # Quasar does not finish its XHR entry until after the Python upload
         # callback and HTTP response complete. Resetting the finished queue
         # here (rather than inside that callback) also clears failed entries

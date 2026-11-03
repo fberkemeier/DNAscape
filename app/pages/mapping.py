@@ -14,6 +14,7 @@ from typing import Any, cast
 
 import numpy as np
 from nicegui import run, ui
+from dnascape._resources import ensure_single_source, hosted, LOCAL_SETUP_URL
 
 from app.notifications import notify
 from app.data_filter_controls import DataFilterControls
@@ -1639,6 +1640,7 @@ def _render_upload_input(
             return (
                 len(inspection.numeric_columns) > 1
                 and inspection.source_format not in {"bedgraph", "bigwig"}
+                and (not hosted() or "xt" in profile_forms and uses_matrix_columns(inspection))
             )
 
         def sync_selection_values() -> None:
@@ -1655,7 +1657,7 @@ def _render_upload_input(
                     default_column = inspection.default_column
                     if supports_all_profile_columns(inspection):
                         valid_columns.add("__all__")
-                    if uses_matrix_columns(inspection):
+                    if uses_matrix_columns(inspection) and supports_all_profile_columns(inspection):
                         default_column = "__all__"
                     if selected.get("column") not in valid_columns:
                         selected["column"] = default_column
@@ -1778,7 +1780,7 @@ def _render_upload_input(
             except (OSError, TypeError, ValueError) as exc:
                 on_error(str(exc))
                 return False
-            candidates = list(inspections)
+            candidates = [] if hosted() else list(inspections)
             replaced_index = next(
                 (
                     index
@@ -1869,8 +1871,8 @@ def _render_upload_input(
             show_accepted_formats=False,
             on_upload=uploaded,
             on_clear=cleared,
-            multiple=True,
-            max_files=None,
+            multiple=not hosted(),
+            max_files=1 if hosted() else None,
             hide_when_loaded=False,
             initial_names=tuple(item.name for item in inspections),
         )
@@ -2268,6 +2270,8 @@ def _render_mapping_input(
                         "constants": "Multiple constants",
                     }
                 default_mode = str(default_form)
+            if hosted():
+                mode_options.pop("constants", None)
             mode_control = (
                 ui.select(mode_options, value=default_mode, label="Input type")
                 .props("dense options-dense")
@@ -2582,6 +2586,7 @@ async def _read_mapping_input_async(
     if source is not None and str(source.value) == "prepared":
         raise ValueError(f"{live.spec.label}: choose an uploaded file.")
     inspections = tuple(cast(list[UploadInspection], live.surface.get("inspections", [])))
+    ensure_single_source(len(inspections), live.spec.label)
     if not inspections:
         raise ValueError(f"Upload {live.spec.label.lower()} data before selecting Map.")
     materialized_cache = cast(
@@ -2733,6 +2738,8 @@ async def _read_mapping_input_batch_async(
     uploaded = form not in {"scalar", "regions", "bundle"} or (
         form == "regions" and source is not None and str(source.value) == "upload"
     )
+    if uploaded:
+        ensure_single_source(len(inspections), live.spec.label)
     if str(getattr(live.surface.get("mode"), "value", "")) == "constants":
         constant_controls = cast(
             Sequence[Any],
@@ -2741,6 +2748,7 @@ async def _read_mapping_input_batch_async(
         if not constant_controls:
             raise ValueError(f"{live.spec.label} has no multiple-constant control.")
         values = _read_multiple_constant_controls(constant_controls, live.spec.label)
+        ensure_single_source(len(values), live.spec.label)
         units = _SCALAR_UNITS.get(_friendly_input_key(live.spec.key), "")
         return _PreparedBatchInput(
             key=key,
@@ -2765,6 +2773,9 @@ async def _read_mapping_input_batch_async(
         )
     )
     if expand_table_columns:
+        for inspection in inspections:
+            if selection_values.get(inspection.name, {}).get("column") == "__all__":
+                ensure_single_source(len(inspection.numeric_columns), live.spec.label)
         materialized_cache = cast(
             dict[str, Any],
             live.surface.setdefault("materialized_cache", {"key": None, "value": None}),
@@ -3208,6 +3219,13 @@ def render(_navigate: Callable[[str], None]) -> None:
         "Map replication kinetic landscapes",
         "Infer replication features from measured profiles.",
     )
+    if hosted():
+        ui.html(
+            "Render accepts one constant or profile per input and one mapping at a time. "
+            "Uploading a new profile replaces the previous one. "
+            f'<a href="{LOCAL_SETUP_URL}" target="_blank" rel="noopener noreferrer">'
+            "Run locally for multiple constants, profiles and batch comparisons</a>."
+        ).classes("dn-about-copy dn-hosted-resource-note").mark("mapping-hosted-input-note")
     with ui.element("div").classes("dn-workspace"):
         with ui.column().classes("dn-control-stack"):
             with panel(extra_classes="dn-control-card"):
@@ -6036,7 +6054,9 @@ def render(_navigate: Callable[[str], None]) -> None:
                     render_latest_result()
 
                 def histogram_values() -> Any | None:
-                    if latest_result is None:
+                    # Hidden histogram controls must not flatten/copy an XT
+                    # target while its bounded heat-map raster is displayed.
+                    if latest_result is None or resolved_plot_type() != "Histogram":
                         return None
                     output_key = str(preview_output.value or latest_result.primary_output)
                     if output_key.startswith(_COMPARISON_PREFIX):
