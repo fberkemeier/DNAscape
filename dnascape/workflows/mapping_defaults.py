@@ -8,6 +8,8 @@ Benchmark scripts and tuning reports are kept locally outside version control.
 from dataclasses import replace
 
 def mapping_defaults(route, settings, shape=None):
+    if getattr(route, "unified_kinetics", False):
+        return tuple(settings)
     overrides: dict[str, float | int] = {
         item.key: 100 for item in settings
         if item.key.endswith("sim_number") and item.has_default

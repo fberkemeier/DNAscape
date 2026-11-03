@@ -5,6 +5,7 @@ import time
 import numpy as np
 
 from ._fit_bounds import fit_bounds, initial_rate
+from ._fit_constraints import fit_free_mask, has_fit_constraint, project_fit
 from .mapping import _expand_space_time_field
 from .simulation import rsim
 from .utils import check_cancelled, etaferr, measured_work
@@ -115,6 +116,19 @@ def fit_stochastic_weibull(
         alpha = np.exp(np.clip(log_alpha, np.log(low), np.log(high)))
         # Exact interval-averaged hazard avoids the k<1 activation singularity.
         hazard = _interval_hazard(alpha, shape, simulation_t, delay, dt, temporal=temporal)
+        if has_fit_constraint('initiation_rate'):
+            # Freeze on the exported target grid, then apply those same
+            # selected samples to every internal simulation proposal. Rates
+            # here are densities; rsim's per-bin conversion follows below.
+            output_hazard = np.maximum(_interval_hazard(
+                alpha, shape, output_t, delay, dt, temporal=temporal), floor)
+            form = 't' if temporal else 'xt'
+            projected = project_fit(output_hazard, 'initiation_rate', form)
+            free = fit_free_mask(output_hazard, 'initiation_rate', form)
+            if free is not None:
+                indices = np.clip(np.searchsorted(output_t, simulation_t, side='right') - 1,
+                                  0, output_t.size - 1)
+                hazard = np.where(~free[:, indices], projected[:, indices], hazard)
         simulation = rsim(
             # Weibull amplitudes describe initiation per kb. The legacy
             # simulator accepts initiation hazard per spatial bin.
@@ -179,6 +193,7 @@ def fit_stochastic_weibull(
     alpha = np.exp(z)
     hazard = np.maximum(_interval_hazard(alpha, k, output_t, delay, dt, temporal=temporal), floor)
     values = np.mean(hazard, axis=0, keepdims=True) if temporal else hazard
+    values = project_fit(values, 'initiation_rate', 't' if temporal else 'xt')
     info = {
         "alpha": alpha, "lambda": alpha ** (-1.0 / k), "weibull_shape": k,
         "weibull_delay": delay, "time_grid": output_t, "target_shape": "weibull",

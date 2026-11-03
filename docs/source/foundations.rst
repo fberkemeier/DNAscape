@@ -164,35 +164,21 @@ not the final speed multiplied by elapsed time. When speed also depends on
 position, fork paths satisfy :math:`dx/dt=\pm v(x,t)` and determine the
 reachable region.
 
-A time-dependent initiation model
-~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+A time-dependent kinetic model
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
-Some fitting routes describe initiation with a Weibull-shaped hazard:
+Time-dependent initiation and speed fits use a regularised Weibull-shaped
+basis. Shape 1 gives a constant component, larger shapes allow an increasing
+profile, and shapes below 1 allow a decreasing profile. The physical onset
+interval keeps the first part finite independently of numerical resolution.
+Fork speed also has a positive basal component. Spatial amplitudes and local
+temporal shapes can vary across a space-time target.
 
-.. math::
-
-   I(x,t)=
-   \begin{cases}
-      0, & t<d(x),\\
-      k\,\alpha(x)[t-d(x)]^{k-1}, & t\ge d(x).
-   \end{cases}
-
-The amplitude :math:`\alpha`, delay :math:`d` and shape :math:`k` determine
-the potential initiation programme. The shape :math:`k=1` gives a
-memoryless constant hazard after the delay; larger shapes can produce an
-increasing hazard. Amplitude units depend on :math:`k`:
-:math:`\mathrm{kb}^{-1}\mathrm{min}^{-k}` in the density convention.
-
-For uniform :math:`\alpha`, constant speed and zero delay, substituting into
-the cone integral gives
-
-.. math::
-
-   A(t)=\frac{2v\alpha}{k+1}t^{k+1}.
-
-Thus the hazard shape :math:`k` and the exponent of the replicated-fraction
-curve are not the same parameter. This is a specified fitting family, not a
-universal assumption about experimental origin firing.
+The fitted temporal family is a modelling choice, rather than a universal
+law of origin firing or independently sampled random fork travel times. The
+amplitude carries the units of the kinetic field; the temporal basis is
+dimensionless. See :doc:`kineticframework` for the exact parameterisation,
+shared hazard equations, fitting procedure and identifiability limits.
 
 Timing and directionality
 -------------------------

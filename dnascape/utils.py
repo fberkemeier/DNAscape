@@ -25,11 +25,13 @@ def progress_context(report=None, cancel=None, *, suppress_output=False, metric_
         getattr(_PROGRESS_STATE, "cancel", None),
         getattr(_PROGRESS_STATE, "suppress_output", False),
         getattr(_PROGRESS_STATE, "metric_report", None),
+        getattr(_PROGRESS_STATE, "prediction_claimed", False),
     )
     _PROGRESS_STATE.report = report
     _PROGRESS_STATE.cancel = cancel
     _PROGRESS_STATE.suppress_output = bool(suppress_output)
     _PROGRESS_STATE.metric_report = metric_report
+    _PROGRESS_STATE.prediction_claimed = False
     try:
         yield
     finally:
@@ -38,6 +40,7 @@ def progress_context(report=None, cancel=None, *, suppress_output=False, metric_
             _PROGRESS_STATE.cancel,
             _PROGRESS_STATE.suppress_output,
             _PROGRESS_STATE.metric_report,
+            _PROGRESS_STATE.prediction_claimed,
         ) = previous
 
 
@@ -52,6 +55,9 @@ def check_cancelled():
 def _report_progress(value, message):
     """Report a solver stage without printing or changing its scientific options."""
     check_cancelled()
+    state = getattr(_PROGRESS_STATE,'mapping',None)
+    if state is not None and state.get('iterating') and 'Initial prediction' in str(message):
+        return
     report = getattr(_PROGRESS_STATE, "report", None)
     if callable(report):
         report(float(value), str(message))
@@ -74,12 +80,15 @@ def mapping_progress(options):
     budgets = [int(value) for key, value in options.items()
                if key.endswith("maxiter") and value is not None]
     state = {"total": max([0, *budgets]) + 1, "claimed": False}
+    previous_claimed = getattr(_PROGRESS_STATE,'prediction_claimed',False)
+    _PROGRESS_STATE.prediction_claimed = False
     _PROGRESS_STATE.mapping = state
     try:
         _report_progress(.04, "Mapping... Initial prediction 0%")
         yield
     finally:
         _PROGRESS_STATE.mapping = previous
+        _PROGRESS_STATE.prediction_claimed = previous_claimed
 
 
 def initial_prediction(function):
@@ -98,11 +107,17 @@ def initial_prediction(function):
 def measured_work(total=1, label="Mapping"):
     """Observe a long first evaluation without changing the calculation."""
     previous = getattr(_PROGRESS_STATE, "work", None)
+    # Refinement grids, expanded clocks and final diagnostic predictions are
+    # parts of the same run. Only its first prediction owns this timer.
+    if previous is not None or getattr(_PROGRESS_STATE, 'prediction_claimed', False):
+        yield
+        return
     previous_range = getattr(_PROGRESS_STATE, "work_range", (0., 1.))
     _PROGRESS_STATE.work_range = (0., 1.)
     _PROGRESS_STATE.work = None
     if total is not None and callable(getattr(_PROGRESS_STATE, "report", None)):
         started = time.perf_counter()
+        _PROGRESS_STATE.prediction_claimed = True
         _PROGRESS_STATE.work = [started, started, max(1, int(total)), str(label), 0.]
         state = getattr(_PROGRESS_STATE, "mapping", None)
         if state is not None:
@@ -132,6 +147,9 @@ def measured_work_phase(start, end):
 def report_measured_work(fraction):
     work = getattr(_PROGRESS_STATE, "work", None)
     if work is None:
+        return
+    state = getattr(_PROGRESS_STATE,'mapping',None)
+    if state is not None and state.get('iterating'):
         return
     now = time.perf_counter()
     started, last, total, label = work[:4]
@@ -169,6 +187,11 @@ def _progress_update(it, maxiter, eta_sec, label=None, err=None):
     iteration = min(total, max(0, int(it)))
     fraction = iteration / total
     normalized_label = str(label or "Working").strip().lower()
+    if (getattr(_PROGRESS_STATE,'mapping',None) is not None
+            and normalized_label in {'rsim','rsim_finalize','rsim_finalise','rsim_post'}):
+        # Replicates in a stalled-fork fit belong to one prediction. The
+        # prediction observer and outer counter own Mapping's progress.
+        return
     metric_report = getattr(_PROGRESS_STATE, "metric_report", None)
     if err is not None and callable(metric_report):
         metric_report(normalized_label, iteration, total, float(err))
@@ -187,6 +210,8 @@ def _progress_update(it, maxiter, eta_sec, label=None, err=None):
         prefix = str(label or "Mapping").replace("_", " ").title()
     counter = f"{iteration}/{total}"
     if getattr(_PROGRESS_STATE, "mapping", None) is not None and normalized_label != "rsim":
+        _PROGRESS_STATE.mapping['iterating'] = True
+        _PROGRESS_STATE.prediction_claimed = True
         prefix = "Mapping"
         counter = f"iteration {counter}"
     text = f"{prefix}... {counter} - ETA {hms(eta_sec)}"
@@ -335,11 +360,13 @@ def etaf(it, maxiter, start_time, done=None, label=None):
         )
 
 
-def etaferr(it, maxiter, start_time, err, done=None, label="rmap"):
+def etaferr(it, maxiter, start_time, err, done=None, label="rmap", *, eta_seconds=None):
     elapsed = time.time() - start_time
     sims_left = maxiter - it
     avg_time_per_sim = elapsed / max(1, it)
     eta_sec = sims_left * avg_time_per_sim
+    if eta_seconds is not None:
+        eta_sec = max(0., float(eta_seconds))
     if done is None:
         done = it >= maxiter
     if done:

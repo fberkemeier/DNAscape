@@ -133,7 +133,7 @@ _FEATURE_DESCRIPTIONS = {
     "fork_speed": "Fork progression speed to infer or supply.",
     "replication_timing": "Replication timing along genomic position.",
     "fork_directionality": "Net fork movement directionality along position.",
-    "replicated_fraction": "Fraction of replicated DNA over time.",
+    "replicated_fraction": "Replicated DNA fraction across genomic position and time.",
     "replicated_fraction_xt": "Space-time replicated-fraction field.",
     "fork_density_xt": "Space-time active fork-density field.",
     "fork_densities_xt": "Right- and left-moving space-time fork-density fields.",
@@ -583,6 +583,8 @@ class MappingSpec:
             # ordinary scalar/x/t convention because their names have no _xt.
             if cname.endswith("_xt") and np.asarray(source_data[cname]).ndim == 2:
                 kind = "xt"
+            elif cname == "replicated_fraction" and np.asarray(source_data[cname]).ndim == 1:
+                kind = "t"
             if kind not in kinds:
                 return False
         return True
@@ -776,6 +778,8 @@ def _deterministic_mapping_feature(output_name, hazard, options):
 
 _REPLICATED_FRACTION_OPTIONS = (
     "resolution",
+    "neighbourhood_range",
+    "backend",
     "resolution_time",
     "time_grid",
     "max_time",
@@ -1302,24 +1306,20 @@ def map_firing_density_to_timing(
     neighbourhood_range=2000, perQ=False, n_bins=None, genome_length=None,
     interval_kb=None, resolution_time=5.0, time_grid=None, max_time=None, max_rep_time=None,
 ):
-    """Adapt density-valued public firing inputs to the legacy timing solver."""
+    """Integrate the same survival law used for replicated-fraction maps."""
     dx = _rmap_spatial_resolution({"resolution": resolution, "resolution_x": resolution_x})
-    from .mapping import _field_time_length, _resolve_n_bins_from_fields
+    from .mapping import _resolve_n_bins_from_fields
     n = _resolve_n_bins_from_fields(initiation_rate, fork_speed, n_bins=n_bins,
         resolution_x=dx, genome_length=genome_length, interval_kb=interval_kb)
-    if any(_field_time_length(field, n) is not None for field in (initiation_rate, fork_speed)):
-        from ._forward_mapping import fraction_field, timing_from_fraction
-        clock, fraction = fraction_field(initiation_rate, fork_speed, resolution=dx,
-            resolution_time=resolution_time, time_grid=time_grid, max_time=max_time,
-            max_rep_time=max_rep_time, n_bins=n, interval_kb=interval_kb, perQ=perQ)
-        complete = time_grid is None and max_time is None and max_rep_time is None
-        return _SimulationFeatureArray(timing_from_fraction(clock, fraction, require_complete=complete),
-                                       {"time_grid": clock, "method": "deterministic"})
-    return map_firing_timing(
-        np.asarray(initiation_rate, dtype=float) * dx, fork_speed=fork_speed,
-        resolution=dx, neighbourhood_range=neighbourhood_range, perQ=perQ,
-        n_bins=n_bins, genome_length=genome_length, interval_kb=interval_kb,
-    )
+    from ._forward_mapping import fraction_field, timing_from_fraction
+    clock, fraction = fraction_field(initiation_rate, fork_speed, resolution=dx,
+        resolution_time=resolution_time, time_grid=time_grid, max_time=max_time,
+        max_rep_time=max_rep_time, n_bins=n, interval_kb=interval_kb, perQ=perQ,
+        neighbourhood_range=neighbourhood_range, _complete=True)
+    return _SimulationFeatureArray(timing_from_fraction(clock, fraction, require_complete=True),
+                                   {"time_grid": clock, "method": "deterministic",
+                                    "forward_model": "cumulative_replication_hazard",
+                                    "neighbourhood_range": neighbourhood_range})
 
 
 def map_firing_and_speed_to_timing(source, **kwargs):
@@ -1348,11 +1348,16 @@ def map_firing_and_speed_to_directionality(source, **kwargs):
             perQ=bool(options.get("perQ", False)), T0=kwargs.get("T0"), smoothw=kwargs.get("smoothw"))
         return _SimulationFeatureArray(result, {**getattr(timing, "_rmap_info", {}), "method": "deterministic"})
     from ._forward_mapping import fraction_field, timing_from_fraction
-    clock, fraction = fraction_field(firing, speed, **_options(options, _REPLICATED_FRACTION_OPTIONS))
-    complete = all(options.get(key) is None for key in ("time_grid", "max_time", "max_rep_time"))
-    timing_from_fraction(clock, fraction, require_complete=complete)
+    clock, fraction = fraction_field(firing, speed, _complete=True,
+                                     **_options(options, _REPLICATED_FRACTION_OPTIONS))
+    timing_from_fraction(clock, fraction, require_complete=True)
     survival = 1. - fraction
-    velocity = _expand_space_time_field(speed, len(clock), n, clock,
+    native_time = options.get("time_grid")
+    sampled_speed = np.asarray(speed, dtype=float)
+    if (native_time is not None and sampled_speed.ndim == 2
+            and sampled_speed.shape[1] == len(native_time)):
+        sampled_speed = np.stack([np.interp(clock, native_time, row) for row in sampled_speed])
+    velocity = _expand_space_time_field(sampled_speed, len(clock), n, clock,
         options.get("resolution_time", 5.), "fork_speed", positive=True).T
     difference = survival - np.roll(survival, 1, axis=0)
     edge_velocity = .5 * (velocity + np.roll(velocity, 1, axis=0))
@@ -1778,6 +1783,9 @@ class DataTypeMapper:
         changed = False
         for spec in self._specs:
             if spec.target != "fork_speed":
+                updated.append(spec)
+                continue
+            if getattr(spec.func, "_unified_kinetic", False):
                 updated.append(spec)
                 continue
 
@@ -2632,6 +2640,19 @@ class DataTypeMapper:
 
         target = _canonical_feature(target)
         source_data = self._normalise_source(source, data)
+        fraction = source_data.get('replicated_fraction')
+        if fraction is not None and np.asarray(fraction).ndim == 2 and np.asarray(fraction).shape[0] > 1:
+            source_data['replicated_fraction_xt'] = source_data.pop('replicated_fraction')
+        fraction_methods = {
+            'auto':'auto',
+            'firing_and_speed_to_replicated_fraction_lightcone':'firing_and_speed_to_replicated_fraction_xt_lightcone',
+            'firing_to_replicated_fraction_lightcone':'firing_to_replicated_fraction_xt_lightcone',
+        }
+        if target == "replicated_fraction" and method in fraction_methods:
+            # Replicated fraction is a field f(x,t). Spatial averaging remains
+            # available only through explicitly named legacy mean routes.
+            target = "replicated_fraction_xt"
+            method = fraction_methods[method]
         assumptions = self._normalise_assumptions(assumptions, kwargs)
         spec, assumptions = self._select_spec(source_data, target, assumptions, method)
 
@@ -4563,3 +4584,8 @@ rmap.register(
 # Include the deterministic kinetic directionality methods in first-use
 # discovery, in addition to the autoreload hook used when invoking rmap.
 rmap._ensure_directionality_routes()
+
+# Keep established public method names while sharing one kinetic inverse.
+from ._kinetic_routes import install_kinetic_routes as _install_kinetic_routes
+
+_install_kinetic_routes(rmap)

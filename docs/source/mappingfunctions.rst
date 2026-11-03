@@ -2,6 +2,8 @@ Mapping
 ========
 
 
+Replicated fraction is a space-time field, displayed as a heatmap.
+
 Use **Mapping** to infer a target from compatible inputs, or to predict
 observables from initiation rate and fork speed under explicit kinetic
 assumptions. The equations and their limits are explained in :doc:`foundations`.
@@ -21,10 +23,10 @@ Available routes and input fields update to match those choices.
      - Typical supplied inputs
    * - Where is origin firing favoured?
      - Initiation rate
-     - Replication timing and fork speed.
+     - Replication timing or replicated fraction, together with fork speed.
    * - How quickly do forks move?
      - Fork speed
-     - Timing and initiation rate; supported routes also use directionality.
+     - Timing or replicated fraction, together with initiation rate; supported routes also use directionality.
    * - When will each position replicate?
      - Replication timing
      - Initiation rate and fork speed.
@@ -32,7 +34,7 @@ Available routes and input fields update to match those choices.
      - Fork directionality
      - Timing and fork speed, or kinetic inputs through a timing prediction.
    * - How does replication progress?
-     - Replicated fraction or fork density
+     - Replicated fraction (space-time) or fork density
      - Initiation rate and fork speed.
    * - Where and when do events occur?
      - Initiation or coalescence density
@@ -40,8 +42,12 @@ Available routes and input fields update to match those choices.
 
 **Constant**, **Space**, **Time** and **Space-time** describe how a fitted
 kinetic quantity varies. A time-only rate or speed is shared across the region;
-a space-time field can vary along both axes. Some routes offer a **Target
-shape**, such as a Weibull time dependence.
+a space-time field can vary along both axes. Kinetic fits with time dependence
+use a Weibull hazard-shaped component. Space-time fits can infer a different
+amplitude and Weibull shape at each position. These are constrained effective
+kinetics; timing alone does not uniquely determine an arbitrary temporal
+history. The shared equations and identifiability limits are explained in
+:doc:`kineticframework`.
 
 For initiation and coalescence outputs, **Quantity** distinguishes integrated
 spatial density in events/kb from space-time rate density in events/(kb min).
@@ -84,6 +90,9 @@ region transforms when required, then run the map.
 Click **Map**. The status line reports the stage, fit error when available,
 ETA and elapsed time. **Initial prediction** measures the first forward
 calculation; the estimate can change as later fitting stages are measured.
+After that prediction the status shows completed/total fitting iterations.
+The total covers all refinement grids, with line-search trials excluded.
+Refinement and preview preparation retain the estimate instead of restarting it.
 
 Optional settings
 -----------------
@@ -99,20 +108,42 @@ resulting prediction, not just the fitted curve.
    predicted data. It differs from a numerical floor on the target values.
 
 **Fit iterations and Fit step**
-   Control the relevant fitting stage. Routes that separate spatial and
-   temporal fitting expose **Space fit iterations** and **Time fit iterations**
-   with their corresponding steps. Space-time fits may use sequential or
-   alternating component updates; they can report more than one stage.
+   Spatial and temporal phases each default to **10 iterations**. Space-time
+   fits expose **Space fit iterations** and **Time fit iterations**, each with
+   its own step. **Fitting order** alternates the two phases, or completes space
+   then time or time then space. One iteration is one proposed block update;
+   line-search evaluations do not inflate the displayed counter. Fit steps
+   limit changes in positive log-parameters, and rejected proposals retain the
+   best prediction.
 
-**Neighbourhood range and Maximum edge context**
-   Control the spatial context used by supported calculations and linear-edge
-   treatment. Cropped regions can lose contributions from origins outside the
-   interval; retain surrounding data when local boundary behaviour matters.
+**Adaptive fitting and Fit tolerance**
+   Large fits start on coarser grids and refine at the selected resolution.
+   Iteration budgets are shared across grids; the reported final MSE uses all
+   valid native observations. Disable Adaptive fitting for every update to
+   use the selected grid. Fit tolerance defaults to 0.001: 0.1% timing error,
+   or 0.001 fraction error. Zero disables convergence-based local skipping.
+
+**Influence radius**
+   Limits the distance of potential origins contributing to a position, in kb;
+   the default is **2000 kb**. This is an explicit finite-influence
+   approximation when physical cones extend farther. Increase it to check that
+   a result is stable. Linear regions have no incoming forks from outside the
+   supplied region; retain surrounding data when boundary behaviour matters.
+
+**Weibull shape and Fit Weibull shape**
+   Set the initial temporal shape and whether it is fitted. Shape 1 gives a
+   constant hazard; shape 2 gives linear growth after the activation delay,
+   while shapes below 1 permit decreasing profiles.
+   Space-time fits can optimise the shape locally. Fork speed also has a
+   positive basal component. **Onset interval** regularises the first part of
+   the profile in physical minutes, independently of numerical resolution.
+   The temporal profile describes prescribed kinetics, rather than drawing
+   random Weibull fork speeds.
 
 **Target bounds and Initial guess**
    Constrain the fitted quantity and choose its starting value. Supplied inputs
-   remain fixed. For a Weibull model, amplitude bounds apply to its fitted
-   amplitude, whose units depend on the temporal shape.
+   remain fixed. Bounds apply to the actual fitted kinetic values on the
+   computational grid; regional transforms can fix selected values separately.
 
 The advanced **Fork movement** controls include stalling and, where needed,
 the simulations averaged for a stochastic fit estimate. Deterministic routes

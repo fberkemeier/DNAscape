@@ -18,6 +18,8 @@ class MappingFilterSettings:
 
 def filtered_speed_settings(route, settings):
     """Expose exactly the controls used by the constrained speed solver."""
+    if route.unified_kinetics:
+        return tuple(settings)
     from .mapping_catalog import MappingSetting
 
     allowed = {'resolution', 'resolution_time', 'time_grid', 'T0', 'perQ', 'n_bins',
@@ -65,7 +67,8 @@ def prepare_filter_request(request):
         if not candidates:
             raise ValueError('No compatible target is available for this region transform and these inputs.')
         route = max(candidates, key=lambda item: SequenceMatcher(None, request.route.method, item.method).ratio())
-    shape = 'free' if route.target == 'initiation_rate' and dependence in {'time', 'spacetime'} else route.default_target_shape
+    shape = ('free' if not route.unified_kinetics and route.target == 'initiation_rate'
+             and dependence in {'time', 'spacetime'} else route.default_target_shape)
     active = route.active_settings(shape, request.input_forms)
     if route.target == 'fork_speed' and any(item.key == 'replication_timing' for item in route.inputs):
         active = filtered_speed_settings(route, active)
@@ -100,8 +103,12 @@ def compatible_filter_dependence(dependence, reference_form, selection):
 class MappingFitConstraint:
     def __init__(self, settings, *, target, form, reference, reference_form,
                  start, resolution, resolution_t, reference_time=None, per_bin=True, cancel=None,
-                 spatial_size=None, end=None):
+                 spatial_size=None, end=None, density_model=False):
         self.settings = resolve_filter(settings.regions)
+        if self.settings.action == 'noise' and self.settings.seed is None:
+            # Tail planning clones this constraint before the real mask is
+            # frozen. All planning and fitting evaluations share one draw.
+            self.settings = replace(self.settings, seed=int(np.random.SeedSequence().generate_state(1)[0]))
         self.warnings = []
         self.settings = replace(self.settings, _warning_sink=self.warnings.append)
         self.target, self.form = target, form
@@ -109,7 +116,12 @@ class MappingFitConstraint:
         self.start, self.dx, self.dt = start, resolution, resolution_t
         self.reference_time = reference_time
         self.spatial_size, self.end = spatial_size, end
-        self.scale = 1. if target != 'initiation_rate' or per_bin else 1. / resolution
+        if density_model:
+            # The shared solver always fits a density. Transform values still
+            # use the caller's units, including the app's per-bin rates.
+            self.scale = resolution if target == 'initiation_rate' and per_bin else 1.
+        else:
+            self.scale = 1. if target != 'initiation_rate' or per_bin else 1. / resolution
         self.cancel = cancel or (lambda: None)
         self.mask = self.frozen = self.positions = None
 
@@ -117,7 +129,7 @@ class MappingFitConstraint:
         """An empty selection must preserve the selected route's native fit."""
         if not self.settings.enabled:
             return False
-        if self.settings.selection == 'profile':
+        if self.settings.selection in {'profile', 'ranges'}:
             positions = self.start + np.arange(spatial_size) * self.dx
             intervals = np.column_stack((positions, positions + self.dx))
             if self.end is not None:
@@ -133,7 +145,7 @@ class MappingFitConstraint:
 
     def _reference_on_grid(self, n, nt):
         values = np.asarray(self.reference, dtype=float)
-        if self.settings.selection in {'all', 'profile'}:
+        if self.settings.selection in {'all', 'profile', 'ranges'}:
             return np.zeros((n, nt))
         if self.form == 't' and self.reference_form == 't':
             source = values.reshape(-1)
@@ -199,6 +211,80 @@ class MappingFitConstraint:
         result = np.where(self.mask, self.frozen, canonical)
         result = result.reshape((raw.T if transposed else raw).shape)
         return result.T if transposed else result
+
+    def prepare_tiled(self, canonical):
+        """Freeze an XT constraint column by column, retaining global regions.
+
+        Each column still sees every spatial position, so interpolation,
+        regional means, extrema and convolutions keep their original anchors.
+        One random generator also preserves the ordinary noise sequence.
+        """
+        from dnascape._kinetic_tiled import disk_array
+        from .modulation import aligned_modulation
+
+        if self.frozen is not None:
+            return
+        n, nt = canonical.shape
+        self.positions = self.start + np.arange(n) * self.dx
+        intervals = np.column_stack((self.positions, self.positions + self.dx))
+        if self.end is not None:
+            intervals[:, 1] = np.minimum(intervals[:, 1], self.end)
+        mask = disk_array(canonical.shape, bool, order="F")
+        frozen = disk_array(canonical.shape, order="F")
+        rng = np.random.default_rng(None if self.settings.seed is None else
+                                   np.random.SeedSequence([self.settings.seed, 0]))
+        modulation = (aligned_modulation(canonical, self.settings.modulation,
+                      coordinates=self.positions, warning=self.settings._warning_sink)
+                      if self.settings.action == "modulate" else None)
+        for column in range(nt):
+            self.cancel()
+            selected = []
+
+            def capture(selection, *_args, **_kwargs):
+                selected.append(selection)
+
+            transformed = apply_data_filter(
+                canonical[:, column] * self.scale,
+                replace(self.settings, _position_sink=capture),
+                positions=self.positions, intervals=intervals,
+                selection_values=self._reference_column(n, nt, column),
+                cancel=self.cancel, _rng=rng,
+                _modulation=None if modulation is None else modulation[:, column:column + 1],
+            ) / self.scale
+            mask[:, column] = selected[0] if selected else False
+            values = transformed[mask[:, column]]
+            invalid = ~np.isfinite(values) | (values < 0 if self.target == 'initiation_rate' else values <= 0)
+            if invalid.any():
+                domain = 'finite, non-negative initiation rates' if self.target == 'initiation_rate' else 'finite, positive fork speeds'
+                raise ValueError(f'The Mapping region transform must produce {domain}. Choose a compatible transform.')
+            frozen[:, column] = transformed
+        self.mask, self.frozen = mask, frozen
+
+    def _reference_column(self, n, nt, column):
+        """The same reference interpolation as _reference_on_grid, streamed."""
+        if self.settings.selection in {'all', 'profile', 'ranges'}:
+            return np.zeros(n)
+        values = np.asarray(self.reference, dtype=float)
+        if self.reference_form == 'scalar':
+            return np.broadcast_to(values.reshape(()), (n,))
+        if self.reference_form == 'x':
+            if values.size != n:
+                raise ValueError('The selection input must cover the fitted genomic region.')
+            return values.reshape(n)
+        if self.reference_form == 't':
+            values = values.reshape(1, -1)
+        elif self.reference_form != 'xt' or values.shape[0] != n:
+            raise ValueError('Choose a numeric input with coordinates matching the fitted target.')
+        if values.shape[1] == nt:
+            return np.broadcast_to(values[:, column], (n,))
+        source_t = (np.asarray(self.reference_time) if self.reference_time is not None
+                    and len(self.reference_time) == values.shape[1] else np.arange(values.shape[1]) * self.dt)
+        target_t = (self.reference_time[column] if self.reference_time is not None
+                    and len(self.reference_time) == nt else column * self.dt)
+        lo = int(np.clip(np.searchsorted(source_t, target_t, side='right') - 1, 0, len(source_t) - 1))
+        hi = min(lo + 1, len(source_t) - 1)
+        weight = np.clip((target_t - source_t[lo]) / (source_t[hi] - source_t[lo]), 0., 1.) if hi != lo else 0.
+        return np.broadcast_to((1. - weight) * values[:, lo] + weight * values[:, hi], (n,))
 
     def export_positions(self):
         if self.mask is None:

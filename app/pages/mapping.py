@@ -866,6 +866,11 @@ def _render_setting_field(setting: Any, *, automatic: bool = False, initial: Any
         )
     if setting.kind == "choice":
         options = {item: str(item).replace("_", " ").title() for item in setting.allowed_values}
+        if setting.key == "spacetime_order":
+            options.update({key: label for key, label in {
+                "crossed": "Cross fitting", "space_then_time": "Space then time",
+                "time_then_space": "Time then space",
+            }.items() if key in options})
         return (
             ui.select(options, value=value, label=label)
             .props("dense options-dense")
@@ -960,7 +965,8 @@ def _mapping_setting_group(setting: Any, keys: set[str]) -> str:
         return "fork_movement"
     if setting.category == "simulation":
         return "simulation"
-    if setting.key in {"maxiter", "fit_step", "temporal_maxiter", "temporal_fit_step"}:
+    if setting.key in {"maxiter", "fit_step", "temporal_maxiter", "temporal_fit_step",
+                       "weibull_shape", "weibull_delay", "fit_weibull_shape", "spacetime_order"}:
         return "fitting"
     if setting.key in {"space_maxiter", "space_fit_step"} and "maxiter" not in keys:
         return "fitting"
@@ -994,7 +1000,7 @@ def _sync_contextual_mapping_settings(
     active["tau"] = stalled
     if route.target == "initiation_rate" and route.output_dependence == "space":
         active["deviation_threshold"] = not (variable_speed or stalled)
-    if route.target == "initiation_rate" and route.output_dependence == "constant":
+    if route.target == "initiation_rate" and route.output_dependence == "constant" and not route.unified_kinetics:
         active["neighbourhood_range"] = not variable_speed
     for key, enabled in active.items():
         live = controls.get(key)
@@ -1007,6 +1013,7 @@ def _sync_contextual_mapping_settings(
 _MAPPING_SETTING_ORDER = (
     "maxiter", "fit_step", "space_maxiter", "space_fit_step",
     "temporal_maxiter", "temporal_fit_step",
+    "weibull_shape", "weibull_delay", "fit_weibull_shape", "spacetime_order",
 )
 
 _MAPPING_ADVANCED_ORDER = (
@@ -1025,12 +1032,12 @@ def _render_fit_parameter_rows(route, settings, input_forms, input_controls, on_
     initial_key = "initial_initiation_rate" if quantity == "initiation_rate" else "initial_fork_speed"
     floor_key = next((key for key in ("err_threshold", "floor") if key in specifications), None)
     fitted = quantity in {"initiation_rate", "fork_speed"} and bool(specifications)
-    rows = ([(quantity, "Initiation-rate amplitude" if quantity == "initiation_rate" and "weibull_shape" in {s.key for s in settings} else mapping_target(route.target_key).label, True)] if fitted else [])
+    rows = ([(quantity, "Initiation-rate amplitude" if not route.unified_kinetics and quantity == "initiation_rate" and "weibull_shape" in {s.key for s in settings} else mapping_target(route.target_key).label, True)] if fitted else [])
     with ui.column().classes("dn-mapping-fit-parameters").mark("mapping-fitting-parameters"):
         for key, label, editable in rows:
             marker = f"mapping-fit-{_slug(key)}"
             with ui.element("div").classes("dn-mapping-fit-row").mark(marker) as row:
-                is_amplitude = editable and "weibull_shape" in {item.key for item in settings}
+                is_amplitude = editable and not route.unified_kinetics and "weibull_shape" in {item.key for item in settings}
                 ui.label(label).classes("dn-mapping-fit-label")
                 bounds = specifications.get(bound_key) if editable else None
                 defaults = bounds.default if bounds is not None and bounds.default is not None else (None, None)
@@ -1044,6 +1051,8 @@ def _render_fit_parameter_rows(route, settings, input_forms, input_controls, on_
                 field_hint(lower, "Minimum fitted value; blank keeps the route default.")
                 field_hint(upper, "Maximum fitted value; blank keeps the route default.")
                 field_hint(initial, "Starting fitted value; blank uses the route's automatic estimate.")
+                if route.unified_kinetics and "weibull_shape" in {item.key for item in settings}:
+                    field_hint(initial, "Starting temporal amplitude; blank uses the automatic estimate.")
                 if is_amplitude:
                     field_hint(lower, "Minimum Weibull amplitude; the curve varies with time.")
                     field_hint(upper, "Maximum Weibull amplitude; the curve varies with time.")
@@ -1214,7 +1223,7 @@ def _render_route_setting_groups(
             bind_inherited(child, parent)
     if route.method in {
         "timing_and_speed_to_initiation_rate", "timing_to_firing_constant_fork_speed",
-    } and "fit_step" in controls:
+    } and "fit_step" in controls and not route.unified_kinetics:
         automatic_step = 2.0
         custom_step = False
 
@@ -1260,7 +1269,7 @@ def _render_route_setting_groups(
 
         controls["spacetime_update"].control.on_value_change(sync_firing_update_controls)
         sync_firing_update_controls()
-    if route.target == "fork_speed" and "spacetime_order" in controls:
+    if route.target == "fork_speed" and "spacetime_order" in controls and not route.unified_kinetics:
         def sync_speed_order_controls() -> None:
             sequential = controls["spacetime_order"].control.value != "crossed"
             for key in ("neighbourhood_range", "refine_verbose"):
@@ -2029,7 +2038,6 @@ def _render_multiple_constant_input(
 ) -> None:
     """Render editable, indexed constants with optional counterpart pairing."""
 
-    units = _SCALAR_UNITS.get(_friendly_input_key(input_spec.key), "")
     aligned_rows = () if retained.manual_override else peer_rows()
     manual = not aligned_rows
     if manual:
@@ -3315,7 +3323,7 @@ def render(_navigate: Callable[[str], None]) -> None:
 
                     def sync_target_shape(route: MappingRoute, *, retain: bool = False) -> None:
                         shapes = route.shapes_for(selected_forms)
-                        filtered_free = (mapping_filter_controls is not None and mapping_filter_controls.controls['enabled'].value
+                        filtered_free = (not route.unified_kinetics and mapping_filter_controls is not None and mapping_filter_controls.controls['enabled'].value
                             and mapping_filter_controls.selection_ready
                             and route.target == 'initiation_rate' and route.output_dependence in {'time', 'spacetime'})
                         if filtered_free:
@@ -5732,6 +5740,8 @@ def render(_navigate: Callable[[str], None]) -> None:
 
                         primary = np.asarray(result.outputs[result.primary_output])
                         for warning in dict.fromkeys(warning for item in latest_results for warning in item.result.diagnostics.get('filter_warnings', ())):
+                            notify(warning, type='warning')
+                        for warning in dict.fromkeys(warning for item in latest_results for warning in item.result.diagnostics.get('warnings', ())):
                             notify(warning, type='warning')
                         mapping_stats["Dependence"].text = _mapping_dependence_label(result.target_key, result.output_dependence)
                         mapping_stats["Points"].text = f"{primary.size:,}"

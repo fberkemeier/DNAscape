@@ -78,6 +78,13 @@ _DIAGNOSTIC_KEYS = {
     "terminal_survival", "extrapolated_tail", "tail_policy", "initial_policy",
     "timing_is_restricted_mean", "clipped_derivative_count", "derivative_method",
     "monotonic_policy", "temporal_smoothw", "density_floor", "unreplicated_floor",
+    "forward_backend", "fitting_backend", "phase_history", "space_iterations", "time_iterations",
+    "iterations", "iteration_budget", "objective_evaluations", "observation",
+    "weibull_reference", "weibull_baseline", "warnings", "finite_influence_approximation",
+    "weibull_shape", "weibull_delay", "alpha", "initiation_rate_units",
+    "restricted_mean_timing",
+    "weibull_onset_cutoff_min",
+    "coarse_fit_history", "coarse_resolution", "native_resolution", "adaptive_fitting",
 }
 
 
@@ -422,7 +429,7 @@ def _validate_input_shapes(
     temporal = next(iter(time_lengths), 0)
     if spatial > MAX_SPATIAL_POINTS or temporal > MAX_TIME_POINTS:
         raise ValueError("An input axis exceeds the local interactive grid limit.")
-    if spatial and temporal and spatial * temporal > MAX_GRID_CELLS:
+    if not route.unified_kinetics and spatial and temporal and spatial * temporal > MAX_GRID_CELLS:
         raise ValueError(
             "The uploaded space-time grid is too large for an interactive mapping run."
         )
@@ -1140,6 +1147,7 @@ def _validate_grid(
     *,
     input_spatial_points: int = 0,
     input_time_points: int = 0,
+    tiled_kinetics: bool = False,
 ) -> None:
     time_grid = assumptions.get("time_grid")
     if time_grid is not None:
@@ -1164,7 +1172,7 @@ def _validate_grid(
         )
     time_points = time_points or input_time_points
     n_bins = int(assumptions.get("n_bins", 0) or 0) or input_spatial_points
-    if n_bins and time_points and n_bins * time_points > MAX_GRID_CELLS:
+    if not tiled_kinetics and n_bins and time_points and n_bins * time_points > MAX_GRID_CELLS:
         raise ValueError(
             "The requested space-time grid is too large for an interactive mapping run. "
             "Coarsen the spatial or temporal resolution."
@@ -1264,7 +1272,8 @@ def validate_mapping_request(
 
     shape = request.target_shape if request.target_shape is not None else route.default_target_shape
     available_shapes = route.shapes_for(raw_forms)
-    if (request.fit_filter.regions.enabled or request.fit_filter.relative_to is not None) and route.target == 'initiation_rate' and route.output_dependence in {'time', 'spacetime'}:
+    if (not route.unified_kinetics and (request.fit_filter.regions.enabled or request.fit_filter.relative_to is not None)
+            and route.target == 'initiation_rate' and route.output_dependence in {'time', 'spacetime'}):
         available_shapes = (*available_shapes, 'free')
     if shape is not None and shape not in available_shapes:
         choices = ", ".join(available_shapes) or "no configurable shapes"
@@ -1406,6 +1415,10 @@ def validate_mapping_request(
         assumptions,
         input_spatial_points=input_spatial_points,
         input_time_points=input_time_points,
+        tiled_kinetics=route.unified_kinetics and not any(
+            float(assumptions.get(key) or 0.) > 0.
+            for key in ("stall_rate", "stall_rate_per_kb")
+        ),
     )
     return _PreparedCall(
         route=route,
@@ -1532,7 +1545,8 @@ def _collect_result_outputs(
         raise RuntimeError("DNAscape returned no plottable numeric mapping output.")
     total_values = sum(array.size for array in outputs.values())
     total_bytes = sum(array.nbytes for array in outputs.values())
-    if total_values > MAX_OUTPUT_VALUES or total_bytes > MAX_OUTPUT_BYTES:
+    disk_backed_fit = route.unified_kinetics and info.get("tiled_fitting") and info.get("disk_backed_output")
+    if not disk_backed_fit and (total_values > MAX_OUTPUT_VALUES or total_bytes > MAX_OUTPUT_BYTES):
         raise RuntimeError(
             f"Mapped output contains {total_values:,} values / {total_bytes / 1024**2:.1f} MiB; "
             "reduce the requested grid before previewing it in the local app."
@@ -1569,7 +1583,11 @@ def _collect_result_outputs(
                 else ("xt" if array.ndim == 2 and 1 not in array.shape else "x")
             )
         elif key == "residual":
-            if array.ndim == 2 and 1 not in array.shape:
+            fraction_input = next((name for name in ("replicated_fraction_xt", "replicated_fraction")
+                                   if name in input_forms), None)
+            if fraction_input is not None and route.unified_kinetics:
+                forms[key] = input_forms[fraction_input]
+            elif array.ndim == 2 and 1 not in array.shape:
                 forms[key] = "xt"
             elif array.ndim == 2 and array.shape[0] == 1:
                 forms[key] = "t"
@@ -1942,9 +1960,17 @@ def run_mapping(
         constraint = None
         if prepared.fit_filter.regions.enabled:
             reference_key = prepared.fit_filter.relative_to
-            if prepared.fit_filter.regions.selection not in {'profile', 'all'} and reference_key not in prepared.input_forms:
+            if prepared.fit_filter.regions.selection not in {'profile', 'ranges', 'all'} and reference_key not in prepared.input_forms:
                 raise ValueError('Choose the input used to define the mask.')
             reference = prepared.source.get(reference_key, prepared.assumptions.get(reference_key, 0.))
+            density_fit = prepared.route.unified_kinetics
+            if (density_fit and prepared.route.target == 'initiation_rate'
+                    and prepared.route.output_form in {'scalar', 'x'}
+                    and any(float(execution_assumptions.get(key) or 0.) > 0.
+                            for key in ('stall_rate', 'stall_rate_per_kb'))):
+                # Stalled spatial fits retain the legacy per-bin solver. The
+                # temporal Weibull fallback already uses density-valued fields.
+                density_fit = False
             constraint = MappingFitConstraint(
                 prepared.fit_filter, target=prepared.route.target, form=prepared.route.output_form,
                 reference=reference, reference_form=prepared.input_forms.get(reference_key, 'scalar'),
@@ -1952,6 +1978,7 @@ def run_mapping(
                 reference_time=prepared.assumptions.get('time_grid'),
                 per_bin=prepared.initiation_rate_per_bin, cancel=cancel,
                 spatial_size=prepared.spatial_size, end=prepared.end_kb,
+                density_model=density_fit,
             )
             if not constraint.selects_regions(prepared.spatial_size):
                 constraint = None
@@ -2013,7 +2040,8 @@ def run_mapping(
         ), mapping_progress(execution_assumptions):
             from dnascape._fit_constraints import fit_constraint_context
             with fit_constraint_context(constraint):
-                if constraint is not None and prepared.route.target == 'fork_speed' and 'replication_timing' in execution_source:
+                if (constraint is not None and not prepared.route.unified_kinetics
+                        and prepared.route.target == 'fork_speed' and 'replication_timing' in execution_source):
                     from dnascape.inverse import fit_timing_fork_speed
                     accepted = {'initial_fork_speed', 'resolution_time', 'time_grid', 'T0', 'perQ',
                                 'maxiter', 'spatial_knots', 'temporal_knots', 'regularization', 'speed_bounds', 'tolerance', 'verbose'}

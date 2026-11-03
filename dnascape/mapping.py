@@ -370,12 +370,18 @@ def map_replicated_fraction_xt(
     genome_length=None,
     interval_kb=None,
     perQ=False,
+    neighbourhood_range=2000.0,
+    backend="auto",
+    return_hazard=False,
 ):
     resolution = _normalise_resolution_x(resolution, resolution_x=resolution_x)
     if resolution_t is not None:
         resolution_time = resolution_t
     if max_rep_time is not None and max_time is None:
         max_time = max_rep_time
+    radius = float(neighbourhood_range)
+    if np.isnan(radius) or radius <= 0:
+        raise ValueError("Neighbourhood range must be positive.")
 
     n_bins = _resolve_n_bins_from_fields(
         initiation_rate,
@@ -405,7 +411,7 @@ def map_replicated_fraction_xt(
             raise ValueError("Replication time grids cannot start before zero.")
         rates = _expand_space_time_field(initiation_rate, t.size, 1, t, resolution_time, "initiation_rate")[:, 0]
         speeds = _expand_space_time_field(fork_speed, t.size, 1, t, resolution_time, "fork_speed", positive=True)[:, 0]
-        length = int(n_bins) * resolution
+        length = min(int(n_bins) * resolution, 2.0 * radius)
         if np.asarray(initiation_rate).size == 1 and np.asarray(fork_speed).size == 1:
             volume = rates[0] * np.where(
                 2 * speeds[0] * t <= length, speeds[0] * t**2,
@@ -416,20 +422,30 @@ def map_replicated_fraction_xt(
             integration_t = np.insert(t, 0, 0.0) if leading else t
             rates = np.insert(rates, 0, rates[0]) if leading else rates
             speeds = np.insert(speeds, 0, speeds[0]) if leading else speeds
-            dt = np.diff(integration_t)
-            distance = np.concatenate(([0.0], np.cumsum(0.5 * (speeds[:-1] + speeds[1:]) * dt)))
-            midpoint_distance = distance[:-1] + dt * (3 * speeds[:-1] + speeds[1:]) / 8
-            mass = 0.5 * (rates[:-1] + rates[1:]) * dt
-            volume = np.zeros(integration_t.size)
-            for index in range(1, integration_t.size):
-                check_cancelled()
-                report_measured_work(index * (index - 1) / (integration_t.size * (integration_t.size - 1)))
-                width = np.minimum(2 * (distance[index] - midpoint_distance[:index]), length)
-                volume[index] = np.dot(width, mass[:index])
+            from ._hazard_uniform import UniformKineticsHazard
+            operator = UniformKineticsHazard(speeds[:, None], integration_t, resolution,
+                                             True, radius, length=int(n_bins)*resolution)
+            volume = operator.forward(rates[:, None])[:, 0]
             if leading:
                 volume = volume[1:]
-        fraction = -np.expm1(-np.maximum(volume, 0.0))
+        fraction = np.maximum(volume, 0.0) if return_hazard else -np.expm1(-np.maximum(volume, 0.0))
         return np.broadcast_to(fraction, (int(n_bins), t.size)).copy()
+
+    if (backend == "auto" and _field_time_length(fork_speed, int(n_bins)) is None
+            and _field_time_length(initiation_rate, int(n_bins)) is None):
+        from ._hazard_static import StationaryHazard
+
+        if t[0] < 0:
+            raise ValueError("Replication time grids cannot start before zero.")
+        leading = t[0] > 0
+        clock = np.insert(t, 0, 0.0) if leading else t
+        stationary = np.broadcast_to(np.asarray(initiation_rate, dtype=float).reshape(-1), (int(n_bins),))
+        stationary_speed = np.broadcast_to(np.asarray(fork_speed,dtype=float).reshape(-1),(int(n_bins),))
+        operator = StationaryHazard(stationary_speed, clock,
+                                        resolution=resolution, periodic=bool(perQ), radius=radius)
+        volume = operator.forward(stationary)
+        volume = np.maximum(volume[1:] if leading else volume, 0.0)
+        return volume.T if return_hazard else -np.expm1(-volume).T
 
     I = _expand_space_time_field(initiation_rate, t.size, int(n_bins), t, resolution_time, "initiation_rate")
     v = _expand_space_time_field(fork_speed, t.size, int(n_bins), t, resolution_time, "fork_speed", positive=True)
@@ -441,6 +457,29 @@ def map_replicated_fraction_xt(
         t = np.insert(t, 0, 0.)
         I = np.vstack((I[:1], I))
         v = np.vstack((v[:1], v))
+
+    if backend != "legacy":
+        from ._hazard import HazardOperator
+        from ._hazard_fft import ConstantSpeedConvolution
+        from ._hazard_transport import FastTransportHazard
+        from ._hazard_uniform import UniformKineticsHazard
+        from ._hazard_stationary_source import StationarySourceHazard
+
+        if backend == "auto" and t.size > 1 and np.all(I == I[:, :1]) and np.all(v == v[:, :1]):
+            operator = UniformKineticsHazard(v, t, resolution, bool(perQ), radius)
+        elif (backend == 'auto' and StationarySourceHazard.applicable(v,t) and np.all(I == I[:1])
+                and np.all(v == v[:,:1])):
+            operator = StationarySourceHazard(v,t,resolution,bool(perQ),radius)
+        elif backend == "auto" and ConstantSpeedConvolution.applicable(v, t):
+            operator = ConstantSpeedConvolution(v, t, resolution, bool(perQ), radius)
+        elif backend == "auto":
+            operator = FastTransportHazard(v, t, resolution, bool(perQ), radius, uniform_speed=True)
+        else:
+            operator = HazardOperator(v, t, resolution=resolution, periodic=bool(perQ), radius=radius, backend=backend)
+        A = operator.forward(I)
+        if leading:
+            A = A[1:]
+        return np.maximum(A, 0.0).T if return_hazard else -np.expm1(-np.maximum(A, 0.0)).T
 
     v_raw = np.asarray(fork_speed, dtype=float)
     if perQ:
@@ -476,10 +515,21 @@ def map_replicated_fraction_xt(
 
     if leading:
         A = A[1:]
-    return -np.expm1(-np.maximum(A, 0.0)).T
+    return np.maximum(A, 0.0).T if return_hazard else -np.expm1(-np.maximum(A, 0.0)).T
+
+
+def map_replication_hazard(*args, **kwargs):
+    """Return H(position, time) directly, retaining values after f saturates."""
+    return map_replicated_fraction_xt(*args, **dict(kwargs, return_hazard=True))
 
 
 def map_replicated_fraction(*args, **kwargs):
+    """Return the replicated-fraction field f(position, time)."""
+    return map_replicated_fraction_xt(*args, **kwargs)
+
+
+def map_mean_replicated_fraction(*args, **kwargs):
+    """Return the explicitly spatially averaged fraction over time."""
     return np.nanmean(map_replicated_fraction_xt(*args, **kwargs), axis=0)
 
 

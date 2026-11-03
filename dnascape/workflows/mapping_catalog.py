@@ -286,6 +286,7 @@ class MappingRoute:
     assumption_forms: tuple[tuple[str, tuple[DataForm, ...]], ...]
     assumption_values: tuple[tuple[str, tuple[Any, ...]], ...]
     prepared_result_only: bool = False
+    unified_kinetics: bool = False
 
     @property
     def source_keys(self) -> tuple[str, ...]:
@@ -342,6 +343,27 @@ class MappingRoute:
 
         shape = self.default_target_shape if target_shape is None else target_shape
         settings = tuple(item for item in self.settings if item.key not in self.single_phase_fit_aliases)
+        if self.unified_kinetics:
+            keys = {
+                "resolution", "resolution_time", "time_grid", "T0", "n_bins", "perQ",
+                "neighbourhood_range", "error", "rate_bounds", "speed_bounds",
+                "initial_initiation_rate", "initial_fork_speed", "floor",
+                "alpha_smooth", "alpha_prior", "adaptive_fitting", "relative_tolerance",
+            }
+            if self.output_dependence in {"constant", "space"}:
+                keys.update(("maxiter", "fit_step"))
+            else:
+                keys.update(("temporal_maxiter", "temporal_fit_step", "weibull_shape",
+                             "weibull_delay", "weibull_onset", "fit_weibull_shape"))
+                if self.output_dependence == "spacetime":
+                    keys.update(("space_maxiter", "space_fit_step", "spacetime_order"))
+            if self.output_dependence in {"constant", "time"}:
+                keys.discard("alpha_smooth")
+            if "replication_timing" not in self.source_keys:
+                keys.discard("T0")
+            if any(item.key == "stall_rate_per_kb" for item in settings):
+                keys.update(("stall_rate_per_kb", "sim_number", "tau", "refine_seed"))
+            return tuple(item for item in settings if item.key in keys)
         if self.target == "initiation_rate" and self.target_shapes:
             if shape == "weibull":
                 settings = tuple(item for item in settings if item.key in _WEIBULL_FIRING_SETTINGS)
@@ -832,7 +854,7 @@ _FEATURE_DESCRIPTIONS = {
 }
 
 _TARGET_GROUP_DESCRIPTIONS = {
-    "replicated_fraction": "Replicated fraction over time or across position and time.",
+    "replicated_fraction": "Replicated DNA fraction across position and time.",
     "initiation_events": "Expected initiation density, or initiation rate density resolved over time.",
     "initiation_pdf": "Initiation probability density as a spatial profile or space-time field.",
     "coalescence_events": "Expected coalescence density, or coalescence rate density resolved over time.",
@@ -855,8 +877,8 @@ _SETTING_DESCRIPTIONS = {
     "perQ": "Treat the region as periodic rather than linear.",
     "geometry": "Genome boundary geometry used by stochastic simulation.",
     "x_array": "Explicit spatial coordinates for profile integration.",
-    "neighbourhood_range": "Spatial neighbourhood used by deterministic mappings.",
-    "fit_step": "Global multiplicative fitting update size.",
+    "neighbourhood_range": "Maximum distance from which origin firing can affect a position (kb).",
+    "fit_step": "Maximum log-parameter change per fitting step; smaller values make gentler updates.",
     "maxiter": "Maximum number of global fitting iterations.",
     "error": "Optional MSE threshold for early stopping; automatic disables it.",
     "sim_number": "Number of stochastic simulations in the active route or fit phase.",
@@ -871,10 +893,10 @@ _SETTING_DESCRIPTIONS = {
     "firing_bounds": "Lower and upper bounds for fitted initiation rates.",
     "initial_fork_speed": "Starting fork-speed value for fitting, in kb/min.",
     "initial_initiation_rate": "Starting initiation-rate value; automatic uses the route's native estimate.",
-    "space_fit_step": "Spatial-phase fitting update size.",
+    "space_fit_step": "Maximum log-amplitude change during a spatial fitting step.",
     "space_maxiter": "Maximum number of spatial-phase fitting iterations.",
     "temporal_smoothw": "Optional smoothing window for time-dependent profiles.",
-    "temporal_fit_step": "Temporal-phase fitting update size.",
+    "temporal_fit_step": "Maximum log-parameter change during a temporal fitting step.",
     "temporal_maxiter": "Maximum number of temporal-phase fitting iterations.",
     "temporal_sim_number": "Simulations per temporal refinement iteration.",
     "spacetime_fit_step": "Local space-time update size for mixed fitting.",
@@ -882,13 +904,16 @@ _SETTING_DESCRIPTIONS = {
     "spacetime_time_fit_step": "Temporal update size for factorized space-time fitting.",
     "spacetime_sim_number": "Simulations per mixed space-time refinement iteration.",
     "spacetime_update": "Use factorized space/time phases or mixed local corrections.",
-    "spacetime_order": "Order of the spatial and temporal phases in a factorized fit.",
+    "spacetime_order": "Alternate space/time steps, or complete one phase before the other.",
     "spacetime_kernel_t": "Temporal kernel width for mixed space-time corrections.",
     "weibull_shape": "Weibull shape parameter; 1 is exponential and 2 is linear hazard.",
-    "weibull_delay": "Activation delay for a Weibull initiation-rate target.",
-    "fit_weibull_shape": "Fit the Weibull shape as well as the rate field.",
-    "alpha_smooth": "Smoothness regularisation applied to log(alpha).",
-    "alpha_prior": "Prior strength keeping log(alpha) near its initial estimate.",
+    "weibull_delay": "Time at which the fitted Weibull component starts (min).",
+    "weibull_onset": "Physical onset interval used to keep Weibull kinetics finite, independent of plot resolution.",
+    "fit_weibull_shape": "Fit temporal curvature as well as amplitude.",
+    "alpha_smooth": "Penalty on differences between neighbouring log-amplitudes and Weibull shapes.",
+    "alpha_prior": "Penalty on moving log-amplitudes away from their initial guess.",
+    "adaptive_fitting": "Start large fits on a coarser grid, then refine and verify at the selected resolution.",
+    "relative_tolerance": "Skip converged neighbourhoods; 0.001 allows 0.1% prediction error. Zero disables this.",
     "floor": "Lower numerical floor for fitted initiation-rate fields.",
     "unreplicated_floor": "Numerical floor when conditioning on unreplicated DNA.",
     "smoothw": "Spatial smoothing window for fitted profiles.",
@@ -915,6 +940,14 @@ _SETTING_DESCRIPTIONS = {
 }
 
 _SETTING_LABELS = {
+    "neighbourhood_range": "Influence radius",
+    "alpha_smooth": "Spatial smoothness",
+    "alpha_prior": "Initial-guess penalty",
+    "adaptive_fitting": "Adaptive fitting",
+    "relative_tolerance": "Fit tolerance",
+    "spacetime_order": "Fitting order",
+    "fit_weibull_shape": "Fit Weibull shape",
+    "weibull_onset": "Onset interval",
     "error": "MSE threshold",
     "err_threshold": "Initiation rate floor",
     "spatial_knots": "Spatial control points",
@@ -994,6 +1027,7 @@ _SETTING_CATEGORIES: dict[str, SettingCategory] = {
 }
 
 _SETTING_LOCATIONS: dict[str, SettingLocation] = {
+    "backend": "derived",
     **{
         name: "region"
         for name in (
@@ -1017,6 +1051,7 @@ _SETTING_CHOICES: dict[str, tuple[Any, ...]] = {
 }
 
 _BOOLEAN_SETTINGS = {
+    "adaptive_fitting",
     "perQ",
     "fit_weibull_shape",
     "refine_verbose",
@@ -1066,6 +1101,7 @@ _POSITIVE_SETTINGS = {
     "tau",
 }
 _NONNEGATIVE_SETTINGS = {
+    "relative_tolerance",
     "speed_regularization",
     "tail_tolerance",
     "density_floor",
@@ -1102,6 +1138,7 @@ _SETTING_UNITS = {
     "initial_fork_speed": "kb/min",
     "refine_edge_kb": "kb",
     "weibull_delay": "min",
+    "weibull_onset": "min",
     "stall_rate_per_kb": "stalls/kb",
     "tau": "min",
 }
@@ -1320,6 +1357,9 @@ def _target_output(spec: Any) -> tuple[DataForm, str]:
 
 
 def _target_shapes(spec: Any) -> tuple[str, ...]:
+    if getattr(spec.func, "_unified_kinetic", False):
+        form = dict(spec.default_assumptions).get("target_form", "space")
+        return ("weibull",) if form in {"time", "spacetime"} else ()
     if (
         spec.target == "initiation_rate"
         and "target_shape" in (*spec.required_assumptions, *spec.optional_assumptions)
@@ -1638,6 +1678,10 @@ def _setting_limits(
         return minimum, maximum, 1
     if name == "cfl":
         return 1e-6, 1.0, 0.05
+    if name == "weibull_shape":
+        return 0.25, 8.0, 0.1
+    if name == "weibull_onset":
+        return 1e-6, None, 0.1
     if name == "stall_rate_per_kb":
         return 0.0, None, 0.001
     if name == "err_threshold":
@@ -1754,13 +1798,14 @@ def _build_routes(specs: tuple[Any, ...], descriptions: dict[str, str]) -> tuple
                 output_form=output_form,
                 output_dependence=output_dependence,
                 target_shapes=shapes,
-                default_target_shape=dict(defaults).get("target_shape"),
+                default_target_shape=dict(defaults).get("target_shape") if shapes else None,
                 required_assumptions=tuple(str(name) for name in spec.required_assumptions),
                 optional_assumptions=tuple(str(name) for name in spec.optional_assumptions),
                 defaults=defaults,
                 assumption_forms=assumption_forms,
                 assumption_values=assumption_values,
                 prepared_result_only=spec.target == "fork_densities_xt",
+                unified_kinetics=bool(getattr(spec.func, "_unified_kinetic", False)),
             )
         )
     return tuple(routes)
@@ -2008,7 +2053,7 @@ def get_mapping_catalog() -> MappingCatalog:
     )
     # Simulation retains its own observables and APIs. Mapping presents only
     # deterministic conversions, without probability-density or identity routes.
-    removed_targets = {"initiation_pdf", "initiation_pdf_xt", "coalescence_pdf", "coalescence_pdf_xt"}
+    removed_targets = {"initiation_pdf", "initiation_pdf_xt", "coalescence_pdf", "coalescence_pdf_xt", "replicated_fraction"}
     removed_methods = {
         "fork_density_bundle_to_directionality_time_integrated",
         "fork_density_fields_to_directionality_time_integrated",
@@ -2017,6 +2062,7 @@ def get_mapping_catalog() -> MappingCatalog:
     }
     specs = tuple(spec for spec in specs
                   if spec.target not in removed_targets
+                  and "replicated_fraction" not in spec.source
                   and spec.method not in removed_methods
                   and not spec.method.endswith("_simulation"))
     public_target_ids = tuple(target for target in public_target_ids

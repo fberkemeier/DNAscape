@@ -477,6 +477,7 @@ def apply_data_filter(
     values, settings: DataFilterSettings, *, positions=None, intervals=None,
     chromosome: str | None = None, cancel: Callable[[], None] | None = None,
     selection_values=None,
+    _rng=None, _modulation=None,
 ) -> np.ndarray:
     """Edit each ordered profile independently, using a fixed pre-edit selection.
 
@@ -500,11 +501,12 @@ def apply_data_filter(
             reference_columns = np.broadcast_to(reference_values, columns.shape)
         except ValueError as exc:
             raise ValueError("The selection input must match the fitted profile's coordinates.") from exc
-    modulation = (aligned_modulation(source, settings.modulation, coordinates=positions, chromosome=chromosome, warning=settings._warning_sink)
+    modulation = (_modulation if _modulation is not None else
+                  aligned_modulation(source, settings.modulation, coordinates=positions, chromosome=chromosome, warning=settings._warning_sink)
                   if settings.action == "modulate" else None)
     # Reproducible, distinct noise across chromosome outputs and time slices.
     seed = settings.seed
-    rng = np.random.default_rng(None if seed is None else np.random.SeedSequence([seed, zlib.crc32((chromosome or "").encode())]))
+    rng = _rng if _rng is not None else np.random.default_rng(None if seed is None else np.random.SeedSequence([seed, zlib.crc32((chromosome or "").encode())]))
     for column in range(columns.shape[1]):
         if cancel is not None:
             cancel()

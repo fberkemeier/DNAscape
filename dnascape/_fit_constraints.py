@@ -34,3 +34,9 @@ def fit_free_mask(values, target, form):
 def has_fit_constraint(target=None):
     constraint = getattr(_STATE, 'constraint', None)
     return constraint is not None and (target is None or constraint.target == target)
+
+
+def current_fit_constraint(target=None):
+    """Return the worker's active constraint for read-only planning copies."""
+    constraint = getattr(_STATE, 'constraint', None)
+    return constraint if constraint is not None and (target is None or constraint.target == target) else None

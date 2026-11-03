@@ -25,6 +25,7 @@ Continue in Python
 entry points: ``rdata`` prepares data, ``rmap`` maps replication features and
 ``rsim`` simulates replication. :doc:`notebooks` provides worked examples.
 :doc:`foundations` explains the quantities, units and mathematical assumptions.
+:doc:`kineticframework` derives the shared forward and inverse mapping model.
 
 .. toctree::
    :maxdepth: 2
@@ -36,6 +37,7 @@ entry points: ``rdata`` prepares data, ``rmap`` maps replication features and
    appguide
    python
    foundations
+   kineticframework
 
 Citation and contact
 --------------------
