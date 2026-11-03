@@ -78,19 +78,49 @@ class StationarySourceHazard:
         value = self.J[index] + self.t[index] * (vl * a0 + vr * a1) + vl * c0 + vr * c1
         return value, (index, s, a0, a1, c0, c1, query > 0.0)
 
+    def _prepare_primitives(self):
+        if hasattr(self, "J"):
+            return
+        interval = self.t[:-1] * 0.5 * self.dt * (self.velocity[:-1] + self.velocity[1:])
+        interval += self.dt**2 * (self.velocity[:-1] / 6 + self.velocity[1:] / 3)
+        self.J = np.r_[0.0, np.cumsum(interval)]
+
+    def _kernel_block(self, selected):
+        self._prepare_primitives()
+        distance = np.arange(self.width + 1) * self.dx
+        a = np.maximum(0.0, distance - 0.5 * self.dx)
+        b = np.minimum(self.cap, distance + 0.5 * self.dx)
+        travel = self.travel[selected, None]
+        if np.all(self.velocity == self.velocity[0]):
+            # The same primitive J(D^-1(z)) = z^2/(2v), with no search or
+            # derivative records when the prescribed speed is constant.
+            left = np.maximum(travel - a, 0.)
+            right = np.maximum(travel - b, 0.)
+            np.square(left, out=left)
+            np.square(right, out=right)
+            left /= 2. * self.velocity[0]
+            right /= 2. * self.velocity[0]
+        else:
+            left, _ = self._primitive(travel - a)
+            right, _ = self._primitive(travel - b)
+        ring = np.maximum(left - right, 0.)
+        ring[:, 0] *= 2.
+        ring[:, b <= a] = 0.
+        kernel = np.zeros((len(ring), self.length))
+        kernel[:, :self.width + 1] = ring
+        if self.width:
+            kernel[:, (-np.arange(1, self.width + 1)) % self.length] += ring[:, 1:]
+        return rfft(kernel, axis=1)
+
     def _kernel(self):
         if self._spectrum is not None:
             return
         check_cancelled()
-        distance = np.arange(self.width + 1) * self.dx
-        a = np.maximum(0.0, distance - 0.5 * self.dx)
-        b = np.minimum(self.cap, distance + 0.5 * self.dx)
-        interval = self.t[:-1] * 0.5 * self.dt * (self.velocity[:-1] + self.velocity[1:])
-        interval += self.dt**2 * (self.velocity[:-1] / 6 + self.velocity[1:] / 3)
-        self.J = np.r_[0.0, np.cumsum(interval)]
+        self._prepare_primitives()
         from ._resources import ensure_capacity
         temporary_times = len(self.t) if self.differentiate_speed else min(16, len(self.t))
-        ensure_capacity(len(self.t) * self.length * 40 + temporary_times * (self.width + 1) * 160,
+        spectrum_bytes = len(self.t) * (self.length // 2 + 1) * 16
+        ensure_capacity(spectrum_bytes + temporary_times * (self.length * 24 + (self.width + 1) * 160),
                         "Building the mapping convolution")
         # Construct the kernel in time blocks when speed derivatives are not
         # required, avoiding permanent XT derivative tables for initiation fits.
@@ -99,19 +129,12 @@ class StationarySourceHazard:
             for first in range(0, len(self.t), 16):
                 check_cancelled()
                 selected = slice(first, first + 16)
-                travel = self.travel[selected, None]
-                left, _ = self._primitive(travel - a)
-                right, _ = self._primitive(travel - b)
-                ring = np.maximum(left - right, 0.)
-                ring[:, 0] *= 2.
-                ring[:, b <= a] = 0.
-                kernel = np.zeros((len(ring), self.length))
-                kernel[:, :self.width + 1] = ring
-                if self.width:
-                    kernel[:, (-np.arange(1, self.width + 1)) % self.length] += ring[:, 1:]
-                self._spectrum[selected] = rfft(kernel, axis=1)
+                self._spectrum[selected] = self._kernel_block(selected)
             self._kernel_state = None
             return
+        distance = np.arange(self.width + 1) * self.dx
+        a = np.maximum(0.0, distance - 0.5 * self.dx)
+        b = np.minimum(self.cap, distance + 0.5 * self.dx)
         left, lr = self._primitive(self.travel[:, None] - a)
         right, rr = self._primitive(self.travel[:, None] - b)
         factor = np.ones(len(distance))

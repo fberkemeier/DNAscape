@@ -28,8 +28,14 @@ If a job is too large, a warning suggests a smaller region, larger bin size
 or fewer outputs. Its **Run locally** action opens the
 `GitHub installation instructions <https://github.com/fberkemeier/DNAscape#run-the-dnascape-app>`_.
 The app does not silently change the selected resolution, model or outputs.
-Spatial initiation-rate and fork-speed timing fits use time blocks on Render
-to reduce memory while retaining the selected numerical grid.
+Timing fits use bounded blocks of the existing kinetic operators on Render.
+Stationary initiation fits retain the fast spatial convolution; uniform
+time-dependent fits process distinct boundary histories in small batches.
+Space-time initiation fits with constant fork speed use overlapping FFT time
+blocks of the exact cone kernel. Kernel caching follows the available memory,
+and rejected fitting proposals do not calculate unused derivatives. These
+changes retain the numerical grid, model, objective and fitting settings.
+The final output must also fit the available memory.
 
 These additional hosted restrictions do not apply to local runs, which retain
 their existing validation and resource controls. Conversion memory limit in

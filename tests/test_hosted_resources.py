@@ -132,6 +132,48 @@ def test_data_manager_declines_large_expansion_even_with_raised_conversion_setti
         conversion.prepare_data(request)
 
 
+@pytest.mark.parametrize("workflow", ["prepare_data", "convert_data"])
+@pytest.mark.parametrize("source_format", ["bigwig", "bedgraph"])
+def test_hosted_tracks_use_resolved_bins(render, monkeypatch, workflow, source_format):
+    from dnascape.workflows import conversion, uploads
+
+    if source_format == "bigwig":
+        inspection = uploads.inspect_upload("signal.bw", b"&\xfc\x8f\x88fake-bigwig")
+        monkeypatch.setattr(conversion, "inspect_track", lambda *a: conversion.TrackInspection(
+            source_format="bigwig", regions=(conversion.TrackRegion("chr1", 0, 3000),), backend="test",
+        ))
+        monkeypatch.setattr(conversion, "read_bigwig_bins", lambda *a, **k: np.array([1., 2., 3.]))
+    else:
+        inspection = uploads.inspect_upload("signal.bedgraph",
+                                            b"chr1\t0\t1000\t1\nchr1\t1000\t2000\t2\nchr1\t2000\t3000\t3\n")
+    if source_format == "bigwig":
+        assert inspection.shape is None
+    request = conversion.DataConversionRequest(inspection=inspection, input_form="track",
+                                               chromosome="chr1", bin_size=1000, target_format="npz")
+    result = getattr(conversion, workflow)(request)
+    if workflow == "prepare_data":
+        np.testing.assert_allclose(result.profile_values["chr1"], [1., 2., 3.])
+    else:
+        assert result.artifact.data
+        assert result.shape == (3,)
+
+
+@pytest.mark.parametrize("workflow", ["prepare_data", "convert_data"])
+def test_hosted_shapeless_track_still_rejects_excessive_resolved_bins(render, monkeypatch, workflow):
+    from dnascape.workflows import conversion, uploads
+
+    inspection = uploads.inspect_upload("signal.bw", b"&\xfc\x8f\x88fake-bigwig")
+    assert inspection.shape is None
+    monkeypatch.setattr(conversion, "inspect_track", lambda *a: conversion.TrackInspection(
+        source_format="bigwig", regions=(conversion.TrackRegion("chr1", 0, 5_000_000_000),), backend="test",
+    ))
+    monkeypatch.setattr(conversion, "read_bigwig_bins", lambda *a, **k: pytest.fail("must reject before reading bins"))
+    request = conversion.DataConversionRequest(inspection=inspection, input_form="track",
+                                               chromosome="chr1", bin_size=1000, memory_limit_mb=4096)
+    with pytest.raises(resources.HostedResourceError, match="Online memory limit"):
+        getattr(conversion, workflow)(request)
+
+
 @pytest.mark.parametrize("periodic", [False, True])
 @pytest.mark.parametrize("with_speed", [False, True])
 def test_streamed_timing_and_gradient_match_full_field(periodic, with_speed, monkeypatch):
@@ -185,7 +227,7 @@ def test_hosted_fit_preserves_native_grid_and_matches_local_fit(render, monkeypa
     options = dict(target="initiation_rate", target_form="space", resolution=1.,
                    resolution_time=5., maxiter=3, tolerance=0., adaptive_fitting=False)
     online = fit_kinetic(observed, 1.4, **options)
-    assert "streamed" in online._rmap_info["forward_backend"]
+    assert online._rmap_info["forward_backend"] == "blocked_stationary_source_convolution"
     monkeypatch.delenv("RENDER", raising=False)
     local = fit_kinetic(observed, 1.4, **options)
     np.testing.assert_allclose(online, local, rtol=1e-7, atol=1e-12)

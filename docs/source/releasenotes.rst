@@ -6,8 +6,12 @@ Unreleased
 
 * Added Render-only memory detection, allocation checks, shared heavy-job
   admission and bounded caches, with warnings linking to local installation.
-* Reduced Mapping memory by streaming stationary timing calculations and
-  omitting unused fork-speed derivative tables in initiation-rate fits.
+* Restored fast convolutions for hosted timing fits, with bounded working
+  arrays, reusable kernel caches and derivatives only for accepted proposals.
+  Time-dependent fits batch uniform histories; space-time initiation fits
+  with constant fork speed use exact cone convolutions in FFT time blocks.
+* Corrected hosted BigWig conversion when inspection has no array shape;
+  memory admission uses the resolved genomic bins.
 
 * Reorganised the documentation into Getting started, App guide, Python and
   notebooks, and Core concepts, with each chapter's subsections on one page.

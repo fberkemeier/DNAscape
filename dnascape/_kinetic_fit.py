@@ -155,7 +155,7 @@ class _KineticModel:
         if self.baseline_index is not None:
             self.lower[self.baseline_index], self.upper[self.baseline_index] = -12.0, 12.0
 
-    def basis(self, parameters):
+    def basis(self, parameters, *, derivatives=True):
         shape = (
             np.asarray([self.shape])
             if self.shape_index is None
@@ -169,11 +169,19 @@ class _KineticModel:
         normalized = np.maximum(age, self.onset) / self.reference
         shapes = np.broadcast_to(shape[None, :], normalized.shape)
         basis = np.zeros_like(normalized)
-        derivative = np.zeros_like(normalized)
-        basis[positive] = shapes[positive] * normalized[positive] ** (shapes[positive] - 1.0)
-        derivative[positive] = basis[positive] * (
-            1.0 + shapes[positive] * np.log(normalized[positive])
-        )
+        derivative = np.zeros_like(normalized) if derivatives else None
+        if derivatives:
+            basis[positive] = shapes[positive] * normalized[positive] ** (shapes[positive] - 1.0)
+        else:
+            # Prediction-only blocks need no masked copies of every XT
+            # operand and no logarithms for a derivative they will not use.
+            np.power(normalized, shapes - 1., out=basis)
+            basis *= shapes
+            np.copyto(basis, 0., where=~positive)
+        if derivatives:
+            derivative[positive] = basis[positive] * (
+                1.0 + shapes[positive] * np.log(normalized[positive])
+            )
         return basis, derivative
 
     def initial(self, initial, typical_timing, supplied):
@@ -267,7 +275,7 @@ class _KineticModel:
             return np.broadcast_to(values.reshape(len(self.clock), 1), (len(self.clock), self.n))
         return values.T
 
-    def evaluate(self, parameters):
+    def evaluate(self, parameters, *, need_state=True):
         if self.form in {"x", "xt"}:
             logs = parameters[: self.n]
             if self.form == "xt":
@@ -281,7 +289,7 @@ class _KineticModel:
         amplitude = np.exp(np.clip(logs, -60.0, 60.0))
         basis = basis_gradient = None
         if self.temporal:
-            basis, basis_gradient = self.basis(parameters)
+            basis, basis_gradient = self.basis(parameters, derivatives=need_state)
             baseline = (
                 np.exp(parameters[self.baseline_index]) if self.baseline_index is not None else 0.0
             )
@@ -305,7 +313,7 @@ class _KineticModel:
                     free = free & np.asarray(free_public).reshape(1, -1)
                 else:
                     free = np.broadcast_to(free, values.shape) & self._public_grid(free_public)
-        return values, (raw, amplitude, basis, basis_gradient, free)
+        return values, (raw, amplitude, basis, basis_gradient, free) if need_state else None
 
     def gradient(self, field_gradient, parameters, state):
         raw, amplitude, basis, basis_gradient, free = state
@@ -588,6 +596,12 @@ def fit_kinetic(
         )
     original_n = n
     supplied_array = np.asarray(supplied, dtype=float)
+    if (not supplied_array.size or np.any(~np.isfinite(supplied_array))
+            or np.any(supplied_array < 0)
+            or target == "initiation_rate" and np.any(supplied_array <= 0)):
+        name = "Fork speed" if target == "initiation_rate" else "Initiation rate"
+        domain = "positive" if target == "initiation_rate" else "non-negative"
+        raise ValueError(f"{name} must contain finite {domain} values.")
     if target == "fork_speed" and not np.any(supplied_array > 0):
         raise ValueError("A positive initiation rate is required to infer fork speed.")
     if time_grid is None:
@@ -817,10 +831,46 @@ def fit_kinetic(
     from ._resources import ensure_capacity, hosted, working_bytes
 
     tiled = None
-    streamed = hosted() and static_primitive and observation == "timing"
+    bounded = None
+    # Keep the stationary primitive only for spatially varying prescribed
+    # speed; uniform speed retains the much faster spatial convolution.
+    streamed = (hosted() and static_primitive and not stationary_source
+                and observation == "timing")
 
     def configure_grid():
-        nonlocal tiled, fixed
+        nonlocal tiled, fixed, bounded
+        from ._kinetic_bounded import (
+            ConeConvolutionTiming,
+            StationaryConvolutionTiming,
+            UniformTiming,
+        )
+
+        bounded = None
+        if hosted() and observation == "timing" and backend == "auto" and not compact:
+            args = (model, raw_observed, valid_observed, offset, scale_loss, dx, perQ, radius)
+            constant_supplied = bool(np.all(supplied_array == supplied_array.reshape(-1)[0]))
+            uniform = (form in {"scalar", "t"} and constant_supplied and delay.size == 1
+                       and fit_projection is None and not has_fit_constraint(target))
+            if uniform_kinetics or uniform:
+                bounded = UniformTiming(*args, supplied=supplied, native_clock=native_clock, dt=dt)
+            elif (target == "initiation_rate" and
+                  (stationary_source or constant_supplied and form in {"scalar", "x"})):
+                speed = (np.broadcast_to(supplied_array.reshape(-1)[0], (len(clock), n))
+                         if constant_supplied else _supplied_on_clock(
+                             supplied, clock, native_clock, n, dt, supplied_name, positive=True))
+                bounded = StationaryConvolutionTiming(*args, speed=speed)
+            elif stationary_source:
+                rate = _supplied_on_clock(supplied, clock, native_clock, n, dt,
+                                          supplied_name)
+                bounded = StationaryConvolutionTiming(*args, rate=rate)
+            elif (target == "initiation_rate" and form in {"t", "xt"}
+                  and constant_supplied and fit_projection is None
+                  and not has_fit_constraint(target)
+                  and np.allclose(np.diff(clock), clock[1], rtol=1e-11, atol=1e-12)):
+                bounded = ConeConvolutionTiming(*args, speed=float(supplied_array.reshape(-1)[0]), dt=clock[1])
+        if bounded is not None:
+            tiled, fixed = None, None
+            return
         dense_limit = DENSE_FIT_VALUES
         if hosted():
             dense_limit = min(dense_limit, working_bytes(128 * 1024**2) // 192)
@@ -1032,6 +1082,18 @@ def fit_kinetic(
 
     def evaluate(p, need_gradient=True):
         nonlocal calls
+        if bounded is not None:
+            calls += 1
+            if hasattr(bounded, "source"):
+                rate = bounded.source(p)
+                if not np.all(eventual_sources(rate[-1], dx, radius, perQ)):
+                    if enforce_completion:
+                        return {"loss": np.inf, "mse": np.inf, "gradient": np.zeros(model.count)}
+                    raise ValueError("The kinetics allow no continuing initiation near some positions.")
+            result = bounded.evaluate(p, need_gradient)
+            if enforce_completion and np.max(result["survival"][-1]) > completion_tolerance:
+                return {"loss": np.inf, "mse": np.inf, "gradient": np.zeros(model.count)}
+            return regularize(result, p)
         if streamed:
             from ._stationary_timing import stationary_timing
             fitted, state = model.evaluate(p)
@@ -1045,17 +1107,20 @@ def fit_kinetic(
                     rate[0], speed[0], clock, weights, dx, perQ, radius,
                     raw_observed, valid_observed, offset, scale_loss,
                     with_speed=target == "fork_speed",
+                    need_gradient=need_gradient,
                 )
             calls += 1
             if enforce_completion and np.max(final) > completion_tolerance:
                 return {"loss": np.inf, "mse": np.inf, "gradient": np.zeros(model.count)}
             mse = float(np.sum(np.where(valid_observed, residual, 0.) ** 2) / observation_count)
             return regularize(dict(loss=mse / scale_loss, mse=mse,
-                                   gradient=model.gradient(derivative, p, state), fitted=fitted,
+                                   gradient=(model.gradient(derivative, p, state) if need_gradient
+                                             else np.zeros(model.count)), fitted=fitted,
                                    hazard=None, survival=final[None, :], prediction=predicted,
                                    residual=residual, sensitivity=sensitivity,
                                    positive_rate=bool(np.any(rate[0] > 0)), spatial_groups=None,
                                    backend="streamed_stationary_travel_primitive",
+                                   streamed_parameters=None if need_gradient else p.copy(),
                                    gradient_state=None), p)
         if tiled is None:
             return evaluate_dense(p, need_gradient)
@@ -1064,6 +1129,21 @@ def fit_kinetic(
         return regularize(result, p)
 
     def complete_gradient(result):
+        if "bounded_state" in result:
+            bounded.complete(result)
+            return
+        streamed_parameters = result.pop("streamed_parameters", None)
+        if streamed_parameters is not None:
+            from ._stationary_timing import stationary_timing
+            fitted, model_state = model.evaluate(streamed_parameters)
+            rate, speed = (fitted, fixed) if target == "initiation_rate" else (fixed, fitted)
+            derivative = stationary_timing(
+                rate[0], speed[0], clock, weights, dx, perQ, radius,
+                raw_observed, valid_observed, offset, scale_loss,
+                with_speed=target == "fork_speed", gradient_only=result["residual"],
+            )[-1]
+            result["gradient"] += model.gradient(derivative, streamed_parameters, model_state)
+            return
         tiled_parameters = result.pop("tiled_parameters", None)
         if tiled_parameters is not None:
             # Recompute one tile's tape at a time for accepted proposals;
@@ -1123,6 +1203,10 @@ def fit_kinetic(
                     "Replication has not completed on the available fit grid; increase its resolution or check the supplied kinetics."
                 )
             extended = np.r_[clock, clock[-1] + np.arange(1, count + 1, dtype=float) * dt]
+            # Release the old kernel/objective before budgeting its replacement.
+            current = None
+            bounded = None
+            cached_operator = None
             clock = extended
             model.clock = clock
             weights = _trapz_weights(clock)
@@ -1346,7 +1430,8 @@ def fit_kinetic(
             label="Mapping",
             eta_seconds=progress_stage.eta(0),
         )
-    fitted = tiled.public(parameters) if tiled is not None else model.public(current["fitted"])
+    fitted = (bounded.public(parameters) if bounded is not None else
+              tiled.public(parameters) if tiled is not None else model.public(current["fitted"]))
     final_survival = current["survival"][-1]
     info = {
         "fit_mse": current["mse"],
@@ -1410,7 +1495,7 @@ def fit_kinetic(
             info["weibull_baseline"] = float(np.exp(parameters[model.baseline_index]))
     if observation == "timing":
         info["replication_timing_fit"] = current["prediction"]
-        if clock.size * n <= 1_000_000:
+        if clock.size * n <= 1_000_000 and current["survival"].shape[0] == clock.size:
             groups = current["spatial_groups"]
             info["survival"] = (
                 current["survival"].T if groups is None else current["survival"][:, groups].T

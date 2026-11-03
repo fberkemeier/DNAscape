@@ -211,6 +211,12 @@ class DataConversionRequest:
     _prepared_data: PreparedData | None = field(default=None, repr=False, compare=False)
 
 
+def _check_preparation_memory(request: DataConversionRequest) -> None:
+    """Check array inputs; track sizes are checked after resolving their bins."""
+    if hosted() and request.inspection.shape is not None:
+        ensure_capacity(math.prod(request.inspection.shape) * 96, "Preparing the selected data")
+
+
 def _track_limits(request: DataConversionRequest) -> _TrackLimits:
     """Scale track allocation guards with this conversion's memory budget."""
 
@@ -1863,8 +1869,7 @@ def prepare_data(request: DataConversionRequest, cancel: _CancelChecker | None =
     """Prepare values for preview/mapping without writing a download file."""
 
     request = _normalized_request(request)
-    if hosted():
-        ensure_capacity(math.prod(request.inspection.shape) * 96, "Preparing the selected data")
+    _check_preparation_memory(request)
     if request.repliseq_timing_method is not None:
         return _prepare_repliseq_timing(request, cancel=cancel)
     if request.input_form == "track":
@@ -2316,9 +2321,7 @@ def convert_data(
 
     _check_cancelled(cancel)
     request = _normalized_request(request)
-    if hosted():
-        shape = request.inspection.shape
-        ensure_capacity(math.prod(shape) * 96, "Preparing the selected data")
+    _check_preparation_memory(request)
     _check_cancelled(cancel)
     if len(request.inspection.content) > MAX_DECOMPRESSED_BYTES:
         raise ValueError("The uploaded source exceeds the local conversion limit.")

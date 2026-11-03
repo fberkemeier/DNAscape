@@ -8,7 +8,8 @@ from .utils import check_cancelled, report_measured_work
 
 
 def stationary_timing(rate, speed, clock, weights, dx, periodic, radius,
-                      observed, valid, offset, scale_loss, with_speed=False):
+                      observed, valid, offset, scale_loss, with_speed=False,
+                      *, need_gradient=True, gradient_only=None):
     """Integrate the selected clock without keeping its full space-time field.
 
     The second pass recomputes each block for the adjoint. It uses the same
@@ -34,12 +35,17 @@ def stationary_timing(rate, speed, clock, weights, dx, periodic, radius,
             survival = np.exp(-hazard[1:])
             yield selected, operator, hazard, survival
 
-    for selected, _operator, hazard, survival in blocks():
-        prediction += weights[selected] @ survival
-        sensitivity += np.einsum("t,tx,tx->x", weights[selected], hazard[1:], survival)
-        final = survival[-1].copy()
-        report_measured_work(.5 * selected.stop / len(clock))
-    residual = prediction - observed
+    if gradient_only is None:
+        for selected, _operator, hazard, survival in blocks():
+            prediction += np.einsum("t,tx->x", weights[selected], survival)
+            sensitivity += np.einsum("t,tx,tx->x", weights[selected], hazard[1:], survival)
+            final = survival[-1].copy()
+            report_measured_work(.5 * selected.stop / len(clock))
+        residual = prediction - observed
+    else:
+        residual = gradient_only
+    if not need_gradient:
+        return prediction, residual, sensitivity, final, None
     q = np.where(valid, residual, 0.) * (2. / (int(valid.sum()) * scale_loss))
     gradient = np.zeros(n)
     for selected, operator, hazard, survival in blocks():
