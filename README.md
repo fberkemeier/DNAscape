@@ -49,7 +49,7 @@ With the app open, select **Data Manager** in the left-hand menu. We will prepar
 Select **Mapping** from the left-hand menu. We will now infer a spatial origin initiation-rate profile that fits the timing data:
 
 1. Within **Target**, set **Mapped output** to `Initiation rate`, **Dependence** to `Space`, and **Input factors** to `Replication timing + fork speed`. This determines the mapping route: to determine the initation rate from given replication timing and fork speed.
-2. Under **Inputs**, upload the timing profile as a spatial profile. Set **Fork speed** to `Constant` with a value of `1.4` kb/min.
+2. Under **Inputs**, upload the timing profile (TSV), and set **Fork speed** to `Constant` with a value of `1.4` kb/min.
 3. In **Region**, leave **Whole region** off and set **Start** to `40000` kb, **End** to `50000` kb, and keep **Resolution** at `1` kb. Click **Map**, compare observed and fitted timing (toggle the **Output** options in the **Preview** panel), and download the fitted initiation-rate profile from **Raw data**.
 
 ### III. Simulating DNA replication
@@ -84,6 +84,6 @@ If you use DNAscape in your research, please cite the following and include the 
 
 ## Questions and bugs
 
-For questions, bug reports or feature requests, use [GitHub Issues](https://github.com/fberkemeier/DNAscape/issues) or contact [Francisco Berkemeier](mailto:fp409@cam.ac.uk).
+DNAscape is under active development by Francisco Berkemeier. For questions, bug reports or feature requests, [raise an issue](https://github.com/fberkemeier/DNAscape/issues) or contact [fp409@cam.ac.uk](mailto:fp409@cam.ac.uk).
 
 DNAscape is available under the [MIT License](LICENSE).
