@@ -10,7 +10,8 @@ from dataclasses import dataclass, field
 from typing import Any
 from uuid import uuid4
 
-from nicegui import run, ui
+from nicegui import ui
+from app import background as run
 
 from app.export_settings import get_export_settings
 from app.field_hints import field_hint
@@ -2278,7 +2279,7 @@ def render_preview_chart(
 
 
 def refresh_preview_points() -> None:
-    """Apply the global display budget to existing charts without losing viewports."""
+    """Apply this client's display budget without changing other clients' charts."""
     for element in list(ui.context.client.elements.values()):
         handle = getattr(element, "_dn_preview_handle", None)
         if handle is not None and not element.is_deleted and handle.options.get("dnascapePlotType") in {"Line", "Histogram"}:

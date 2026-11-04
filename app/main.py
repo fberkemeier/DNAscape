@@ -25,6 +25,7 @@ from app.field_hints import FIELD_HINTS
 from app.icons import GITHUB_ICON_SVG, OUTLINE_ICON_SVGS, PLOT_ICON_SVG, RESET_ICON
 from app.notifications import notify
 from app.page_activity import current_page_activity
+from app.preferences import BrowserPreferences
 from app.pages import PAGE_RENDERERS, preload_workflow_pages
 from app.settings_dialog import settings_dialog as create_settings_dialog
 from app.theme import brand_logo, logo_sources, theme_css, update_logo
@@ -445,6 +446,8 @@ def index() -> None:
             dark_mode.enable()
         else:
             dark_mode.auto()
+        export_settings.theme_mode = {None: "system", False: "light", True: "dark"}[dark_mode.value]
+        preferences.save()
 
     def open_external(target: str) -> None:
         ui.navigate.to(target, new_tab=True)
@@ -473,7 +476,7 @@ def index() -> None:
 
     applied_preview_points = export_settings.preview_points
 
-    def apply_application_settings() -> None:
+    def apply_application_settings(*, persist=True) -> None:
         nonlocal applied_preview_points
         sync_control_font_size()
         sync_theme()
@@ -494,8 +497,17 @@ def index() -> None:
             from app.preview_plotting import refresh_preview_points
             refresh_preview_points()
             applied_preview_points = export_settings.preview_points
+        if persist:
+            preferences.save()
 
     settings_dialog = create_settings_dialog(on_apply=apply_application_settings)
+
+    def load_preferences() -> None:
+        dark_mode.set_value({"system": None, "light": False, "dark": True}[export_settings.theme_mode])
+        settings_dialog.load(export_settings)
+        apply_application_settings(persist=False)
+
+    preferences = BrowserPreferences(on_load=load_preferences)
 
     with (
         ui.dialog() as about_dialog,
@@ -554,7 +566,7 @@ def index() -> None:
                 )
 
     def reset_everything() -> None:
-        """Return the client-local workspace and shared preferences to defaults."""
+        """Reset this tab's workspace and this browser's personal preferences."""
 
         cache = current_session_cache()
         page_activity.reset()
@@ -563,6 +575,7 @@ def index() -> None:
             discard_page(slug)
 
         defaults = reset_export_settings()
+        preferences.save(reset=True)
         sync_control_font_size()
         sync_theme()
         settings_dialog.load(defaults)
@@ -733,8 +746,7 @@ def main(*, launch_progress: LaunchProgress | None = None, shutdown_progress: Sh
         nicegui_app.on_shutdown(shutdown_progress.start)
     if launch_progress is not None:
         launch_progress.update(1, "Loading workflows")
-    if not hosted():
-        preload_workflow_pages()
+    preload_workflow_pages()
     if launch_progress is not None:
         launch_progress.update(2, "Starting server")
 

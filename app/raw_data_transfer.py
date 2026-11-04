@@ -8,7 +8,8 @@ from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from pathlib import PurePath
 
-from nicegui import run, ui
+from nicegui import ui
+from app import background as run
 
 from app.mapping_uploads import MAX_ARCHIVE_MEMBERS, MAX_DECOMPRESSED_BYTES, MAX_UPLOAD_BYTES
 from app.notifications import notify

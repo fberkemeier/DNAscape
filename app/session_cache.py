@@ -567,10 +567,15 @@ def current_session_cache() -> SessionCache:
     """Return the cache associated with the active NiceGUI browser tab."""
 
     client = context.client
-    session_id = str(client.tab_id or client.id)
-    cache = _SESSION_CACHES.get(session_id)
+    # A client owns the mounted controls and callbacks. Its tab ID becomes
+    # available only after the handshake; changing registry keys then used to
+    # detach callbacks from the cache populated while building the page.
+    session_id = str(client.id)
+    cache = client.storage.get("dnascape.session_cache")
     if cache is None:
         cache = SessionCache()
+        client.storage["dnascape.session_cache"] = cache
+    if session_id not in _SESSION_CACHES:
         _SESSION_CACHES[session_id] = cache
     if hosted() and client.id not in cache._client_ids:
         cache._client_ids.add(client.id)
@@ -590,7 +595,8 @@ def current_session_cache() -> SessionCache:
         client.on_delete(release_client)
     _SESSION_CACHES.move_to_end(session_id)
     while len(_SESSION_CACHES) > MAX_SESSION_CACHES:
-        _SESSION_CACHES.popitem(last=False)
+        _, expired = _SESSION_CACHES.popitem(last=False)
+        expired.clear_all()
     return cache
 
 

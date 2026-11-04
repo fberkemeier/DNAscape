@@ -6,7 +6,8 @@ from collections.abc import Callable
 from dataclasses import dataclass
 from typing import Any
 
-from nicegui import run, ui
+from nicegui import ui
+from app import background as run
 
 from app.export_settings import get_export_settings
 from app.notifications import notify

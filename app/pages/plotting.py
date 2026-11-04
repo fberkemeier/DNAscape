@@ -11,7 +11,8 @@ from threading import Event
 from typing import Any
 
 import numpy as np
-from nicegui import run, ui
+from nicegui import ui
+from app import background as run
 
 from app.export_settings import get_export_settings
 from app.data_filter_controls import DataFilterControls

@@ -136,14 +136,11 @@ def apply_profile_presentation(options, settings):
 
 
 def run_plotting_recipe(recipe, *, input_directory="inputs", output_directory="outputs"):
-    from .export_settings import get_export_settings
-    settings = get_export_settings()
-    previous = settings.preview_points
-    try:
-        settings.preview_points = int(recipe.get("preview_points", previous))
+    from .export_settings import settings_scope, snapshot_export_settings
+    settings = snapshot_export_settings()
+    settings.preview_points = int(recipe.get("preview_points", settings.preview_points))
+    with settings_scope(settings):
         return _run_plotting_recipe(recipe, input_directory=input_directory, output_directory=output_directory)
-    finally:
-        settings.preview_points = previous
 
 
 def _run_plotting_recipe(recipe, *, input_directory="inputs", output_directory="outputs"):

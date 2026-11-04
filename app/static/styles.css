@@ -574,6 +574,18 @@ body.body--dark .dn-app-menu {
   margin: -0.4rem 0 0.8rem;
 }
 
+.dn-preferences-loading {
+  position: fixed;
+  inset: 0;
+  z-index: 10000;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 0.75rem;
+  background: var(--dn-panel, white);
+  color: var(--dn-muted, #403932);
+}
+
 .dn-hosted-resource-note a {
   color: var(--dn-accent);
   text-decoration: underline;

@@ -9,7 +9,7 @@ from __future__ import annotations
 import sys
 from typing import Any
 
-from nicegui import run
+from app import background as run
 
 from dnascape.workflows import uploads as _workflow
 from dnascape.workflows.uploads import (

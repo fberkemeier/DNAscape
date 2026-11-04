@@ -4,6 +4,15 @@ Release Notes
 Unreleased
 ----------
 
+* Reduced first-click delays on Render by preparing shared workflow imports at
+  startup when memory headroom permits. Visitor pages remain lazy and isolated;
+  low-memory services retain deferred imports.
+* Isolated NiceGUI preferences by client and persisted them in namespaced
+  browser localStorage. Theme, interface and export changes no longer affect
+  other visitors; reset clears only this browser's DNAscape preferences.
+* Background calculations and exports receive explicit settings snapshots.
+  Headless recipes use independent scopes instead of temporarily changing
+  process-wide preview settings. Hosted memory safeguards remain in place.
 * Time-only initiation and fork-speed uploads now retain their complete row
   of time samples, without a value-column selector or per-column batch expansion.
 * Reduced source interpolation, travel-coordinate and Weibull-field overhead

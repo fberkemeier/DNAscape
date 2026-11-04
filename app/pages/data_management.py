@@ -19,7 +19,8 @@ from types import SimpleNamespace
 from typing import Any
 
 import numpy as np
-from nicegui import run, ui
+from nicegui import ui
+from app import background as run
 
 from app.artifact_archives import (
     DEFAULT_BATCH_ARCHIVE_SOURCE_BYTES,

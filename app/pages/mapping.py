@@ -13,7 +13,8 @@ from threading import Event, Lock
 from typing import Any, cast
 
 import numpy as np
-from nicegui import run, ui
+from nicegui import ui
+from app import background as run
 from dnascape._resources import ensure_single_source, hosted
 
 from app.notifications import notify

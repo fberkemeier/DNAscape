@@ -81,6 +81,34 @@ identifies a running job; a check marks a result completed while you were
 elsewhere. Jobs can continue while you inspect another page. Use the page's
 stop action to cancel its run.
 
+On Render, shared workflow code is prepared at service startup when memory
+allows, reducing the delay on the first menu click. Page controls and results
+are still created separately for each visitor and only when opened. Returning
+to an already opened page reuses its controls when **Keep settings and results
+between pages** is enabled. Under memory pressure, imports stay lazy.
+
+Personal settings and browser storage
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+**Settings** belongs to the current browser, including the theme colour,
+light/dark/system mode, control font size, preview point budget, export DPI,
+file formats, compression and interface preferences. **Apply** saves these
+preferences in this site's browser ``localStorage`` under
+``dnascape.preferences.v1``. They survive reloads, Render restarts and
+redeployments at the same address. Separate browser profiles and computers
+have independent preferences, including when they share an IP address.
+
+Tabs in the same browser share saved preferences, but their inputs, uploaded
+files, results and running jobs remain separate. Work already dispatched to
+a background worker uses a snapshot of the initiating visitor's settings.
+Changing preferences does not change that worker's export or preview budget.
+
+**Restore defaults** in Settings edits the draft; click **Apply** to save it.
+**Reset to defaults** in the app menu resets the current tab's workspace and
+removes only DNAscape's preference key. It does not clear other sites' or
+applications' browser storage. Private browsing or blocked local storage may
+prevent persistence; preferences still remain isolated for that visit.
+
 Inputs, controls and results
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 

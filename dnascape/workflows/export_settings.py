@@ -1,8 +1,12 @@
-"""Application-wide export preferences for the local NiceGUI interface."""
+"""Framework-independent preferences and explicit per-job settings scopes."""
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+import re
+from collections.abc import Callable, Mapping
+from contextlib import contextmanager
+from contextvars import ContextVar
+from dataclasses import asdict, dataclass, fields, replace
 
 COMPRESSION_OPTIONS = {
     "gzip": "GZIP (.gz)",
@@ -35,7 +39,7 @@ MAX_PREVIEW_POINTS = 10000
 
 @dataclass(slots=True)
 class ExportSettings:
-    """Mutable preferences shared by every workflow in the local app."""
+    """Personal preferences; browser clients own separate instances."""
 
     plot_dpi: int = 150
     raw_compression: str = "gzip"
@@ -51,41 +55,91 @@ class ExportSettings:
     control_font_size_px: int = DEFAULT_CONTROL_FONT_SIZE_PX
     theme_color: str = "#b03412"
     preview_points: int = DEFAULT_PREVIEW_POINTS
+    theme_mode: str = "system"
 
 
-_EXPORT_SETTINGS = ExportSettings()
+_HEADLESS_SETTINGS = ExportSettings()
+_SETTINGS_SCOPE: ContextVar[ExportSettings | None] = ContextVar("dnascape_settings", default=None)
+_settings_provider: Callable[[], ExportSettings | None] | None = None
+
+
+def set_settings_provider(provider: Callable[[], ExportSettings | None]) -> None:
+    """Let a front end resolve its client without importing that framework here."""
+    global _settings_provider
+    _settings_provider = provider
 
 
 def get_export_settings() -> ExportSettings:
-    """Return the process-local export preferences."""
+    """Resolve a job snapshot, a front-end client, or standalone Python defaults."""
+    scoped = _SETTINGS_SCOPE.get()
+    if scoped is not None:
+        return scoped
+    if _settings_provider is not None:
+        current = _settings_provider()
+        if current is not None:
+            return current
+    return _HEADLESS_SETTINGS
 
-    return _EXPORT_SETTINGS
+
+def snapshot_export_settings() -> ExportSettings:
+    return replace(get_export_settings())
+
+
+@contextmanager
+def settings_scope(settings: ExportSettings):
+    """Bind an independent copy for one calculation, thread or recipe."""
+    token = _SETTINGS_SCOPE.set(replace(settings))
+    try:
+        yield get_export_settings()
+    finally:
+        _SETTINGS_SCOPE.reset(token)
+
+
+def run_with_settings(settings, callback, args, kwargs):
+    """Picklable worker entry point; no UI context crosses the boundary."""
+    with settings_scope(settings):
+        return callback(*args, **kwargs)
+
+
+def load_export_settings(payload) -> ExportSettings:
+    """Validate untrusted, versioned browser values, falling back field by field."""
+    result = ExportSettings()
+    if not isinstance(payload, Mapping):
+        return result
+    bounded = {"plot_dpi": (72, 384), "conversion_memory_limit_mb": (64, 4096),
+               "control_font_size_px": (12, 18), "preview_points": (100, 10000)}
+    choices = {"raw_compression": COMPRESSION_OPTIONS, "cached_compression": COMPRESSION_OPTIONS,
+               "cached_file_format": CACHE_FILE_FORMAT_OPTIONS,
+               "result_name_style": ("short", "full"), "theme_mode": ("system", "light", "dark")}
+    for item in fields(result):
+        value = payload.get(item.name)
+        default = getattr(result, item.name)
+        if item.name in bounded:
+            low, high = bounded[item.name]
+            if type(value) in (int, float) and low <= value <= high and float(value).is_integer():
+                setattr(result, item.name, int(value))
+        elif item.name in choices:
+            if isinstance(value, str) and value in choices[item.name]:
+                setattr(result, item.name, value)
+        elif item.name == "theme_color":
+            if isinstance(value, str) and re.fullmatch(r"#[0-9a-fA-F]{6}", value):
+                result.theme_color = value.lower()
+        elif isinstance(default, bool) and isinstance(value, bool):
+            setattr(result, item.name, value)
+    return result
 
 
 def reset_export_settings() -> ExportSettings:
-    """Restore every application-wide export preference to its default."""
-
-    defaults = ExportSettings()
-    _EXPORT_SETTINGS.plot_dpi = defaults.plot_dpi
-    _EXPORT_SETTINGS.raw_compression = defaults.raw_compression
-    _EXPORT_SETTINGS.cached_file_format = defaults.cached_file_format
-    _EXPORT_SETTINGS.cached_compression = defaults.cached_compression
-    _EXPORT_SETTINGS.result_name_style = defaults.result_name_style
-    _EXPORT_SETTINGS.preserve_page_state = defaults.preserve_page_state
-    _EXPORT_SETTINGS.show_examples = defaults.show_examples
-    _EXPORT_SETTINGS.show_field_hints = defaults.show_field_hints
-    _EXPORT_SETTINGS.show_help = defaults.show_help
-    _EXPORT_SETTINGS.dev_mode = defaults.dev_mode
-    _EXPORT_SETTINGS.conversion_memory_limit_mb = defaults.conversion_memory_limit_mb
-    _EXPORT_SETTINGS.control_font_size_px = defaults.control_font_size_px
-    _EXPORT_SETTINGS.theme_color = defaults.theme_color
-    _EXPORT_SETTINGS.preview_points = defaults.preview_points
-    return _EXPORT_SETTINGS
+    """Reset only the current scope, keeping existing UI bindings intact."""
+    settings = get_export_settings()
+    for key, value in asdict(ExportSettings()).items():
+        setattr(settings, key, value)
+    return settings
 
 
 def preview_point_limit() -> int:
     """Bound the per-curve display budget independently of native data size."""
-    return max(MIN_PREVIEW_POINTS, min(MAX_PREVIEW_POINTS, int(_EXPORT_SETTINGS.preview_points)))
+    return max(MIN_PREVIEW_POINTS, min(MAX_PREVIEW_POINTS, int(get_export_settings().preview_points)))
 
 
 def normalize_compression(value: str | None) -> str:
@@ -129,4 +183,9 @@ __all__ = [
     "preview_point_limit",
     "normalize_compression",
     "reset_export_settings",
+    "snapshot_export_settings",
+    "settings_scope",
+    "run_with_settings",
+    "load_export_settings",
+    "set_settings_provider",
 ]
