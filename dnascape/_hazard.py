@@ -243,7 +243,11 @@ class HazardOperator:
             raise ValueError("Time grid must be finite, start at zero and increase strictly.")
         if not np.isfinite(self.dx) or self.dx <= 0:
             raise ValueError("Spatial resolution must be finite and positive.")
-        if np.any(~np.isfinite(self.speed)) or np.any(self.speed <= 0):
+        # Broadcast kinetic fields contain repeated rows/columns by
+        # construction. Validate their stored samples, not every repetition.
+        speed_samples = (self.speed[:, :1] if self.speed.strides[1] == 0 else
+                         self.speed[:1] if self.speed.strides[0] == 0 else self.speed)
+        if np.any(~np.isfinite(speed_samples)) or np.any(speed_samples <= 0):
             raise ValueError("Fork speed must contain finite positive values.")
         if np.isnan(self.radius) or self.radius <= 0:
             raise ValueError("Influence radius must be positive.")
@@ -260,9 +264,14 @@ class HazardOperator:
         self.interpolation = interpolation
         # A conservative trajectory-length bound, including all time slices.
         # Auto selection is fixed for the lifetime of this operator.
+        if self.speed.strides[1] == 0:
+            maximum_speed = self.speed[:, 0]
+        elif self.speed.strides[0] == 0:
+            maximum_speed = np.broadcast_to(np.max(self.speed[0]), len(self.t))
+        else:
+            maximum_speed = np.max(self.speed, axis=1)
         self.travel_bound = float(np.sum(
-            np.maximum(np.max(self.speed[:-1], axis=1),
-                       np.max(self.speed[1:], axis=1)) * np.diff(self.t)))
+            np.maximum(maximum_speed[:-1], maximum_speed[1:]) * np.diff(self.t)))
         cap = min(self.radius, .5 * self.length) if self.periodic else self.radius
         safe = ((not self.periodic and self.radius >= self.length)
                 or self.travel_bound <= cap * (1. - 1e-12))
@@ -426,10 +435,22 @@ class HazardOperator:
         np.add.at(result, upper, gradient * weight)
         return result, gradient * slope
 
-    def _source_sample(self, prefix, positions, *, with_position=True):
+    def _source_sample(self, prefix, positions, *, with_position=True, cache_geometry=True):
         """Exact integral of the piecewise-constant centered-cell source."""
-        key = ("source", positions.tobytes())
-        geometry = self._geometry_cache.get(key)
+        if not with_position and not cache_geometry:
+            # Speed fits need the source value here, but no source adjoint
+            # record. Ordered departures let interp integrate the same cells
+            # without constructing five unused interpolation arrays.
+            edges = getattr(self, "_source_edges", None)
+            if edges is None:
+                edges = self._source_edges = (np.arange(self.n + 1) - .5) * self.dx
+            if self.periodic:
+                turns = np.floor((positions + .5 * self.dx) / self.length)
+                local = positions - turns * self.length
+                return np.interp(local, edges, prefix) + turns * prefix[-1], None
+            return np.interp(positions, edges, prefix), None
+        key = ("source", positions.tobytes()) if cache_geometry else None
+        geometry = self._geometry_cache.get(key) if cache_geometry else None
         if geometry is None:
             coordinate = (positions + .5 * self.dx) / self.dx
             if self.periodic:
@@ -445,7 +466,9 @@ class HazardOperator:
                 turns = np.zeros_like(weight)
                 active = ((coordinate > 0) & (coordinate < self.n)).astype(float)
             upper = lower + 1
-            geometry = self._cache_geometry(key, (lower, upper, weight, turns, active))
+            geometry = lower, upper, weight, turns, active
+            if cache_geometry:
+                geometry = self._cache_geometry(key, geometry)
         lower, upper, weight, turns, active = geometry
         value = ((1. - weight) * prefix[lower] + weight * prefix[upper]
                  + turns * prefix[-1])

@@ -1456,13 +1456,7 @@ def _materialize_table(
         )
     if not numeric:
         raise UploadInspectionError("No numeric data column was detected in the selected table.")
-    if column is not None:
-        if column not in inspection.numeric_columns:
-            raise UploadInspectionError(
-                f"Column {column!r} is not a selectable numeric signal column in the upload."
-            )
-        values = numeric[column]
-    elif (
+    if (
         inspection.expected_form.casefold() == "t"
         and inspection.shape
         and inspection.shape[0] == 1
@@ -1474,6 +1468,12 @@ def _materialize_table(
             [numeric[name][0] for name in inspection.numeric_columns],
             dtype=float,
         )
+    elif column is not None:
+        if column not in inspection.numeric_columns:
+            raise UploadInspectionError(
+                f"Column {column!r} is not a selectable numeric signal column in the upload."
+            )
+        values = numeric[column]
     elif inspection.expected_form.casefold() in {"xt", "regions"}:
         selected = list(numeric)
         if inspection.expected_form.casefold() == "xt":
@@ -1574,8 +1574,9 @@ def materialize_upload(
         raise UploadInspectionError(f"Unsupported upload format {inspection.source_format!r}.")
 
     array = _validate_numeric_array(values, allow_missing=True)
-    selected_column = column
-    if selected_column is None and (
+    temporal_row = inspection.expected_form.casefold() == "t" and array.ndim == 2 and array.shape[0] == 1
+    selected_column = None if temporal_row else column
+    if not temporal_row and selected_column is None and (
         inspection.expected_form.casefold() in {"scalar", "x", "t"}
         or (
             inspection.expected_form.casefold() == "auto"

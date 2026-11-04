@@ -162,26 +162,24 @@ class _KineticModel:
             else np.exp(parameters[self.shape_slice])
         )
         columns = max(self.delay.size, shape.size)
-        age = np.broadcast_to(self.clock[:, None] - self.delay[None, :], (len(self.clock), columns))
+        age = self.clock[:, None] - self.delay[None, :]
         positive = age >= 0.0
         # A fixed physical onset cutoff makes shape derivatives finite at
         # t=delay, without changing the fitted curve when dt is changed.
         normalized = np.maximum(age, self.onset) / self.reference
-        shapes = np.broadcast_to(shape[None, :], normalized.shape)
-        basis = np.zeros_like(normalized)
-        derivative = np.zeros_like(normalized) if derivatives else None
+        shapes = shape[None, :]
+        basis = np.empty((len(self.clock), columns))
+        derivative = np.empty_like(basis) if derivatives else None
+        # The onset cutoff makes every normalized age positive. Evaluate the
+        # complete array directly instead of copying each masked XT operand.
+        np.power(normalized, shapes - 1., out=basis)
+        basis *= shapes
+        np.copyto(basis, 0., where=~positive)
         if derivatives:
-            basis[positive] = shapes[positive] * normalized[positive] ** (shapes[positive] - 1.0)
-        else:
-            # Prediction-only blocks need no masked copies of every XT
-            # operand and no logarithms for a derivative they will not use.
-            np.power(normalized, shapes - 1., out=basis)
-            basis *= shapes
-            np.copyto(basis, 0., where=~positive)
-        if derivatives:
-            derivative[positive] = basis[positive] * (
-                1.0 + shapes[positive] * np.log(normalized[positive])
-            )
+            np.log(normalized, out=derivative)
+            derivative *= shapes
+            derivative += 1.
+            derivative *= basis
         return basis, derivative
 
     def initial(self, initial, typical_timing, supplied):
@@ -902,13 +900,17 @@ def fit_kinetic(
         options = {"with_speed": target == "fork_speed"}
         if isinstance(operator, (FastTransportHazard, StationarySourceHazard)):
             options["with_rate"] = target == "initiation_rate"
+        if (isinstance(operator, StationarySourceHazard) and target == "fork_speed" and form == "t"
+                and fit_projection is None and not has_fit_constraint(target) and delay.size == 1):
+            options["reduce_speed"] = True
         rate_gradient, speed_gradient = operator.backward(d_hazard / scale_loss, **options)
         return rate_gradient if target == "initiation_rate" else speed_gradient
 
-    def evaluate_dense(p, need_gradient=True):
+    def evaluate_dense(p, need_gradient=True, *, retain_gradient=True):
         nonlocal calls, cached_operator, scalar_response
         check_cancelled()
-        fitted, model_state = model.evaluate(p)
+        record_gradient = need_gradient or (retain_gradient and budget > 0)
+        fitted, model_state = model.evaluate(p, need_state=record_gradient)
         rate, speed = (fitted, fixed) if target == "initiation_rate" else (fixed, fitted)
         if observation == "timing" and not np.all(eventual_sources(rate[-1], dx, radius, perQ)):
             if enforce_completion:
@@ -925,7 +927,7 @@ def fit_kinetic(
                 )
             elif stationary_source and StationarySourceHazard.applicable(speed, clock):
                 operator = StationarySourceHazard(speed, clock, dx, perQ, radius,
-                                                 differentiate_speed=target == "fork_speed")
+                                                 differentiate_speed=target == "fork_speed" and record_gradient)
             elif static_primitive:
                 operator = _StaticHazardAdapter(speed, clock, dx, perQ, radius)
             elif (
@@ -942,7 +944,7 @@ def fit_kinetic(
                     perQ,
                     radius,
                     uniform_speed=target == "initiation_rate" or form in {"scalar", "t"},
-                    differentiate_speed=target == "fork_speed",
+                    differentiate_speed=target == "fork_speed" and record_gradient,
                 )
             else:
                 operator = HazardOperator(
@@ -960,7 +962,7 @@ def fit_kinetic(
                     )
                 hazard = scalar_response * float(rate[0, 0])
             else:
-                hazard = operator.forward(rate, record=need_gradient or budget > 0)
+                hazard = operator.forward(rate, record=record_gradient)
         survival_field = np.exp(-np.maximum(hazard, 0.0))
         groups = getattr(operator, "groups", None)
         if (
@@ -1045,7 +1047,7 @@ def fit_kinetic(
             "positive_rate": bool(np.any(rate > 0.0)),
             "spatial_groups": groups,
             "gradient_state": None
-            if need_gradient
+            if need_gradient or not record_gradient
             else (operator, d_hazard, p.copy(), model_state),
         }, p)
 
@@ -1085,7 +1087,7 @@ def fit_kinetic(
         result["loss"] += penalty
         return result
 
-    def evaluate(p, need_gradient=True):
+    def evaluate(p, need_gradient=True, *, retain_gradient=True):
         nonlocal calls
         if bounded is not None:
             calls += 1
@@ -1128,7 +1130,7 @@ def fit_kinetic(
                                    streamed_parameters=None if need_gradient else p.copy(),
                                    gradient_state=None), p)
         if tiled is None:
-            return evaluate_dense(p, need_gradient)
+            return evaluate_dense(p, need_gradient, retain_gradient=retain_gradient)
         calls += 1
         result = tiled.evaluate(p, need_gradient, enforce_completion, completion_tolerance)
         return regularize(result, p)
@@ -1252,7 +1254,7 @@ def fit_kinetic(
     completed = {"space": 0, "time": 0}
     stalled_phases = {"space": 0, "time": 0}
     for phase_index, phase in enumerate(schedule):
-        terminal_bounded_step = bounded is not None and phase_index == len(schedule) - 1
+        terminal_step = phase_index == len(schedule) - 1
         check_cancelled()
         if relative_tolerance and stalled_phases[phase] >= 2:
             continue
@@ -1368,7 +1370,7 @@ def fit_kinetic(
                     candidate[model.amplitude_index] += np.mean(candidate[:n] - parameters[:n])
                 if np.array_equal(candidate, parameters):
                     break
-                evaluated = evaluate(candidate, need_gradient=False)
+                evaluated = evaluate(candidate, need_gradient=False, retain_gradient=not terminal_step)
                 displacement = candidate[indices] - parameters[indices]
                 armijo = current["loss"] + 1e-4 * float(np.dot(gradient, displacement))
                 if (
@@ -1378,12 +1380,13 @@ def fit_kinetic(
                 ):
                     # The accepted last proposal is already fully validated.
                     # No subsequent step will consume its expensive adjoint.
-                    if not terminal_bounded_step:
+                    terminal_step = terminal_step or (error is not None and evaluated["mse"] <= error)
+                    if not terminal_step:
                         complete_gradient(evaluated)
                     parameters, current, accepted = candidate, evaluated, True
                     phase_scales[phase] = min(1.0, phase_scales[phase] * 0.5**trial * 1.5)
                     break
-        if accepted and not terminal_bounded_step:
+        if accepted and not terminal_step:
             s = parameters[indices] - old_parameters[indices]
             y = current["gradient"][indices] - old["gradient"][indices]
             if partial_space:
@@ -1442,6 +1445,9 @@ def fit_kinetic(
             eta_seconds=progress_stage.eta(0),
         )
     current.pop("bounded_state", None)
+    # The final forward prediction is sufficient for every public result.
+    # Release an unused adjoint tape before copying a large fitted XT field.
+    current.pop("gradient_state", None)
     fitted = (bounded.public(parameters) if bounded is not None else
               tiled.public(parameters) if tiled is not None else model.public(current["fitted"]))
     final_survival = current["survival"][-1]

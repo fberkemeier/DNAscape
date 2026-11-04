@@ -353,7 +353,11 @@ Mean timing is the survival integral
    \overline T(x)=\int_0^\infty e^{-H(x,t)}\,dt.
 
 Thus predicting timing and fraction is one calculation with two observation
-operators. A finite time grid must capture the survival tail. If a model
+operators. A finite time grid must capture the survival tail. A small final
+survival probability alone does not bound the remaining timing integral:
+very weak continuing initiation can leave a slowly decaying tail. Check
+convergence with a longer horizon or an independent tail bound in that case.
+If a model
 retains a nonzero probability of never replicating, its unconditional mean
 timing is infinite; truncating the integral cannot turn it into a finite
 mean. Fraction observations may legitimately stop before completion; an
@@ -634,6 +638,18 @@ samples and speed samples, including motion of the cone edges. This gives
 all parameter derivatives in a reverse pass instead of one additional
 forward map per fitted genomic value. It also avoids estimating noisy
 second derivatives of measured :math:`-\log(1-f)` directly.
+
+For temporal speed with stationary initiation, adjacent source cells share
+one primitive evaluation at their common edge. Their adjoint contributions
+are combined at that edge before differentiation. General speed fits cache
+characteristic positions and reconstruct their inverse-coordinate derivatives
+from those positions, reducing repeated tracing and cache storage. Speed-only
+adjoints sample the source density directly instead of building initiation
+derivative records. These operations retain the same numerical model, bounds,
+time grid and objective; a final prediction does not need an unused adjoint.
+Space-time speed fits also sample the prescribed initiation primitive directly
+when no source derivative record is needed, and evaluate Weibull fields with
+broadcast temporal ages instead of copying masked space-time operands.
 
 Spatial and temporal phases each default to **10 iterations** when
 applicable. A space-time fit can alternate the two phases (**Cross fitting**)

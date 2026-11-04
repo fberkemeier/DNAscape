@@ -33,7 +33,9 @@ class FastTransportHazard(HazardOperator):
         self.radius = float(radius)
         self.cap = min(self.radius, self.length / 2.0) if periodic else self.radius
         self.capped = self.travel_bound > self.cap and (periodic or self.cap < self.length)
-        self.uniform_speed = bool(uniform_speed and np.all(self.speed == self.speed[:, :1]))
+        self.uniform_speed = bool(uniform_speed and (
+            self.speed.strides[1] == 0 or np.all(self.speed == self.speed[:, :1])
+        ))
         self.differentiate_speed = bool(differentiate_speed)
         self.labelled = self.capped and not self.uniform_speed
         self.travel = np.r_[
@@ -70,13 +72,13 @@ class FastTransportHazard(HazardOperator):
             self._kinematic_bytes += cost
         return value
 
-    def _potential_sample(self, values, positions, total, direction, *, with_position=True):
+    def _potential_sample(self, values, positions, total, direction, *, with_position=True, record=True):
         u = positions / self.dx
         raw = np.floor(u).astype(int)
         f = u - raw
         j = raw.copy()
         linear = np.full(self.n, self.n < 4)
-        scale = np.full(self.n, 1.0 / self.dx)
+        scale = np.full(self.n, 1.0 / self.dx) if with_position else None
         if self.periodic:
             turn = np.floor_divide(j, self.n)
             loc = j % self.n
@@ -85,17 +87,22 @@ class FastTransportHazard(HazardOperator):
                 extended = np.r_[
                     values[-1] - total, values, values[0] + total, values[0] + 2 * total
                 ]
-            a, b, c, d = (extended[np.minimum(loc + s, len(extended) - 1)] for s in (0, 1, 2, 3))
+            a, b, c, d = (extended[loc + s] for s in (0, 1, 2, 3))
         else:
             left, right = u < 0.0, u >= self.n - 1
             j = np.clip(j, -1, self.n - 1)
             f[left] = np.clip(2.0 * (u[left] + 0.5), 0.0, 1.0)
             f[right] = np.clip(2.0 * (u[right] - (self.n - 1)), 0.0, 1.0)
             linear |= (j < 1) | (j > self.n - 3)
-            scale[left | right] = 2.0 / self.dx
-            scale[u <= -0.5] = 0.0
-            scale[u >= self.n - 0.5] = 0.0
-            a, b, c, d = (values[np.clip(j + s, 0, self.n - 1)] for s in (-1, 0, 1, 2))
+            if with_position:
+                scale[left | right] = 2.0 / self.dx
+                scale[u <= -0.5] = 0.0
+                scale[u >= self.n - 0.5] = 0.0
+            # Two repeated edge values cover the complete clipped stencil,
+            # including the one-cell domain, without four clipped indices.
+            extended = np.empty(self.n + 4)
+            extended[:2], extended[2:-2], extended[-2:] = values[0], values, values[-1]
+            a, b, c, d = (extended[j + s] for s in (1, 2, 3, 4))
             b = np.where(left, 0.0, b)
             c = np.where(right, total, c)
             turn = 0.0
@@ -110,6 +117,8 @@ class FastTransportHazard(HazardOperator):
             else None
         )
         low, high = np.minimum(b, c), np.maximum(b, c)
+        if not record and not with_position:
+            return np.clip(result, low, high) + turn * total, None
         chosen = np.where(
             result < low,
             np.where(b <= c, 0, 1),
@@ -131,10 +140,14 @@ class FastTransportHazard(HazardOperator):
         )
         result = np.zeros(self.n)
         total = 0.0
+        has_linear = bool(np.any(linear))
+        limited = chosen >= 0
+        has_limited = bool(np.any(limited))
         for slot, (offset, w) in enumerate(zip((-1, 0, 1, 2), weights)):
-            lw = 1.0 - f if slot == 1 else f if slot == 2 else np.zeros(self.n)
-            w = np.where(linear, lw, w)
-            w = np.where(chosen >= 0, (chosen == slot - 1).astype(float), w)
+            if has_linear:
+                w[linear] = 1.0 - f[linear] if slot == 1 else f[linear] if slot == 2 else 0.0
+            if has_limited:
+                w[limited] = chosen[limited] == slot - 1
             index = j + offset
             value = gradient * w
             if periodic:
@@ -183,8 +196,9 @@ class FastTransportHazard(HazardOperator):
         # Positive travel coordinates cross even a steep slow/fast spatial
         # interface without a CFL restriction. Only large temporal changes
         # need an extra midpoint stage.
+        speed = self.speed[:, :1] if self.uniform_speed else self.speed
         change = np.max(
-            np.abs(self.speed[1:] - self.speed[:-1]) / (self.speed[1:] + self.speed[:-1]), axis=1
+            np.abs(speed[1:] - speed[:-1]) / (speed[1:] + speed[:-1]), axis=1
         )
         return np.maximum(1, np.ceil(2.0 * change).astype(int))
 
@@ -205,47 +219,83 @@ class FastTransportHazard(HazardOperator):
             self._travel_slices[weight] = cached
         return cached
 
-    def _departure(self, k, dt, high, count, q, direction):
+    def _departure(self, k, dt, high, count, q, direction, *, with_derivative=True):
         key = ("travel", k, dt, high, count, q, direction)
-        # Prescribed speeds reuse only positions across many initiation
-        # proposals. Speed fits retain the reverse records directly, avoiding
-        # the cost of decoding compact records during each reverse pass.
+        weight = high - 0.5 * (1.0 - q) / count
+        # A position is enough to reconstruct the inverse-coordinate
+        # derivative, without repeating the inverse search or square root.
+        # Keeping only positions fits many more departures in the cache.
         cache = self._geometry_cache if self.differentiate_speed else self._kinematic_cache
-        remember = self._cache_geometry if self.differentiate_speed else self._cache_kinematics
+        remember = self._remember_departure if self.differentiate_speed else self._cache_kinematics
         cached = cache.get(key)
         if cached is not None:
+            if with_derivative and self.differentiate_speed and cached[1] is None:
+                return cached[0], self._departure_record(cached[0], k, weight)
             return cached
-        weight = high - 0.5 * (1.0 - q) / count
         if self.uniform_speed:
             velocity = (1.0 - weight) * self.speed[k - 1, 0] + weight * self.speed[k, 0]
             multiplier = -direction * dt * (1.0 - q)
             return remember(key, (self.x + multiplier * velocity, (multiplier, weight)))
         velocity, slowness, nodes = self._travel_slice(k, weight)
         target = nodes[: self.n] - direction * dt * (1.0 - q)
-        turns = np.floor(target / nodes[-1]) if self.periodic else np.zeros(self.n)
-        local = target - turns * nodes[-1]
-        lower = np.clip(np.searchsorted(nodes, local, side="right") - 1, 0, len(nodes) - 1)
+        turns = np.floor(target / nodes[-1]) if self.periodic else 0.0
+        local = target - turns * nodes[-1] if self.periodic else target
+        # Fractional node indices exploit the ordered travel queries and avoid
+        # the explicit search/clipping temporaries used for each departure.
+        lower = np.floor(np.interp(local, nodes, np.arange(len(nodes), dtype=float))).astype(np.intp)
         upper = np.minimum(lower + 1, len(nodes) - 1)
-        li, ui = lower % self.n, upper % self.n
+        li, ui = (lower % self.n, upper % self.n) if self.periodic else (lower, upper)
         outside = (local < 0.0) | (local > nodes[-1])
         ui = np.where(outside, li, ui)
         offset = local - nodes[lower]
         slope = (slowness[ui] - slowness[li]) / self.dx
         root = np.sqrt(np.maximum(slowness[li] ** 2 + 2.0 * slope * offset, 0.0))
         distance = 2.0 * offset / (slowness[li] + root)
-        position = lower * self.dx + distance + turns * self.length
+        position = lower * self.dx + distance
+        if self.periodic:
+            position += turns * self.length
         if not self.differentiate_speed:
             # A prescribed speed needs only departure positions, never their
             # speed derivative. This fits substantially more fixed geometry
             # into the same bounded cache when estimating initiation.
             return self._cache_kinematics(key, (position, None))
+        remember(key, (position, None))
+        if not with_derivative:
+            return position, None
         c1 = np.where(outside, 0.0, 0.5 * distance * distance / self.dx)
         record = (
             li, ui, distance - c1, c1,
             slowness[li] + slope * distance, turns if self.periodic else 0.0,
             velocity, weight,
         )
-        return remember(key, (position, record))
+        return position, record
+
+    def _departure_record(self, position, k, weight):
+        velocity, slowness, _ = self._travel_slice(k, weight)
+        turns = np.floor(position / self.length) if self.periodic else 0.
+        local = position - turns * self.length
+        lower = np.clip(np.floor(local / self.dx).astype(np.intp), 0, self.n - 1)
+        upper = (lower + 1) % self.n if self.periodic else np.minimum(lower + 1, self.n - 1)
+        outside = (local < 0.) | (local > (self.n - 1) * self.dx) if not self.periodic else False
+        upper = np.where(outside, lower, upper)
+        distance = local - lower * self.dx
+        c1 = np.where(outside, 0., .5 * distance * distance / self.dx)
+        slope = (slowness[upper] - slowness[lower]) / self.dx
+        return lower, upper, distance - c1, c1, slowness[lower] + slope * distance, turns, velocity, weight
+
+    def _remember_departure(self, key, value):
+        # This fixed record contains only arrays and scalars. Account for it
+        # directly: recursively walking thousands of these tuples costs a
+        # noticeable fraction of a speed fit. Views remain over-counted.
+        position, record = value
+        cost = 2048 + position.nbytes
+        if record is not None:
+            cost += sum(item.nbytes for item in record if isinstance(item, np.ndarray))
+        if self._geometry_bytes + cost <= self._CACHE_BYTES:
+            self._geometry_cache[key] = value
+            self._geometry_bytes += cost
+            self.diagnostics["geometry_cache_bytes"] = self._geometry_bytes
+        return value
 
     def _travel_pullback(self, gradient, record):
         if len(record) == 2:
@@ -270,6 +320,22 @@ class FastTransportHazard(HazardOperator):
             gs[1:] += segments
         return -gs / velocity**2, weight
 
+    def _source_slope(self, prefix, positions):
+        """Position derivative of a centered-cell source, without its tape.
+
+        Speed-only adjoints do not scatter gradients into initiation. They
+        need only the cell density at each departure, rather than all the
+        source interpolation weights and a second sampled source value.
+        """
+        coordinate = (positions + .5 * self.dx) / self.dx
+        if self.periodic:
+            lower = np.floor(coordinate).astype(np.intp) % self.n
+            active = 1.
+        else:
+            lower = np.clip(np.floor(coordinate).astype(np.intp), 0, self.n - 1)
+            active = (coordinate > 0.) & (coordinate < self.n)
+        return active * (prefix[lower + 1] - prefix[lower]) / self.dx
+
     def _advance(self, states, prefix, k, dt, high, middle, count):
         plus, minus, total, uplus, uminus = states
         result, labels = [], []
@@ -277,20 +343,23 @@ class FastTransportHazard(HazardOperator):
         cached_labels = self._kinematic_cache.get(label_key)
         gauss = (0.5 - np.sqrt(3.0) / 6.0, 0.5 + np.sqrt(3.0) / 6.0)
         for direction in (1.0, -1.0):
-            departure, _ = self._departure(k, dt, high, count, 0.0, direction)
+            departure, _ = self._departure(k, dt, high, count, 0.0, direction, with_derivative=False)
             previous = plus if direction > 0 else minus
             value, _ = self._potential_sample(
-                previous, departure, total, direction, with_position=False
+                previous, departure, total, direction, with_position=False, record=False
             )
             for q in gauss:
                 r = 1.0 - q
-                position, _ = self._departure(k, dt, high, count, q, direction)
+                position, _ = self._departure(k, dt, high, count, q, direction, with_derivative=False)
                 weight = high - r / count
                 source = (
                     prefix[0] if prefix.strides[0] == 0
                     else (1.0 - weight) * prefix[k - 1] + weight * prefix[k]
                 )
-                sampled, _ = self._source_sample(source, position, with_position=False)
+                sampled, _ = self._source_sample(
+                    source, position, with_position=False,
+                    cache_geometry=not self.differentiate_speed,
+                )
                 value = value + 0.5 * dt * sampled
             result.append(value)
             if self.labelled and cached_labels is None:
@@ -333,7 +402,8 @@ class FastTransportHazard(HazardOperator):
                 shifted_u.append(self._label_sample(labels[k], positions)[0])
             shifted_d.append(
                 self._potential_sample(
-                    potential[k] - cumulative[k], positions, 0.0, direction, with_position=False
+                    potential[k] - cumulative[k], positions, 0.0, direction,
+                    with_position=False, record=False,
                 )[0]
             )
         return np.asarray(shifted_u), np.asarray(shifted_d)
@@ -577,15 +647,15 @@ class FastTransportHazard(HazardOperator):
                         self._prefix[0] if self._prefix.strides[0] == 0
                         else (1.0 - weight) * self._prefix[k - 1] + weight * self._prefix[k]
                     )
-                    _, sr = self._source_sample(source, position, with_position=with_speed)
                     if with_rate:
+                        _, sr = self._source_sample(source, position, with_position=with_speed)
                         ps, gs = self._source_pullback(
                             0.5 * dt * value, sr, with_position=with_speed
                         )
                         prefix_gradient[k - 1] += (1.0 - weight) * ps
                         prefix_gradient[k] += weight * ps
                     else:
-                        gs = 0.5 * dt * value * sr[-1] if with_speed else None
+                        gs = 0.5 * dt * value * self._source_slope(source, position) if with_speed else None
                     if with_speed:
                         value_velocity, weight_velocity = self._travel_pullback(gs, source_travel)
                         speed_gradient[k - 1] += (1.0 - weight_velocity) * value_velocity

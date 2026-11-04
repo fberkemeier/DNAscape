@@ -24,7 +24,7 @@ from typing import Any, Protocol, cast
 
 import numpy as np
 
-from dnascape._resources import ensure_capacity, hosted_operation
+from dnascape._resources import ensure_capacity, hosted, hosted_operation
 from dnascape.workflows.mapping_catalog import (
     DATA_FORMS,
     DataForm,
@@ -61,6 +61,21 @@ MAX_MAPPING_IOD_SAMPLES = 2_000_000
 MAX_TRACK_UPLOAD_BYTES = 32 * 1024 * 1024
 MAX_TRACK_PAYLOAD_BYTES = 64 * 1024 * 1024
 MAX_TRACK_FILES = 128
+
+
+def _bounded_local_forward(route: MappingRoute) -> bool:
+    return not hosted() and route.method in {
+        "firing_and_speed_to_replicated_fraction_xt_lightcone",
+        "firing_to_replicated_fraction_xt_lightcone",
+        "firing_and_speed_to_replicated_fraction_lightcone",
+        "firing_to_replicated_fraction_lightcone",
+        "firing_to_timing_deterministic",
+        "firing_and_speed_to_timing_deterministic",
+    }
+
+
+def _spatial_point_limit(route: MappingRoute) -> int:
+    return max(MAX_INPUT_VALUES, MAX_SPATIAL_POINTS) if _bounded_local_forward(route) else MAX_SPATIAL_POINTS
 
 _RUN_LOCK = Lock()
 _AXIS_OUTPUT_KEYS = {"time_grid", "time_axis", "x_array", "position_kb"}
@@ -224,7 +239,9 @@ def _readonly(array: np.ndarray) -> np.ndarray:
     return array
 
 
-def _numeric_array(value: Any, label: str) -> np.ndarray:
+def _numeric_array(value: Any, label: str, *, allow_large: bool = False) -> np.ndarray:
+    from dnascape._forward_fraction import DENSE_FRACTION_VALUES, WORK_VALUES
+    from dnascape.utils import check_cancelled
     if isinstance(value, (str, bytes, bytearray)):
         raise ValueError(f"{label} must contain parsed numeric data, not text or bytes.")
     if np.iscomplexobj(value):
@@ -234,7 +251,7 @@ def _numeric_array(value: Any, label: str) -> np.ndarray:
     except (TypeError, ValueError) as exc:
         raise ValueError(f"{label} must contain numeric values.") from exc
     estimated_bytes = max(int(raw_array.nbytes), int(raw_array.size) * np.dtype(float).itemsize)
-    if raw_array.size > MAX_INPUT_VALUES or estimated_bytes > MAX_INPUT_BYTES:
+    if not allow_large and (raw_array.size > MAX_INPUT_VALUES or estimated_bytes > MAX_INPUT_BYTES):
         raise ValueError(
             f"{label} contains {raw_array.size:,} values / "
             f"{estimated_bytes / 1024**2:.1f} MiB, which exceeds the local input limit."
@@ -245,10 +262,18 @@ def _numeric_array(value: Any, label: str) -> np.ndarray:
         # input preparation scale with the same data two or three times.
         if (
             raw_array.dtype == np.dtype(float)
-            and raw_array.flags.c_contiguous
+            and (raw_array.flags.c_contiguous or allow_large)
             and not raw_array.flags.writeable
         ):
             array = raw_array
+        elif allow_large and raw_array.size > DENSE_FRACTION_VALUES and raw_array.ndim <= 2:
+            from dnascape._kinetic_tiled import disk_array
+            array = disk_array(raw_array.shape)
+            columns = raw_array.shape[1] if raw_array.ndim == 2 else 1
+            block = max(1, WORK_VALUES // max(1, columns))
+            for start in range(0, len(raw_array), block):
+                check_cancelled()
+                array[start:start + block] = raw_array[start:start + block]
         else:
             array = np.array(raw_array, dtype=float, copy=True, order="C")
     except (TypeError, ValueError) as exc:
@@ -257,16 +282,22 @@ def _numeric_array(value: Any, label: str) -> np.ndarray:
         raise ValueError(f"{label} must not be empty.")
     if array.ndim > 2:
         raise ValueError(f"{label} must be a scalar, vector, or two-dimensional matrix.")
-    if np.any(~np.isfinite(array)):
-        raise ValueError(
-            f"{label} contains missing or infinite values. Resolve them in the import controls."
-        )
+    rows = array.reshape(1) if array.ndim == 0 else array
+    columns = rows.shape[1] if rows.ndim == 2 else 1
+    block = max(1, WORK_VALUES // max(1, columns))
+    for start in range(0, len(rows), block):
+        check_cancelled()
+        if np.any(~np.isfinite(rows[start:start + block])):
+            raise ValueError(
+                f"{label} contains missing or infinite values. Resolve them in the import controls."
+            )
     return _readonly(array)
 
 
 def _preflight_input_payload(
     values: Mapping[str, Any],
     cancel: CancelChecker | None = None,
+    *, allow_large: bool = False,
 ) -> None:
     total_values = 0
     total_bytes = 0
@@ -296,7 +327,7 @@ def _preflight_input_payload(
     for value in values.values():
         visit(value)
     ensure_capacity(total_bytes * 4, "Preparing Mapping inputs")
-    if total_values > MAX_INPUT_VALUES or total_bytes > MAX_INPUT_BYTES:
+    if not allow_large and (total_values > MAX_INPUT_VALUES or total_bytes > MAX_INPUT_BYTES):
         raise ValueError(
             f"Mapped inputs contain {total_values:,} values / {total_bytes / 1024**2:.1f} MiB; "
             f"the interactive limits are {MAX_INPUT_VALUES:,} values and "
@@ -329,7 +360,7 @@ def _normalise_regions(value: Any, label: str) -> Any:
     return _readonly(array)
 
 
-def _normalise_bundle(value: Any, label: str) -> dict[str, Any]:
+def _normalise_bundle(value: Any, label: str, *, allow_large: bool = False) -> dict[str, Any]:
     if not isinstance(value, Mapping) or not value:
         raise ValueError(f"{label} must be a prepared DNAscape result bundle.")
     if len(value) > 64:
@@ -338,24 +369,24 @@ def _normalise_bundle(value: Any, label: str) -> dict[str, Any]:
     for raw_key, member in value.items():
         key = str(raw_key)
         if isinstance(member, Mapping):
-            bundle[key] = _normalise_bundle(member, f"{label}.{key}")
+            bundle[key] = _normalise_bundle(member, f"{label}.{key}", allow_large=allow_large)
         elif member is not None:
-            bundle[key] = _numeric_array(member, f"{label}.{key}")
+            bundle[key] = _numeric_array(member, f"{label}.{key}", allow_large=allow_large)
     if not bundle:
         raise ValueError(f"{label} contains no numeric result members.")
     return bundle
 
 
-def _normalise_input(value: Any, input_spec: MappingInput, form: DataForm) -> Any:
+def _normalise_input(value: Any, input_spec: MappingInput, form: DataForm, *, allow_large: bool = False) -> Any:
     label = input_spec.label
     if form == "regions":
         return _normalise_regions(value, label)
     if form == "bundle":
-        return _normalise_bundle(value, label)
+        return _normalise_bundle(value, label, allow_large=allow_large)
     if form == "supplied" and isinstance(value, Mapping):
-        return _normalise_bundle(value, label)
+        return _normalise_bundle(value, label, allow_large=allow_large)
 
-    array = _numeric_array(value, label)
+    array = _numeric_array(value, label, allow_large=allow_large)
     if form == "scalar":
         if array.size != 1:
             raise ValueError(f"{label} must contain one constant value.")
@@ -431,9 +462,9 @@ def _validate_input_shapes(
         raise ValueError(f"Temporal inputs must use the same number of points; received {lengths}.")
     spatial = next(iter(spatial_lengths), 0)
     temporal = next(iter(time_lengths), 0)
-    if spatial > MAX_SPATIAL_POINTS or temporal > MAX_TIME_POINTS:
+    if spatial > _spatial_point_limit(route) or temporal > MAX_TIME_POINTS:
         raise ValueError("An input axis exceeds the local interactive grid limit.")
-    if not route.unified_kinetics and spatial and temporal and spatial * temporal > MAX_GRID_CELLS:
+    if not (route.unified_kinetics or _bounded_local_forward(route)) and spatial and temporal and spatial * temporal > MAX_GRID_CELLS:
         raise ValueError(
             "The uploaded space-time grid is too large for an interactive mapping run."
         )
@@ -681,7 +712,7 @@ def _resample_spatial_inputs(
             # profiles must still cover the complete explicitly selected width.
             end = min(end, reference[5] + reference[3] * reference[4])
     count = spatial_bin_count(start, end, resolution)
-    if count > MAX_SPATIAL_POINTS:
+    if count > _spatial_point_limit(route):
         raise ValueError(
             "The requested spatial grid exceeds the local limit. "
             "Increase the resolution or narrow the region."
@@ -706,7 +737,9 @@ def _resample_spatial_inputs(
             return resample_spatial(
                 array, source_resolution=step, source_start=origin,
                 start=start, end=end, resolution=resolution,
-                max_points=MAX_SPATIAL_POINTS, max_values=MAX_INPUT_VALUES,
+                max_points=_spatial_point_limit(route),
+                max_values=(max(MAX_INPUT_VALUES, array.size, count * (array.shape[1] if array.ndim == 2 else 1))
+                            if _bounded_local_forward(route) else MAX_INPUT_VALUES),
             )
         return value
 
@@ -1084,10 +1117,10 @@ def _apply_domain(
 
     if n_bins:
         length = n_bins * resolution_x if input_spatial_points else cast(float, end) - start
-        if n_bins > MAX_SPATIAL_POINTS:
+        if n_bins > _spatial_point_limit(route):
             raise ValueError(
                 f"The requested region contains {n_bins:,} bins; the local limit is "
-                f"{MAX_SPATIAL_POINTS:,}. Increase the resolution or narrow the region."
+                f"{_spatial_point_limit(route):,}. Increase the resolution or narrow the region."
             )
         if "interval_kb" in accepted:
             assumptions.setdefault("interval_kb", (start, cast(float, end)))
@@ -1102,8 +1135,8 @@ def _apply_domain(
             )
 
     n_bins_value = assumptions.get("n_bins")
-    if n_bins_value is not None and int(n_bins_value) > MAX_SPATIAL_POINTS:
-        raise ValueError(f"Spatial bins exceed the local limit of {MAX_SPATIAL_POINTS:,}.")
+    if n_bins_value is not None and int(n_bins_value) > _spatial_point_limit(route):
+        raise ValueError(f"Spatial bins exceed the local limit of {_spatial_point_limit(route):,}.")
     return start, resolution_x, resolution_t
 
 
@@ -1251,7 +1284,8 @@ def validate_mapping_request(
         raise ValueError(
             "Whole region mapping needs an uploaded spatial profile to determine its length."
         )
-    _preflight_input_payload(raw_inputs, check_cancelled)
+    allow_large = _bounded_local_forward(route)
+    _preflight_input_payload(raw_inputs, check_cancelled, allow_large=allow_large)
 
     normalized_inputs: dict[str, Any] = {}
     for input_spec in route.inputs:
@@ -1260,12 +1294,12 @@ def validate_mapping_request(
             continue
         form = raw_forms[input_spec.key]
         normalized_inputs[input_spec.key] = _normalise_input(
-            raw_inputs[input_spec.key], input_spec, form
+            raw_inputs[input_spec.key], input_spec, form, allow_large=allow_large
         )
         check_cancelled()
 
     total_values, total_bytes = _input_size(normalized_inputs)
-    if total_values > MAX_INPUT_VALUES or total_bytes > MAX_INPUT_BYTES:
+    if not allow_large and (total_values > MAX_INPUT_VALUES or total_bytes > MAX_INPUT_BYTES):
         raise ValueError(
             f"Mapped inputs contain {total_values:,} values / {total_bytes / 1024**2:.1f} MiB; "
             f"the interactive limits are {MAX_INPUT_VALUES:,} values and "
@@ -1420,7 +1454,7 @@ def validate_mapping_request(
         assumptions,
         input_spatial_points=input_spatial_points,
         input_time_points=input_time_points,
-        tiled_kinetics=route.unified_kinetics and not any(
+        tiled_kinetics=_bounded_local_forward(route) or route.unified_kinetics and not any(
             float(assumptions.get(key) or 0.) > 0.
             for key in ("stall_rate", "stall_rate_per_kb")
         ),
@@ -1453,10 +1487,14 @@ def _result_array(value: Any, label: str, *, allow_empty: bool = False) -> np.nd
         return None
     if (array.size == 0 and not allow_empty) or array.ndim > 2:
         return None
-    if np.any(np.isinf(array)):
-        raise RuntimeError(f"DNAscape returned infinite values for {label!r}.")
     if array.ndim == 0:
         array = array.reshape(1)
+    # Mapped chromosome-scale outputs must stay mapped during validation.
+    columns = array.shape[1] if array.ndim == 2 else 1
+    block = max(1, 1_000_000 // max(1, columns))
+    for start in range(0, len(array), block):
+        if np.any(np.isinf(array[start:start + block])):
+            raise RuntimeError(f"DNAscape returned infinite values for {label!r}.")
     return _readonly(array)
 
 
@@ -1551,7 +1589,9 @@ def _collect_result_outputs(
     total_values = sum(array.size for array in outputs.values())
     total_bytes = sum(array.nbytes for array in outputs.values())
     disk_backed_fit = route.unified_kinetics and info.get("tiled_fitting") and info.get("disk_backed_output")
-    if not disk_backed_fit and (total_values > MAX_OUTPUT_VALUES or total_bytes > MAX_OUTPUT_BYTES):
+    from dnascape._forward_fraction import disk_backed
+    disk_backed_forward = _bounded_local_forward(route) and any(disk_backed(array) for array in outputs.values())
+    if not (disk_backed_fit or disk_backed_forward) and (total_values > MAX_OUTPUT_VALUES or total_bytes > MAX_OUTPUT_BYTES):
         raise RuntimeError(
             f"Mapped output contains {total_values:,} values / {total_bytes / 1024**2:.1f} MiB; "
             "reduce the requested grid before previewing it in the local app."

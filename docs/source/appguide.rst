@@ -331,6 +331,10 @@ Mapping
 
 
 Replicated fraction is a space-time field, displayed as a heatmap.
+Local deterministic mapping can process complete chromosome profiles at the
+selected bin size. Large fraction fields use temporary disk storage and bounded
+calculation blocks. The heatmap samples the display while the result and numeric
+exports retain every position and time point.
 
 Use **Mapping** to infer a target from compatible inputs, or to predict
 observables from initiation rate and fork speed under explicit kinetic
@@ -376,6 +380,16 @@ amplitude and Weibull shape at each position. These are constrained effective
 kinetics; timing alone does not uniquely determine an arbitrary temporal
 history. The shared equations and identifiability limits are explained in
 :ref:`kineticframework`.
+
+A space-time initiation table supplies all its time columns to one fit. In a
+replication-timing table, the selected value column supplies the timing profile;
+selecting **All** explicitly requests a separate fit for each value column.
+The progress label **Dataset i/N** counts those independent fits, whereas
+**Iteration** counts optimiser updates within the current fit.
+
+When a time-only kinetic table stores its samples in one row (for example,
+under ``t0, t1, ...`` headers), Mapping reads the whole row as one time series
+and does not offer a value-column selector for those samples.
 
 For initiation and coalescence outputs, **Quantity** distinguishes integrated
 spatial density in events/kb from space-time rate density in events/(kb min).

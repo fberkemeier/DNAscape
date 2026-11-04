@@ -793,9 +793,11 @@ _REPLICATED_FRACTION_OPTIONS = (
 
 def map_firing_and_speed_to_replicated_fraction_xt(source, **kwargs):
     from ._forward_mapping import fraction_field
+    from ._forward_fraction import disk_backed
     clock, field = fraction_field(source["initiation_rate"], source["fork_speed"],
                                   **_options(kwargs, _REPLICATED_FRACTION_OPTIONS))
-    return _SimulationFeatureArray(field, {"time_grid": clock, "method": "deterministic"})
+    return _SimulationFeatureArray(field, {"time_grid": clock, "method": "deterministic",
+                                           "disk_backed_output": disk_backed(field)})
 
 
 def map_firing_to_replicated_fraction_xt(initiation_rate, **kwargs):

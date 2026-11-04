@@ -118,8 +118,6 @@ def adaptive_fit(observed, supplied, options):
         _warm_start=coarse_info["_parameter_state"],
         _progress_offset=options.get("_progress_offset", 0) + used_space + used_time,
     )
-    from .utils import _report_progress
-    _report_progress(.04, "Mapping... Refining model at the selected resolution")
     result = fit_kinetic(observed, supplied, **initial)
     info = result._rmap_info
     info["coarse_fit_history"] = coarse_info["fit_history"]

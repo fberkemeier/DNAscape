@@ -85,27 +85,25 @@ class StationarySourceHazard:
         interval += self.dt**2 * (self.velocity[:-1] / 6 + self.velocity[1:] / 3)
         self.J = np.r_[0.0, np.cumsum(interval)]
 
+    def _cell_edges(self):
+        # Adjacent source cells share an edge. Evaluate its primitive once,
+        # rather than building two almost identical XT derivative tables.
+        return np.r_[0., np.minimum(self.cap, (np.arange(self.width + 1) + .5) * self.dx)]
+
     def _kernel_block(self, selected):
         self._prepare_primitives()
-        distance = np.arange(self.width + 1) * self.dx
-        a = np.maximum(0.0, distance - 0.5 * self.dx)
-        b = np.minimum(self.cap, distance + 0.5 * self.dx)
+        edges = self._cell_edges()
         travel = self.travel[selected, None]
         if np.all(self.velocity == self.velocity[0]):
             # The same primitive J(D^-1(z)) = z^2/(2v), with no search or
             # derivative records when the prescribed speed is constant.
-            left = np.maximum(travel - a, 0.)
-            right = np.maximum(travel - b, 0.)
-            np.square(left, out=left)
-            np.square(right, out=right)
-            left /= 2. * self.velocity[0]
-            right /= 2. * self.velocity[0]
+            values = np.maximum(travel - edges, 0.)
+            np.square(values, out=values)
+            values /= 2. * self.velocity[0]
         else:
-            left, _ = self._primitive(travel - a)
-            right, _ = self._primitive(travel - b)
-        ring = np.maximum(left - right, 0.)
+            values, _ = self._primitive(travel - edges)
+        ring = np.maximum(values[:, :-1] - values[:, 1:], 0.)
         ring[:, 0] *= 2.
-        ring[:, b <= a] = 0.
         kernel = np.zeros((len(ring), self.length))
         kernel[:, :self.width + 1] = ring
         if self.width:
@@ -132,15 +130,10 @@ class StationarySourceHazard:
                 self._spectrum[selected] = self._kernel_block(selected)
             self._kernel_state = None
             return
-        distance = np.arange(self.width + 1) * self.dx
-        a = np.maximum(0.0, distance - 0.5 * self.dx)
-        b = np.minimum(self.cap, distance + 0.5 * self.dx)
-        left, lr = self._primitive(self.travel[:, None] - a)
-        right, rr = self._primitive(self.travel[:, None] - b)
-        factor = np.ones(len(distance))
+        values, record = self._primitive(self.travel[:, None] - self._cell_edges())
+        factor = np.ones(self.width + 1)
         factor[0] = 2.0
-        ring = np.maximum(left - right, 0.0) * factor
-        ring[:, b <= a] = 0.0
+        ring = np.maximum(values[:, :-1] - values[:, 1:], 0.0) * factor
         check_cancelled()
         kernel = np.zeros((len(self.t), self.length))
         kernel[:, : self.width + 1] = ring
@@ -148,7 +141,7 @@ class StationarySourceHazard:
             kernel[:, (-np.arange(1, self.width + 1)) % self.length] += ring[:, 1:]
         self._spectrum = rfft(kernel, axis=1)
         check_cancelled()
-        self._kernel_state = lr, rr, factor, ring > 0.0
+        self._kernel_state = record, factor, ring > 0.0
 
     def forward(self, rate, record=False):
         check_cancelled()
@@ -167,7 +160,12 @@ class StationarySourceHazard:
         report_measured_work(1.0)
         return np.maximum(result, 0.0)
 
-    def backward(self, gradient, with_speed=True, *, with_rate=True):
+    def backward(self, gradient, with_speed=True, *, with_rate=True, reduce_speed=False):
+        """Differentiate the cell convolution on its original time grid.
+
+        ``reduce_speed`` returns the shared temporal-speed derivative as a
+        single column, avoiding an otherwise zero-filled XT derivative.
+        """
         if with_speed and not self.differentiate_speed:
             raise ValueError("Speed derivatives were not requested for this operator.")
         if self._state is None:
@@ -181,7 +179,8 @@ class StationarySourceHazard:
             rate_gradient[0] = irfft(np.sum(g * np.conj(self._spectrum), axis=0), n=self.length)[
                 : self.n
             ]
-        speed_gradient = np.zeros(shape) if with_speed else np.broadcast_to(0.0, shape)
+        speed_shape = (len(self.t), 1) if reduce_speed else shape
+        speed_gradient = np.zeros(speed_shape) if with_speed else np.broadcast_to(0.0, speed_shape)
         if not with_speed:
             return rate_gradient, speed_gradient
         kg = irfft(g * np.conj(source)[None, :], n=self.length, axis=1)
@@ -189,28 +188,30 @@ class StationarySourceHazard:
         ring = kg[:, : self.width + 1].copy()
         if self.width:
             ring[:, 1:] += kg[:, (-np.arange(1, self.width + 1)) % self.length]
-        lr, rr, factor, positive = self._kernel_state
+        record, factor, positive = self._kernel_state
         ring *= factor * positive
         gd = np.zeros(len(self.t))
         gj = np.zeros(len(self.t))
         gv = np.zeros(len(self.t))
-        for sign, record in ((1.0, lr), (-1.0, rr)):
-            index, s, a0, a1, c0, c1, active = record
-            q = sign * ring * active
-            sigma = self.t[index] + s
-            gd += np.sum(q * sigma, axis=1)
-            gd += np.bincount(index.ravel(), weights=(-q * sigma).ravel(), minlength=len(self.t))
-            gj += np.bincount(index.ravel(), weights=q.ravel(), minlength=len(self.t))
-            gv += np.bincount(
-                index.ravel(),
-                weights=(q * ((self.t[index] - sigma) * a0 + c0)).ravel(),
-                minlength=len(self.t),
-            )
-            gv += np.bincount(
-                (index + 1).ravel(),
-                weights=(q * ((self.t[index] - sigma) * a1 + c1)).ravel(),
-                minlength=len(self.t),
-            )
+        edge_gradient = np.empty((len(self.t), self.width + 2))
+        edge_gradient[:, 0], edge_gradient[:, -1] = ring[:, 0], -ring[:, -1]
+        edge_gradient[:, 1:-1] = ring[:, 1:] - ring[:, :-1]
+        index, s, a0, a1, c0, c1, active = record
+        q = edge_gradient * active
+        sigma = self.t[index] + s
+        gd += np.sum(q * sigma, axis=1)
+        gd += np.bincount(index.ravel(), weights=(-q * sigma).ravel(), minlength=len(self.t))
+        gj += np.bincount(index.ravel(), weights=q.ravel(), minlength=len(self.t))
+        gv += np.bincount(
+            index.ravel(),
+            weights=(q * ((self.t[index] - sigma) * a0 + c0)).ravel(),
+            minlength=len(self.t),
+        )
+        gv += np.bincount(
+            (index + 1).ravel(),
+            weights=(q * ((self.t[index] - sigma) * a1 + c1)).ravel(),
+            minlength=len(self.t),
+        )
         d = np.cumsum(gd[:0:-1])[::-1]
         j = np.cumsum(gj[:0:-1])[::-1]
         gv[:-1] += 0.5 * self.dt * d + j * (0.5 * self.t[:-1] * self.dt + self.dt**2 / 6)

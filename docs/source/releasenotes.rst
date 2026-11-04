@@ -4,6 +4,19 @@ Release Notes
 Unreleased
 ----------
 
+* Time-only initiation and fork-speed uploads now retain their complete row
+  of time samples, without a value-column selector or per-column batch expansion.
+* Reduced source interpolation, travel-coordinate and Weibull-field overhead
+  when fitting space-time fork speed from space-time initiation and timing.
+* Timing uploads no longer select every numeric column for independent fits
+  automatically. Space-time initiation uploads retain their complete matrix.
+* Accelerated temporal and space-time fork-speed fitting with shared source-cell
+  edges, compact characteristic caches and smaller temporal adjoints. Unused
+  final adjoints are skipped while preserving fit grids and stopping rules.
+* Local replicated-fraction mapping now processes chromosome-scale native grids
+  in bounded blocks, with temporary disk-backed outputs and full-resolution exports.
+* Reduced travel-coordinate inversion and interpolation-adjoint overhead while
+  retaining the numerical model, fit grids, objectives and stopping rules.
 * Removed the persistent Render input-limit notices from Mapping and Simulation.
 * Improved adaptive-fitting ETA estimates using measured phase costs and the
   remaining work on each refinement grid.

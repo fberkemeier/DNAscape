@@ -47,6 +47,7 @@ class StationaryHazard:
         self.slow = 1 / self.speed
         self.uniform_speed = bool(np.all(self.speed == self.speed[0]))
         self.y = np.r_[0.0, np.cumsum(self.dx * self.slow)]
+        self.edges = np.arange(self.n + 1, dtype=float) * self.dx
         self.centers = (np.arange(self.n) + 0.5) * self.dx
         self.yc = self.y[:-1] + 0.5 * self.dx * self.slow
         self.recorded = False
@@ -59,9 +60,10 @@ class StationaryHazard:
             position = query * self.speed[0]
             return position if self.periodic else np.clip(position, 0.0, self.length)
         turns = np.floor(query / self.y[-1]) if self.periodic else 0.0
-        local = query - turns * self.y[-1] if self.periodic else np.clip(query, 0.0, self.y[-1])
-        cell = np.clip(np.searchsorted(self.y, local, side="right") - 1, 0, self.n - 1)
-        return turns * self.length + cell * self.dx + (local - self.y[cell]) * self.speed[cell]
+        local = query - turns * self.y[-1] if self.periodic else query
+        # Travel is affine inside each constant-speed cell. Interpolating its
+        # inverse is exact and avoids Python-side search/gather temporaries.
+        return turns * self.length + np.interp(local, self.y, self.edges)
 
     def _prefix(self, position, key=None):
         geometry = self._geometry.get(key) if key is not None else None

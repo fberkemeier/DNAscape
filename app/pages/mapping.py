@@ -577,6 +577,18 @@ def _inspection_profile_form(inspection: UploadInspection) -> str | None:
     return detected if detected in {"x", "t", "xt"} else None
 
 
+def _time_samples_in_columns(inspection: UploadInspection) -> bool:
+    """A temporal row's columns are samples, not alternative datasets."""
+
+    return (
+        _inspection_profile_form(inspection) == "t"
+        and inspection.shape is not None
+        and len(inspection.shape) == 2
+        and inspection.shape[0] == 1
+        and len(inspection.numeric_columns) > 1
+    )
+
+
 def _preview_outputs(route: MappingRoute) -> dict[str, str]:
     """Return the actual plottable members produced by the selected route."""
 
@@ -1652,12 +1664,18 @@ def _render_upload_input(
                     selection_values.pop(stale_name, None)
             for inspection in inspections:
                 selected = selection_values.setdefault(inspection.name, {})
-                if inspection.numeric_columns:
+                if "t" in profile_forms and _time_samples_in_columns(inspection):
+                    selected["column"] = None
+                elif inspection.numeric_columns:
                     valid_columns = set(inspection.numeric_columns)
                     default_column = inspection.default_column
                     if supports_all_profile_columns(inspection):
                         valid_columns.add("__all__")
-                    if uses_matrix_columns(inspection) and supports_all_profile_columns(inspection):
+                    # All columns form one space-time field when this input
+                    # accepts XT. For a timing-only input, All starts one fit
+                    # per column and must be an explicit batch selection.
+                    if ("xt" in profile_forms and uses_matrix_columns(inspection)
+                            and supports_all_profile_columns(inspection)):
                         default_column = "__all__"
                     if selected.get("column") not in valid_columns:
                         selected["column"] = default_column
@@ -1715,7 +1733,9 @@ def _render_upload_input(
                     column_control = None
                     # A selector adds no information when there is only one
                     # usable signal column: rdata already chooses it safely.
-                    if len(inspection.numeric_columns) > 1:
+                    if len(inspection.numeric_columns) > 1 and not (
+                        "t" in profile_forms and _time_samples_in_columns(inspection)
+                    ):
                         column_options: Any = list(inspection.numeric_columns)
                         if supports_all_profile_columns(inspection):
                             column_options = {
@@ -2422,7 +2442,8 @@ def _selected_upload_value(live: _MappingInputControl) -> Any:
 
     def choices(inspection: UploadInspection) -> tuple[str | None, str | None]:
         selected = selection_values.get(inspection.name, {})
-        column = selected.get("column")
+        column = (None if inspection.expected_form == "t" and _time_samples_in_columns(inspection)
+                  else selected.get("column"))
         array_key = selected.get("array_key")
         return (
             None if column is None or str(column) == "__all__" else str(column),
@@ -2681,7 +2702,8 @@ async def _read_mapping_input_async(
     array_keys: list[str | None] = []
     for inspection in inspections:
         selected = selection_values.get(inspection.name, {})
-        column = selected.get("column")
+        column = (None if form == "t" and _time_samples_in_columns(inspection)
+                  else selected.get("column"))
         array_key = selected.get("array_key")
         columns.append(None if column is None or str(column) == "__all__" else str(column))
         array_keys.append(None if array_key is None else str(array_key))
@@ -2769,12 +2791,14 @@ async def _read_mapping_input_batch_async(
         and form in {"x", "t"}
         and any(
             selection_values.get(inspection.name, {}).get("column") == "__all__"
+            and not (form == "t" and _time_samples_in_columns(inspection))
             for inspection in inspections
         )
     )
     if expand_table_columns:
         for inspection in inspections:
-            if selection_values.get(inspection.name, {}).get("column") == "__all__":
+            if (selection_values.get(inspection.name, {}).get("column") == "__all__"
+                    and not (form == "t" and _time_samples_in_columns(inspection))):
                 ensure_single_source(len(inspection.numeric_columns), live.spec.label)
         materialized_cache = cast(
             dict[str, Any],
@@ -2807,7 +2831,8 @@ async def _read_mapping_input_batch_async(
         value_index = 0
         for inspection in inspections:
             selected = selection_values.get(inspection.name, {})
-            selected_column = selected.get("column")
+            selected_column = (None if form == "t" and _time_samples_in_columns(inspection)
+                               else selected.get("column"))
             columns: tuple[str | None, ...] = (
                 tuple(inspection.numeric_columns)
                 if selected_column == "__all__"
@@ -5483,8 +5508,6 @@ def render(_navigate: Callable[[str], None]) -> None:
                     if not latest_results:
                         result_chart = None
                         result_slot.clear()
-                        with result_slot:
-                            ui.label("Mapping is running in the background...").classes("dn-muted")
                     try:
                         route = selected_route_state["route"]
                         missing_policy = str(_region_missing.value or "error")
@@ -5833,7 +5856,7 @@ def render(_navigate: Callable[[str], None]) -> None:
                         eta.finish("unavailable")
                         progress.visible = False
                         status.text = "Mapping could not be completed"
-                        notify(str(exc) or type(exc).__name__, type="negative")
+                        notify(str(exc) or type(exc).__name__, type="negative", timeout=0)
                         if latest_results:
                             stats_container.visible = True
                             render_latest_result()

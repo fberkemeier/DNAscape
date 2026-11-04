@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import dataclasses
 import hashlib
+import mmap
 import time
 import uuid
 from collections import OrderedDict
@@ -92,6 +93,8 @@ def estimate_retained_bytes(value: Any, _seen: set[int] | None = None) -> int:
     if isinstance(value, memoryview):
         return int(value.nbytes)
     if isinstance(value, (bytes, bytearray)):
+        return len(value)
+    if isinstance(value, mmap.mmap):
         return len(value)
     if isinstance(value, np.ndarray):
         # A small slice keeps its entire parent allocation alive.

@@ -24,6 +24,10 @@ def fraction_field(firing, speed, **options):
     )
     if n is None:
         raise ValueError("Provide a spatial profile or a region length.")
+    from ._resources import hosted
+    # Large local fractions use bounded working arrays and mapped output.
+    # Keep admission limits for the hosted and legacy dense calculations.
+    time_limit = min(100_000, 64_000_000 // int(n)) if hosted() or options.get("backend") == "legacy" else 100_000
     if not np.isfinite(dt) or dt <= 0:
         raise ValueError("Time step must be finite and positive.")
     if complete:
@@ -50,7 +54,7 @@ def fraction_field(firing, speed, **options):
         if not np.isfinite(maximum) or maximum <= 0:
             raise ValueError("Maximum time must be finite and positive.")
         count = maximum / dt
-        if not np.isfinite(count) or count > min(99_999, 64_000_000 // int(n) - 1):
+        if not np.isfinite(count) or count > time_limit - 1:
             raise ValueError("The computed time domain is too large. Increase the spatial or temporal resolution.")
         clock = np.append(np.arange(0., maximum, dt), maximum)
     else:
@@ -67,13 +71,13 @@ def fraction_field(firing, speed, **options):
         waiting = 1. / (average * max((n - 1) * dx, dx)) if average > 0 else dt
         maximum = max(2. * dt, (support - 1) * dt, 6. * characteristic, 12. * waiting)
         count = maximum / dt
-        if not np.isfinite(count) or count > min(99_999, 64_000_000 // int(n) - 1):
+        if not np.isfinite(count) or count > time_limit - 1:
             raise ValueError("The computed time domain is too large. Increase the spatial or temporal resolution.")
         clock = np.arange(int(np.ceil(count)) + 1, dtype=float) * dt
     if (clock.ndim != 1 or not clock.size or np.any(~np.isfinite(clock))
             or clock[0] < 0 or np.any(np.diff(clock) <= 0)):
         raise ValueError("Time grid must be a non-empty finite increasing vector starting at or after zero.")
-    if clock.size > 100_000 or int(n) * clock.size > 64_000_000:
+    if clock.size > time_limit:
         raise ValueError("The computed time domain is too large. Increase the spatial or temporal resolution.")
     native_clock = None if explicit is None else np.asarray(explicit, dtype=float).copy()
     if complete and clock.size and clock[0] > 0:
@@ -90,12 +94,22 @@ def fraction_field(firing, speed, **options):
                         + np.arange(raw.shape[1], dtype=float) * dt)
         if np.array_equal(clock, source_clock):
             return values
+        from ._forward_fraction import DENSE_FRACTION_VALUES, WORK_VALUES
+        if not hosted() and raw.shape[0] * len(clock) > DENSE_FRACTION_VALUES:
+            from ._kinetic_tiled import disk_array
+            resampled = disk_array((raw.shape[0], len(clock)))
+            block = max(1, WORK_VALUES // len(clock))
+            for start in range(0, len(raw), block):
+                check_cancelled()
+                resampled[start:start + block] = np.stack([
+                    np.interp(clock, source_clock, row) for row in raw[start:start + block]])
+            return resampled
         return np.stack([np.interp(clock, source_clock, row) for row in raw])
 
     while True:
         check_cancelled()
         # Check before allocating any space-time fields or expanding profiles.
-        if clock.size > 100_000 or int(n) * clock.size > 64_000_000:
+        if clock.size > time_limit:
             raise ValueError("The computed time domain is too large. Increase the spatial or temporal resolution.")
         selected = {key: value for key, value in options.items()
                     if key not in {"time_grid", "max_time", "max_rep_time"}}
@@ -113,7 +127,7 @@ def fraction_field(firing, speed, **options):
                 return clock, field
         end = max(2. * float(clock[-1]), float(clock[-1]) + dt)
         extension_count = (end + .01 * dt - (float(clock[-1]) + dt)) / dt
-        available = min(100_000 - clock.size, 64_000_000 // int(n) - clock.size)
+        available = time_limit - clock.size
         if not np.isfinite(extension_count) or extension_count > available:
             raise ValueError("The computed time domain is too large. Increase the spatial or temporal resolution.")
         extension = np.arange(float(clock[-1]) + dt, end + .01 * dt, dt)
@@ -121,6 +135,16 @@ def fraction_field(firing, speed, **options):
 
 
 def timing_from_fraction(clock, fraction, *, require_complete=True):
+    from ._forward_fraction import DENSE_FRACTION_VALUES, WORK_VALUES
+    if np.asarray(fraction).size > DENSE_FRACTION_VALUES:
+        if require_complete and np.max(1. - fraction[:, -1]) > 1e-7:
+            raise ValueError("The firing profile leaves an unreplicated fraction; finite mean timing cannot be determined.")
+        timing = np.empty(len(fraction))
+        block = max(1, WORK_VALUES // len(clock))
+        for start in range(0, len(fraction), block):
+            check_cancelled()
+            timing[start:start + block] = np.trapezoid(1. - fraction[start:start + block], clock, axis=1)
+        return timing
     survival = 1. - np.asarray(fraction)
     if require_complete and np.max(survival[:, -1]) > 1e-7:
         raise ValueError("The firing profile leaves an unreplicated fraction; finite mean timing cannot be determined.")

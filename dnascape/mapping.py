@@ -403,6 +403,14 @@ def map_replicated_fraction_xt(
         max_time=max_time,
     )
 
+    from ._forward_fraction import DENSE_FRACTION_VALUES, mapped_fraction
+    from ._resources import hosted
+    if not hosted() and backend != "legacy" and int(n_bins) * t.size > DENSE_FRACTION_VALUES:
+        if t[0] < 0:
+            raise ValueError("Replication time grids cannot start before zero.")
+        return mapped_fraction(initiation_rate, fork_speed, int(n_bins), t,
+                               resolution, resolution_time, bool(perQ), radius, backend)
+
     if (perQ or int(n_bins) == 1) and _spatial_length(initiation_rate) is None and _spatial_length(fork_speed) is None:
         # Homogeneous circles have one survival curve. Avoid repeating the
         # same cone computation (and kinetic-field allocations) at every bin.
