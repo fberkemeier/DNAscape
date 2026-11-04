@@ -1,8 +1,10 @@
 Release Notes
 =============
 
-Unreleased
-----------
+0.1.1
+-----
+
+* Show Reverse order in plot settings only when multiple curves share a plot.
 
 * Reduced first-click delays on Render by preparing shared workflow imports at
   startup when memory headroom permits. Visitor pages remain lazy and isolated;

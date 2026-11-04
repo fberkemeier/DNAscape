@@ -1697,6 +1697,7 @@ def preview_settings_controls(
                         .props("dense options-dense").classes("dn-field"), markers, "fill_side",
                     )
                 reverse_order = _mark(ui.checkbox("Reverse order", value=False), markers, "reverse_order")
+                reverse_order.visible = False
                 with ui.element("div").classes("dn-kde-controls"):
                     density = _mark(
                         ui.checkbox("KDE", value=False),
@@ -2154,7 +2155,7 @@ def sync_preview_settings_visibility(
         controls.view.update()
     controls.heatmap_palette.visible = heatmap
     controls.z_axis_label.visible = heatmap
-    controls.reverse_order.visible = not heatmap
+    controls.reverse_order.visible = not heatmap and multiple_curves
     circular = not heatmap and controls.view.value == "Circular"
     controls.circular_options.visible = circular
     controls.circular_combine.visible = circular and multiple_curves

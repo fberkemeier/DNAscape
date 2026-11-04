@@ -15,7 +15,7 @@ DNAscape works with experimental or model-derived profiles of replication timing
 
 DNAscape is best used through its interactive and user-friendly app, available at [dnascape.onrender.com](https://dnascape.onrender.com), built with [NiceGUI](https://nicegui.io) and hosted on [Render](https://render.com).
 
-To explore DNAscape’s full capabilities without the resource limits of the hosted version, follow the steps below to run the app locally (recommended).
+To explore DNAscape’s full capabilities without the resource limits of the hosted version, follow the steps below to run the app locally.
 
 > **Requirements:** Python 3.10 or newer (3.13 is recommended), Git, Pip and a modern web browser.
 

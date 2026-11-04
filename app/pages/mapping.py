@@ -4780,7 +4780,12 @@ def render(_navigate: Callable[[str], None]) -> None:
                         len(latest_results) > 1
                         and str(preview_layout.value or "Combined") == "Combined"
                     )
-                    multiple_curves = comparison_curves or combined_batch or output_key == _ALL_PLOTS_KEY
+                    multiple_curves = comparison_curves or (
+                        combined_batch and output_key != _ALL_PLOTS_KEY
+                    ) or (
+                        output_key == _ALL_PLOTS_KEY
+                        and latest_result is not None and bool(latest_result.comparisons)
+                    )
                     actual_output_key = (
                         _resolved_output_key(latest_result, output_key)
                         if latest_result is not None

@@ -4345,6 +4345,11 @@ def render(_navigate: Callable[[str], None]) -> None:
                         boxplot = requested_view == "Boxplot"
                     sync_preview_settings_visibility(
                         plot_settings,
+                        multiple_curves=combined_preview_active() or (
+                            allow_individual_profiles
+                            and bool(show_individual_profiles.value)
+                            and available_profile_count() > 0
+                        ),
                         plot_type=(
                             "Heatmap"
                             if time_array
@@ -4368,6 +4373,7 @@ def render(_navigate: Callable[[str], None]) -> None:
                     )
                     # A combined batch uses one colour control per dataset; the
                     # single-series colour field would otherwise be ambiguous.
+                    plot_settings.secondary_color_surface.visible = False
                     if combined_preview_active():
                         plot_settings.primary_color_surface.visible = False
                     render_ensemble_raw_files.refresh()
