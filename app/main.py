@@ -683,7 +683,12 @@ def index() -> None:
             with ui.item_section():
                 ui.label("About")
 
-    dark_mode.on_value_change(lambda: render_app_menu_items.refresh())
+    def refresh_theme_mode() -> None:
+        # A mode switch must reuse the Settings colour for both variants.
+        sync_theme()
+        render_app_menu_items.refresh()
+
+    dark_mode.on_value_change(refresh_theme_mode)
 
     with ui.header(elevated=False).classes("dn-header"):
         ui.space()

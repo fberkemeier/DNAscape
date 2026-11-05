@@ -611,6 +611,20 @@ def _cartesian_grid(
     }
 
 
+def style_curve_legend(legend: dict[str, Any], series: Sequence[dict[str, Any]]) -> None:
+    """Keep curve legend dashes at one width and hide their marker symbols."""
+    line_names = {item.get("name") for item in series if item.get("type") == "line"}
+    entries = []
+    for item in legend.get("data", ()):
+        name = item.get("name") if isinstance(item, dict) else item
+        if name in line_names:
+            item = dict(item) if isinstance(item, dict) else {"name": name}
+            item["itemStyle"] = {**item.get("itemStyle", {}), "opacity": 0}
+            item["lineStyle"] = {**item.get("lineStyle", {}), "width": 1.8, "opacity": 1}
+        entries.append(item)
+    legend["data"] = entries
+
+
 def build_legend_options(
     names: Sequence[str],
     *,
@@ -1490,6 +1504,7 @@ def _combined_preview_options(
         position=arguments["legend_position"], show=arguments["show_legend"],
         interactive=arguments["interactive"],
     )
+    style_curve_legend(options["legend"], options["series"])
     plotted = [np.asarray(series["data"], dtype=float) for series in options["series"]]
     if plot_type == "Boxplot":
         hover_x = [row[:, 0] for row in plotted]
@@ -2518,6 +2533,7 @@ def _build_preview_plot_options(
         show=show_legend,
         interactive=interactive,
     )
+    style_curve_legend(legend_options, line_options)
     x_axis_options: dict[str, Any] = {
         "type": "log" if log_x else "value",
         "min": x_limits[0],

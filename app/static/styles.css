@@ -427,6 +427,92 @@ body.body--dark .dn-app-menu {
   outline-offset: 2px;
 }
 
+.dn-color-picker {
+  display: flex;
+  flex-direction: column;
+  width: 180px;
+  height: 322px;
+  max-width: 100%;
+  border-radius: 4px;
+  overflow: hidden;
+  background: var(--dn-panel, #fff);
+}
+
+.dn-color-picker > .q-color-picker {
+  display: flex;
+  flex-direction: column;
+  flex: 1;
+  min-height: 0;
+  width: 100%;
+  box-shadow: none;
+}
+
+.dn-color-picker .q-color-picker__header {
+  flex: none;
+}
+
+.dn-color-picker .q-color-picker__header .q-tabs,
+.dn-color-picker .q-color-picker__header .q-tab,
+.dn-color-picker .q-color-picker__header .q-tab__content,
+.dn-color-picker .q-color-picker__header .q-tab__label {
+  color: inherit !important;
+  opacity: 1 !important;
+}
+
+.dn-color-picker .q-tab-panels {
+  flex: 1;
+  min-height: 0;
+}
+
+.dn-color-picker .q-color-picker__spectrum {
+  height: auto;
+}
+
+.dn-color-picker .q-color-picker__palette-rows {
+  display: grid !important;
+  align-items: stretch !important;
+  grid-template-columns: repeat(10, minmax(0, 1fr));
+  grid-auto-rows: minmax(0, 1fr);
+  height: 100%;
+}
+
+.dn-color-picker .q-color-picker__cube {
+  /* Quasar's layered width is relative to this grid cell, not the palette. */
+  min-width: 100%;
+  padding-bottom: 0;
+}
+
+.dn-color-picker-tabs {
+  flex: 0 0 36px;
+  height: 36px;
+}
+
+.dn-color-picker-tabs .q-tab {
+  flex: 1;
+  min-width: 0;
+  min-height: 36px;
+  padding: 0 !important;
+}
+
+.dn-color-picker-tabs .q-tab__indicator {
+  display: none;
+}
+
+.dn-color-picker-tabs .q-tab--active {
+  box-shadow: inset 0 -2px var(--dn-accent, #b03412);
+}
+
+.dn-color-picker-logo {
+  width: 22px;
+  height: 22px;
+  filter: grayscale(1);
+  opacity: .65;
+}
+
+.dn-color-picker[data-dn-view="dnascape"] .q-color-picker__palette-rows {
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+}
+
 .dn-settings-dialog:not(.dn-about-dialog):not(.dn-reset-dialog) {
   max-height: calc(100dvh - 2rem);
   max-width: min(46rem, calc(100vw - 2rem));
