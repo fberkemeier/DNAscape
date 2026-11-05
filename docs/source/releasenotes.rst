@@ -1,6 +1,14 @@
 Release Notes
 =============
 
+Unreleased
+----------
+
+* Removed the Directional fork densities route for Mapping's Replicated fraction target.
+* Accelerated raw Mapping CSV/TSV downloads with bounded numeric formatting and
+  reused immutable result arrays, retaining full precision and existing file contents.
+  Large replicated-fraction downloads use faster lossless gzip/ZIP compression.
+
 0.1.1
 -----
 

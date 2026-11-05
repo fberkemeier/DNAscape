@@ -29,6 +29,7 @@ from dnascape.workflows.result_naming import (
 MAX_TEXT_EXPORT_VALUES = 64_000_000
 MAX_BINARY_EXPORT_BYTES = 512 * 1024 * 1024
 MAX_TEXT_EXPORT_BYTES = 1024 * 1024 * 1024
+_TEXT_BLOCK_VALUES = 262_144
 
 
 @dataclass(frozen=True, slots=True)
@@ -109,8 +110,12 @@ def select_mapping_output(
         values = values.reshape(-1)
         data_form = "space"
 
-    values = np.array(values, dtype=float, copy=True)
-    values.setflags(write=False)
+    # Mapping results are immutable, including chromosome-scale disk-backed
+    # fields. Keep those arrays mapped instead of copying the entire grid just
+    # to download it. Mutable caller-owned arrays still need a frozen snapshot.
+    if values.flags.writeable:
+        values = np.array(values, dtype=float, copy=True)
+        values.setflags(write=False)
     return SelectedMappingOutput(
         key=key,
         values=values,
@@ -206,6 +211,11 @@ def build_mapping_raw_export(
             "npz": "application/octet-stream",
         }[normalized_format],
         compression=selected_compression,
+        # Prefer download latency over maximum compression for
+        # large fraction fields. All values and the inner file remain identical.
+        compression_level=(
+            1 if selected.key == "replicated_fraction_xt" and selected.values.size >= 1_000_000 else 6
+        ),
     )
 
 
@@ -356,11 +366,31 @@ def _text_bytes(selected: SelectedMappingOutput, file_format: str) -> bytes:
         writer.writerows((_number_text(value),) for value in values)
     else:
         writer.writerow(tuple(f"t{index}" for index in range(values.shape[1])))
-        writer.writerows(tuple(_number_text(value) for value in row) for row in values)
+        _write_numeric_rows(stream, values, delimiter)
     stream.flush()
     data = binary.getvalue()
     stream.detach()
     return data
+
+
+def _write_numeric_rows(stream: io.TextIOWrapper, values: np.ndarray, delimiter: str) -> None:
+    """Write bounded blocks using Python's exact, shortest float representation.
+
+    Boxing a NumPy block in C and formatting a whole row avoids a Python call
+    for every cell. Numeric fields require no CSV quoting. Keep the existing
+    spelling of integral values (including negative zero) and scientific notation.
+    """
+    row_format = delimiter.join(["%s"] * values.shape[1]) + "\n"
+    rows_per_block = max(1, _TEXT_BLOCK_VALUES // values.shape[1])
+    for start in range(0, len(values), rows_per_block):
+        block = values[start:start + rows_per_block]
+        objects = block.astype(object)
+        # repr(float) uses fixed notation below 1e16. Only those integral
+        # values previously lost their trailing '.0' in _number_text.
+        integral = np.isfinite(block) & (np.abs(block) < 1e16) & (block == np.trunc(block))
+        objects[integral] = block[integral].astype(np.int64)
+        objects[(block == 0) & np.signbit(block)] = "-0"
+        stream.writelines(row_format % tuple(row) for row in objects.tolist())
 
 
 def _binary_bytes(selected: SelectedMappingOutput) -> bytes:

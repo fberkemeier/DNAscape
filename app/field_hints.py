@@ -203,6 +203,7 @@ FIELD_HINTS = {
 }
 
 MAPPING_SETTING_HINTS = {
+    "time_multiplier": "End time as a multiple of the region’s 50% replication time.",
     "adaptive_fitting": "Fit coarse grids first, then refine at the selected resolution.",
     "relative_tolerance": "Skip converged neighbourhoods; 0.001 means 0.1% error. Zero disables.",
     "resolution": "Output bin width; wider bins average, finer bins interpolate.",

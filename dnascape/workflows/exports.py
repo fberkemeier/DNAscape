@@ -293,8 +293,9 @@ def compressed_export_artifact(
     filename: str,
     media_type: str,
     compression: str,
+    compression_level: int = 6,
 ) -> ExportArtifact:
-    """Wrap one raw-data file in the selected deterministic compression format."""
+    """Wrap one raw-data file, with an optional gzip/ZIP compression level."""
 
     normalized = normalize_compression(compression)
     ensure_capacity(len(data) * 3, "Compressing the download")
@@ -302,7 +303,7 @@ def compressed_export_artifact(
         return ExportArtifact(data=data, filename=filename, media_type=media_type)
     if normalized == "gzip":
         return ExportArtifact(
-            data=gzip.compress(data, compresslevel=6, mtime=0),
+            data=gzip.compress(data, compresslevel=compression_level, mtime=0),
             filename=f"{filename}.gz",
             media_type="application/gzip",
         )
@@ -313,7 +314,7 @@ def compressed_export_artifact(
             archive,
             mode="w",
             compression=zipfile.ZIP_DEFLATED,
-            compresslevel=6,
+            compresslevel=compression_level,
         ) as output:
             output.writestr(filename, data)
         return ExportArtifact(

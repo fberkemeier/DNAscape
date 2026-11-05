@@ -38,7 +38,6 @@ MAX_HEATMAP_WORK_CELLS = 262_144
 MAX_INTERACTIVE_CURVES = 6
 
 FIXED_QUANTITY_Y_LIMITS: dict[str, tuple[float, float]] = {
-    "origin_efficiency": (0.0, 1.0),
     "fork_directionality": (-1.0, 1.0),
     "replicated_fraction": (0.0, 1.0),
 }

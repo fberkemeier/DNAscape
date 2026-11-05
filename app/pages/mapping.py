@@ -959,7 +959,7 @@ def _render_setting(
             control = _render_setting_field(
                 setting, automatic=automatic, initial=automatic_value,
             )
-        field_hint(control, MAPPING_SETTING_HINTS.get(
+        field_hint(control, setting.description if setting.label == "Data resolution" else MAPPING_SETTING_HINTS.get(
             setting.key, f"Adjust {_setting_label(setting).lower()}.",
         ))
         if on_change is not None:
@@ -974,6 +974,8 @@ def _render_setting(
 
 def _mapping_setting_group(setting: Any, keys: set[str]) -> str:
     """Keep fitting stages prominent and secondary route controls together."""
+    if setting.key == "time_multiplier":
+        return "domain"
 
     if setting.key in {"sim_number", "stall_rate_per_kb", "stall_rate", "tau"}:
         return "fork_movement"
@@ -2476,8 +2478,20 @@ def _selected_upload_value(live: _MappingInputControl) -> Any:
     )
 
 
+def _mapping_source_resolution(route: MappingRoute, settings: Mapping[str, Any]) -> float:
+    """Origin efficiency uses its declared data bin width as the native grid."""
+    if route.target != "origin_efficiency":
+        return 1.0
+    value = settings.get("resolution", route.setting_defaults_dict.get("resolution", 1.0))
+    resolution = float(value)
+    if not math.isfinite(resolution) or resolution <= 0:
+        raise ValueError("Data resolution must be finite and greater than zero.")
+    return resolution
+
+
 def _mapping_whole_region_end(
     inputs: Mapping[str, _MappingInputControl], resolution_x: float,
+    *, source_resolution_x: float = 1.0,
 ) -> float | None:
     """Read the shortest spatial extent from inspected metadata, without parsing data."""
 
@@ -2519,9 +2533,10 @@ def _mapping_whole_region_end(
                 else shape[0]
             )
             if size > 0:
-                # Ordinary array uploads use a native spacing of 1 kb. The
-                # destination resolution must never stretch their extent.
-                extents.append(float(size))
+                # A destination rebin must not stretch the native extent.
+                # Origin efficiency can explicitly declare a different native
+                # spacing through its Data resolution control.
+                extents.append(float(size) * source_resolution_x)
     if not extents:
         return None
     end = min(extents)
@@ -3774,7 +3789,8 @@ def render(_navigate: Callable[[str], None]) -> None:
                         if not bool(whole_region.value):
                             return
                         route = selected_route_state["route"]
-                        resolution = region_setting_controls.get("resolution")
+                        resolution = (region_setting_controls.get("resolution")
+                                      or mapping_setting_controls.get("resolution"))
                         if resolution is not None and (
                             resolution.override is None or bool(resolution.override.value)
                         ):
@@ -3785,6 +3801,7 @@ def render(_navigate: Callable[[str], None]) -> None:
                         try:
                             end = _mapping_whole_region_end(
                                 mapping_input_controls, float(value),
+                                source_resolution_x=_mapping_source_resolution(route, {"resolution": value}),
                             )
                         except (TypeError, ValueError):
                             end = None  # Allow an incomplete bin-width edit.
@@ -3841,6 +3858,8 @@ def render(_navigate: Callable[[str], None]) -> None:
                         sync_whole_region_bounds()
 
                     def scientific_setting_changed() -> None:
+                        if selected_route_state["route"].target == "origin_efficiency":
+                            sync_whole_region_bounds()
                         _sync_contextual_mapping_settings(
                             selected_route_state["route"],
                             {**region_setting_controls, **mapping_setting_controls},
@@ -5338,7 +5357,7 @@ def render(_navigate: Callable[[str], None]) -> None:
                                 "end_kb": _read_number(region_end, "Region end"),
                                 "whole_genome": bool(whole_region.value),
                                 "missing_policy": str(_region_missing.value or "error"),
-                                "source_resolution_x": 1.0,
+                                "source_resolution_x": _mapping_source_resolution(selected_route_state["route"], setting_values()),
                                 "initiation_rate_per_bin": True,
                             },
                             combination_mode=str(mapping_combination_mode.get("value", "pairwise")),
@@ -5526,7 +5545,7 @@ def render(_navigate: Callable[[str], None]) -> None:
                         selected_resolution = float(
                             1.0 if resolution_value is None else resolution_value
                         )
-                        if "resolution" not in region_setting_controls:
+                        if "resolution" not in region_setting_controls and "resolution" not in mapping_setting_controls:
                             # Bundle-only reductions inherit their coordinates;
                             # there is no destination grid for the user to edit.
                             for live in mapping_input_controls.values():
@@ -5634,7 +5653,7 @@ def render(_navigate: Callable[[str], None]) -> None:
                                         ),
                                         whole_genome=use_whole_region,
                                         prewindowed_inputs=frozenset(prewindowed_inputs),
-                                        source_resolution_x=1.0,
+                                        source_resolution_x=_mapping_source_resolution(route, settings),
                                         initiation_rate_per_bin=True,
                                         fit_filter=MappingFilterSettings(
                                             mapping_filter_controls.snapshot(),

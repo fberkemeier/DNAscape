@@ -28,7 +28,6 @@ from .mapping import (
     map_directionality_timing,
     map_firing_timing,
     map_fork_densities_directionality,
-    map_fork_densities_xt,
     map_initiation_events,
     map_initiation_events_profile,
     map_initiation_events_xt,
@@ -141,7 +140,7 @@ _FEATURE_DESCRIPTIONS = {
     "left_fork_density": "Spatial-mean left-moving density over time, or time-integrated density along position.",
     "right_fork_density_xt": "Space-time right-moving fork-density field.",
     "left_fork_density_xt": "Space-time left-moving fork-density field.",
-    "origin_efficiency": "Expected initiation-event count or efficiency over user-defined regions.",
+    "origin_efficiency": "Expected initiation-event count or efficiency in each spatial bin.",
     "inter_origin_distance": "Distances between neighbouring fired origins.",
     "s_phase_duration": (
         "Elapsed time from the first realised initiation to replication completion."
@@ -894,12 +893,14 @@ def map_firing_and_speed_to_initiation_events(source, **kwargs):
 
 def _kinetic_event_result(source, output, **kwargs):
     from ._event_densities import kinetic_event_densities
-    options = _options(kwargs, _REPLICATED_FRACTION_OPTIONS + ("cfl", "unreplicated_floor"))
-    fields = kinetic_event_densities(source["initiation_rate"], source["fork_speed"], **options)
+    options = _options(kwargs, _OBSERVABLE_OPTIONS)
+    fields = kinetic_event_densities(source["initiation_rate"], source["fork_speed"], outputs=(output,), **options)
     return _SimulationFeatureArray(fields[output], {
         "time_grid": fields["time_grid"],
         "event_density_units": "events/(kb min)" if output.endswith("_xt") else "events/kb",
-        "event_time_integration": "adaptive",
+        "event_time_integration": "independent_of_display_clock",
+        "median_replication_time": fields["median_replication_time"],
+        "observable_method": fields["observable_method"],
     })
 
 
@@ -960,6 +961,24 @@ def map_initiation_events_to_origin_efficiency(initiation_events, **kwargs):
         initiation_events,
         **_options(kwargs, _ORIGIN_EFFICIENCY_OPTIONS),
     )
+
+
+def map_firing_and_speed_to_origin_efficiency(source, **kwargs):
+    from ._event_densities import kinetic_event_densities
+
+    options = _options(kwargs, _OBSERVABLE_OPTIONS)
+    options.pop("time_multiplier", None)
+    fields = kinetic_event_densities(source["initiation_rate"], source["fork_speed"],
+                                    outputs=("initiation_events",), _complete=True, **options)
+    dx = float(kwargs.get("resolution",1.))
+    # The integral of I*s is a density (events/kb). Each output owns one
+    # spatial cell, so efficiency is its expected initiation count, not a
+    # density accidentally interpreted as a bin-independent probability.
+    return _SimulationFeatureArray(fields["initiation_events"] * dx, {
+        "efficiency_bin_kb": dx,
+        "efficiency_units": "events/bin",
+        "observable_method": fields["observable_method"],
+    })
 
 
 _COALESCENCE_EVENT_OPTIONS = (
@@ -1056,6 +1075,16 @@ def map_firing_and_speed_to_coalescence_pdf(source, **kwargs):
 
 
 _FORK_DENSITY_OPTIONS = _REPLICATED_FRACTION_OPTIONS + ("cfl",)
+_OBSERVABLE_OPTIONS = (
+    "resolution", "resolution_time", "time_grid", "max_time", "max_rep_time",
+    "n_bins", "genome_length", "interval_kb", "perQ", "cfl",
+    "unreplicated_floor", "time_multiplier",
+)
+_OBSERVABLE_TARGETS = {
+    "origin_efficiency", "initiation_events", "initiation_events_xt",
+    "coalescence_events", "coalescence_events_xt", "fork_densities_xt",
+    "right_fork_density_xt", "left_fork_density_xt",
+}
 _COALESCENCE_FORWARD_OPTIONS = tuple(dict.fromkeys(
     _FORK_DENSITY_OPTIONS + _COALESCENCE_EVENT_OPTIONS
 ))
@@ -1070,23 +1099,14 @@ _FORK_DENSITY_DIRECTIONALITY_DEFAULTS = {
 
 
 def map_firing_and_speed_to_fork_densities_xt(source, **kwargs):
-    options = _options(kwargs, _FORK_DENSITY_OPTIONS)
-    if all(options.get(key) is None for key in ("time_grid", "max_time", "max_rep_time")):
-        from ._forward_mapping import fraction_field
-        clock, _ = fraction_field(source["initiation_rate"], source["fork_speed"],
-                                  **_options(options, _REPLICATED_FRACTION_OPTIONS))
-        options["time_grid"] = clock
-    result = map_fork_densities_xt(
-        source["initiation_rate"],
-        fork_speed=source["fork_speed"],
-        **options,
-    )
-    from .mapping import _fraction_time_axis
-    n = result["replicated_fraction_xt"].shape[0]
-    result["time_grid"] = _fraction_time_axis(
-        (source["initiation_rate"], source["fork_speed"]), n,
-        resolution_time=options.get("resolution_time", 5.), time_grid=options.get("time_grid"),
-        max_time=options.get("max_time") or options.get("max_rep_time"))
+    from ._event_densities import kinetic_event_densities
+
+    result = kinetic_event_densities(source["initiation_rate"], source["fork_speed"],
+        outputs=("replicated_fraction_xt", "right_fork_density_xt", "left_fork_density_xt", "fork_density_xt"),
+        **_options(kwargs, _OBSERVABLE_OPTIONS))
+    # String diagnostics belong in metadata, not in numeric bundle outputs.
+    result.pop("observable_method")
+    result.pop("median_replication_time")
     return result
 
 
@@ -2506,8 +2526,6 @@ class DataTypeMapper:
             self._ensure_initiation_event_routes()
         if target in {"initiation_pdf", "initiation_pdf_xt"}:
             self._ensure_initiation_event_routes()
-        if target == "origin_efficiency":
-            self._ensure_origin_efficiency_routes()
         if target in {"coalescence_events", "coalescence_events_xt"}:
             self._ensure_coalescence_event_routes()
         if target in {"coalescence_pdf", "coalescence_pdf_xt"}:
@@ -2518,6 +2536,8 @@ class DataTypeMapper:
             "left_fork_density_xt",
         }:
             self._ensure_fork_density_routes()
+        if target in _OBSERVABLE_TARGETS:
+            self._ensure_observable_routes()
         out = []
         for spec in self._specs:
             if set(spec.source) != source_set or spec.target != target:
@@ -2968,6 +2988,8 @@ class DataTypeMapper:
         return table
 
     def _filtered_specs(self, target=None, source=None, implemented=None):
+        if self is globals().get("rmap"):
+            self._ensure_observable_routes()
         if target is None:
             target_set = None
         else:
@@ -2990,6 +3012,40 @@ class DataTypeMapper:
                 continue
             specs.append(spec)
         return specs
+
+    def _ensure_observable_routes(self):
+        """One deterministic I+v route per requested source/sink observable."""
+        methods = {
+            "initiation_events": (map_firing_and_speed_to_initiation_events, "firing_and_speed_to_initiation_events_mean_field"),
+            "initiation_events_xt": (map_firing_and_speed_to_initiation_events_xt, "firing_and_speed_to_initiation_events_xt_mean_field"),
+            "coalescence_events": (map_firing_and_speed_to_coalescence_events, "firing_and_speed_to_coalescence_events_mean_field"),
+            "coalescence_events_xt": (map_firing_and_speed_to_coalescence_events_xt, "firing_and_speed_to_coalescence_events_xt_mean_field"),
+            "fork_densities_xt": (map_firing_and_speed_to_fork_densities_xt, "firing_and_speed_to_directional_fork_densities_xt_mean_field"),
+            "right_fork_density_xt": (map_firing_and_speed_to_right_fork_density_xt, "firing_and_speed_to_right_fork_density_xt_mean_field"),
+            "left_fork_density_xt": (map_firing_and_speed_to_left_fork_density_xt, "firing_and_speed_to_left_fork_density_xt_mean_field"),
+            "origin_efficiency": (map_firing_and_speed_to_origin_efficiency, "firing_and_speed_to_origin_efficiency_spatial"),
+        }
+        existing = [spec for spec in self._specs if spec.target in _OBSERVABLE_TARGETS]
+        if (len(existing) == len(methods) and all(
+                spec.method == methods.get(spec.target, (None, None))[1]
+                and (spec.target == "origin_efficiency" or "time_multiplier" in spec.optional_assumptions)
+                for spec in existing)):
+            return
+        self._specs = [spec for spec in self._specs if spec.target not in _OBSERVABLE_TARGETS]
+        defaults = {"resolution": 1., "resolution_time": 5., "time_grid": None,
+                    "max_time": None, "max_rep_time": None, "perQ": False,
+                    "cfl": .8, "unreplicated_floor": 1e-12, "time_multiplier": 4.}
+        for target, (func, method) in methods.items():
+            efficiency = target == "origin_efficiency"
+            options = (tuple(key for key in _OBSERVABLE_OPTIONS if key != "time_multiplier")
+                       if efficiency else _OBSERVABLE_OPTIONS)
+            self.register(("initiation_rate", "fork_speed"), target, func, method=method,
+                optional_assumptions=options,
+                default_assumptions=({key: value for key,value in defaults.items() if key != "time_multiplier"}
+                                     if efficiency else defaults),
+                source_kinds=(("initiation_rate", ("scalar", "x", "t", "xt")),
+                              ("fork_speed", ("scalar", "x", "t", "xt"))),
+                description=_FEATURE_DESCRIPTIONS.get(target, "Deterministic initiation and fork observables."))
 
     def _grouped_specs(self, target=None, source=None, implemented=None):
         groups = {}
@@ -4591,3 +4647,4 @@ rmap._ensure_directionality_routes()
 from ._kinetic_routes import install_kinetic_routes as _install_kinetic_routes
 
 _install_kinetic_routes(rmap)
+rmap._ensure_observable_routes()

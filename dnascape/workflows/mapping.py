@@ -64,14 +64,18 @@ MAX_TRACK_FILES = 128
 
 
 def _bounded_local_forward(route: MappingRoute) -> bool:
-    return not hosted() and route.method in {
+    return not hosted() and (route.target in {
+        "origin_efficiency", "initiation_events", "initiation_events_xt",
+        "coalescence_events", "coalescence_events_xt", "fork_densities_xt",
+        "right_fork_density_xt", "left_fork_density_xt", "fork_density_xt",
+    } or route.method in {
         "firing_and_speed_to_replicated_fraction_xt_lightcone",
         "firing_to_replicated_fraction_xt_lightcone",
         "firing_and_speed_to_replicated_fraction_lightcone",
         "firing_to_replicated_fraction_lightcone",
         "firing_to_timing_deterministic",
         "firing_and_speed_to_timing_deterministic",
-    }
+    })
 
 
 def _spatial_point_limit(route: MappingRoute) -> int:
@@ -1599,8 +1603,8 @@ def _collect_result_outputs(
 
     if route.target in outputs:
         primary = route.target
-    elif route.target == "fork_densities_xt" and "replicated_fraction_xt" in outputs:
-        primary = "replicated_fraction_xt"
+    elif route.target == "fork_densities_xt" and "fork_density_xt" in outputs:
+        primary = "fork_density_xt"
     else:
         primary = next(iter(outputs))
 

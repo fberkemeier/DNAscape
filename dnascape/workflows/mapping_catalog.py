@@ -408,11 +408,6 @@ class MappingRoute:
             settings = tuple(item for item in settings if item.key in _PDF_SETTINGS)
         elif self.method == "fork_density_profiles_to_directionality":
             settings = ()  # Already time-integrated profiles need no integration axis.
-        elif self.target == "origin_efficiency" and self.output_dependence == "regions":
-            if all("xt" not in item.forms for item in self.inputs):
-                settings = tuple(
-                    item for item in settings if item.key not in {"time_grid", "resolution_time"}
-                )
         if not self.supports_periodic(shape):
             settings = tuple(item for item in settings if item.key != "perQ")
         if self.output_dependence in {"time", "spacetime"} and (
@@ -860,7 +855,7 @@ _TARGET_GROUP_DESCRIPTIONS = {
     "coalescence_events": "Expected coalescence density, or coalescence rate density resolved over time.",
     "coalescence_pdf": "Coalescence probability density as a spatial profile or space-time field.",
     "origin_efficiency": (
-        "Origin efficiency across genomic position or integrated over user-defined regions."
+        "Expected origin firing in each spatial bin at the data resolution."
     ),
 }
 
@@ -940,6 +935,7 @@ _SETTING_DESCRIPTIONS = {
 }
 
 _SETTING_LABELS = {
+    "time_multiplier": "Maximum time (× median)",
     "neighbourhood_range": "Influence radius",
     "alpha_smooth": "Spatial smoothness",
     "alpha_prior": "Initial-guess penalty",
@@ -974,6 +970,7 @@ _SETTING_LABELS = {
 }
 
 _SETTING_DESCRIPTIONS.update({
+    "time_multiplier": "End time as a multiple of the time when the region is 50% replicated.",
     "spatial_knots": "Number of spatial control points in the positive interpolated kinetic field; capped by available bins.",
     "temporal_knots": "Number of temporal control points; more points permit variation that timing alone may not constrain.",
     "regularization": "Penalty on differences between neighboring log-kinetic control points, relative to normalized timing error.",
@@ -990,6 +987,7 @@ _SETTING_DESCRIPTIONS.update({
 })
 
 _SETTING_CATEGORIES: dict[str, SettingCategory] = {
+    "time_multiplier": "domain",
     **{
         name: "domain"
         for name in (
@@ -1350,9 +1348,7 @@ def _target_output(spec: Any) -> tuple[DataForm, str]:
         default_form = dict(spec.default_assumptions).get("target_form", "space")
         return _FORM_ALIASES.get(str(default_form), ("supplied", str(default_form)))
     if spec.target == "origin_efficiency":
-        if "simulation" in spec.method:
-            return "x", "space"
-        return "regions", "regions"
+        return "x", "space"
     return _FIXED_OUTPUTS.get(spec.target, ("supplied", "space"))
 
 
@@ -1667,6 +1663,8 @@ def _setting_limits(
     name: str,
     kind: SettingKind,
 ) -> tuple[float | int | None, float | int | None, float | int | None]:
+    if name == "time_multiplier":
+        return 1.0, None, 0.5
     if kind == "integer":
         if name == "ffiring_nr":
             return 2, None, 1
@@ -1729,6 +1727,7 @@ def _route_settings(spec: Any, inputs: tuple[MappingInput, ...]) -> tuple[Mappin
             default = "periodic" if defaults.get("perQ") else "linear"
             has_default = True
         location = _SETTING_LOCATIONS.get(name, "settings")
+        efficiency_resolution = spec.target == "origin_efficiency" and name == "resolution"
         # Mapping uses one Periodic switch for deterministic and stochastic
         # routes. Retain the string alias only for saved/programmatic requests.
         if name == "geometry" and has_geometry:
@@ -1736,7 +1735,7 @@ def _route_settings(spec: Any, inputs: tuple[MappingInput, ...]) -> tuple[Mappin
         settings.append(
             MappingSetting(
                 key=name,
-                label=_setting_label(name),
+                label="Data resolution" if efficiency_resolution else _setting_label(name),
                 category=_SETTING_CATEGORIES.get(name, "fitting"),
                 location=location,
                 kind=kind,
@@ -1744,11 +1743,11 @@ def _route_settings(spec: Any, inputs: tuple[MappingInput, ...]) -> tuple[Mappin
                 has_default=has_default,
                 default=default,
                 allowed_values=allowed_values,
-                description=_SETTING_DESCRIPTIONS.get(
+                description="Width of each data bin; uploads default to 1 kb." if efficiency_resolution else _SETTING_DESCRIPTIONS.get(
                     name,
                     "Optional setting accepted by this exact DNAscape mapping route.",
                 ),
-                unit=_SETTING_UNITS.get(name),
+                unit="kb" if efficiency_resolution else _SETTING_UNITS.get(name),
                 min_value=minimum,
                 max_value=maximum,
                 step=step,
@@ -2059,6 +2058,7 @@ def get_mapping_catalog() -> MappingCatalog:
         "fork_density_fields_to_directionality_time_integrated",
         "fork_density_profiles_to_directionality",
         "replicated_fraction_xt_to_replicated_fraction_spatial_mean",
+        "fork_density_bundle_to_replicated_fraction_xt_extraction",
     }
     specs = tuple(spec for spec in specs
                   if spec.target not in removed_targets
