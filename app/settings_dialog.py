@@ -20,12 +20,11 @@ from app.export_settings import (
     ExportSettings,
     get_export_settings,
 )
-from app.color_controls import configure_color_picker
 from app.field_hints import field_hint
 from app.icons import RESET_ICON
 from app.notifications import notify
 from app.result_naming import NAME_STYLE_OPTIONS
-from app.theme import normalize_theme_color
+from app.theme import THEME_SWATCHES, normalize_theme_color
 
 
 @dataclass
@@ -146,7 +145,8 @@ def settings_dialog(*, on_apply: Callable[[], None]) -> SettingsDialog:
                     .classes("dn-field dn-settings-theme-color")
                     .mark("settings-theme-color")
                 )
-                configure_color_picker(controls["theme_color"])
+                controls["theme_color"].picker.q_color.props("format-model=hex")
+                controls["theme_color"].picker.q_color._props["palette"] = list(THEME_SWATCHES)
                 controls["theme_color"].button.props('dense aria-label="Choose theme colour"')
                 controls["control_font_size_px"] = (
                     ui.number(

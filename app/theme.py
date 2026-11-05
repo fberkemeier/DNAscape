@@ -15,6 +15,7 @@ from app._startup_cache import read_asset_text
 from app.export_settings import get_export_settings
 
 DEFAULT_THEME_COLOR = "#b03412"
+THEME_SWATCHES = (DEFAULT_THEME_COLOR, "#2563eb", "#0f766e", "#6d28d9", "#be185d", "#b7791f")
 _ASSETS = Path(__file__).resolve().parents[1] / "docs" / "source" / "_static"
 _LOGOS = {"dnascape_logo.svg", "dnascape_logo_small.svg", "dnascape_logo_tab.svg"}
 
@@ -87,11 +88,7 @@ def logo_sources(asset: str, color: str) -> tuple[str, str]:
     source = read_asset_text(_ASSETS / asset)
     palette = theme_css(color)
     images = []
-    variants = ((palette["--dn-theme-light"], "#403932"), (palette["--dn-theme-dark"], "#f3eee8"))
-    if asset == "dnascape_logo_tab.svg":
-        # Browser tabs keep the original neutral artwork in either UI mode.
-        variants = ((normalize_theme_color(color), "#403932"),) * 2
-    for accent, neutral in variants:
+    for accent, neutral in ((palette["--dn-theme-light"], "#403932"), (palette["--dn-theme-dark"], "#f3eee8")):
         svg = re.sub(r"#b03412\b", accent, source, flags=re.IGNORECASE)
         svg = re.sub(r"#403932\b", neutral, svg, flags=re.IGNORECASE)
         images.append("data:image/svg+xml;base64," + base64.b64encode(svg.encode("utf-8")).decode("ascii"))

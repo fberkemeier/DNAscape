@@ -34,8 +34,8 @@ def test_fraction_route_uses_initiation_and_speed_only():
     assert families[0].factor_keys == ("initiation_rate", "fork_speed")
     with pytest.raises(KeyError):
         mapping_route("fork_density_bundle_to_replicated_fraction_xt_extraction")
-    # Directional densities use the same deterministic initiation-and-speed inputs.
-    mapping_route("firing_and_speed_to_right_fork_density_xt_mean_field")
+    # The other directional-density extractions remain available.
+    mapping_route("fork_density_bundle_to_right_fork_density_xt_extraction")
 
 
 def test_fraction_route_selector_excludes_directional_densities():

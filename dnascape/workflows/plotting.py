@@ -27,7 +27,6 @@ from .preview import (
     histogram_domain,
     histogram_guide_options,
     limit_curve_hover,
-    style_curve_legend,
 )
 
 
@@ -935,6 +934,5 @@ def combined_mapping_plot_options(
     else:
         legend = dict(base.get("legend", {}))
         legend["data"] = combined_names
-        style_curve_legend(legend, combined_series)
         base["legend"] = legend
     return limit_curve_hover(base)

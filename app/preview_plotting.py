@@ -13,7 +13,6 @@ from uuid import uuid4
 from nicegui import ui
 from app import background as run
 
-from app.color_controls import configure_color_picker
 from app.export_settings import get_export_settings
 from app.field_hints import field_hint
 from app.icons import RESET_ICON
@@ -1474,7 +1473,6 @@ def compact_color_input(
             .props(f'dense readonly borderless aria-label="{label}"')
             .classes("dn-compact-color-input")
         )
-        configure_color_picker(control)
         if marker:
             control.mark(marker)
 
