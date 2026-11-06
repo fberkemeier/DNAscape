@@ -1587,9 +1587,8 @@ body.body--dark .dn-nav-active {
   margin-bottom: 0.02rem;
 }
 
-/* Origin and fork behaviour gets the full settings width, then divides its two related
-   themes evenly. This retains the same hierarchy as Ensemble and Timing while
-   avoiding a dense stack of switches in a narrow third column. */
+/* Stack origin and fork dynamics across the full settings width, with the
+   same heading style as Ensemble and Timing. */
 .dn-fork-behaviour-group {
   border-left: 0 !important;
   grid-column: 1 / -1;
@@ -1600,15 +1599,15 @@ body.body--dark .dn-nav-active {
 .dn-fork-behaviour-grid {
   align-items: start;
   display: grid;
-  gap: 0;
-  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 0.6rem;
+  grid-template-columns: minmax(0, 1fr);
   min-width: 0;
   width: 100%;
 }
 
 .dn-fork-behaviour-grid > .dn-setting-subgroup {
   min-width: 0;
-  padding: 0.08rem 0.55rem 0.2rem;
+  padding: 0.08rem 0 0.2rem;
 }
 
 .dn-fork-behaviour-grid > .dn-setting-subgroup:first-child {
@@ -1642,6 +1641,25 @@ body.body--dark .dn-nav-active {
   gap: 0.34rem;
   min-width: 0;
   width: 100%;
+}
+
+.dn-fork-mechanism + .dn-fork-mechanism {
+  margin-top: 0.3rem;
+  padding-top: 0.2rem;
+}
+
+.dn-fork-stochastic-row {
+  align-items: center;
+  display: grid;
+  column-gap: 0.55rem;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+
+.dn-fork-dependent {
+  gap: 0.4rem;
+  padding-left: 0;
+  width: 100%;
+  min-width: 0;
 }
 
 .dn-setting-inline {
@@ -2826,6 +2844,24 @@ body.body--dark .dn-nav-active {
   width: 100%;
 }
 
+.dn-simulation-movement-source {
+  align-items: start;
+  display: grid;
+  column-gap: 0.55rem;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  padding: 0;
+}
+
+.dn-simulation-movement-source > .dn-source-head {
+  grid-column: 1;
+  grid-row: 1;
+}
+
+.dn-simulation-movement-source > .dn-source-fields {
+  grid-column: 2;
+  grid-row: 1;
+}
+
 /* Mapping starts with the scientific question, then progressively reveals
    only the route inputs which can answer it. The selectors remain flat and
    compact because Data's expansion header already supplies the outer frame. */
@@ -3667,15 +3703,9 @@ body.body--dark .dn-nav-active {
 }
 
 .dn-upload-compact .q-uploader__title::before {
-  content: "Choose file";
+  content: "Upload file";
   font-size: 0.82rem;
   font-weight: 700;
-}
-
-.dn-upload-compact .q-uploader__title::after {
-  content: " or drag it here";
-  font-size: 0.82rem;
-  font-weight: 400;
 }
 
 .dn-upload-compact .q-uploader__subtitle {

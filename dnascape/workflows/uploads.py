@@ -15,6 +15,8 @@ import math
 import re
 import zipfile
 from collections.abc import Iterator, Mapping, Sequence
+from contextlib import contextmanager
+from contextvars import ContextVar
 from dataclasses import dataclass, field, replace
 from pathlib import PurePath
 from types import MappingProxyType
@@ -27,6 +29,18 @@ from dnascape._resources import checkpoint, ensure_capacity, hosted, hosted_oper
 # These limits apply again on the server; the matching browser-side limit in
 # ``data_upload`` is only a usability aid and must not be treated as security.
 MAX_UPLOAD_BYTES = 512 * 1024 * 1024
+_POSITIVE_INFINITY = ContextVar("recovery_upload_positive_infinity", default=False)
+
+
+@contextmanager
+def _positive_infinity_policy(allow):
+    """Scope the recovery-time opt-in to this read, including worker threads."""
+    token = _POSITIVE_INFINITY.set(bool(allow))
+    try:
+        yield
+    finally:
+        _POSITIVE_INFINITY.reset(token)
+
 MAX_DECOMPRESSED_BYTES = 1024 * 1024 * 1024
 MAX_ARRAY_ELEMENTS = 64_000_000
 # Delimited uploads are parsed into float64 storage, so the array-element and
@@ -143,6 +157,7 @@ class UploadInspection:
         repr=False,
         compare=False,
     )
+    allow_positive_infinity: bool = False
 
 
 def _safe_name(name: str) -> str:
@@ -487,7 +502,7 @@ def _is_number(value: str) -> bool:
         number = float(value)
     except ValueError:
         return False
-    return bool(np.isfinite(number))
+    return bool(np.isfinite(number) or (_POSITIVE_INFINITY.get() and number == math.inf))
 
 
 def _has_header(rows: Sequence[Sequence[str]], source_format: str) -> bool:
@@ -697,7 +712,7 @@ def _stream_numeric_columns(
             except ValueError:
                 numeric[column_index] = False
                 continue
-            if not np.isfinite(number):
+            if not np.isfinite(number) and not (_POSITIVE_INFINITY.get() and number == math.inf):
                 raise UploadInspectionError(
                     f"Column {columns[column_index]!r} contains an infinite numeric value."
                 )
@@ -788,7 +803,7 @@ def _pandas_numeric_columns(
         if bool(invalid.any()):
             continue
         array = converted.to_numpy(dtype=float, na_value=np.nan, copy=False)
-        if np.any(np.isinf(array)):
+        if np.any(np.isinf(array)) and (not _POSITIVE_INFINITY.get() or np.any(np.isneginf(array))):
             raise UploadInspectionError(f"Column {column!r} contains an infinite numeric value.")
         array.setflags(write=False)
         result[column] = array
@@ -919,7 +934,7 @@ def _validate_numeric_array(
     result = np.asarray(array, dtype=float)
     if result.size == 0:
         raise UploadInspectionError(f"The selected {label} is empty.")
-    if np.any(np.isinf(result)):
+    if np.any(np.isinf(result)) and (not _POSITIVE_INFINITY.get() or np.any(np.isneginf(result))):
         raise UploadInspectionError(f"The selected {label} contains infinite numeric values.")
     if not allow_missing and np.any(np.isnan(result)):
         raise UploadInspectionError(f"The selected {label} contains missing numeric values.")
@@ -1247,8 +1262,28 @@ def _inspect_npz(
     )
 
 
-@hosted_operation("Reading uploaded data")
 def inspect_upload(
+    name: str,
+    content: bytes | bytearray | memoryview,
+    *,
+    content_type: str = "",
+    expected_form: str = "auto",
+    source_format: str = "auto",
+    allow_positive_infinity: bool = False,
+) -> UploadInspection:
+    """Inspect a file; recovery-time inputs may explicitly allow positive infinity.
+
+    Ordinary kinetic/data uploads retain their finite-value validation. The
+    opt-in follows the immutable inspection into materialization and recipes.
+    """
+    with _positive_infinity_policy(allow_positive_infinity):
+        return replace(_inspect_upload(name, content, content_type=content_type,
+                       expected_form=expected_form, source_format=source_format),
+                       allow_positive_infinity=allow_positive_infinity)
+
+
+@hosted_operation("Reading uploaded data")
+def _inspect_upload(
     name: str,
     content: bytes | bytearray | memoryview,
     *,
@@ -1380,7 +1415,7 @@ def _normalize_missing_policy(policy: str) -> str:
 
 
 def _interpolate_vector(values: np.ndarray, *, label: str) -> np.ndarray:
-    finite = np.isfinite(values)
+    finite = ~np.isnan(values) if _POSITIVE_INFINITY.get() else np.isfinite(values)
     if not np.any(finite):
         raise UploadInspectionError(f"{label} contains no values to interpolate from.")
     indices = np.arange(values.size, dtype=float)
@@ -1407,12 +1442,12 @@ def _resolve_missing_values(
     if normalized == "ignore":
         return array
     if normalized == "zero":
-        return np.nan_to_num(array, nan=0.0, copy=True)
+        return np.nan_to_num(array, nan=0.0, posinf=np.inf if _POSITIVE_INFINITY.get() else None, copy=True)
     if expected_form.casefold() == "regions":
         raise UploadInspectionError("Region coordinates cannot be interpolated.")
 
     result = np.array(array, dtype=float, copy=True)
-    if result.ndim <= 1:
+    if result.ndim <= 1 or (expected_form.casefold() == "x" and result.ndim == 2 and 1 in result.shape):
         return _interpolate_vector(result.reshape(-1), label="The selected profile").reshape(
             result.shape
         )
@@ -1541,8 +1576,20 @@ def _materialize_npz(inspection: UploadInspection, array_key: str | None) -> np.
     return values
 
 
-@hosted_operation("Reading uploaded data")
 def materialize_upload(
+    inspection: UploadInspection,
+    *,
+    column: str | None = None,
+    array_key: str | None = None,
+    missing_policy: str = "error",
+) -> np.ndarray:
+    """Materialize an inspected file with its original numeric-value policy."""
+    with _positive_infinity_policy(inspection.allow_positive_infinity):
+        return _materialize_upload(inspection, column=column, array_key=array_key, missing_policy=missing_policy)
+
+
+@hosted_operation("Reading uploaded data")
+def _materialize_upload(
     inspection: UploadInspection,
     *,
     column: str | None = None,

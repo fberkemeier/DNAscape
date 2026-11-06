@@ -1160,6 +1160,7 @@ def _sample_heatmap(
     log_x: bool = False,
     log_y: bool = False,
     log_z: bool = False,
+    scale_to_preview: bool = False,
 ) -> tuple[np.ndarray, np.ndarray, np.ndarray, float, float]:
     """Adaptively average a heatmap into a bounded raster using small tiles."""
     matrix = np.asarray(values)
@@ -1246,16 +1247,31 @@ def _sample_heatmap(
             "Log Z requires at least one positive heatmap value."
             if log_z else "The selected output contains no finite values."
         )
+    sampled = np.full(sums.shape, np.nan, dtype=float)
+    np.divide(sums, counts, out=sampled, where=counts > 0)
+    if scale_to_preview:
+        # Density overviews average native cells. Isolated native peaks can
+        # dwarf every displayed pixel and wash out the entire overview. Use
+        # the same bounded raster we colour, retaining its scale on zoom.
+        finite_sample = sampled[np.isfinite(sampled)]
+        data_minimum = float(np.min(finite_sample))
+        data_maximum = float(np.max(finite_sample))
     if log_z:
         z_minimum, z_maximum = float(data_minimum), float(math.ceil(data_maximum))
+        if scale_to_preview and data_minimum == data_maximum:
+            z_minimum -= 1.0
         if z_minimum == z_maximum:
             z_maximum += 1.0
     else:
+        if scale_to_preview and data_minimum >= 0:
+            # Anchor densities at zero, including small constant fields.
+            # Otherwise generic constant-domain padding can swamp the signal.
+            data_minimum = 0.0
+            if data_maximum == 0:
+                data_maximum = 1.0
         z_minimum, z_maximum = _nice_axis_limits(
             data_minimum, data_maximum, floor_at_zero=data_minimum >= 0, intervals=5,
         )
-    sampled = np.full(sums.shape, np.nan, dtype=float)
-    np.divide(sums, counts, out=sampled, where=counts > 0)
 
     return x_values, y_values, sampled, z_minimum, z_maximum
 
@@ -1582,6 +1598,7 @@ def _build_preview_plot_options(
     histogram_boundary: str = "left",
     x_limits: tuple[float, float] | None = None,
     z_limits: tuple[float, float] | None = None,
+    heatmap_scale_to_preview: bool = False,
     aspect_ratio: float | None = None,
     line_type: str = "solid",
     secondary_y_label: str | None = None,
@@ -1642,6 +1659,7 @@ def _build_preview_plot_options(
             log_x=log_x,
             log_y=log_y,
             log_z=log_z,
+            scale_to_preview=heatmap_scale_to_preview,
         )
         if z_limits is not None:
             z_minimum, z_maximum = _plot_axis_limits(z_limits, None, label="Z", log_axis=log_z)
@@ -1991,7 +2009,9 @@ def _build_preview_plot_options(
 
             options["series"][0]["data"] = DetailedPreviewData(options["series"][0]["data"], refine_kde)
             return options
-        finite, counts, edges = _histogram_data(
+        # Retain the full sample for reset domains and their counts. The
+        # selected window may legitimately contain no samples at all.
+        _, counts, edges = _histogram_data(
             finite,
             bins=histogram_bins,
             bin_size=histogram_bin_size,
@@ -2675,10 +2695,13 @@ def build_preview_plot_options(**kwargs: Any) -> dict[str, Any]:
     options = _build_preview_plot_options(**kwargs)
     if kwargs.get("plot_type") == "Histogram":
         if not kwargs.get("density"):
-            # Keep the axis guide, but let the bar under the pointer alone
-            # control emphasis. Nearest-axis samples can be an adjacent bin
-            # or several datasets sharing the same slot.
-            options["axisPointer"] = {"triggerEmphasis": False}
+            # Rectangle hover supplies one count. The shared browser runtime
+            # places its guide at the rendered bar's centre and labels its
+            # full bin interval, including grouped and logarithmic histograms.
+            options["tooltip"]["trigger"] = "item"
+            options["tooltip"]["axisPointer"].update(show=False, type="none")
+            options["tooltip"]["axisPointer"]["label"]["show"] = False
+            options["axisPointer"] = {"show": False, "triggerEmphasis": False}
         lines = kwargs.get("lines", ())
         datasets = (
             [(line.name, line.color, line.y) for line in lines]

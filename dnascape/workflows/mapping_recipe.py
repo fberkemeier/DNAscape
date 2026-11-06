@@ -286,10 +286,12 @@ def _optional_number(value: Any, label: str) -> float | None:
 
 
 def _load_prepared_input(source: Mapping[str, Any], base_path: Path) -> dict[str, np.ndarray]:
-    if "prepared_values" in source:
+    path = base_path / str(source["prepared_path"]) if source.get("prepared_path") else None
+    if "prepared_values" in source and (path is None or not path.is_file()):
         from .code_recipes import restore_settings
         return restore_settings(source["prepared_values"], input_directory=base_path)
-    path = base_path / str(source["prepared_path"])
+    if path is None:
+        raise ValueError("Choose a prepared input path or include prepared_values.")
     with np.load(path, allow_pickle=False) as bundle:
         return {key: np.asarray(bundle[key]) for key in bundle.files}
 

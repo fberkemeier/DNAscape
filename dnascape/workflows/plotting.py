@@ -143,9 +143,12 @@ def write_plot_html(
         embedded_source = re.sub(r"</script", r"<\\/script", echarts_source, flags=re.IGNORECASE)
         runtime_script = "<script>\n" + embedded_source + "\n</script>"
     circular = bool(specification.get("dnascapeCircular"))
-    navigation_script = "<script>" + plot_navigation_script() + "</script>" if circular else ""
-    navigation_class = ' class="nicegui-echart dn-plot-navigation" style="position:relative"' if circular else ""
-    navigation_bootstrap = "window.getElement=()=>({chart,options,$emit:()=>{}});" if circular else ""
+    histogram = not circular and specification.get("dnascapePlotType") == "Histogram" and any(
+        item.get("type") == "custom" for item in specification.get("series", ())
+    )
+    shared_hover = circular or histogram
+    navigation_class = ' class="nicegui-echart dn-plot-navigation" style="position:relative"' if shared_hover else ""
+    navigation_bootstrap = "window.getElement=()=>({chart,options,$emit:()=>{}});" if shared_hover else ""
     safe_title = escape(str(title))
     download_name = json.dumps(destination.stem, ensure_ascii=True).replace("<", "\\u003c")
     histogram_script = """
@@ -195,6 +198,10 @@ def write_plot_html(
     });
     }
     """
+    navigation_script = (
+        "<script>" + plot_navigation_script() + ("\n" + histogram_script if histogram else "") + "</script>"
+        if shared_hover else ""
+    )
     html = f'''<!doctype html>
 <html lang="en">
 <head>
@@ -241,7 +248,7 @@ def write_plot_html(
     const options = chartOptions(specification);
     chart.setOption(options);
     {navigation_bootstrap}
-    {histogram_script}
+    {histogram_script if not histogram else ""}
     window.addEventListener('resize', () => chart.resize());
     function downloadImage(url, extension) {{
       const link = document.createElement('a');

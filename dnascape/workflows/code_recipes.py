@@ -19,6 +19,63 @@ _TYPES = {
     "SmoothingSettings": "analysis", "ConstantSimulationRequest": "simulation",
 }
 
+MAX_CODE_INPUT_BYTES = 256 * 1024 * 1024
+
+
+def encode_input_files(files):
+    """Retain original uploads losslessly in a single Python download."""
+    import base64
+    import zlib
+
+    unique = dict(files)
+    if sum(len(data) for data in unique.values()) > MAX_CODE_INPUT_BYTES:
+        raise ValueError("Code inputs exceed the 256 MB download limit.")
+    return {name: base64.b85encode(zlib.compress(data)).decode("ascii")
+            for name, data in unique.items() if data}
+
+
+def prepare_input_files(files, input_directory, *, recipe):
+    """Restore referenced originals once, preserving any user-supplied files.
+
+    Empty placeholders are never created. An edited filename must refer to a
+    real local file; it cannot silently reuse a different embedded source.
+    """
+    import base64
+    import zlib
+
+    referenced = set()
+
+    def visit(value):
+        if isinstance(value, dict):
+            for key, item in value.items():
+                if key in {"__upload__", "path", "prepared_path"} and isinstance(item, str):
+                    referenced.add(item)
+                visit(item)
+        elif isinstance(value, (list, tuple)):
+            for item in value:
+                visit(item)
+
+    visit(recipe)
+    root = Path(input_directory).resolve()
+    for name, encoded in files.items():
+        if name not in referenced:
+            continue
+        path = root / name
+        try:
+            path.resolve().relative_to(root)
+        except ValueError as exc:
+            raise ValueError("Embedded input paths must stay inside INPUT_DIRECTORY.") from exc
+        if path.exists():
+            continue
+        data = zlib.decompress(base64.b85decode(encoded))
+        path.parent.mkdir(parents=True, exist_ok=True)
+        try:
+            with path.open("xb") as stream:
+                stream.write(data)
+        except FileExistsError:
+            # Another run or a local editor may have supplied the file meanwhile.
+            pass
+
 
 def encode_settings(value, *, upload):
     """Keep active configuration readable and preserve arrays without pickle."""
@@ -26,6 +83,8 @@ def encode_settings(value, *, upload):
 
     if isinstance(value, UploadInspection):
         result = {"__upload__": upload(value), "form": value.expected_form}
+        if value.allow_positive_infinity:
+            result["allow_positive_infinity"] = True
         if value.source_format in {"bigwig", "bedgraph"}:
             result["format"] = value.source_format
         return result
@@ -86,10 +145,11 @@ def restore_settings(value, *, input_directory="inputs", _uploads=None):
         path = Path(input_directory) / value["__upload__"]
         if not path.is_file():
             raise FileNotFoundError(f"Place the source file at {path}, or edit INPUT_DIRECTORY/the recipe path.")
-        key = (str(path.resolve()), value.get("form"), value.get("format", "auto"))
+        key = (str(path.resolve()), value.get("form"), value.get("format", "auto"), value.get("allow_positive_infinity", False))
         if key not in _uploads:
             _uploads[key] = inspect_upload(path.name, path.read_bytes(), expected_form=value.get("form"),
-                                          source_format=value.get("format", "auto"))
+                                          source_format=value.get("format", "auto"),
+                                          allow_positive_infinity=value.get("allow_positive_infinity", False))
         return _uploads[key]
     if "__array__" in value:
         return np.asarray(value["__array__"], dtype=value["dtype"])

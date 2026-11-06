@@ -43,6 +43,27 @@ def prepare_simulation_recipe(recipe, *, input_directory="inputs"):
                                      tuple(form for _item in files), tuple(np.shape(value) for value in values))
                    if files else None)
         sources.append(_PreparedSimulationSource(label, values, components, summary))
+    # Movement profiles are shared by the existing initiation/speed batch. They
+    # use the same upload selections and native grid as the live page.
+    for key in ("stall_rate_per_kb", "stall_duration", "stall_recovery_rate"):
+        source = recipe["inputs"].get(key)
+        if source is None:
+            continue
+        if source["mode"] == "profile":
+            if len(source["files"]) != 1:
+                raise ValueError("Choose one spatial profile per fork-movement input.")
+            item = source["files"][0]
+            inspection = restore_settings(item["source"], input_directory=input_directory)
+            if inspection.inferred_form == "t":
+                raise ValueError(f"{key} requires a spatial profile.")
+            value = materialize_upload(replace(inspection, expected_form="x"),
+                                       column=item.get("column"), array_key=item.get("array_key"),
+                                       missing_policy=settings.get("missing_values", "error"))
+        else:
+            if len(source["values"]) != 1:
+                raise ValueError("Choose one constant per fork-movement input.")
+            value = source["values"][0]
+        settings[key] = value
     cases = _plan_simulation_cases(sources, combination_mode=recipe.get("combination_mode", "pairwise"))
     configured_end = float(recipe["region_end_kb"])
     start = float(settings["region_start_kb"])
@@ -50,12 +71,15 @@ def prepare_simulation_recipe(recipe, *, input_directory="inputs"):
     prepared = []
     for case in cases:
         fields = [source.values[index] for source, index in zip(sources, case.item_indices, strict=True)]
-        sizes = {np.asarray(value).shape[0] for value in fields
+        grid_fields = fields + [settings[key] for key in ("stall_rate_per_kb", "stall_duration", "stall_recovery_rate")
+                                if settings.get(key) is not None]
+        sizes = {np.asarray(value).shape[0] for value in grid_fields
                  if np.asarray(value).ndim == 2 and np.asarray(value).shape[0] > 1}
-        sizes.update(np.asarray(value).size for value in fields if np.asarray(value).ndim == 1 and np.asarray(value).size > 1)
+        sizes.update(np.asarray(value).size for value in grid_fields if np.asarray(value).ndim == 1 and np.asarray(value).size > 1)
         if len(sizes) > 1:
-            raise ValueError("Initiation-rate and fork-speed spatial axes disagree.")
-        end = start + next(iter(sizes)) if sizes and not use_selected_end else configured_end
+            raise ValueError("Spatial kinetic input axes disagree.")
+        native_spacing = float(settings.get("source_resolution_x") or settings["resolution_x"])
+        end = start + next(iter(sizes)) * native_spacing if sizes and not use_selected_end else configured_end
         request = ConstantSimulationRequest(initiation_rate=fields[0], fork_speed=fields[1],
                                             region_end_kb=end, **settings)
         validated = validate_constant_simulation(request)

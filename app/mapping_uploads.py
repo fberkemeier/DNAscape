@@ -58,6 +58,7 @@ async def inspect_upload_event(
     *,
     expected_form: str = "auto",
     source_format: str = "auto",
+    allow_positive_infinity: bool = False,
 ) -> UploadInspection:
     """Read and inspect a NiceGUI upload event with a server-side size check."""
 
@@ -87,6 +88,7 @@ async def inspect_upload_event(
         content_type=upload.content_type,
         expected_form=expected_form,
         source_format=source_format,
+        **({"allow_positive_infinity": True} if allow_positive_infinity else {}),
     )
     if inspection is None:  # NiceGUI returns None only while its executor is shutting down.
         raise RuntimeError("Upload inspection was interrupted while the app was stopping.")

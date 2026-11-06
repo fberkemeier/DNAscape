@@ -5,7 +5,7 @@ from datetime import datetime
 project = "DNAscape"
 author = "Francisco Berkemeier"
 copyright = f"{datetime.now().year}, {author}"
-release = "0.1.1"
+release = "0.1.2"
 
 extensions = ["sphinx.ext.mathjax", "sphinx_copybutton"]
 exclude_patterns = []

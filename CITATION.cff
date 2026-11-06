@@ -9,7 +9,7 @@ authors:
     given-names: Francisco
   - family-names: Boemo
     given-names: Michael A.
-version: 0.1.1
+version: 0.1.2
 license: MIT
 repository-code: "https://github.com/fberkemeier/DNAscape"
 url: "https://github.com/fberkemeier/DNAscape"

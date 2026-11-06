@@ -3,16 +3,14 @@
 from __future__ import annotations
 
 import math
-import pprint
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from typing import Any
 
 import numpy as np
 
-from app.simulation_exports import ExportArtifact
-
-MAX_CODE_INPUT_BYTES = 256 * 1024 * 1024
+from dnascape.workflows.code_recipes import MAX_CODE_INPUT_BYTES
+from dnascape.workflows.exports import ExportArtifact
 
 
 @dataclass(frozen=True)
@@ -154,57 +152,47 @@ def snapshot_mapping_code(
         "inputs": input_recipes,
         **({'filter': filter_recipe} if filter_recipe is not None else {}),
     })
-    input_bytes = sum(
-        0 if isinstance(data, bytes) else sum(array.nbytes for array in data.values())
-        for _path, data in members
-    )
+    members = list(dict(members).items())
+    input_bytes = sum(len(data) if isinstance(data, bytes) else sum(array.nbytes for array in data.values())
+                      for _path, data in members)
     if input_bytes > MAX_CODE_INPUT_BYTES:
         raise ValueError("Mapping code inputs exceed the 256 MB download limit.")
     return MappingCodeSnapshot(recipe, _literal(raw_export), tuple(members))
 
 
 def build_mapping_python(snapshot: MappingCodeSnapshot) -> ExportArtifact:
-    """One concise script with editable source and destination directories."""
+    """Use the shared developer-script layout with Mapping's exact workflow."""
     from copy import deepcopy
+    from app.code_export import recipe_literal, render_python
     from dnascape.workflows.code_recipes import encode_settings
     recipe = deepcopy(snapshot.recipe)
+    # Active controls used to appear twice; the override silently won when a
+    # user edited `settings`. Give each active option one editable value.
+    overrides = recipe.get("setting_overrides", {})
+    for key, override in tuple(overrides.items()):
+        if override.get("enabled"):
+            recipe.setdefault("settings", {})[key] = override["value"]
+            del overrides[key]
+    if not overrides:
+        recipe.pop("setting_overrides", None)
     prepared = {path: data for path, data in snapshot.files if not isinstance(data, bytes)}
     for source in recipe["inputs"].values():
         if source.get("mode") == "prepared" and source.get("prepared_path") in prepared:
             source["prepared_values"] = encode_settings(prepared[source["prepared_path"]], upload=lambda _source: None)
-    inputs = "\n".join(f"#   {path!r}" for path, data in snapshot.files if isinstance(data, bytes))
-    source = f'''# DNAscape Mapping: run with this version of DNAscape installed.
-# Run: python mapping.py
-# Edit INPUT_DIRECTORY and the filenames below to use your local data.
-# Missing uploads use placeholder filenames; replace them or supply those files:
-{inputs or "#   No external files: constants/prepared data are included below."}
-
-from pathlib import Path
-from math import inf, nan
-
-from dnascape.workflows.mapping_recipe import run_mapping_recipe
-from dnascape.workflows.recipe_exports import save_mapping_outputs
-
-HERE = Path(__file__).resolve().parent
-INPUT_DIRECTORY = HERE / "inputs"
-OUTPUT_DIRECTORY = HERE / "outputs"
-
-# Positions and resolution are in kb; time is in minutes. Edit input paths,
-# columns/arrays, constants, region, fitting settings and region transforms here.
-MAPPING = {pprint.pformat(recipe, width=95, sort_dicts=False)}
-
-# Select the output, filename, TSV/TXT/CSV/NPZ format and compression.
-RAW_EXPORT = {pprint.pformat(snapshot.raw_export, width=95, sort_dicts=False)}
-
-
-def main():
-    results = run_mapping_recipe(MAPPING, base_path=INPUT_DIRECTORY)
-    for path in save_mapping_outputs(results, RAW_EXPORT, directory=OUTPUT_DIRECTORY):
-        print(f"Saved {{path}}")
-    return results
-
-
-if __name__ == "__main__":
-    main()
-'''
-    return ExportArtifact(source.encode("utf-8"), "mapping.py", "text/x-python; charset=utf-8")
+    groups = (
+        ("Inputs: paths, dependence, columns/arrays and constants.", ("inputs",)),
+        ("Settings: route, region, fitting and transforms (kb; minutes).", (
+            "method", "target_shape", "region", "settings", "setting_overrides", "combination_mode", "filter",
+        )),
+    )
+    configuration = "MAPPING = " + recipe_literal(recipe, groups)
+    configuration += "\n\n# Outputs: filenames, formats, compression and statistics.\nRAW_EXPORT = "
+    configuration += recipe_literal(snapshot.raw_export, ())
+    return render_python(
+        workflow="mapping", recipe_name="MAPPING", configuration=configuration,
+        files=tuple((path, data) for path, data in snapshot.files if isinstance(data, bytes)),
+        imports=("from dnascape.workflows.mapping_recipe import run_mapping_recipe\n"
+                 "from dnascape.workflows.recipe_exports import save_mapping_outputs"),
+        execution=("results = run_mapping_recipe(recipe, base_path=input_directory)\n"
+                   "paths = save_mapping_outputs(results, RAW_EXPORT, directory=output_directory)"),
+    )

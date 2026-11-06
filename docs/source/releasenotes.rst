@@ -1,9 +1,19 @@
 Release Notes
 =============
 
-Unreleased
-----------
+0.1.2
+-----
 
+* Unified Developer code downloads across Data Manager, Mapping, Simulation
+  and Analysis. Scripts include original uploads, preserve local replacements,
+  group editable settings, and support notebooks and repeatable Python calls.
+* Added spatial stalling densities and recovery times/rates to Simulation,
+  with aligned uploads, independent stochastic speed controls, and Developer scripts.
+* Preserved censored replication arrivals at the cutoff instead of counting
+  them as completed. Incomplete runs are identified in the Simulation summary.
+* Corrected stalled-fork counts for permanent stalls and pauses extending past
+  the recording window or simulation cutoff. Active/total counts and directional
+  fork-density fields now include unfinished heads and agree with each other.
 * Removed the Directional fork densities route for Mapping's Replicated fraction target.
 * Accelerated raw Mapping CSV/TSV downloads with bounded numeric formatting and
   reused immutable result arrays, retaining full precision and existing file contents.

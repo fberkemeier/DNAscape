@@ -228,8 +228,10 @@ Export an app workflow
 
 
 Enable **Settings -> Interface -> Developer mode** to show **Code** on each
-workflow page. See :ref:`exportworkflows` for the script, input placeholders
-and output folders.
+workflow page. Each download is one editable Python script with its original
+uploads included, grouped settings and configurable input/output folders.
+Local source files take precedence over the included originals. See
+:ref:`exportworkflows` for placeholders, notebook use and repeated runs.
 
 .. _datamanagement:
 
@@ -616,13 +618,13 @@ Main workflow
    Repeat a run with the same random seed and settings. Record both for
    reproducibility.
 
-**Time window (min)**
-   Interval covered by the recorded time-dependent outputs.
-
-**Maximum time (min)**
+**Simulation time (min)**
    Stopping limit for a replicate. A recording window and a simulation stopping
    limit serve different purposes. Check for unfinished replication before
    interpreting completion statistics.
+
+**Time window (min)**
+   Interval covered by the recorded time-dependent outputs.
 
 **Track time courses**
    Adds replicated fraction, origin firing, fork counts and available firing
@@ -639,13 +641,37 @@ points improve on-screen detail, not the simulation grid or stored outputs.
 Optional settings
 ~~~~~~~~~~~~~~~~~
 
-Fork movement and firing factors
-^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+Origin dynamics
+^^^^^^^^^^^^^^^
+
+**Firing factors** enables an optional limited pool for origin
+activation. Set its size and recycling behaviour when investigating
+resource-limited initiation. Available-factor time courses require time tracking.
+
+Fork dynamics
+^^^^^^^^^^^^^
+
+Under **Fork dynamics**, **Fork stalling** and **Stochastic movement** are
+independent. Enable either, both, or neither.
 
 **Fork stalling** enables genomic barriers at the specified **Stall rate
-(stalls/kb)**. **Stall recovery** allows passage after a mean **Recovery time**
-in minutes. With recovery disabled, a stalled fork remains blocked in that
-realisation.
+(stalls/kb)**. Under **Dependence**, choose **Constant** or upload a
+**Profile**. The density is converted to a bin encounter probability
+``1 - exp(-density * bin width)``; it is not a reduced effective fork speed.
+
+**Stall recovery** enables exponential pauses. Set **Recovery rate (1/min)**,
+initially 0.1, corresponding to a mean pause of 10 minutes:
+``mean time = 1 / recovery rate``. Uploaded recovery profiles also contain
+rates in inverse minutes. Zero recovery rate means no restart. With recovery
+disabled, all encountered stalls remain non-recovering.
+
+Recovery accepts **Constant** or **Profile**. Both spatial profiles
+use the existing upload/column-selection controls and the same chromosome
+extent, selected region and destination bin size as initiation rate and fork
+speed. Multiple kinetic datasets share the selected movement profiles. Missing
+values follow the global missing-value policy; zero-filled recovery rates
+represent locally permanent stalls. The Python API continues to accept legacy
+mean recovery times as well as recovery rates.
 
 **Shared between directions** uses the same stall positions and recovery
 landscape for forks arriving from either direction. With it off, the two
@@ -657,9 +683,11 @@ local speed as its arithmetic mean and the selected standard deviation in
 kb/min. The model uses lognormal draws; zero deviation recovers deterministic
 movement. Spatial and temporal speed dependence can be combined with stalling.
 
-Finite firing factors provide an optional limited pool for origin activation.
-Set its size and recycling behaviour when investigating resource-limited
-initiation. Available-factor time courses require time tracking.
+At the maximum replication time, unreplicated bins remain censored rather
+than becoming replicated at the cutoff. The run summary identifies incomplete
+realizations. Retained timing profiles contain infinity for censored bins;
+timing means and standard deviations use observed finite arrivals. An incomplete
+S phase has infinite completion time/duration, or NaN if initiation never started.
 
 Region transforms
 ^^^^^^^^^^^^^^^^^
@@ -699,9 +727,22 @@ Click **Simulate**, then choose an output in **Preview**.
    * - Outputs marked (space-time)
      - Position-by-time fields of progression, events and fork density.
 
+For event and fork-density heatmaps, the automatic **Z max** follows the
+averaged overview pixels so sparse densities remain visible on long regions.
+The scale stays fixed while zooming; native peaks above it use the top colour.
+Set Z limits manually for comparisons between runs, or reset them to restore
+the data-dependent default. Raw values and exports retain their full precision.
+
 **Origin firing (time)** counts actual initiations per recording interval,
 averaged over replicates. It differs from the input initiation hazard and is
 not an event rate per minute unless divided by interval duration.
+
+**Stalled forks (time)** includes permanent stalls and pauses still in progress
+at the end of the recording window or simulation. A paused fork is counted
+until it recovers or its destination is replicated by another fork or origin.
+**Total forks (time)** is the sum of active and stalled forks. The directional
+fork-density heatmaps include both moving and paused heads, classified by
+their propagation direction.
 
 **Completion time** is measured on the simulation clock. **S-phase duration**
 is completion minus the first realised initiation. Inter-origin distance is

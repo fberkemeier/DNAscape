@@ -433,7 +433,7 @@ def data_upload(
         if ".csv" in accept_tokens and "text/csv" not in accept_tokens:
             accept_tokens.append("text/csv")
         normalized_accept = ",".join(accept_tokens)
-        upload_prompt = "Choose file or drag it here"
+        upload_prompt = "Upload file"
         uploader = (
             _DataUpload(
                 label=upload_prompt,

@@ -12,6 +12,10 @@ INPUT_PREFIX = "input:"
 
 
 def input_profile_label(key: str) -> str:
+    labels = {"stall_rate_per_kb": "Stalling density", "stall_duration": "Mean recovery time",
+              "stall_recovery_rate": "Recovery rate"}
+    if key.removeprefix(INPUT_PREFIX) in labels:
+        return labels[key.removeprefix(INPUT_PREFIX)] + " (input)"
     name = key.removeprefix(INPUT_PREFIX).removesuffix("_xt").replace("_", " ")
     return f"{name.capitalize()} (input)"
 
@@ -86,9 +90,12 @@ def add_simulation_input_previews(result: Any, request: Any) -> Any:
     outputs = dict(result.outputs)
     forms = dict(result.input_forms)
     axes = dict(result.input_axes)
-    for source_key in ("initiation_rate", "fork_speed"):
+    for source_key in ("initiation_rate", "fork_speed", "stall_rate_per_kb", "stall_duration", "stall_recovery_rate"):
         key = INPUT_PREFIX + source_key
-        values = _readonly(getattr(request, source_key))
+        source = getattr(request, source_key, None)
+        if source is None:
+            continue
+        values = _readonly(source)
         if values.ndim == 0 or values.size == 1 or key in outputs:
             continue
         form = "x" if values.ndim == 1 or values.shape[1] == 1 else "t" if values.shape[0] == 1 else "xt"

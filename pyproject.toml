@@ -5,7 +5,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "dnascape"
-version = "0.1.1"
+version = "0.1.2"
 description = "DNAscape: tools for modelling and simulating DNA replication kinetics."
 readme = "README.md"
 requires-python = ">=3.9"

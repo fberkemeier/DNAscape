@@ -12,6 +12,11 @@ import numpy as np
 from .utils import check_cancelled, etaf, report_measured_work
 
 _SOURCE_ALIASES = {
+    "stall_density": "stall_rate_per_kb",
+    "stall_density_per_kb": "stall_rate_per_kb",
+    "recovery_rate": "stall_recovery_rate",
+    "recovery_time": "tau",
+    "stall_recovery_time": "tau",
     "firing_rate": "initiation_rate",  # Read older structured inputs.
     "fr": "initiation_rate",
     "firing": "initiation_rate",
@@ -27,6 +32,9 @@ _SOURCE_ALIASES = {
 }
 
 _ASSUMPTION_ALIASES = {
+    "recovery_rate": "stall_recovery_rate",
+    "recovery_time": "tau",
+    "stall_recovery_time": "tau",
     "bin_size": "resolution",
     "resolution_kb": "resolution",
     "resolution_x": "resolution_space",
@@ -83,6 +91,7 @@ def _resolve_n_bins(
     resolution_space=1.0,
     genome_length=None,
     interval_kb=None,
+    spatial_fields=(),
 ):
     """Infer the spatial genome length from spatial or space-time inputs."""
     candidates = []
@@ -108,6 +117,8 @@ def _resolve_n_bins(
 
     add_candidate(initiation_rate, "initiation_rate")
     add_candidate(fork_speed, "fork_speed")
+    for name, value in spatial_fields:
+        add_candidate(value, name)
     interval_n = _n_bins_from_interval(
         resolution_space,
         genome_length=genome_length,
@@ -316,6 +327,50 @@ def _validated_nonnegative_integer(value, name):
     return int(numeric)
 
 
+def _spatial_stall_parameter(value, name, *, n_bins=None, positive=False, allow_inf=False):
+    """Validate a scalar or spatial vector without expanding scalar fields."""
+    if np.iscomplexobj(value):
+        raise ValueError(f"{name} must contain real numeric values.")
+    try:
+        array = np.asarray(value, dtype=float)
+    except (ValueError, TypeError) as exc:
+        raise ValueError(f"{name} must contain numeric values.") from exc
+    if array.size == 0 or array.ndim > 2 or (array.ndim == 2 and array.shape[1] != 1):
+        raise ValueError(f"{name} must be a scalar or one-dimensional spatial profile.")
+    array = array.reshape(-1)
+    invalid = np.isnan(array) | np.isneginf(array)
+    if not allow_inf:
+        invalid |= np.isposinf(array)
+    invalid |= (array <= 0) if positive else (array < 0)
+    if np.any(invalid):
+        qualifier = "positive (or infinity)" if positive and allow_inf else "finite and non-negative"
+        raise ValueError(f"{name} values must be {qualifier}.")
+    if array.size == 1:
+        return float(array[0])
+    if n_bins is not None and array.size != n_bins:
+        raise ValueError(f"{name} spatial profile must contain {n_bins} values; got {array.size}.")
+    return array
+
+
+def _stall_recovery_time(tau, stall_recovery_rate, *, n_bins=None):
+    if tau is not None and stall_recovery_rate is not None:
+        raise ValueError("Specify either tau (mean recovery time) or stall_recovery_rate, not both.")
+    if stall_recovery_rate is None:
+        return _spatial_stall_parameter(
+            np.inf if tau is None else tau, "tau", n_bins=n_bins, positive=True, allow_inf=True)
+    rate = _spatial_stall_parameter(stall_recovery_rate, "stall_recovery_rate", n_bins=n_bins)
+    with np.errstate(divide="ignore", over="ignore"):
+        duration = np.divide(1., rate)
+    return float(duration) if np.ndim(duration) == 0 else duration
+
+
+def _compact_stall_parameter(value):
+    """Keep uniform profiles on the scalar sampling fast path, after axis validation."""
+    if np.ndim(value) and np.all(value == value[0]):
+        return float(value[0])
+    return value
+
+
 def stall_probability_per_bin(stall_rate_per_kb, resolution_space):
     """Convert a physical stall density into a per-bin encounter probability.
 
@@ -325,14 +380,7 @@ def stall_probability_per_bin(stall_rate_per_kb, resolution_space):
     represents that encounter with one Bernoulli draw per bin and direction.
     """
 
-    try:
-        rate = float(stall_rate_per_kb)
-    except (TypeError, ValueError) as exc:
-        raise ValueError(
-            "stall_rate_per_kb must be a finite non-negative rate."
-        ) from exc
-    if not np.isfinite(rate) or rate < 0.0:
-        raise ValueError("stall_rate_per_kb must be a finite non-negative rate.")
+    rate = _spatial_stall_parameter(stall_rate_per_kb, "stall_rate_per_kb")
     try:
         resolution = float(resolution_space)
     except (TypeError, ValueError) as exc:
@@ -341,7 +389,8 @@ def stall_probability_per_bin(stall_rate_per_kb, resolution_space):
         raise ValueError("resolution_x must be a finite positive number.")
     with np.errstate(over="ignore"):
         exposure = rate * resolution
-    return float(-np.expm1(-exposure))
+    probability = -np.expm1(-exposure)
+    return float(probability) if np.ndim(probability) == 0 else probability
 
 
 def _resolve_stall_probability(stall_rate, stall_rate_per_kb, resolution_space):
@@ -430,7 +479,7 @@ def simulate_replication(
     rng=None,
     perQ=False,
     stall_rate=0.0,
-    tau=np.inf,
+    tau=None,
     ffiring_nr=None,
     ffiring_recycle=0.0,
     ffiring_forkQ=False,
@@ -450,6 +499,9 @@ def simulate_replication(
     _compute_inter_origin_distances=True,
     fork_speed_std=0.0,
     stall_shared_directions=False,
+    stall_recovery_rate=None,
+    _prepared_stalling=None,
+    _fork_interval_sink=None,
     **legacy_kwargs,
 ):
     """Run one stochastic replication simulation.
@@ -460,6 +512,9 @@ def simulate_replication(
     ``interval_kb``. ``stall_rate_per_kb`` is a physical stall density and is
     converted to a per-bin probability after resolving the spatial resolution.
     ``stall_rate`` remains the legacy probability-per-bin input.
+    Stalling density and ``tau`` may be scalars or spatial vectors. Alternatively
+    supply ``stall_recovery_rate`` in inverse minutes (zero means no restart).
+    Specify one recovery representation; omitted recovery means permanent stalls.
     ``fork_speed_std`` enables positive lognormal speeds matching the local
     input mean and the requested SD in kb/min, independently by bin, direction
     and replicate (also by time slice for temporal fields). Temporal stochastic
@@ -482,14 +537,11 @@ def simulate_replication(
     if not np.isfinite(resolution_time) or resolution_time <= 0:
         raise ValueError("resolution_t must be a finite positive number.")
 
-    stall_rate = _resolve_stall_probability(
-        stall_rate,
-        stall_rate_per_kb,
-        resolution_space,
-    )
-    tau = float(tau)
-    if np.isnan(tau) or tau <= 0:
-        raise ValueError("tau must be positive or np.inf.")
+    if _prepared_stalling is None:
+        stall_rate = _resolve_stall_probability(stall_rate, stall_rate_per_kb, resolution_space)
+        tau = _stall_recovery_time(tau, stall_recovery_rate)
+    else:
+        stall_rate, tau, has_stalls, recoverable = _prepared_stalling
     if max_rep_time is not None:
         max_rep_time = float(max_rep_time)
         if not np.isfinite(max_rep_time) or max_rep_time <= 0:
@@ -507,6 +559,7 @@ def simulate_replication(
         resolution_space=resolution_space,
         genome_length=genome_length,
         interval_kb=interval_kb,
+        spatial_fields=(("stall_rate_per_kb", stall_rate), ("tau", tau)),
     )
 
     if _prepared_firing_field is None:
@@ -551,23 +604,37 @@ def simulate_replication(
     else:
         raise RuntimeError(f"Unknown prepared fork-speed field kind: {v_kind!r}.")
 
+    if _prepared_stalling is None:
+        stall_rate = _spatial_stall_parameter(stall_rate, "stall probability", n_bins=n)
+        tau = _spatial_stall_parameter(tau, "tau", n_bins=n, positive=True, allow_inf=True)
+        stall_rate = _compact_stall_parameter(stall_rate)
+        tau = _compact_stall_parameter(tau)
+        has_stalls = bool(np.any(np.asarray(stall_rate) > 0))
+        recoverable = np.isfinite(tau)
     p = stall_rate
-    shared_stalls = stall_shared_directions and p > 0
+    shared_stalls = stall_shared_directions and has_stalls
     stall_left_mask = rng.random(n) < p
     stall_right_mask = stall_left_mask if shared_stalls else rng.random(n) < p
     stall_delay_left = np.zeros(n, float)
     stall_delay_right = np.zeros(n, float)
-    if p > 0.0:
-        if np.isfinite(tau):
-            if stall_left_mask.any():
-                stall_delay_left[stall_left_mask] = rng.exponential(scale=tau, size=int(stall_left_mask.sum()))
-            if shared_stalls:
-                stall_delay_right[:] = stall_delay_left
-            elif stall_right_mask.any():
-                stall_delay_right[stall_right_mask] = rng.exponential(scale=tau, size=int(stall_right_mask.sum()))
+    if has_stalls:
+        def sample_delays(mask, delays):
+            if np.ndim(tau) == 0:
+                if recoverable:
+                    if mask.any():
+                        delays[mask] = rng.exponential(scale=tau, size=int(mask.sum()))
+                else:
+                    delays[mask] = np.inf
+            else:
+                finite = mask & recoverable
+                delays[mask & ~finite] = np.inf
+                if finite.any():
+                    delays[finite] = rng.exponential(scale=tau[finite], size=int(finite.sum()))
+        sample_delays(stall_left_mask, stall_delay_left)
+        if shared_stalls:
+            stall_delay_right[:] = stall_delay_left
         else:
-            stall_delay_left[stall_left_mask] = np.inf
-            stall_delay_right[stall_right_mask] = np.inf
+            sample_delays(stall_right_mask, stall_delay_right)
 
     def _row_for_time(t):
         if not np.isfinite(t) or t < 0.0:
@@ -970,6 +1037,8 @@ def simulate_replication(
 
     idx = np.arange(n, dtype=np.int32)
     fired_mask = (src == idx) & np.isfinite(t)
+    if max_rep_time is not None:
+        fired_mask &= t <= max_rep_time
     fired_idx = np.flatnonzero(fired_mask).astype(np.int64, copy=False)
 
     if not perQ:
@@ -996,7 +1065,60 @@ def simulate_replication(
 
     replication_time_min = g
     if max_rep_time is not None:
-        replication_time_min = np.minimum(replication_time_min, float(max_rep_time))
+        replication_time_min = np.where(g <= max_rep_time, g, np.inf)
+
+    # Reconstruct realised directional fork heads, including attempted
+    # crossings which never finish. Arrival-tree edges alone omit permanently
+    # stalled forks and losing forks rescued by replication from the other side.
+    fork_intervals = []
+    if time_statsQ or _fork_interval_sink is not None:
+        time_grid = _validated_time_grid(time_grid, required=True)
+        observation_end = float(time_grid[-1])
+        if max_rep_time is not None:
+            observation_end = min(observation_end, max_rep_time)
+        reached = np.isfinite(g) & (g <= observation_end)
+        for direction, delays in ((1, stall_delay_left), (-1, stall_delay_right)):
+            heads = np.flatnonzero(reached & (fired_mask | (fork_directionality == direction)))
+            if not perQ:
+                heads = heads[heads < n - 1] if direction == 1 else heads[heads > 0]
+            destinations = (heads + direction) % n
+            starts = g[heads]
+            ahead = g[destinations] > starts
+            heads, destinations, starts = heads[ahead], destinations[ahead], starts[ahead]
+            if not heads.size:
+                continue
+            check_cancelled()
+            if fork_speed_std > 0 and v_kind in {"scalar", "x"}:
+                inverse = inverse_forward if direction == 1 else inverse_backward
+                moving_time = resolution_space * inverse[destinations]
+            elif fork_speed_std > 0:
+                samples = forward_samples if direction == 1 else backward_samples
+                # These crossings were already visited by propagation. Reuse
+                # its speed samples without consuming additional random draws.
+                moving_time = np.empty(heads.size)
+                for offset in range(0, heads.size, 1024):
+                    check_cancelled()
+                    moving_time[offset:offset + 1024] = [
+                        stochastic_crossing(float(start), int(destination), samples)
+                        for start, destination in zip(starts[offset:offset + 1024],
+                                                      destinations[offset:offset + 1024], strict=True)
+                    ]
+            elif inv_v_xt is not None or inv_v_t is not None:
+                rows = np.minimum((starts // resolution_time).astype(np.int64), Tv - 1)
+                inverse = inv_v_t[rows] if inv_v_t is not None else inv_v_xt[rows, destinations]
+                moving_time = resolution_space * inverse
+            elif inv_v_x is not None:
+                moving_time = resolution_space * inv_v_x[destinations]
+            else:
+                moving_time = np.full(heads.size, resolution_space * inv_v_scalar)
+            pause = delays[destinations]
+            # The first replication of the destination rescues/terminates a
+            # competing head, even if its own stall would never recover.
+            ends = np.minimum(g[destinations], starts + (moving_time + pause))
+            pause_starts = np.where(pause > 0, starts + moving_time, np.inf)
+            fork_intervals.append((direction, destinations, starts, ends, pause_starts))
+        if _fork_interval_sink is not None:
+            _fork_interval_sink.extend(fork_intervals)
 
     # --- time statistics (1D only, stays here) ---
     time_stats = None
@@ -1008,33 +1130,26 @@ def simulate_replication(
         def count_from_intervals(starts, ends):
             starts = np.asarray(starts, float)
             ends = np.asarray(ends, float)
+            present = np.isfinite(starts) & (starts < ends)
+            starts, ends = starts[present], ends[present]
             if starts.size == 0:
                 return np.zeros_like(time_grid, float)
             starts.sort()
             ends.sort()
             started = np.searchsorted(starts, time_grid, side="right")
-            ended = np.searchsorted(ends, time_grid, side="left")
-            return (started - ended).astype(float)
+            # Half-open intervals avoid counting a head twice at a bin boundary
+            # or keeping it stalled at the instant it restarts.
+            ended = np.searchsorted(ends, time_grid, side="right")
+            counts = (started - ended).astype(float)
+            if max_rep_time is not None:
+                counts[time_grid > max_rep_time] = 0.
+            return counts
 
-        # build fork/stall intervals via traversal edges (cheap vs m×n)
-        pk = prev.astype(np.int64, copy=False)
-        good = (pk >= 0) & np.isfinite(replication_time_min) & np.isfinite(replication_time_min[pk])
-        cols = np.flatnonzero(good).astype(np.int64, copy=False)
-        edge_start = replication_time_min[pk[cols]]
-        edge_end = replication_time_min[cols]
-
-        fork_ok = np.isfinite(edge_start) & np.isfinite(edge_end) & (edge_start < edge_end) & (edge_start <= t_max_grid)
-        fork_starts = edge_start[fork_ok].tolist()
-        fork_ends = np.minimum(edge_end[fork_ok], t_max_grid).tolist()
-
-        d = fork_directionality[cols]
-        delay = np.where(d > 0, stall_delay_left[cols], stall_delay_right[cols])
-        stall_ok = np.isfinite(delay) & (delay > 0.0) & np.isfinite(edge_end) & (edge_end <= t_max_grid)
-        stall_starts = (edge_end[stall_ok] - delay[stall_ok]).tolist()
-        stall_ends = np.minimum(edge_end[stall_ok], t_max_grid).tolist()
-
-        total_forks = count_from_intervals(fork_starts, fork_ends)
-        stalled_forks = count_from_intervals(stall_starts, stall_ends)
+        total_forks = np.zeros_like(time_grid)
+        stalled_forks = np.zeros_like(time_grid)
+        for _direction, _positions, starts, ends, pause_starts in fork_intervals:
+            total_forks += count_from_intervals(starts, ends)
+            stalled_forks += count_from_intervals(pause_starts, ends)
         active_forks = total_forks - stalled_forks
 
         # firing_factors 1D (as before)
@@ -1127,7 +1242,7 @@ def rsim(
     resolution_t=None,
     perQ=False,
     stall_rate=0.0,
-    tau=np.inf,
+    tau=None,
     ffiring_nr=None,
     ffiring_recycle=0.0,
     ffiring_forkQ=False,
@@ -1157,6 +1272,7 @@ def rsim(
     fork_speed_std=0.0,
     retain_replicon_lengths_limit=None,
     stall_shared_directions=False,
+    stall_recovery_rate=None,
     **legacy_kwargs,
 ):
     """Run replicate stochastic simulations and return averaged features.
@@ -1175,6 +1291,14 @@ def rsim(
     Per-simulation profiles, pooled inter-origin distances, one-dimensional
     time courses, and space-time fields have independent retention/statistics
     controls; inter-origin distances do not require either time-statistics flag.
+    Stalling density and recovery (``tau`` in minutes, or ``stall_recovery_rate``
+    in inverse minutes) accept scalar or spatial profiles through ``source`` or
+    direct arguments. Legacy scalar assumptions are retained. Specify only one
+    recovery representation. Omitted recovery means permanent stalls.
+    Arrival times beyond ``max_rep_time`` remain infinite, not replicated at
+    the cutoff. Completion and duration are infinite for incomplete S phases,
+    or NaN when no origin fired. Timing means/std use observed finite arrivals;
+    ``replication_timing_observed_fraction`` reports coverage of those statistics.
     ``time_statsQ`` also records actual origin firing per time-grid interval and
     completed replicon lengths. Replicons are the DNA domains copied from each
     fired origin; unfinished domains are excluded. Their retained sample count
@@ -1199,6 +1323,7 @@ def rsim(
         "stall_rate_per_kb": stall_rate_per_kb,
         "stall_shared_directions": stall_shared_directions,
         "tau": tau,
+        "stall_recovery_rate": stall_recovery_rate,
         "ffiring_nr": ffiring_nr,
         "ffiring_recycle": ffiring_recycle,
         "ffiring_forkQ": ffiring_forkQ,
@@ -1229,13 +1354,17 @@ def rsim(
     if source is not None:
         if not isinstance(source, dict):
             raise ValueError("rsim source must be a dictionary with initiation_rate and/or fork_speed.")
-        allowed_source = {"initiation_rate", "fork_speed"}
+        allowed_source = {"initiation_rate", "fork_speed", "stall_rate_per_kb", "tau", "stall_recovery_rate"}
+        source_names = set()
         for key, value in source.items():
             name = _normalise_structured_key(key, _SOURCE_ALIASES)
             if name not in allowed_source:
                 raise ValueError(
-                    "rsim source only accepts kinetic inputs: initiation_rate and fork_speed."
+                    "rsim source accepts initiation_rate, fork_speed, stall_rate_per_kb, tau and stall_recovery_rate."
                 )
+            if name in source_names or (name in {"stall_rate_per_kb", "tau", "stall_recovery_rate"} and params[name] is not None):
+                raise ValueError(f"Pass {name} either directly or in source, not both.")
+            source_names.add(name)
             if name == "initiation_rate" and (
                 params["initiation_rate"] is not None
                 or params["ori_rate"] is not None
@@ -1262,6 +1391,11 @@ def rsim(
                 )
             if name not in allowed_assumptions:
                 raise ValueError(f"Unknown rsim assumption: {key!r}.")
+            if name in {"stall_rate_per_kb", "tau", "stall_recovery_rate"}:
+                if source is not None and name in source_names:
+                    raise ValueError(f"Pass {name} in source or assumptions, not both.")
+                if np.asarray(value).size > 1:
+                    raise ValueError(f"Put spatial {name} profiles in source, not assumptions.")
             params[name] = value
 
     initiation_rate = params["initiation_rate"]
@@ -1277,6 +1411,7 @@ def rsim(
     stall_rate_per_kb = params["stall_rate_per_kb"]
     stall_shared_directions = _validated_stall_shared_directions(params["stall_shared_directions"])
     tau = params["tau"]
+    stall_recovery_rate = params["stall_recovery_rate"]
     ffiring_nr = params["ffiring_nr"]
     ffiring_recycle = params["ffiring_recycle"]
     ffiring_forkQ = params["ffiring_forkQ"]
@@ -1331,9 +1466,7 @@ def rsim(
         stall_rate_per_kb,
         resolution_space,
     )
-    tau = float(tau)
-    if np.isnan(tau) or tau <= 0:
-        raise ValueError("tau must be positive or np.inf.")
+    tau = _stall_recovery_time(tau, stall_recovery_rate)
     if max_rep_time is not None:
         max_rep_time = float(max_rep_time)
         if not np.isfinite(max_rep_time) or max_rep_time <= 0:
@@ -1364,8 +1497,17 @@ def rsim(
         resolution_space=resolution_space,
         genome_length=genome_length,
         interval_kb=interval_kb,
+        spatial_fields=(("stall_rate_per_kb", stall_rate), ("tau", tau)),
     )
 
+    # Stalling/recovery profiles can define the spatial axis when both other
+    # kinetic fields are scalar or temporal.
+    # (The same fields were already normalized above.)
+    stall_rate = _spatial_stall_parameter(stall_rate, "stall probability", n_bins=n)
+    tau = _spatial_stall_parameter(tau, "tau", n_bins=n, positive=True, allow_inf=True)
+    stall_rate = _compact_stall_parameter(stall_rate)
+    tau = _compact_stall_parameter(tau)
+    prepared_stalling = (stall_rate, tau, bool(np.any(np.asarray(stall_rate) > 0)), np.isfinite(tau))
     sim_number = _validated_positive_integer(sim_number, "sim_number")
     print_every = _validated_positive_integer(print_every, "print_every")
     if retain_rep_times_per_sim:
@@ -1539,6 +1681,7 @@ def rsim(
         retain_this_iod = all_iods is not None and (
             retained_iod_limit is None or retained_iod_count < retained_iod_limit
         )
+        fork_intervals = [] if time_stats_xtQ else None
         (
             fired_idx,
             _,
@@ -1578,6 +1721,8 @@ def rsim(
             _compute_inter_origin_distances=retain_this_iod,
             fork_speed_std=fork_speed_std,
             stall_shared_directions=stall_shared_directions,
+            _prepared_stalling=prepared_stalling,
+            _fork_interval_sink=fork_intervals,
         )
 
         if rep_times_per_sim is not None and i <= retained_rep_times:
@@ -1712,42 +1857,19 @@ def rsim(
                         cols = boundary_k[okm].astype(np.int64, copy=False)
                         np.add.at(sum_coalescence_events_xt, (bins, cols), 1.0)
 
-            # (d) fork densities in (t,x)
-            pk = prev.astype(np.int64, copy=False)
-            good = (pk >= 0) & np.isfinite(rep_time) & np.isfinite(rep_time[pk])
-            cols0 = np.flatnonzero(good).astype(np.int64, copy=False)
-            if cols0.size:
-                t_end = rep_time[cols0]
-                t_start = rep_time[pk[cols0]]
-                ok2 = (t_start < t_end) & (t_start <= t_max_grid)
-                cols0 = cols0[ok2]
-                if cols0.size:
-                    t_start = t_start[ok2]
-                    t_end = np.minimum(t_end[ok2], t_max_grid)
-                    j0 = np.searchsorted(time_grid, t_start, side="left").astype(np.int64, copy=False)
-                    j1 = np.searchsorted(time_grid, t_end, side="left").astype(np.int64, copy=False)
-                    ok3 = j1 > j0
-                    cols0 = cols0[ok3]
-                    if cols0.size:
-                        j0 = j0[ok3]
-                        j1 = j1[ok3]
-                        d = fdir[cols0]
-                        Rm = d > 0
-                        Lm = d < 0
-
-                        def _range_add(target_mm, cols, a, b, weight=1.0):
-                            for kk in range(cols.size):
-                                c = int(cols[kk])
-                                target_mm[a[kk]:b[kk], c] += weight
-
-                        if np.any(Rm):
-                            _range_add(sum_right_moving_fork_density_xt, cols0[Rm], j0[Rm], j1[Rm])
-                        if np.any(Lm):
-                            _range_add(sum_left_moving_fork_density_xt, cols0[Lm], j0[Lm], j1[Lm])
-                        tied = d == 0
-                        if np.any(tied):
-                            _range_add(sum_right_moving_fork_density_xt, cols0[tied], j0[tied], j1[tied], .5)
-                            _range_add(sum_left_moving_fork_density_xt, cols0[tied], j0[tied], j1[tied], .5)
+            # (d) Directional densities use the same head lifetimes as the
+            # 1D counts, including pauses and unfinished terminal crossings.
+            observation_stop = (len(time_grid) if max_rep_time is None else
+                                int(np.searchsorted(time_grid, max_rep_time, side="right")))
+            for direction, positions, starts, ends, _pause_starts in fork_intervals:
+                j0 = np.searchsorted(time_grid, starts, side="left")
+                j1 = np.minimum(np.searchsorted(time_grid, ends, side="left"), observation_stop)
+                target = (sum_right_moving_fork_density_xt if direction == 1 else
+                          sum_left_moving_fork_density_xt)
+                for kk in np.flatnonzero(j1 > j0):
+                    if kk % 1024 == 0:
+                        check_cancelled()
+                    target[j0[kk]:j1[kk], positions[kk]] += 1.
 
         report_measured_work(i / sim_number)
         if verbose and (i % print_every == 0 or i == sim_number):
@@ -1851,6 +1973,9 @@ def rsim(
     return dict(
         replication_timing=avg_rep_time_min,
         replication_timing_std=replication_timing_std,
+        replication_timing_observed_fraction=count_rep_time / float(sim_number),
+        completed=np.isfinite(completion_times_min),
+        incomplete_simulations=int(np.count_nonzero(~np.isfinite(completion_times_min))),
         rep_times_per_sim=rep_times_per_sim,
         s_phase_duration=s_phase_durations_min,
         completion_time=completion_times_min,
@@ -1913,14 +2038,15 @@ _RSIM_INPUT_DESCRIPTIONS = {
         "Legacy probability that a moving fork encounters a stall in one spatial bin."
     ),
     "stall_rate_per_kb": (
-        "Physical stall density in stalls/kb. Converted to the per-bin probability "
+        "Scalar or spatial physical stall density in stalls/kb. Converted to the per-bin probability "
         "1 - exp(-stall_rate_per_kb * resolution_space)."
     ),
     "stall_shared_directions": (
         "Share stall positions and recovery delays between both fork directions. "
         "False retains independent directional stalls; this does not couple sister forks."
     ),
-    "tau": "Mean stall duration. np.inf represents non-recovering stalls.",
+    "tau": "Scalar or spatial mean stall duration in minutes. Omitted/None or np.inf means no recovery. Use tau or stall_recovery_rate, not both.",
+    "stall_recovery_rate": "Scalar or spatial recovery rate (1/min). Zero means no recovery; mean pause time is 1/rate. Put profiles in source.",
     "ffiring_nr": "Finite firing-factor pool size. None disables finite-factor limitation.",
     "ffiring_recycle": "Rate at which used firing factors recycle into the available pool.",
     "ffiring_forkQ": "Whether active forks also affect the finite firing-factor pool.",
@@ -1978,8 +2104,8 @@ _RSIM_INPUT_DESCRIPTIONS = {
     "geometry": "String geometry selector, usually linear or periodic.",
     "resolution": "Alias for resolution_space.",
     "source": (
-        "Dictionary input style, usually containing initiation_rate and fork_speed; "
-        "mirrors rmap."
+        "Kinetic inputs: initiation_rate, fork_speed, stall_rate_per_kb and either "
+        "tau or stall_recovery_rate. Spatial movement profiles belong here."
     ),
     "assumptions": (
         "Dictionary of simulation settings; mirrors rmap and keeps kinetic "
@@ -1989,11 +2115,17 @@ _RSIM_INPUT_DESCRIPTIONS = {
 
 
 _RSIM_OUTPUT_RECORDS = [
+    {"output": "replication_timing_observed_fraction", "shape/type": "(n,) array",
+     "returned when": "always", "description": "Fraction of realizations with an observed replication time per bin."},
+    {"output": "completed", "shape/type": "(sim_number,) boolean array",
+     "returned when": "always", "description": "True only when all bins replicated before the cutoff."},
+    {"output": "incomplete_simulations", "shape/type": "integer",
+     "returned when": "always", "description": "Number of incomplete or never-started realizations."},
     {
         "output": "replication_timing",
         "shape/type": "(n,) array",
         "returned when": "always",
-        "description": "Mean replication time of each genomic bin across the ensemble.",
+        "description": "Mean observed finite replication time per bin; infinity if no realization replicated it. See replication_timing_observed_fraction.",
     },
     {
         "output": "replication_timing_std",
@@ -2019,7 +2151,7 @@ _RSIM_OUTPUT_RECORDS = [
         "returned when": "always",
         "description": (
             "Elapsed time from the first realised origin initiation to "
-            "replication completion in each simulation."
+            "replication completion in each simulation. Infinity when incomplete; NaN if no origin fired."
         ),
     },
     {
@@ -2028,7 +2160,7 @@ _RSIM_OUTPUT_RECORDS = [
         "returned when": "always",
         "description": (
             "Absolute simulation-clock time at which replication completed "
-            "in each simulation."
+            "in each simulation. Infinity when incomplete; NaN if no origin fired."
         ),
     },
     {

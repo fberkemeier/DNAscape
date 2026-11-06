@@ -420,6 +420,65 @@
     if(state.circularGuide)state.circularGuide.style.display='none';
   }
 
+  function clearHistogramHover(state) {
+    if(state.histogramGuide)state.histogramGuide.style.display='none';
+    if(state.histogramPosition)state.histogramPosition.style.display='none';
+  }
+
+  function clearHover(state) {
+    clearCircularHover(state);
+    clearHistogramHover(state);
+  }
+
+  function histogramHover(state, event) {
+    const options=state.component.options;
+    if(drag||!options.tooltip?.show||options.dnascapePlotType!=='Histogram'||
+       event.seriesType!=='custom'||metadata(state)?.polar)return clearHistogramHover(state);
+    const series=state.chart.getModel().getSeriesByIndex(event.seriesIndex);
+    const bar=series?.getData().getItemGraphicEl(event.dataIndex),value=event.value;
+    const rect=series?.coordinateSystem?.getArea();
+    if(!bar?.shape||!rect||!Array.isArray(value))return clearHistogramHover(state);
+    // Use the actual rectangle: this also covers side-by-side bars, reversed
+    // or logarithmic axes, separated bins and a clipped/short final bin.
+    const shape=bar.shape,center=bar.transformCoordToGlobal(shape.x+shape.width/2,shape.y)[0];
+    const width=state.chart.getWidth(),height=state.chart.getHeight();
+    if(!Number.isFinite(center))return clearHistogramHover(state);
+    const svgNS='http://www.w3.org/2000/svg';
+    const guide=state.histogramGuide||(state.histogramGuide=document.createElementNS(svgNS,'svg'));
+    if(!guide.parentElement){
+      if(getComputedStyle(state.element).position==='static')state.element.style.position='relative';
+      guide.classList.add('dn-histogram-hover-guide');guide.setAttribute('aria-hidden','true');
+      guide.style.cssText='position:absolute;left:0;top:0;z-index:1000;pointer-events:none;overflow:hidden;';
+      const line=document.createElementNS(svgNS,'line');
+      line.setAttribute('stroke','#b8b0aa');line.setAttribute('stroke-width','1');line.setAttribute('stroke-dasharray','4 4');
+      guide.appendChild(line);state.element.appendChild(guide);
+    }
+    guide.setAttribute('viewBox',`0 0 ${width} ${height}`);
+    guide.style.width=width+'px';guide.style.height=height+'px';guide.style.display='block';
+    for(const [key,value] of Object.entries({x1:center,x2:center,y1:rect.y,y2:rect.y+rect.height}))
+      guide.firstChild.setAttribute(key,String(value));
+    const readout=state.histogramPosition||(state.histogramPosition=document.createElement('div'));
+    if(!readout.parentElement){
+      readout.className='dn-histogram-hover-position';
+      readout.style.cssText='position:absolute;z-index:1002;pointer-events:none;color:#fff;font:normal 11px sans-serif;line-height:14px;padding:3px 6px;border-radius:3px;white-space:nowrap;';
+      state.element.appendChild(readout);
+    }
+    const span=Math.abs(value[1]-value[0]);
+    // Round floating-point bin edges at a precision relative to bin width,
+    // retaining distinct endpoints even for very small or offset intervals.
+    const magnitude=Math.max(Math.abs(value[0]),Math.abs(value[1]),span);
+    const digits=Math.min(17,Math.max(1,Math.ceil(Math.log10(magnitude/span))+3));
+    const format=n=>String(Number(n.toPrecision(digits)));
+    readout.textContent=format(value[0])+'-'+format(value[1]);
+    readout.style.backgroundColor=getComputedStyle(document.body).getPropertyValue('--dn-accent').trim()||
+      options.tooltip.axisPointer?.label?.backgroundColor||'#b03412';
+    readout.style.color=getComputedStyle(document.body).getPropertyValue('--dn-accent-text').trim()||
+      options.tooltip.axisPointer?.label?.color||'#fff';
+    readout.style.display='block';
+    readout.style.left=clamp(center-readout.offsetWidth/2,2,width-readout.offsetWidth-2)+'px';
+    readout.style.top=Math.min(rect.y+rect.height+3,height-readout.offsetHeight-2)+'px';
+  }
+
   function circularHover(state, position) {
     if(!metadata(state)?.polar)return;
     const rect=rectangle(state),options=state.component.options;
@@ -528,7 +587,8 @@
   function cursor(state, position) {
     if (drag?.state === state) state.chart.getZr().setCursorStyle(drag.mode === 'select' ? 'crosshair' : 'grabbing');
     else if (inLegend(state, position) || inside(guideBox(state),position)) state.chart.getZr().setCursorStyle('pointer');
-    else state.chart.getZr().setCursorStyle(inside(rectangle(state), position) ? (leftControl ? 'crosshair' : 'grab') : 'default');
+    else state.chart.getZr().setCursorStyle(inside(rectangle(state), position) && Object.keys(metadata(state)?.axes||{}).length
+      ? (leftControl ? 'crosshair' : 'grab') : 'default');
   }
 
   function down(state, event) {
@@ -539,7 +599,7 @@
     const mode = leftControl && event.ctrlKey ? 'select' : 'pan';
     if (mode === 'select' && !Object.keys(initial).some(key => key.endsWith('x'))) return;
     event.preventDefault();
-    clearCircularHover(state);
+    clearHover(state);
     state.suppressClickUntil = 0;
     state.chart.dispatchAction({type: 'hideTip'});
     state.chart.dispatchAction({type: 'updateAxisPointer', currTrigger: 'leave'});
@@ -668,6 +728,7 @@
     if (!inside(rect, position) || inLegend(state, position) || inside(guideBox(state),position)) return;
     const axes = metadata(state)?.axes;
     if (!axes || !Object.keys(axes).length) return;
+    clearHover(state);
     event.preventDefault();
     event.stopImmediatePropagation();
     const pixels = event.deltaY * (event.deltaMode === 1 ? 16 : event.deltaMode === 2 ? rect.height : 1);
@@ -707,6 +768,7 @@
       const setOption = chart.setOption.bind(chart);
       chart.setOption = (options, ...args) => {
         const incoming = options.dnascapeNavigation;
+        clearHistogramHover(state);
         if(incoming)clearCircularHover(state);
         if (incoming) {
           const acknowledged = Number(incoming.sequence) || 0;
@@ -736,27 +798,37 @@
       };
       const onClick = event => {
         if (state.suppressClickUntil > Date.now()) return;
-        if (component.options?.dnascapeHistogramGuides?.selectable && event.componentType === 'series') {
+        if (metadata(state) && component.options?.dnascapeHistogramGuides?.selectable && event.componentType === 'series') {
           const series=component.options.series?.[event.seriesIndex];
           chooseDataset(state,series?.dnascapeDataset ?? event.seriesIndex);
         }
       };
       chart.on('click',onClick);
+      const onHistogramMove=event=>histogramHover(state,event);
+      const onHistogramOut=()=>clearHistogramHover(state);
+      chart.on('mousemove',onHistogramMove);
+      chart.on('mouseout',onHistogramOut);
+      chart.on('globalout',onHistogramOut);
       const onDown = event => down(state, event), onWheel = event => wheel(state, event);
       const onMove = event => { if (!drag) { state.lastPoint = point(state, event); cursor(state, state.lastPoint);
         if(metadata(state)?.polar)queueCircularHover(state,state.lastPoint); } };
-      const onLeave=()=>{state.lastPoint=null;clearCircularHover(state);};
+      const onLeave=()=>{state.lastPoint=null;clearHover(state);};
       element.addEventListener('mousedown', onDown, true);
       element.addEventListener('wheel', onWheel, {capture: true, passive: false});
       element.addEventListener('mousemove', onMove);
       element.addEventListener('mouseleave', onLeave);
       state.dispose = () => {
         clearTimeout(state.timer);
-        clearCircularHover(state);
+        clearHover(state);
         state.circularTooltip?.remove();
         state.circularPosition?.remove();
         state.circularGuide?.remove();
+        state.histogramGuide?.remove();
+        state.histogramPosition?.remove();
         chart.off('click',onClick);
+        chart.off('mousemove',onHistogramMove);
+        chart.off('mouseout',onHistogramOut);
+        chart.off('globalout',onHistogramOut);
         if (state.frame !== undefined) cancelAnimationFrame(state.frame);
         element.removeEventListener('mousedown', onDown, true);
         element.removeEventListener('wheel', onWheel, true);
@@ -782,7 +854,7 @@
   window.addEventListener('keydown', event => key(event, true), true);
   window.addEventListener('keyup', event => key(event, false), true);
   window.addEventListener('blur', () => { leftControl = false; cancel(); });
-  window.addEventListener('resize', ()=>{cancel();for(const state of live)clearCircularHover(state);});
+  window.addEventListener('resize', ()=>{cancel();for(const state of live)clearHover(state);});
   window.addEventListener('mousemove', move, true);
   window.addEventListener('mouseup', up, true);
   // Flush before toolbar clicks so SVG/PDF downloads use the displayed window.

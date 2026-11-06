@@ -53,17 +53,19 @@ class CodeInputs:
 def filter_code_settings(controls):
     """Reference the original mask upload instead of copying its full position list."""
     settings = controls.snapshot()
+    if not settings.enabled:
+        # An inactive transform must not require stale mask/modulation uploads.
+        return type(settings)()
     if controls.upload is not None and settings.selection == "profile":
         settings = replace(settings, profile=None, upload=controls.upload)
-    if settings.enabled:
-        prefix = controls.marker_prefix.replace("-", "_")
-        if settings.selection == "profile" and settings.profile is None and settings.upload is None:
-            settings = replace(settings, upload=placeholder_upload(prefix + "_mask_positions", form="regions"),
-                               profile_layout="positions")
-        if (settings.action == "modulate" and settings.modulation.upload is None
-                and settings.modulation.values is None and not settings.modulation.profiles):
-            settings = replace(settings, modulation=replace(settings.modulation,
-                upload=placeholder_upload(prefix + "_modulation_profile", form="auto")))
+    prefix = controls.marker_prefix.replace("-", "_")
+    if settings.selection == "profile" and settings.profile is None and settings.upload is None:
+        settings = replace(settings, upload=placeholder_upload(prefix + "_mask_positions", form="regions"),
+                           profile_layout="positions")
+    if (settings.action == "modulate" and settings.modulation.upload is None
+            and settings.modulation.values is None and not settings.modulation.profiles):
+        settings = replace(settings, modulation=replace(settings.modulation,
+            upload=placeholder_upload(prefix + "_modulation_profile", form="auto")))
     return settings
 
 
@@ -80,43 +82,111 @@ def statistics_code_settings(controls, *, filename="histogram_statistics"):
                 limits=histogram_x_limits_from_controls(controls, log_x=bool(controls.log_x.value)))
 
 
-def build_python(snapshot: CodeSnapshot) -> ExportArtifact:
-    """A single entry point, editable folders and a plain configuration dictionary."""
-    workflow = snapshot.workflow
-    if workflow not in {"data_manager", "simulation", "plotting"}:
-        raise ValueError("Choose a supported code workflow.")
-    inputs = "\n".join(f"#   {path!r}" for path, _data in snapshot.files) or "#   No external files: constants or prepared arrays are included below."
-    source = f'''# DNAscape {workflow.replace("_", " ").title()}
+def recipe_literal(recipe, groups):
+    """Keep one editable value per field, grouped like the workflow page."""
+    from textwrap import indent
+
+    lines = ["{"]
+    remaining = dict(recipe)
+    for label, keys in groups:
+        selected = {key: remaining.pop(key) for key in keys if key in remaining}
+        if not selected:
+            continue
+        lines.append(f"    # {label}")
+        for key, value in selected.items():
+            field = pprint.pformat({key: value}, width=91, sort_dicts=False)[1:-1]
+            lines.append(indent(field, "    ") + ",")
+    for key, value in remaining.items():
+        field = pprint.pformat({key: value}, width=91, sort_dicts=False)[1:-1]
+        lines.append(indent(field, "    ") + ",")
+    return "\n".join([*lines, "}"])
+
+
+def render_python(*, workflow, imports, configuration, execution, files, recipe_name="RECIPE"):
+    """Use the same portable script shell for every developer download."""
+    from textwrap import indent
+    from dnascape.workflows.code_recipes import encode_input_files
+
+    embedded = encode_input_files(files)
+    encoded_lines = ["{"]
+    for path, data in embedded.items():
+        encoded_lines.append(f"    {path!r}: (")
+        encoded_lines.extend(f"        {data[index:index + 80]!r}" for index in range(0, len(data), 80))
+        encoded_lines.append("    ),")
+    embedded_literal = "\n".join([*encoded_lines, "}"]) if embedded else "{}"
+    manifest = "\n".join(
+        f"#   {path!r}" + (" (included)" if data else " (supply this file)")
+        for path, data in files
+    ) or "#   No external files: constants or prepared arrays are included below."
+    title = "Analysis" if workflow == "plotting" else workflow.replace("_", " ").title()
+    seed_hint = "\n# An integer seed reproduces simulations; None gives independent runs." if workflow == "simulation" else ""
+    source = f'''# DNAscape {title}
 # Run with the DNAscape package used to export this script installed:
 #   python {workflow}.py
-# Edit INPUT_DIRECTORY and the filenames below to use your local data.
+# Original uploads are included; existing local files take precedence.
 # Missing uploads use placeholder filenames; replace them or supply those files:
-{inputs}
+{manifest}
 
-from pathlib import Path
 from math import inf, nan
+from pathlib import Path
 
-from dnascape.workflows.{"analysis_recipe" if workflow == "plotting" else "simulation_recipe" if workflow == "simulation" else "code_recipes"} import run_{workflow}_recipe
+from dnascape.workflows.code_recipes import prepare_input_files
+{imports}
 
-HERE = Path(__file__).resolve().parent
+HERE = Path(__file__).resolve().parent if "__file__" in globals() else Path.cwd()
 INPUT_DIRECTORY = HERE / "inputs"
 OUTPUT_DIRECTORY = HERE / "outputs"
+USE_EMBEDDED_INPUTS = True  # Restore missing originals; never overwrite local files.
 
-# Edit source paths, selections and options here. Positions and time retain
-# the units shown by the app. A seed of None makes stochastic runs independent.
-RECIPE = {pprint.pformat(snapshot.recipe, width=95, sort_dicts=False)}
+# Edit paths, columns/arrays, constants and options below. Units match the app.{seed_hint}
+{configuration}
 
 
-def main():
-    results, paths = run_{workflow}_recipe(
-        RECIPE, input_directory=INPUT_DIRECTORY, output_directory=OUTPUT_DIRECTORY,
-    )
+def main(recipe=None, *, input_directory=None, output_directory=None):
+    """Run here, or call main(recipe=...) for a parameter sweep or notebook."""
+    recipe = {recipe_name} if recipe is None else recipe
+    input_directory = INPUT_DIRECTORY if input_directory is None else Path(input_directory)
+    output_directory = OUTPUT_DIRECTORY if output_directory is None else Path(output_directory)
+    if USE_EMBEDDED_INPUTS:
+        prepare_input_files(EMBEDDED_INPUTS, input_directory, recipe=recipe)
+{indent(execution, "    ")}
     for path in paths:
         print(f"Saved {{path}}")
     return results
+
+
+# Original source bytes, compressed for portability. Edit the recipe above;
+# set USE_EMBEDDED_INPUTS = False to require local files for uploaded sources.
+EMBEDDED_INPUTS = {embedded_literal}
 
 
 if __name__ == "__main__":
     main()
 '''
     return ExportArtifact(source.encode("utf-8"), f"{workflow}.py", "text/x-python; charset=utf-8")
+
+
+def build_python(snapshot: CodeSnapshot) -> ExportArtifact:
+    """A complete script with editable inputs, workflow options and outputs."""
+    workflow = snapshot.workflow
+    modules = {"data_manager": "code_recipes", "simulation": "simulation_recipe", "plotting": "analysis_recipe"}
+    if workflow not in modules:
+        raise ValueError("Choose a supported code workflow.")
+    groups = (
+        ("Inputs: paths, dependence, columns/arrays and constants.", ("sources", "inputs", "profiles")),
+        ("Settings: preparation, region, transforms and calculation.", (
+            "settings", "region_end_kb", "automatic_region_end", "combination_mode",
+            "combined_formula", "combined_name", "data_transforms", "transformations", "methods",
+        )),
+        ("Outputs: filenames, formats, compression, statistics and figures.", (
+            "exports", "export", "statistics", "data_exports", "mask_exports", "report", "report_names",
+            "plots", "plot_dpi", "preview_points",
+        )),
+    )
+    return render_python(
+        workflow=workflow, files=snapshot.files,
+        imports=f"from dnascape.workflows.{modules[workflow]} import run_{workflow}_recipe",
+        configuration="RECIPE = " + recipe_literal(snapshot.recipe, groups),
+        execution=f"results, paths = run_{workflow}_recipe(\n"
+                  "    recipe, input_directory=input_directory, output_directory=output_directory,\n)",
+    )

@@ -177,7 +177,7 @@ FIELD_HINTS = {
     "Track time courses": "Retain replication, fork and origin activity over time.",
     "Two Y axes": "Use independent axis scales for the two datasets.",
     "Type": "Line pattern used for this curve.",
-    "Upload": "Choose a file or drag it here.",
+    "Upload": "Upload a file.",
     "Upper bound": "Treat larger values as missing.",
     "Value": "Constant value used for this input.",
     "Value column": "Choose the table column to process.",

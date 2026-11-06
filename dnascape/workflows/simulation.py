@@ -84,6 +84,11 @@ class ConstantSimulationRequest:
     Kinetic fields use rsim's native forms: scalar, ``(n,)``, ``(1, T)``, or
     ``(n, T)``. The historical class name remains part of the app API even
     though uploaded arrays are now supported.
+
+    Stalling density and recovery accept scalars or spatial vectors. Use
+    ``stall_duration`` (positive mean minutes, including infinity) or
+    ``stall_recovery_rate`` (non-negative inverse minutes, zero for no restart),
+    not both. Omitting recovery leaves stalls permanent.
     """
 
     initiation_rate: float | np.ndarray
@@ -99,13 +104,13 @@ class ConstantSimulationRequest:
     missing_values: str = "error"
     seed: int | None = 1
     stall_rate: float = 0.0
-    stall_duration: float = math.inf
+    stall_duration: float | np.ndarray | None = None
     firing_factors: float | None = None
     firing_factor_recycle: float = 0.0
     firing_factor_fork_coupling: bool = False
     track_time_outputs: bool = False
     track_detailed_outputs: bool = False
-    stall_rate_per_kb: float | None = None
+    stall_rate_per_kb: float | np.ndarray | None = None
     fork_speed_std: float = 0.0
     retained_profile_count: int = 10
     stall_shared_directions: bool = False
@@ -116,6 +121,7 @@ class ConstantSimulationRequest:
     data_filters: Mapping[str, DataFilterSettings] = field(default_factory=dict)
     export_filters: frozenset[str] = frozenset()
     _filter_state: SimulationFilterState | None = field(default=None, repr=False, compare=False)
+    stall_recovery_rate: float | np.ndarray | None = None
 
 
 @dataclass(frozen=True)
@@ -140,6 +146,10 @@ class ConstantSimulationResult:
     replicon_length_count: int = 0
     replicon_lengths_truncated: bool = False
     filter_state: SimulationFilterState | None = None
+    incomplete_simulations: int = 0
+    replication_timing_observed_fraction: np.ndarray | None = None
+    resolution_x: float | None = None
+    resolution_t: float | None = None
 
 
 @dataclass(frozen=True)
@@ -226,14 +236,17 @@ def validate_constant_simulation(request: ConstantSimulationRequest, cancel: Can
         raise ValueError('Whole region must be true or false.')
     if request.whole_region:
         sizes = set()
-        for value in (request.initiation_rate, request.fork_speed):
+        for value in (request.initiation_rate, request.fork_speed, request.stall_rate_per_kb,
+                      request.stall_duration, request.stall_recovery_rate):
+            if value is None:
+                continue
             array = np.asarray(value)
             if array.size and (array.ndim == 1 or array.ndim == 2 and (array.shape[0] > 1 or array.shape == (1, 1))):
                 sizes.add(array.shape[0])
         if not sizes:
-            raise ValueError('Whole region requires an initiation-rate or fork-speed profile with genomic positions.')
+            raise ValueError('Whole region requires a spatial kinetic profile with genomic positions.')
         if len(sizes) != 1:
-            raise ValueError('Initiation-rate and fork-speed profiles must cover the same whole region.')
+            raise ValueError('Spatial kinetic profiles must cover the same whole region.')
         request = replace(request, region_start_kb=0., region_end_kb=sizes.pop() * (request.source_resolution_x or request.resolution_x))
 
     if not isinstance(request.track_time_outputs, bool):
@@ -272,7 +285,10 @@ def validate_constant_simulation(request: ConstantSimulationRequest, cancel: Can
                        _positive_integer(request.retained_profile_count, "Profiles shown", allow_zero=True))
         times = (int(math.ceil(_finite(request.time_window, "Time window", positive=True) / resolution_t)) + 2
                  if request.track_time_outputs or request.track_detailed_outputs else 0)
-        inputs = sum(np.asarray(value).size * 32 for value in (request.initiation_rate, request.fork_speed))
+        inputs = sum(np.asarray(value).size * 32 for value in (
+            request.initiation_rate, request.fork_speed, request.stall_rate_per_kb,
+            request.stall_duration, request.stall_recovery_rate,
+        ) if value is not None)
         estimate = n_bins * (512 + profiles * 24) + reps * 128 + inputs
         estimate += min(MAX_INTER_ORIGIN_SAMPLES, n_bins * reps) * 24
         if request.track_time_outputs or request.track_detailed_outputs:
@@ -298,6 +314,42 @@ def validate_constant_simulation(request: ConstantSimulationRequest, cancel: Can
             max_points=MAX_SPATIAL_BINS,
         )
 
+    def stall_field(value, label, *, positive=False, allow_inf=False):
+        if value is None:
+            return None
+        from dnascape.simulation import _spatial_stall_parameter
+        if np.iscomplexobj(value):
+            raise ValueError(f"{label} must contain real numeric values.")
+        try:
+            array = np.asarray(value, dtype=float)
+        except (TypeError, ValueError) as exc:
+            raise ValueError(f"{label} must contain numeric values.") from exc
+        if np.isnan(array).any():
+            from .uploads import _positive_infinity_policy, _resolve_missing_values
+            with _positive_infinity_policy(allow_inf):
+                array = _resolve_missing_values(array, policy=request.missing_values, expected_form="x")
+        native = _spatial_stall_parameter(array, label, positive=positive, allow_inf=allow_inf)
+        if np.ndim(native) and allow_inf and np.isposinf(native).any():
+            # Preserve non-recovering bins through weighted resampling without
+            # prefix-sum inf-inf cancellation or treating infinity as missing.
+            infinite = np.isposinf(native)
+            sampled = np.array(spatial_upload(np.where(infinite, 0., native)), copy=True)
+            sampled[np.asarray(spatial_upload(infinite.astype(float))) > 0] = np.inf
+        else:
+            sampled = spatial_upload(native)
+        normalized = _spatial_stall_parameter(sampled, label, n_bins=n_bins,
+                                              positive=positive, allow_inf=allow_inf)
+        if isinstance(normalized, np.ndarray):
+            normalized = normalized.view()
+            normalized.setflags(write=False)
+        return normalized
+
+    stall_density = stall_field(request.stall_rate_per_kb, "Stall rate (stalls/kb)")
+    recovery_rate = stall_field(request.stall_recovery_rate, "Stall recovery rate (1/min)")
+    recovery_time = stall_field(request.stall_duration, "Stall duration", positive=True, allow_inf=True)
+    if recovery_rate is not None and recovery_time is not None:
+        raise ValueError("Specify either stall_duration (mean time) or stall_recovery_rate, not both.")
+
     sampled = {'initiation_rate': spatial_upload(request.initiation_rate), 'fork_speed': spatial_upload(request.fork_speed)}
     filter_state = request._filter_state
     if request.data_filters:
@@ -322,6 +374,9 @@ def validate_constant_simulation(request: ConstantSimulationRequest, cancel: Can
         request,
         initiation_rate=initiation_rate,
         fork_speed=fork_speed,
+        stall_rate_per_kb=stall_density,
+        stall_duration=recovery_time,
+        stall_recovery_rate=recovery_rate,
         source_resolution_x=None,
         whole_region=False,
         data_filters={},
@@ -351,7 +406,7 @@ def validate_constant_simulation(request: ConstantSimulationRequest, cancel: Can
     time_window = _finite(request.time_window, "Time window", positive=True)
     _finite(
         request.max_replication_time,
-        "Maximum replication time",
+        "Simulation time",
         positive=True,
     )
     tracks_time = request.track_time_outputs or request.track_detailed_outputs
@@ -402,20 +457,11 @@ def validate_constant_simulation(request: ConstantSimulationRequest, cancel: Can
     if not 0 <= stall_rate <= 1:
         raise ValueError("Legacy stall probability must lie between zero and one.")
     if request.stall_rate_per_kb is not None:
-        stall_rate_per_kb = _finite(
-            request.stall_rate_per_kb,
-            "Stall rate (stalls/kb)",
-        )
-        if stall_rate_per_kb < 0:
-            raise ValueError("Stall rate (stalls/kb) must be non-negative.")
         if stall_rate != 0.0:
             raise ValueError(
                 "A legacy per-bin stall probability cannot be combined with "
                 "a stall rate in stalls/kb."
             )
-    stall_duration = float(request.stall_duration)
-    if not (stall_duration == math.inf or np.isfinite(stall_duration) and stall_duration > 0):
-        raise ValueError("Stall duration must be positive or infinite.")
     if request.seed is not None:
         _positive_integer(request.seed, "Seed", allow_zero=True)
     if request.firing_factors is not None:
@@ -608,7 +654,6 @@ def run_constant_simulation(
             "resolution_x": float(request.resolution_x),
             "resolution_t": float(request.resolution_t),
             "geometry": str(request.geometry).strip().lower(),
-            "tau": float(request.stall_duration),
             "ffiring_nr": request.firing_factors,
             "ffiring_recycle": float(request.firing_factor_recycle),
             "ffiring_forkQ": bool(request.firing_factor_fork_coupling),
@@ -635,15 +680,24 @@ def run_constant_simulation(
         if request.stall_rate_per_kb is None:
             assumptions["stall_rate"] = float(request.stall_rate)
         else:
-            assumptions["stall_rate_per_kb"] = float(request.stall_rate_per_kb)
+            # Legacy scalar assumptions remain readable; spatial fields belong
+            # to source alongside the other kinetic profiles.
+            if np.ndim(request.stall_rate_per_kb) == 0:
+                assumptions["stall_rate_per_kb"] = float(request.stall_rate_per_kb)
+        source = {"initiation_rate": request.initiation_rate, "fork_speed": request.fork_speed}
+        for key, value in (("stall_rate_per_kb", request.stall_rate_per_kb),
+                           ("tau", request.stall_duration),
+                           ("stall_recovery_rate", request.stall_recovery_rate)):
+            if value is not None and key not in assumptions:
+                if np.ndim(value) == 0:
+                    assumptions[key] = float(value)
+                else:
+                    source[key] = value
         if time_outputs or detailed:
             assumptions["time_grid"] = validated.time_grid
         with progress_context(report=report, cancel=cancel, suppress_output=True):
             raw = simulate(
-                source={
-                    "initiation_rate": request.initiation_rate,
-                    "fork_speed": request.fork_speed,
-                },
+                source=source,
                 assumptions=assumptions,
             )
         cancel()
@@ -681,6 +735,13 @@ def run_constant_simulation(
         )
         cancel()
         replication_timing = outputs["replication_timing"]
+        observed_fraction = raw.get("replication_timing_observed_fraction")
+        if observed_fraction is not None:
+            observed_fraction = np.asarray(observed_fraction, dtype=float)
+            if (observed_fraction.shape != (validated.n_bins,) or not np.isfinite(observed_fraction).all()
+                    or np.any((observed_fraction < 0) | (observed_fraction > 1))):
+                raise RuntimeError("DNAscape returned invalid replication-timing observation fractions.")
+            observed_fraction.setflags(write=False)
         position_kb = float(request.region_start_kb) + np.arange(
             validated.n_bins, dtype=float
         ) * float(request.resolution_x)
@@ -704,6 +765,10 @@ def run_constant_simulation(
             replicon_length_count=replicon_length_count,
             replicon_lengths_truncated=replicon_lengths_truncated,
             filter_state=request._filter_state,
+            incomplete_simulations=int(np.count_nonzero(~np.isfinite(outputs["completion_time"]))),
+            replication_timing_observed_fraction=observed_fraction,
+            resolution_x=float(request.resolution_x),
+            resolution_t=float(request.resolution_t),
         )
         from .preview_inputs import add_simulation_input_previews
 

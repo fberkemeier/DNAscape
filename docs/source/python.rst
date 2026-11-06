@@ -16,14 +16,22 @@ Export A Workflow From The App
 ------------------------------
 
 Enable **Settings -> Interface -> Developer mode** and select **Code** on a
-workflow page. The download is one ``.py`` file, containing editable settings
-and input/output folder definitions.
+workflow page: Data Manager, Mapping, Simulation or Analysis. The download is
+one ``.py`` file with grouped inputs, settings and outputs, plus editable
+input/output folder definitions. It runs with the DNAscape package used to
+export it; the web app is not required.
 
 Uploads are optional: missing inputs use placeholder filenames. Edit these
 paths to use files already stored locally, or place the files in the input folder.
 
-Place the listed original files in its input folder, adjust paths as needed,
-and run it with the same DNAscape version. Data Manager scripts reproduce
+Original uploads are included losslessly in the script and restored to its
+input folder on the first run. Existing local files always take precedence;
+edit a source path, column or array key to use different data. Set
+``USE_EMBEDDED_INPUTS = False`` to disable upload restoration. Missing upload
+placeholders remain empty until you supply a real file. Prepared Mapping
+arrays are also included, with a local prepared file taking precedence.
+
+Run the script with the same DNAscape version. Data Manager scripts reproduce
 preparation and transforms; Mapping and Simulation scripts reproduce their
 numerical outputs. Analysis code reproduces its selected preparation and
 output settings, including requested figure exports.
@@ -42,6 +50,14 @@ Use the downloaded filename for Mapping, Simulation or Analysis. The script
 defines ``INPUT_DIRECTORY`` and ``OUTPUT_DIRECTORY`` near the top; outputs
 are written relative to those folders rather than the terminal's current
 directory. Keep the script, source files and DNAscape version with the result.
+
+Scripts also work when pasted into a notebook, using its working directory.
+For repeated runs, import the downloaded module, copy its ``RECIPE``
+(``MAPPING`` for Mapping), edit the copy, and call
+``main(recipe=your_recipe, input_directory=..., output_directory=...)``.
+An integer simulation seed reproduces the random sequence; ``None`` starts
+independent simulations. Code downloads capture settings without running the
+calculation or changing the current results.
 
 .. _pythonmodules:
 
@@ -151,6 +167,55 @@ Use a dictionary for ``source`` and a separate dictionary for ``assumptions``.
 Specify ``target_form`` when fitting a constant, spatial, temporal or space-time
 quantity. Time profiles use shape ``(1, T)``; space-time fields use ``(n, T)``.
 Direct arrays need explicit spatial and temporal resolutions.
+
+Spatial stalling and recovery
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+``rsim`` accepts ``stall_rate_per_kb`` as a scalar or spatial vector in stalls/kb.
+Supply recovery using either ``tau`` (positive mean time in minutes, including
+infinity) or ``stall_recovery_rate`` (non-negative inverse minutes). Zero rate
+means a permanent stall; omitted recovery also means no restart. Supplying both
+representations raises an error. Direct arguments and legacy scalar assumptions
+continue to work; spatial movement profiles belong in ``source``.
+
+.. code-block:: python
+
+   import numpy as np
+   from dnascape import rsim
+
+   x = np.arange(256)
+   density = np.where((x >= 64) & (x < 96), 0.3, 0.01)
+   recovery = 0.1 * (1 + 0.4 * np.sin(x / 20))
+   result = rsim(
+       source={
+           "initiation_rate": 0.01,
+           "fork_speed": 1.4,
+           "stall_rate_per_kb": density,
+           "stall_recovery_rate": recovery,
+       },
+       assumptions={"sim_number": 32, "resolution_x": 1.0, "seed": 7,
+                    "stall_shared_directions": True, "fork_speed_std": 0.2},
+   )
+
+For each bin, stalls are sampled with probability ``1 - exp(-s(x) * resolution_x)``.
+Encountered pauses are exponential with local mean ``tau(x) = 1 / k_r(x)`` and
+are added to the prescribed travel time. Shared-direction mode reuses both the
+sites and sampled pauses; stochastic speed sampling remains independent.
+
+The workflow request ``ConstantSimulationRequest`` accepts spatial
+``stall_rate_per_kb``, ``stall_duration`` (the workflow spelling of ``tau``), or
+``stall_recovery_rate``. Native uploaded profiles use ``source_resolution_x``
+and the same region/resampling rules as initiation and speed. The application
+and Developer scripts use this workflow. Recovery-time uploads accept positive
+infinity for permanent stalls; recovery-rate profiles represent these with zero.
+
+``max_rep_time`` censors arrivals after the cutoff as infinity. Fraction outputs
+therefore remain below one for incomplete realizations. ``completed`` and
+``incomplete_simulations`` distinguish complete realizations; ``completion_time``
+and ``s_phase_duration`` are infinity when incomplete and NaN if no origin fired.
+The existing finite-arrival timing mean/std definitions are retained, with
+``replication_timing_observed_fraction`` reporting the fraction observed per bin.
+See ``examples/spatial_stalling.py`` for a runnable example with permanent barriers.
 
 ``rmap(..., return_info=True)`` returns values and route/fit metadata. ``rsim``
 returns a dictionary of requested outputs. To see supported quantities and

@@ -569,6 +569,9 @@ def _render_simulation_source(
     combination_mode: dict[str, str] | None = None,
     on_profile_change: Callable[[], Any] | None = None,
     on_structure_change: Callable[[], Any] | None = None,
+    spatial_only: bool = False,
+    constant_label: str | None = None,
+    allow_positive_infinity: Callable[[], bool] | None = None,
 ) -> _SimulationSourceControls:
     """Render one scalar-or-upload rsim source using Mapping's upload surface."""
 
@@ -592,13 +595,15 @@ def _render_simulation_source(
         else:
             structure_changed()
 
-    with ui.element("div").classes("dn-source-compact").mark(f"source-{marker}"):
+    with ui.element("div").classes(
+        "dn-source-compact" + (" dn-simulation-movement-source" if spatial_only else "")
+    ).mark(f"source-{marker}"):
         with ui.element("div").classes("dn-source-head"):
             mode = (
                 ui.select(
                     {
                         "scalar": "Constant",
-                        **({} if hosted() else {"constants": "Multiple constants"}),
+                        **({} if hosted() or spatial_only else {"constants": "Multiple constants"}),
                         "profile": "Profile",
                     },
                     value="scalar",
@@ -621,7 +626,7 @@ def _render_simulation_source(
         with ui.element("div").classes("dn-source-fields") as constant_fields:
             constant_input = (
                 ui.number(
-                    label=f"Constant value ({units})",
+                    label=constant_label or f"Value ({units})",
                     value=constant,
                     min=0,
                     step=0.001 if constant < 0.1 else 0.1,
@@ -650,7 +655,8 @@ def _render_simulation_source(
                     on_structure_change=constant_structure_changed,
                 )
 
-            render_constant_fields()
+            if not spatial_only:
+                render_constant_fields()
             local_constant_refresh["call"] = render_constant_fields.refresh
 
         with (
@@ -726,7 +732,7 @@ def _render_simulation_source(
                     return
                 inspection = inspections[0]
                 matrix_columns = (
-                    inspection.inferred_form == "xt" and len(inspection.numeric_columns) > 1
+                    not spatial_only and inspection.inferred_form == "xt" and len(inspection.numeric_columns) > 1
                 )
                 row_vector = bool(
                     str(form.value) == "t"
@@ -813,11 +819,17 @@ def _render_simulation_source(
                     inspection = await inspect_upload_event(
                         event,
                         expected_form="auto",
+                        **({"allow_positive_infinity": True} if allow_positive_infinity and allow_positive_infinity() else {}),
                     )
                 except (OSError, TypeError, ValueError) as exc:
                     notify(str(exc), type="negative")
                     return False
                 detected_form = str(inspection.inferred_form)
+                if spatial_only:
+                    if detected_form == "t":
+                        notify(f"{label} requires a spatial profile, not time-only data.", type="negative")
+                        return False
+                    detected_form = "x"
                 if detected_form not in _SOURCE_DEPENDENCE:
                     notify(
                         f"{label} must be a space, time, or space-time profile.",
@@ -837,7 +849,7 @@ def _render_simulation_source(
                 )
                 selections.pop(inspection.name, None)
                 materialized_cache.clear()
-                if hosted():
+                if hosted() or spatial_only:
                     inspections[:] = [inspection]
                 elif replaced_index is None:
                     inspections.append(inspection)
@@ -861,7 +873,7 @@ def _render_simulation_source(
                 if not inspections:
                     selection.update(column=None, array_key=None)
                 else:
-                    form.set_value(str(inspections[0].inferred_form))
+                    form.set_value("x" if spatial_only else str(inspections[0].inferred_form))
                     sync_selection()
                 render_selection.refresh()
                 render_summary.refresh()
@@ -875,8 +887,8 @@ def _render_simulation_source(
                 show_accepted_formats=False,
                 on_upload=uploaded,
                 on_clear=cleared,
-                multiple=not hosted(),
-                max_files=1 if hosted() else None,
+                multiple=not (hosted() or spatial_only),
+                max_files=1 if hosted() or spatial_only else None,
                 hide_when_loaded=False,
             )
 
@@ -1326,6 +1338,22 @@ def _replication_profile_arrays(
     return profile_array, deviation_array
 
 
+def _resolution_summary(result: ConstantSimulationResult) -> str:
+    """Keep configured spacing when optional tracked axes are absent."""
+    parts = []
+    for configured, axis, units in (
+        (result.resolution_x, result.position_kb, "kb/bin"),
+        (result.resolution_t, result.time_grid, "min/bin"),
+    ):
+        spacing = configured
+        if spacing is None:
+            steps = np.diff(axis)
+            spacing = float(np.median(steps)) if steps.size else None
+        if spacing is not None and np.isfinite(spacing) and spacing > 0:
+            parts.append(f"{spacing:g} {units}")
+    return " | ".join(parts)
+
+
 def _automatic_y_limits(
     result: ConstantSimulationResult,
     *,
@@ -1596,6 +1624,11 @@ def _result_plot_options(
         plot_type=plot_type,
         x_limits=x_limits,
         z_limits=z_limits,
+        heatmap_scale_to_preview=spec.key in {
+            "initiation_events_xt", "coalescence_events_xt",
+            "right_moving_fork_density_xt", "left_moving_fork_density_xt",
+            "fork_density_xt",
+        },
         title=title.strip() or output_label,
         x_label=x_axis_label.strip(),
         y_label=y_axis_label.strip(),
@@ -1853,6 +1886,7 @@ def render(_navigate: Callable[[str], None]) -> None:
     y_limits_automatic = True
     updating_y_limits = False
     updating_presentation = False
+    updating_plot_settings = False
     batch_colors: dict[str, str] = {}
     batch_line_types: dict[str, str] = {}
     batch_names: dict[str, str] = {}
@@ -1863,6 +1897,7 @@ def render(_navigate: Callable[[str], None]) -> None:
     filter_raw_refresh = {'call': lambda: None}
     rendered_name_style = {"value": _simulation_name_style()}
     source_region_refresh: dict[str, Callable[[], Any]] = {"call": lambda: None}
+    movement_source_provider: dict[str, Callable[[], tuple[Any, ...]]] = {"call": lambda: ()}
     simulation_constant_states = {
         "initiation_rate": _SimulationConstantState.create(),
         "fork_speed": _SimulationConstantState.create(),
@@ -2011,6 +2046,7 @@ def render(_navigate: Callable[[str], None]) -> None:
                         for source, source_label in (
                             (firing_source, "Initiation rate"),
                             (speed_source, "Fork speed"),
+                            *((source, label) for _key, source, label in movement_source_provider["call"]()),
                         ):
                             if str(source.mode.value) != "profile" or not source.inspections:
                                 continue
@@ -2101,22 +2137,22 @@ def render(_navigate: Callable[[str], None]) -> None:
 
                         with ui.column().classes("dn-setting-group"):
                             ui.label("Timing & outputs").classes("dn-setting-group-title")
+                            max_replication_time = (
+                                ui.number(
+                                    label="Simulation time (min)",
+                                    value=1200.0,
+                                    min=0.000001,
+                                    step=50.0,
+                                )
+                                .props("dense")
+                                .classes("dn-field")
+                            )
                             time_window = (
                                 ui.number(
                                     label="Time window (min)",
                                     value=300.0,
                                     min=0.000001,
                                     step=10.0,
-                                )
-                                .props("dense")
-                                .classes("dn-field")
-                            )
-                            max_replication_time = (
-                                ui.number(
-                                    label="Maximum time (min)",
-                                    value=1200.0,
-                                    min=0.000001,
-                                    step=50.0,
                                 )
                                 .props("dense")
                                 .classes("dn-field")
@@ -2136,18 +2172,15 @@ def render(_navigate: Callable[[str], None]) -> None:
                             ).mark("simulation-track-detailed-outputs")
 
                         with ui.column().classes("dn-setting-group dn-fork-behaviour-group"):
-                            ui.label("Origin & fork behaviour").classes("dn-setting-group-title")
                             with ui.element("div").classes("dn-fork-behaviour-grid"):
                                 with (
                                     ui.element("div")
                                     .classes("dn-setting-subgroup")
                                     .mark("simulation-factor-pool-settings")
                                 ):
-                                    ui.label("Firing factor").classes(
-                                        "dn-setting-subgroup-title"
-                                    )
+                                    ui.label("Origin dynamics").classes("dn-setting-group-title")
                                     with ui.element("div").classes("dn-firing-factor-grid"):
-                                        finite_pool = ui.checkbox("Finite pool", value=False).mark(
+                                        finite_pool = ui.checkbox("Firing factors", value=False).mark(
                                             "simulation-finite-pool"
                                         )
                                         factor_coupling = ui.checkbox("Fork coupling", value=False).mark(
@@ -2182,28 +2215,37 @@ def render(_navigate: Callable[[str], None]) -> None:
                                     .classes("dn-setting-subgroup")
                                     .mark("simulation-stalling-settings")
                                 ):
-                                    ui.label("Fork movement").classes("dn-setting-subgroup-title")
+                                    ui.label("Fork dynamics").classes("dn-setting-group-title")
                                     with ui.element("div").classes("dn-fork-movement-grid"):
-                                        with ui.column().classes("dn-fork-movement-options"):
+                                        with ui.column().classes("dn-fork-movement-options dn-fork-mechanism"):
                                             fork_stalling = ui.checkbox("Fork stalling", value=False).mark("simulation-fork-stalling")
-                                            with ui.column().classes("dn-fork-movement-options").bind_visibility_from(fork_stalling, "value"):
-                                                stall_rate = (
-                                                    ui.number(label="Stall rate (stalls/kb)", value=0.0, min=0.0, step=0.001)
-                                                    .props("dense").classes("dn-field")
-                                                    .mark("simulation-stall-rate-per-kb")
+                                            with ui.column().classes("dn-fork-dependent").bind_visibility_from(fork_stalling, "value"):
+                                                stall_source = _render_simulation_source(
+                                                    "Stalling density", constant=0., units="stalls/kb",
+                                                    spatial_only=True, constant_label="Stall rate (stalls/kb)",
+                                                    on_profile_change=lambda: source_region_refresh["call"](),
                                                 )
+                                                stall_rate = stall_source.constant.mark("simulation-stall-rate-per-kb")
+                                                field_hint(stall_source.mode, "Local density s(x). A bin of width Δx has stall probability 1 − exp(−s(x)Δx).")
                                                 shared_stalls = ui.checkbox(
                                                     "Shared between directions", value=False,
                                                 ).mark("simulation-stall-shared-directions")
+                                                field_hint(shared_stalls, "Use the same genomic stall sites and sampled pause durations for leftward and rightward forks within each realization. Sites are sampled again for the next realization.")
                                                 stall_recovery = ui.checkbox("Stall recovery", value=False).mark("simulation-stall-recovery")
-                                                stall_duration = (
-                                                    ui.number(label="Recovery time (min)", value=10.0, min=0.000001, step=1.0)
-                                                    .props("dense").classes("dn-field")
-                                                    .mark("simulation-stall-duration")
-                                                )
-                                                stall_duration.bind_visibility_from(stall_recovery, "value")
+                                                with ui.column().classes("dn-fork-dependent").bind_visibility_from(stall_recovery, "value"):
+                                                    recovery_source = _render_simulation_source(
+                                                        "Recovery", constant=.1, units="1/min", spatial_only=True,
+                                                        constant_label="Recovery rate (1/min)",
+                                                        on_profile_change=lambda: source_region_refresh["call"](),
+                                                    )
+                                                    recovery_rate = recovery_source.constant.mark(
+                                                        "simulation-stall-recovery-rate", "simulation-stall-duration",
+                                                    )
+                                                    recovery_rate.props("min=0 step=0.01")
+                                                    field_hint(recovery_rate, "Mean pause time is 1 / recovery rate. The default 0.1/min gives a 10-minute mean pause; zero means no restart.")
+                                                    field_hint(recovery_source.mode, "Use a constant recovery rate or upload a spatial recovery-rate profile in inverse minutes. Zero means no restart.")
                                             fork_stalling.on_value_change(lambda: stall_rate.set_value(0.0) if not fork_stalling.value else None)
-                                        with ui.column().classes("dn-fork-movement-options"):
+                                        with ui.element("div").classes("dn-fork-movement-options dn-fork-mechanism dn-fork-stochastic-row"):
                                             stochastic_movement = ui.checkbox("Stochastic movement", value=False).mark("simulation-stochastic-movement")
                                             fork_speed_std = (
                                                 ui.number(label="Standard deviation (kb/min)", value=0.1, min=0.0, step=0.1)
@@ -2211,6 +2253,26 @@ def render(_navigate: Callable[[str], None]) -> None:
                                                 .mark("simulation-fork-speed-std")
                                             )
                                             fork_speed_std.bind_visibility_from(stochastic_movement, "value")
+
+                def active_movement_sources() -> tuple[Any, ...]:
+                    if not fork_stalling.value:
+                        return ()
+                    sources = [("stall_rate_per_kb", stall_source, "Stalling density")]
+                    if stall_recovery.value:
+                        sources.append(("stall_recovery_rate", recovery_source, "Recovery rate"))
+                    return tuple(sources)
+
+                movement_source_provider["call"] = active_movement_sources
+                for control in (fork_stalling, stall_recovery):
+                    control.on_value_change(sync_region_to_profiles)
+
+                def materialize_movement_sources(missing_policy: str) -> dict[str, Any]:
+                    values: dict[str, Any] = {"stall_rate_per_kb": 0., "stall_duration": math.inf}
+                    for key, source, label in active_movement_sources():
+                        if key == "stall_recovery_rate":
+                            values.pop("stall_duration", None)
+                        values[key] = _materialize_simulation_source(source, label=label, missing_policy=missing_policy)
+                    return values
 
                 filter_refresh = {'call': lambda: None}
                 with expansion('Region transforms', icon='filter_alt'):
@@ -2680,6 +2742,8 @@ def render(_navigate: Callable[[str], None]) -> None:
 
                 def render_latest_result() -> None:
                     nonlocal result_chart
+                    if updating_plot_settings:
+                        return
                     plot_settings.surface.visible = bool(show_plot.value)
                     if plot_settings._statistics_export is not None:
                         plot_settings._statistics_export.refresh()
@@ -2843,7 +2907,7 @@ def render(_navigate: Callable[[str], None]) -> None:
                                 kind="simulation",
                             )
 
-                def simulation_request_settings(selected_filters, selected_filter_exports):
+                def simulation_request_settings(selected_filters, selected_filter_exports, movement_values=None):
                     return dict(
                         resolution_x=_number(resolution_x, "Spatial resolution"),
                         source_resolution_x=1.0,
@@ -2857,20 +2921,16 @@ def render(_navigate: Callable[[str], None]) -> None:
                         time_window=_number(time_window, "Time window"),
                         max_replication_time=_number(
                             max_replication_time,
-                            "Maximum replication time",
+                            "Simulation time",
                         ),
                         missing_values=str(missing_values.value),
                         seed=_integer(seed, "Seed") if fixed_seed.value else None,
-                        stall_rate_per_kb=_number(stall_rate, "Stall rate (stalls/kb)") if fork_stalling.value else 0.0,
                         stall_shared_directions=bool(shared_stalls.value) if fork_stalling.value else False,
                         fork_speed_std=_number(fork_speed_std, "Standard deviation") if stochastic_movement.value else 0.0,
-                        stall_duration=(
-                            math.inf
-                            if not fork_stalling.value or not stall_recovery.value
-                            else _number(stall_duration, "Stall duration")
-                        ),
+                        **(movement_values if movement_values is not None else
+                           {"stall_rate_per_kb": 0., "stall_duration": math.inf}),
                         firing_factors=(
-                            float(_integer(pool_size, "Firing factor"))
+                            float(_integer(pool_size, "Firing factors"))
                             if finite_pool.value
                             else None
                         ),
@@ -2900,7 +2960,8 @@ def render(_navigate: Callable[[str], None]) -> None:
                         exports = frozenset(key for key in selected_filters if filter_controls[key].controls['export'].value)
                         source_options = {}
                         for key, source, label in (("initiation_rate", firing_source, "Initiation rate"),
-                                                   ("fork_speed", speed_source, "Fork speed")):
+                                                   ("fork_speed", speed_source, "Fork speed"),
+                                                   *active_movement_sources()):
                             _validate_simulation_batch_selection(source, label=label)
                             mode = str(source.mode.value)
                             options = {"mode": mode, "form": str(source.form.value)}
@@ -2925,9 +2986,14 @@ def render(_navigate: Callable[[str], None]) -> None:
                         statistics = statistics_code_settings(plot_settings)
                         if statistics is not None and not combined_preview_active():
                             statistics["dataset_index"] = active_dataset_index
+                        recipe_settings = simulation_request_settings(selected_filters, exports)
+                        for key, _source, _label in active_movement_sources():
+                            recipe_settings.pop(key, None)
+                            if key == "stall_recovery_rate":
+                                recipe_settings.pop("stall_duration", None)
                         snapshot = CodeSnapshot("simulation", dict(
                             inputs=source_options,
-                            settings=inputs.encode(simulation_request_settings(selected_filters, exports)),
+                            settings=inputs.encode(recipe_settings),
                             region_end_kb=_number(region_end, "Region end"), automatic_region_end=automatic_region_end,
                             combination_mode=simulation_combination_mode.get("value", "pairwise")
                                 if any(source.mode.value == "constants" for source in (firing_source, speed_source)) else "pairwise",
@@ -3003,12 +3069,16 @@ def render(_navigate: Callable[[str], None]) -> None:
                             stochastic_movement,
                             fork_speed_std,
                             stall_recovery,
-                            stall_duration,
+                            recovery_rate,
                             shared_stalls,
                             finite_pool,
                             pool_size,
                             recycle_rate,
                             factor_coupling,
+                            stall_source.mode,
+                            *stall_source.selection_controls,
+                            recovery_source.mode,
+                            *recovery_source.selection_controls,
                         )
                         if bool(getattr(control, "enabled", False))
                     ]
@@ -3019,6 +3089,8 @@ def render(_navigate: Callable[[str], None]) -> None:
                         active_cancel = None
                         set_data_upload_locked(firing_source.uploader, False)
                         set_data_upload_locked(speed_source.uploader, False)
+                        for source in (stall_source, recovery_source):
+                            set_data_upload_locked(source.uploader, False)
                         for control in frozen_controls:
                             control.enable()
                         for control in filter_controls.values():
@@ -3038,6 +3110,8 @@ def render(_navigate: Callable[[str], None]) -> None:
                     completed_successfully = False
                     set_data_upload_locked(firing_source.uploader, True)
                     set_data_upload_locked(speed_source.uploader, True)
+                    for source in (stall_source, recovery_source):
+                        set_data_upload_locked(source.uploader, True)
                     for control in frozen_controls:
                         control.disable()
                     for control in filter_controls.values():
@@ -3054,6 +3128,7 @@ def render(_navigate: Callable[[str], None]) -> None:
                         def prepare_simulation_sources() -> tuple[
                             tuple[float | np.ndarray, ...],
                             tuple[float | np.ndarray, ...],
+                            dict[str, Any],
                         ]:
                             _validate_simulation_batch_selection(
                                 firing_source,
@@ -3074,6 +3149,7 @@ def render(_navigate: Callable[[str], None]) -> None:
                                     label="Fork speed",
                                     missing_policy='ignore' if 'fork_speed' in selected_filters else missing_policy,
                                 ),
+                                materialize_movement_sources(missing_policy),
                             )
 
                         preparation = asyncio.create_task(
@@ -3094,7 +3170,7 @@ def render(_navigate: Callable[[str], None]) -> None:
                             raise RuntimeError(
                                 "Input preparation stopped before returning simulation data."
                             )
-                        firing_values, speed_values = source_values
+                        firing_values, speed_values, movement_values = source_values
                         prepared_sources = (
                             _prepare_simulation_source(
                                 firing_source,
@@ -3147,6 +3223,7 @@ def render(_navigate: Callable[[str], None]) -> None:
                                 for size in (
                                     _simulation_spatial_size(initiation_rate),
                                     _simulation_spatial_size(fork_speed),
+                                    *(_simulation_spatial_size(value) for value in movement_values.values()),
                                 )
                                 if size is not None
                             }
@@ -3155,7 +3232,7 @@ def render(_navigate: Callable[[str], None]) -> None:
                                     f"{size:,}" for size in sorted(paired_sizes)
                                 )
                                 raise ValueError(
-                                    f"{dataset_name}: initiation-rate and fork-speed spatial "
+                                    f"{dataset_name}: spatial kinetic input "
                                     f"axes disagree ({sizes} bins)."
                                 )
                             region_end_value = (
@@ -3167,7 +3244,7 @@ def render(_navigate: Callable[[str], None]) -> None:
                             paired_values.append(
                                 (initiation_rate, fork_speed, region_end_value)
                             )
-                        shared_request = simulation_request_settings(selected_filters, selected_filter_exports)
+                        shared_request = simulation_request_settings(selected_filters, selected_filter_exports, movement_values)
                         requests = tuple(
                             ConstantSimulationRequest(
                                 initiation_rate=initiation_rate,
@@ -3330,10 +3407,8 @@ def render(_navigate: Callable[[str], None]) -> None:
                         # users) can observe "datasets complete" while the
                         # refreshable raw rows are still being rebuilt.
                         status.text = "Preparing results..."
-                        replicate_stats.text = f"{result.replicates:,}"
-                        resolution_stats.text = (
-                            f"{request.resolution_x:g} kb/bin · {request.resolution_t:g} min/bin"
-                        )
+                        replicate_stats.text = f"{result.replicates:,}" + (f" · {result.incomplete_simulations:,} incomplete" if result.incomplete_simulations else "")
+                        resolution_stats.text = _resolution_summary(result)
                         region_stats.text = (
                             f"{request.region_start_kb:g}–{request.region_end_kb:g} kb"
                         )
@@ -4205,18 +4280,8 @@ def render(_navigate: Callable[[str], None]) -> None:
                     if latest_result is None:
                         stats_container.visible = False
                         return
-                    position_steps = np.diff(latest_result.position_kb)
-                    time_steps = np.diff(latest_result.time_grid)
-                    position_resolution = (
-                        float(np.median(position_steps)) if position_steps.size else 0.0
-                    )
-                    time_resolution = (
-                        float(np.median(time_steps)) if time_steps.size else 0.0
-                    )
-                    replicate_stats.text = f"{latest_result.replicates:,}"
-                    resolution_stats.text = (
-                        f"{position_resolution:g} kb/bin | {time_resolution:g} min/bin"
-                    )
+                    replicate_stats.text = f"{latest_result.replicates:,}" + (f" · {latest_result.incomplete_simulations:,} incomplete" if latest_result.incomplete_simulations else "")
+                    resolution_stats.text = _resolution_summary(latest_result)
                     region_stats.text = (
                         f"{latest_result.position_kb[0]:g}-"
                         f"{latest_result.position_kb[-1]:g} kb"
@@ -4432,60 +4497,78 @@ def render(_navigate: Callable[[str], None]) -> None:
                 def sync_plot_labels() -> None:
                     """Switch the existing result locally without starting a new run."""
 
-                    selected = str(output.value or "Replication timing")
-                    spec = _output_spec(selected, latest_result)
-                    title.value = selected
-                    if len(latest_items) == 1:
-                        sync_single_raw_filename()
-                    else:
-                        raw_controls.file_name.value = (
-                            f"{RSIM_FILE_PREFIX}_{output_file_token(spec.key)}"
+                    nonlocal updating_plot_settings
+                    if updating_plot_settings:
+                        return
+                    # Label and view changes fire their own redraw callbacks.
+                    # Publish only after the new output's ranges are ready.
+                    updating_plot_settings = True
+                    try:
+                        selected = str(output.value or "Replication timing")
+                        spec = _output_spec(selected, latest_result)
+                        title.value = selected
+                        if len(latest_items) == 1:
+                            sync_single_raw_filename()
+                        else:
+                            raw_controls.file_name.value = (
+                                f"{RSIM_FILE_PREFIX}_{output_file_token(spec.key)}"
+                            )
+                        # "Default" resolves to the natural representation for the
+                        # selected quantity: line, histogram, or space-time heatmap.
+                        view.value = "Default"
+                        sync_view_controls()
+                        default_x_label, default_y_label = _default_axis_labels(
+                            output_label=selected,
+                            view_mode=str(view.value or "Default"),
+                            density=bool(density.value),
+                            result=latest_result,
                         )
-                    # "Default" resolves to the natural representation for the
-                    # selected quantity: line, histogram, or space-time heatmap.
-                    view.value = "Default"
-                    sync_view_controls()
-                    default_x_label, default_y_label = _default_axis_labels(
-                        output_label=selected,
-                        view_mode=str(view.value or "Default"),
-                        density=bool(density.value),
-                        result=latest_result,
-                    )
-                    x_axis_label.value = default_x_label
-                    y_axis_label.value = default_y_label
-                    for control in (
-                        title,
-                        x_axis_label,
-                        y_axis_label,
-                        view,
-                        raw_controls.file_name,
-                    ):
-                        control.update()
-                    render_batch_raw_files.refresh()
-                    sync_batch_presentation(redraw=False)
+                        x_axis_label.value = default_x_label
+                        y_axis_label.value = default_y_label
+                        for control in (
+                            title,
+                            x_axis_label,
+                            y_axis_label,
+                            view,
+                            raw_controls.file_name,
+                        ):
+                            control.update()
+                        render_batch_raw_files.refresh()
+                        sync_batch_presentation(redraw=False)
+                        if latest_result is not None:
+                            histogram_bin_sync.sync_to_data(redraw=False)
+                            populate_automatic_y_limits(redraw=False)
+                    finally:
+                        updating_plot_settings = False
                     if latest_result is not None:
-                        histogram_bin_sync.sync_to_data(redraw=False)
-                        populate_automatic_y_limits(redraw=False)
                         render_latest_result()
 
                 def sync_view_axis_labels() -> None:
                     """Keep histogram quantity/count labels consistent with its view."""
 
-                    sync_view_controls()
-                    sync_batch_presentation(redraw=False)
-                    selected = str(output.value or "Replication timing")
-                    default_x_label, default_y_label = _default_axis_labels(
-                        output_label=selected,
-                        view_mode=str(view.value or "Default"),
-                        density=bool(density.value),
-                        result=latest_result,
-                    )
-                    x_axis_label.value = default_x_label
-                    y_axis_label.value = default_y_label
-                    x_axis_label.update()
-                    y_axis_label.update()
-                    histogram_bin_sync.sync_to_data(redraw=False)
-                    refresh_axis_range()
+                    nonlocal updating_plot_settings
+                    if updating_plot_settings:
+                        return
+                    updating_plot_settings = True
+                    try:
+                        sync_view_controls()
+                        sync_batch_presentation(redraw=False)
+                        selected = str(output.value or "Replication timing")
+                        default_x_label, default_y_label = _default_axis_labels(
+                            output_label=selected,
+                            view_mode=str(view.value or "Default"),
+                            density=bool(density.value),
+                            result=latest_result,
+                        )
+                        x_axis_label.value = default_x_label
+                        y_axis_label.value = default_y_label
+                        x_axis_label.update()
+                        y_axis_label.update()
+                        histogram_bin_sync.sync_to_data(redraw=False)
+                        refresh_axis_range()
+                    finally:
+                        updating_plot_settings = False
+                    render_latest_result()
 
                 def histogram_values() -> Any | None:
                     if latest_result is None:
@@ -4624,6 +4707,20 @@ def render(_navigate: Callable[[str], None]) -> None:
                         for _ in range(4):
                             await asyncio.sleep(0)
                         await append_raw_uploads(lambda: simulation_sources[key].uploader, files)
+                    async def receive_movement(key, files):
+                        if running:
+                            raise ValueError("Stop the simulation before adding input data.")
+                        if len(files) != 1:
+                            raise ValueError("Choose one spatial profile per fork-movement input.")
+                        fork_stalling.set_value(True)
+                        source = stall_source
+                        if key != "stall_rate_per_kb":
+                            stall_recovery.set_value(True)
+                            source = recovery_source
+                        source.mode.set_value("profile")
+                        for _ in range(4):
+                            await asyncio.sleep(0)
+                        await append_raw_uploads(lambda: source.uploader, files)
                     async def receive_mask(key, files):
                         if running:
                             raise ValueError("Stop the simulation before adding a mask.")
@@ -4633,6 +4730,10 @@ def render(_navigate: Callable[[str], None]) -> None:
                     return tuple(
                         RawInputTarget(key, label, lambda files, key=key: receive(key, files))
                         for key, label in (("initiation_rate", "Initiation rate"), ("fork_speed", "Fork speed"))
+                    ) + tuple(
+                        RawInputTarget(key, label, lambda files, key=key: receive_movement(key, files))
+                        for key, label in (("stall_rate_per_kb", "Stalling density"),
+                                           ("stall_recovery_rate", "Recovery rate"))
                     ) + tuple(
                         RawInputTarget(key + "_mask", label + " mask", lambda files, key=key: receive_mask(key, files), kind="mask")
                         for key, label in (("initiation_rate", "Initiation rate"), ("fork_speed", "Fork speed"))
